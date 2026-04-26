@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
+import React from 'react';
 import { ChatMessage } from './types';
 
 const EMOJIS = ['😀', '😂', '😍', '😎', '👍', '🙏', '🔥', '❤️', '🎉', '😢'];
@@ -30,6 +31,11 @@ interface Props<T extends BaseUser> {
   onSelectUser: (user: T) => void;
   onSetDeleteTarget: (user: T | null) => void;
   onDelete: () => void;
+  onToggleBlock?: (user: T) => void;
+  blocking?: boolean;
+  renderSelectedExtras?: (user: T) => React.ReactNode;
+  /** Coadmin “View carers” — responsive grid, amber VIP panels, scrollable list. */
+  carersVisualTheme?: boolean;
 
   onStartChat?: (user: T) => void;
   chatUser?: T | null;
@@ -58,6 +64,10 @@ export default function UserManagementView<T extends BaseUser>({
   onSelectUser,
   onSetDeleteTarget,
   onDelete,
+  onToggleBlock,
+  blocking = false,
+  renderSelectedExtras,
+  carersVisualTheme = false,
 
   onStartChat,
   chatUser,
@@ -102,10 +112,26 @@ export default function UserManagementView<T extends BaseUser>({
   const isChatOpen =
     selectedUser && chatUser && selectedUser.uid === chatUser.uid;
 
+  const rootLayoutClass = carersVisualTheme
+    ? 'flex min-h-0 flex-1 flex-col gap-4 lg:grid lg:h-[min(88dvh,calc(100vh-7rem))] lg:grid-cols-[minmax(0,300px)_1fr] lg:gap-6'
+    : 'grid h-[calc(100vh-48px)] grid-cols-1 gap-4 lg:grid-cols-[minmax(0,320px)_1fr] lg:gap-6';
+
+  const sidebarClass = carersVisualTheme
+    ? 'max-h-[42vh] shrink-0 overflow-y-auto rounded-2xl border border-amber-500/30 bg-gradient-to-b from-amber-950/55 via-[#0f0a14] to-black/70 p-4 shadow-[0_0_40px_-12px_rgba(234,179,8,0.15)] backdrop-blur-md lg:max-h-none'
+    : 'rounded-2xl border border-white/10 bg-neutral-900/60 p-4';
+
+  const detailClass = carersVisualTheme
+    ? 'flex min-h-[min(52dvh,28rem)] flex-1 flex-col rounded-2xl border border-amber-500/25 bg-black/50 p-5 shadow-xl shadow-amber-900/10 backdrop-blur-md lg:min-h-0'
+    : 'flex flex-col rounded-2xl border border-white/10 bg-white/5 p-6';
+
+  const listTitleClass = carersVisualTheme
+    ? 'mb-4 text-lg font-black tracking-tight text-amber-100'
+    : 'mb-4 text-xl font-bold';
+
   return (
-    <div className="grid h-[calc(100vh-48px)] grid-cols-[320px_1fr] gap-6">
-      <div className="rounded-2xl border border-white/10 bg-neutral-900/60 p-4">
-        <h2 className="mb-4 text-xl font-bold">{title}</h2>
+    <div className={rootLayoutClass}>
+      <div className={sidebarClass}>
+        <h2 className={listTitleClass}>{title}</h2>
 
         {loadingList ? (
           <p className="text-sm text-neutral-400">Loading...</p>
@@ -125,10 +151,16 @@ export default function UserManagementView<T extends BaseUser>({
                   }}
                   className={`flex w-full items-center justify-between rounded-xl p-4 text-left transition ${
                     selectedUser?.id === user.id
-                      ? 'bg-white text-black'
+                      ? carersVisualTheme
+                        ? 'bg-gradient-to-r from-amber-400 to-yellow-500 text-black shadow-lg shadow-amber-500/25'
+                        : 'bg-white text-black'
                       : unreadCount > 0
-                        ? 'bg-red-500/10 text-white ring-1 ring-red-500/30 hover:bg-red-500/20'
-                        : 'bg-white/5 text-white hover:bg-white/10'
+                        ? carersVisualTheme
+                          ? 'bg-rose-950/40 text-white ring-1 ring-rose-500/35 hover:bg-rose-950/55'
+                          : 'bg-red-500/10 text-white ring-1 ring-red-500/30 hover:bg-red-500/20'
+                        : carersVisualTheme
+                          ? 'border border-white/10 bg-white/[0.04] text-amber-50/95 hover:border-amber-400/30 hover:bg-amber-500/10'
+                          : 'bg-white/5 text-white hover:bg-white/10'
                   }`}
                 >
                   <div className="min-w-0">
@@ -175,19 +207,35 @@ export default function UserManagementView<T extends BaseUser>({
         )}
       </div>
 
-      <div className="flex flex-col rounded-2xl border border-white/10 bg-white/5 p-6">
+      <div className={detailClass}>
         {!selectedUser ? (
-          <div className="flex h-full items-center justify-center text-neutral-500">
-            {selectText}
+          <div
+            className={`flex h-full min-h-[12rem] items-center justify-center px-4 text-center ${
+              carersVisualTheme ? 'text-amber-100/45' : 'text-neutral-500'
+            }`}
+          >
+            {carersVisualTheme ? (
+              <p>
+                <span className="text-2xl">👆</span>
+                <br />
+                {selectText}
+              </p>
+            ) : (
+              selectText
+            )}
           </div>
         ) : (
           <>
             <div>
-              <div className="mb-6 flex justify-end gap-3">
+              <div className="mb-6 flex flex-wrap justify-end gap-2 sm:gap-3">
                 {onStartChat && (
                   <button
                     onClick={() => onStartChat(selectedUser)}
-                    className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200"
+                    className={
+                      carersVisualTheme
+                        ? 'rounded-xl border border-amber-400/40 bg-amber-500/20 px-4 py-2.5 text-sm font-bold text-amber-50 hover:bg-amber-500/30'
+                        : 'rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200'
+                    }
                   >
                     {isChatOpen ? 'Close Chat' : 'Chat'}
                   </button>
@@ -195,27 +243,72 @@ export default function UserManagementView<T extends BaseUser>({
 
                 <button
                   onClick={() => onSetDeleteTarget(selectedUser)}
-                  className="rounded-xl bg-red-500/20 px-4 py-2 text-sm font-semibold text-red-400 hover:bg-red-500/30"
+                  className={
+                    carersVisualTheme
+                      ? 'rounded-xl border border-rose-500/40 bg-rose-600/25 px-4 py-2.5 text-sm font-bold text-rose-100 hover:bg-rose-600/40'
+                      : 'rounded-xl bg-red-500/20 px-4 py-2 text-sm font-semibold text-red-400 hover:bg-red-500/30'
+                  }
                 >
                   Delete
                 </button>
+
+                {onToggleBlock && (
+                  <button
+                    onClick={() => onToggleBlock(selectedUser)}
+                    disabled={blocking}
+                    className={
+                      carersVisualTheme
+                        ? 'rounded-xl border border-yellow-500/40 bg-yellow-500/15 px-4 py-2.5 text-sm font-bold text-yellow-100 hover:bg-yellow-500/25 disabled:cursor-not-allowed disabled:opacity-60'
+                        : 'rounded-xl bg-yellow-500/20 px-4 py-2 text-sm font-semibold text-yellow-300 hover:bg-yellow-500/30 disabled:cursor-not-allowed disabled:opacity-60'
+                    }
+                  >
+                    {blocking
+                      ? 'Updating...'
+                      : selectedUser.status === 'disabled'
+                        ? 'Unblock'
+                        : 'Block'}
+                  </button>
+                )}
               </div>
 
-              <h2 className="text-4xl font-bold capitalize">
+              <h2
+                className={`text-4xl font-bold capitalize ${
+                  carersVisualTheme
+                    ? 'bg-gradient-to-r from-white via-amber-100 to-amber-300 bg-clip-text text-transparent'
+                    : ''
+                }`}
+              >
                 {selectedUser.username}
               </h2>
 
               <div className="mt-4 space-y-3">
-                <p className="text-sm text-neutral-400">
-                  Role: <span className="text-white">{selectedUser.role}</span>
+                <p
+                  className={
+                    carersVisualTheme ? 'text-sm text-amber-100/55' : 'text-sm text-neutral-400'
+                  }
+                >
+                  Role:{' '}
+                  <span className={carersVisualTheme ? 'text-amber-50' : 'text-white'}>
+                    {selectedUser.role}
+                  </span>
                 </p>
 
-                <p className="text-sm text-neutral-400">
+                <p
+                  className={
+                    carersVisualTheme ? 'text-sm text-amber-100/55' : 'text-sm text-neutral-400'
+                  }
+                >
                   Status:{' '}
-                  <span className="text-white">{selectedUser.status}</span>
+                  <span className={carersVisualTheme ? 'text-amber-50' : 'text-white'}>
+                    {selectedUser.status}
+                  </span>
                 </p>
 
-                <div className="flex items-center gap-2 text-sm text-neutral-400">
+                <div
+                  className={`flex items-center gap-2 text-sm ${
+                    carersVisualTheme ? 'text-amber-100/55' : 'text-neutral-400'
+                  }`}
+                >
                   <span>Online Status:</span>
 
                   <span
@@ -224,15 +317,23 @@ export default function UserManagementView<T extends BaseUser>({
                     }`}
                   />
 
-                  <span className="text-white">
+                  <span className={carersVisualTheme ? 'text-amber-50' : 'text-white'}>
                     {getOnlineLabel(selectedUser)}
                   </span>
                 </div>
+
+                {renderSelectedExtras && renderSelectedExtras(selectedUser)}
               </div>
             </div>
 
             {isChatOpen && (
-              <div className="mt-8 flex min-h-[420px] flex-1 flex-col rounded-2xl border border-white/10 bg-neutral-950/60">
+              <div
+                className={`mt-8 flex min-h-[420px] flex-1 flex-col rounded-2xl border ${
+                  carersVisualTheme
+                    ? 'border-amber-500/25 bg-black/45 shadow-inner shadow-black/40'
+                    : 'border-white/10 bg-neutral-950/60'
+                }`}
+              >
                 <div className="border-b border-white/10 p-4">
                   <div className="flex items-center gap-3">
                     <div className="relative">

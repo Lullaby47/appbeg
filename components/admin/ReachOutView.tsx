@@ -1,0 +1,317 @@
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+import { AdminUser, ChatMessage } from './types';
+
+const EMOJIS = ['😀', '😂', '😍', '😎', '👍', '🙏', '🔥', '❤️', '🎉', '😢'];
+
+interface Props {
+  chatUsers: AdminUser[];
+  selectedChatUser: AdminUser | null;
+  messages: ChatMessage[];
+  newMessage: string;
+  unreadCounts?: Record<string, number>;
+  imagePreview?: string | null;
+  sendingImage?: boolean;
+  onSelectUser: (user: AdminUser) => void;
+  onMessageChange: (value: string) => void;
+  onSendMessage: (e: React.FormEvent) => void;
+  onImageSelect?: (file: File) => void;
+  onClearImage?: () => void;
+}
+
+export default function ReachOutView({
+  chatUsers,
+  selectedChatUser,
+  messages,
+  newMessage,
+  unreadCounts = {},
+  imagePreview = null,
+  sendingImage = false,
+  onSelectUser,
+  onMessageChange,
+  onSendMessage,
+  onImageSelect,
+  onClearImage,
+}: Props) {
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [showEmojis, setShowEmojis] = useState(false);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const formatTime = (date: Date) => {
+    return date.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
+  const totalUnread = Object.values(unreadCounts).reduce(
+    (total, count) => total + count,
+    0
+  );
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4 lg:grid lg:h-[min(85dvh,calc(100vh-8rem))] lg:grid-cols-[minmax(0,300px)_1fr] lg:gap-6">
+      <div className="max-h-[38vh] min-h-0 shrink-0 overflow-hidden rounded-2xl border border-violet-500/25 bg-gradient-to-b from-violet-950/80 to-black/60 p-3 shadow-lg shadow-violet-500/10 backdrop-blur-md sm:max-h-[42vh] lg:max-h-none lg:overflow-auto lg:p-4">
+        <div className="mb-3 flex items-center justify-between lg:mb-4">
+          <h2 className="text-lg font-black tracking-tight text-amber-100 lg:text-xl">
+            💬 Agents
+          </h2>
+
+          {totalUnread > 0 && (
+            <span className="rounded-full bg-red-500 px-2.5 py-1 text-xs font-bold text-white">
+              {totalUnread} unread
+            </span>
+          )}
+        </div>
+
+        {chatUsers.length === 0 ? (
+          <p className="text-sm text-violet-200/60">No agents available.</p>
+        ) : (
+          <div className="max-h-[30vh] space-y-2 overflow-y-auto pr-1 lg:max-h-none">
+            {chatUsers.map((user) => {
+              const unreadCount = unreadCounts[user.uid] || 0;
+
+              return (
+                <button
+                  key={user.id}
+                  onClick={() => onSelectUser(user)}
+                  className={`flex w-full items-center gap-3 rounded-xl p-4 text-left transition ${
+                    selectedChatUser?.id === user.id
+                      ? 'bg-white text-black'
+                      : unreadCount > 0
+                        ? 'bg-red-500/10 text-white ring-1 ring-red-500/30 hover:bg-red-500/20'
+                        : 'bg-white/5 text-white hover:bg-white/10'
+                  }`}
+                >
+                  <div className="relative">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-neutral-700 font-bold">
+                      {user.username.charAt(0).toUpperCase()}
+                    </div>
+
+                    {unreadCount > 0 && (
+                      <div className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold text-white">
+                        {unreadCount > 9 ? '9+' : unreadCount}
+                      </div>
+                    )}
+
+                    {unreadCount === 0 && (
+                      <div className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-green-500 ring-2 ring-neutral-900" />
+                    )}
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="truncate text-sm font-semibold">
+                        {user.username}
+                      </p>
+
+                      {unreadCount > 0 && (
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                            selectedChatUser?.id === user.id
+                              ? 'bg-red-500 text-white'
+                              : 'bg-red-500 text-white'
+                          }`}
+                        >
+                          NEW
+                        </span>
+                      )}
+                    </div>
+
+                    <p
+                      className={`text-xs ${
+                        selectedChatUser?.id === user.id
+                          ? 'text-black/60'
+                          : unreadCount > 0
+                            ? 'text-red-200'
+                            : 'text-neutral-500'
+                      }`}
+                    >
+                      {user.role}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="flex min-h-[48vh] flex-1 flex-col rounded-2xl border border-amber-500/20 bg-black/40 shadow-xl shadow-amber-500/5 backdrop-blur-md lg:min-h-0">
+        {!selectedChatUser ? (
+          <div className="flex flex-1 items-center justify-center px-4 text-center text-sm text-amber-100/50">
+            <p>
+              <span className="text-2xl">✨</span>
+              <br />
+              Pick an agent to open your VIP messenger
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="shrink-0 border-b border-white/10 bg-black/30 p-3 lg:p-4">
+              <div className="flex items-center gap-3">
+                <div className="relative">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-neutral-700 font-bold">
+                    {selectedChatUser.username.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-green-500 ring-2 ring-neutral-900" />
+                </div>
+
+                <div>
+                  <h3 className="font-semibold">
+                    {selectedChatUser.username}
+                  </h3>
+                  <p className="text-xs text-neutral-400">
+                    {selectedChatUser.role}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 lg:p-4">
+              {messages.length === 0 ? (
+                <div className="flex h-full items-center justify-center text-sm text-neutral-500">
+                  No messages yet. Start the conversation.
+                </div>
+              ) : (
+                messages.map((msg) => (
+                  <div
+                    key={msg.id}
+                    className={`flex ${
+                      msg.sender === 'admin' ? 'justify-end' : 'justify-start'
+                    }`}
+                  >
+                    <div
+                      className={`max-w-[85%] rounded-2xl px-4 py-2 shadow-md sm:max-w-[70%] ${
+                        msg.sender === 'admin'
+                          ? 'bg-gradient-to-br from-amber-100 to-amber-200 text-black'
+                          : 'border border-white/10 bg-neutral-800/90 text-white'
+                      }`}
+                    >
+                      {msg.imageUrl ? (
+                        <img
+                          src={msg.imageUrl}
+                          alt=""
+                          className="mb-2 max-h-48 w-full rounded-lg object-cover"
+                        />
+                      ) : null}
+                      {msg.text ? (
+                        <p className="break-words text-sm">{msg.text}</p>
+                      ) : null}
+                      <p
+                        className={`mt-1 text-xs ${
+                          msg.sender === 'admin'
+                            ? 'text-black/60'
+                            : 'text-neutral-500'
+                        }`}
+                      >
+                        {formatTime(msg.timestamp)}
+                      </p>
+                    </div>
+                  </div>
+                ))
+              )}
+
+              <div ref={messagesEndRef} />
+            </div>
+
+            <form
+              onSubmit={onSendMessage}
+              className="shrink-0 border-t border-white/10 bg-black/40 p-3 lg:p-4"
+            >
+              {imagePreview && (
+                <div className="mb-3 flex items-center gap-2 rounded-lg bg-white/5 p-3">
+                  <img
+                    src={imagePreview}
+                    alt="preview"
+                    className="h-16 w-16 rounded object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={onClearImage}
+                    className="ml-auto text-xs text-neutral-400 hover:text-white"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <input
+                  type="text"
+                  value={newMessage}
+                  onChange={(e) => onMessageChange(e.target.value)}
+                  placeholder="Message…"
+                  className="min-w-0 flex-1 rounded-xl border border-amber-500/20 bg-neutral-900/90 px-4 py-3 text-base text-white placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-amber-400/40"
+                />
+
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setShowEmojis(!showEmojis)}
+                    className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/20"
+                  >
+                    😊
+                  </button>
+
+                  {showEmojis && (
+                    <div className="absolute bottom-full right-0 mb-2 grid w-48 grid-cols-5 gap-1 rounded-lg bg-neutral-800 p-2 shadow-lg">
+                      {EMOJIS.map((emoji) => (
+                        <button
+                          key={emoji}
+                          type="button"
+                          onClick={() => {
+                            onMessageChange(`${newMessage}${emoji}`);
+                            setShowEmojis(false);
+                          }}
+                          className="rounded bg-neutral-700 p-2 text-lg hover:bg-neutral-600"
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file && onImageSelect) {
+                      onImageSelect(file);
+                    }
+                    e.target.value = '';
+                  }}
+                  className="hidden"
+                />
+
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/20"
+                >
+                  📷
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={(!newMessage.trim() && !imagePreview) || sendingImage}
+                  className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {sendingImage ? '...' : 'Send'}
+                </button>
+              </div>
+            </form>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
