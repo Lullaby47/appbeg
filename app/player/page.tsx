@@ -60,7 +60,7 @@ import {
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
 
-type PlayerView = 'dashboard' | 'play' | 'agents' | 'usernames';
+type PlayerView = 'dashboard' | 'play' | 'bonus-events' | 'agents' | 'usernames';
 
 type PlayerWallet = {
   coin: number;
@@ -170,6 +170,9 @@ const PLAYER_SPLASH_CARD =
 const PLAYER_SPLASH_CARD_WIDE =
   'w-full max-w-lg rounded-3xl border border-amber-400/25 bg-gradient-to-b from-[#121018] via-zinc-950/98 to-black p-6 shadow-2xl shadow-amber-500/10 sm:max-w-2xl sm:p-7';
 const BONUS_ROTATE_MS = 7500;
+const CASINO_BACKGROUND_TRACKS = ['/theme1.mp3', '/theme2.mp3', '/theme3.mp3'] as const;
+const PLAYER_MUSIC_STORAGE_KEY = 'playerBackgroundMusicEnabled';
+const DEFAULT_PLAYER_MUSIC_VOLUME = 0.3;
 
 function normalizeGameKey(gameName: string) {
   return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
@@ -310,6 +313,7 @@ const NAV_ITEMS: {
 }[] = [
   { label: 'Lobby', view: 'dashboard', icon: 'tachometer-alt', emoji: '🏠' },
   { label: 'Play', view: 'play', icon: 'dice-d6', emoji: '🎰' },
+  { label: 'Bonus Events', view: 'bonus-events', icon: 'gift', emoji: '🎁' },
   { label: 'Agents', view: 'agents', icon: 'headset', emoji: '💬' },
   { label: 'Vault', view: 'usernames', icon: 'user-secret', emoji: '🔐' },
 ];
@@ -410,6 +414,17 @@ export default function PlayerPage() {
   const [message, setMessage] = useState('');
   const [loadingList, setLoadingList] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [musicEnabled, setMusicEnabled] = useState(() => {
+    if (typeof window === 'undefined') {
+      return true;
+    }
+
+    try {
+      return window.localStorage.getItem(PLAYER_MUSIC_STORAGE_KEY) !== 'false';
+    } catch {
+      return true;
+    }
+  });
   const [bonusCarouselIndex, setBonusCarouselIndex] = useState(0);
   const [bonusStripPaused, setBonusStripPaused] = useState(false);
   const [showLogoutConfirmSplash, setShowLogoutConfirmSplash] = useState(false);
@@ -417,6 +432,12 @@ export default function PlayerPage() {
   const [bonusVanishedToast, setBonusVanishedToast] = useState(false);
   const selfClaimedBonusIdRef = useRef<string | null>(null);
   const lastBonusIdsRef = useRef<string[]>([]);
+  const musicEnabledRef = useRef(true);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const currentTrackRef = useRef<string | null>(null);
+  const playRandomTrackRef = useRef<((previousTrack?: string | null) => Promise<void>) | null>(null);
+  const interactionListenerCleanupRef = useRef<null | (() => void)>(null);
+  const autoplayRetryTimeoutRef = useRef<number | null>(null);
 
   const formatWalletAmount = useCallback((value: number) => {
     return new Intl.NumberFormat('en-US').format(value);
@@ -430,15 +451,13 @@ export default function PlayerPage() {
     [bonusEvents]
   );
 
-  useEffect(() => {
+  const activeBonusCarouselIndex = useMemo(() => {
     if (playerBonusEvents.length === 0) {
-      setBonusCarouselIndex(0);
-      return;
+      return 0;
     }
-    setBonusCarouselIndex((index) =>
-      Math.min(index, Math.max(0, playerBonusEvents.length - 1))
-    );
-  }, [playerBonusEvents.length]);
+
+    return Math.min(bonusCarouselIndex, Math.max(0, playerBonusEvents.length - 1));
+  }, [bonusCarouselIndex, playerBonusEvents.length]);
 
   useEffect(() => {
     const len = playerBonusEvents.length;
@@ -524,6 +543,119 @@ export default function PlayerPage() {
 
   const playerAlert = useMemo(() => getPlayerAlertInfo(message), [message]);
 
+  const chooseRandomTrack = useCallback((previousTrack?: string | null) => {
+    if (CASINO_BACKGROUND_TRACKS.length <= 1) {
+      return CASINO_BACKGROUND_TRACKS[0];
+    }
+
+    const eligibleTracks = CASINO_BACKGROUND_TRACKS.filter((track) => track !== previousTrack);
+    return eligibleTracks[Math.floor(Math.random() * eligibleTracks.length)] || CASINO_BACKGROUND_TRACKS[0];
+  }, []);
+
+  const clearInteractionListener = useCallback(() => {
+    interactionListenerCleanupRef.current?.();
+    interactionListenerCleanupRef.current = null;
+  }, []);
+
+  const clearAutoplayRetry = useCallback(() => {
+    if (autoplayRetryTimeoutRef.current !== null) {
+      window.clearTimeout(autoplayRetryTimeoutRef.current);
+      autoplayRetryTimeoutRef.current = null;
+    }
+  }, []);
+
+  const cleanupAudioElement = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) {
+      return;
+    }
+
+    audio.pause();
+    audio.onended = null;
+    audio.onerror = null;
+    audio.src = '';
+    audioRef.current = null;
+  }, []);
+
+  const playCurrentAudio = useCallback(async () => {
+    const audio = audioRef.current;
+    if (!audio || !musicEnabledRef.current) {
+      return false;
+    }
+
+    try {
+      audio.volume = DEFAULT_PLAYER_MUSIC_VOLUME;
+      await audio.play();
+      clearInteractionListener();
+      clearAutoplayRetry();
+      return true;
+    } catch {
+      return false;
+    }
+  }, [clearAutoplayRetry, clearInteractionListener]);
+
+  const attachInteractionListener = useCallback(() => {
+    if (interactionListenerCleanupRef.current || typeof window === 'undefined') {
+      return;
+    }
+
+    const handleInteraction = () => {
+      void playCurrentAudio();
+    };
+
+    const options: AddEventListenerOptions = { passive: true };
+    window.addEventListener('pointerdown', handleInteraction, options);
+    window.addEventListener('keydown', handleInteraction, options);
+    interactionListenerCleanupRef.current = () => {
+      window.removeEventListener('pointerdown', handleInteraction);
+      window.removeEventListener('keydown', handleInteraction);
+    };
+  }, [playCurrentAudio]);
+
+  const playRandomTrack = useCallback(
+    async (previousTrack?: string | null) => {
+      if (!musicEnabledRef.current) {
+        return;
+      }
+
+      clearAutoplayRetry();
+      cleanupAudioElement();
+
+      const nextTrack = chooseRandomTrack(previousTrack ?? currentTrackRef.current);
+      const audio = new Audio(nextTrack);
+      audio.volume = DEFAULT_PLAYER_MUSIC_VOLUME;
+      audio.preload = 'auto';
+      audio.onended = () => {
+        void playRandomTrackRef.current?.(nextTrack);
+      };
+      audio.onerror = () => {
+        clearAutoplayRetry();
+        autoplayRetryTimeoutRef.current = window.setTimeout(() => {
+          autoplayRetryTimeoutRef.current = null;
+          void playRandomTrackRef.current?.(nextTrack);
+        }, 1200);
+      };
+
+      audioRef.current = audio;
+      currentTrackRef.current = nextTrack;
+
+      const didPlay = await playCurrentAudio();
+      if (!didPlay) {
+        attachInteractionListener();
+      }
+    },
+    [
+      attachInteractionListener,
+      chooseRandomTrack,
+      cleanupAudioElement,
+      clearAutoplayRetry,
+      playCurrentAudio,
+    ]
+  );
+  useEffect(() => {
+    playRandomTrackRef.current = playRandomTrack;
+  }, [playRandomTrack]);
+
   async function copyCredentialValue(value: string, label: string) {
     const clean = value.trim();
 
@@ -606,6 +738,46 @@ export default function PlayerPage() {
     audio.volume = 0.6;
     void audio.play().catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    musicEnabledRef.current = musicEnabled;
+
+    try {
+      window.localStorage.setItem(PLAYER_MUSIC_STORAGE_KEY, String(musicEnabled));
+    } catch {
+      // Ignore storage write failures.
+    }
+
+    if (!musicEnabled) {
+      clearInteractionListener();
+      clearAutoplayRetry();
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      return;
+    }
+
+    if (audioRef.current) {
+      void playCurrentAudio();
+      return;
+    }
+
+    void playRandomTrack(currentTrackRef.current);
+  }, [
+    clearAutoplayRetry,
+    clearInteractionListener,
+    musicEnabled,
+    playCurrentAudio,
+    playRandomTrack,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      clearInteractionListener();
+      clearAutoplayRetry();
+      cleanupAudioElement();
+    };
+  }, [cleanupAudioElement, clearAutoplayRetry, clearInteractionListener]);
 
   const loadAgents = useCallback(async () => {
     try {
@@ -972,7 +1144,12 @@ export default function PlayerPage() {
 
     if (
       playerUid &&
-      (activeView === 'usernames' || activeView === 'play' || activeView === 'dashboard')
+      (
+        activeView === 'usernames' ||
+        activeView === 'play' ||
+        activeView === 'dashboard' ||
+        activeView === 'bonus-events'
+      )
     ) {
       const nextTimeoutId = window.setTimeout(() => {
         void loadPlayerUsernames(playerUid);
@@ -1638,6 +1815,16 @@ export default function PlayerPage() {
           </div>
         </header>
 
+        <button
+          type="button"
+          onClick={() => setMusicEnabled((previous) => !previous)}
+          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] right-3 z-40 min-h-[44px] rounded-full border border-amber-400/35 bg-black/70 px-4 py-2 text-xs font-black uppercase tracking-wide text-amber-100 shadow-[0_0_24px_-10px_rgba(234,179,8,0.7)] backdrop-blur-xl transition hover:border-amber-300/60 hover:bg-black/80 lg:bottom-4 lg:right-4"
+          aria-pressed={musicEnabled}
+          aria-label={musicEnabled ? 'Turn music off' : 'Turn music on'}
+        >
+          {musicEnabled ? 'Music On' : 'Music Off'}
+        </button>
+
         <AnimatePresence>
           {mobileMenuOpen ? (
             <>
@@ -2085,6 +2272,7 @@ export default function PlayerPage() {
                   ))}
                 </div>
 
+                {false ? (
                 <div
                   className="group/bonus relative overflow-hidden rounded-3xl border border-violet-400/35 bg-gradient-to-br from-violet-950/60 via-black/50 to-fuchsia-950/25 p-4 shadow-[0_0_40px_-12px_rgba(139,92,246,0.35)] backdrop-blur-xl sm:p-6"
                   onPointerEnter={() => setBonusStripPaused(true)}
@@ -2180,7 +2368,7 @@ export default function PlayerPage() {
                           type="button"
                           onClick={() => setBonusCarouselIndex(i)}
                           className={`max-w-[140px] truncate rounded-lg border px-2 py-1 text-left text-[10px] font-bold transition ${
-                            i === bonusCarouselIndex
+                            i === activeBonusCarouselIndex
                               ? 'border-fuchsia-400/60 bg-fuchsia-500/25 text-fuchsia-50 shadow-[0_0_12px_rgba(217,70,239,0.35)]'
                               : 'border-violet-500/25 bg-black/30 text-violet-200/80 hover:border-violet-400/50'
                           }`}
@@ -2204,7 +2392,7 @@ export default function PlayerPage() {
                           onClick={() => setBonusCarouselIndex(i)}
                           aria-label={`Show bonus ${i + 1}`}
                           className={`h-2 rounded-full transition-all ${
-                            i === bonusCarouselIndex
+                            i === activeBonusCarouselIndex
                               ? 'w-6 bg-gradient-to-r from-fuchsia-400 to-violet-400'
                               : 'w-2 bg-violet-600/50 hover:bg-violet-400/70'
                           }`}
@@ -2228,7 +2416,7 @@ export default function PlayerPage() {
                     <div className="relative min-h-[12rem]">
                       <AnimatePresence initial={false} mode="wait">
                         <motion.div
-                          key={playerBonusEvents[bonusCarouselIndex]?.id || 'bonus'}
+                          key={playerBonusEvents[activeBonusCarouselIndex]?.id || 'bonus'}
                           initial={{ opacity: 0, y: 14, filter: 'blur(10px)' }}
                           animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
                           exit={{ opacity: 0, y: -12, filter: 'blur(8px)' }}
@@ -2236,7 +2424,7 @@ export default function PlayerPage() {
                           className="rounded-2xl border border-fuchsia-400/20 bg-gradient-to-b from-violet-950/40 to-black/50 p-4 shadow-inner sm:p-5"
                         >
                           {(() => {
-                            const event = playerBonusEvents[bonusCarouselIndex];
+                            const event = playerBonusEvents[activeBonusCarouselIndex];
                             if (!event) {
                               return null;
                             }
@@ -2285,6 +2473,7 @@ export default function PlayerPage() {
                     </div>
                   )}
                 </div>
+                ) : null}
 
                 <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
                   <div className="rounded-3xl border border-amber-400/25 bg-black/45 p-4 shadow-xl backdrop-blur-xl sm:p-6">
@@ -2357,6 +2546,250 @@ export default function PlayerPage() {
                       </div>
                     )}
                   </div>
+                </div>
+              </div>
+            )}
+
+            {activeView === 'bonus-events' && (
+              <div className="space-y-5 sm:space-y-6">
+                <div className="relative overflow-hidden rounded-3xl border border-fuchsia-400/40 bg-gradient-to-br from-fuchsia-700/25 via-amber-500/10 to-black/60 p-5 shadow-[0_0_48px_-12px_rgba(217,70,239,0.45)] sm:p-6">
+                  <div className="pointer-events-none absolute -right-10 top-0 h-36 w-36 rounded-full bg-fuchsia-400/25 blur-3xl" />
+                  <div className="pointer-events-none absolute bottom-0 left-0 h-28 w-28 rounded-full bg-amber-400/20 blur-2xl" />
+                  <p className="text-xs font-black uppercase tracking-[0.35em] text-fuchsia-200/90 sm:text-sm">
+                    🎁 Reward lounge
+                  </p>
+                  <h2 className="mt-2 text-3xl font-black text-white sm:text-4xl">Bonus Events</h2>
+                  <p className="mt-2 max-w-2xl text-sm text-fuchsia-100/80 sm:text-base">
+                    Claim limited rewards from staff and coadmin drops.
+                  </p>
+                </div>
+
+                <div
+                  className="group/bonus relative overflow-hidden rounded-3xl border border-violet-400/35 bg-gradient-to-br from-violet-950/70 via-black/55 to-fuchsia-950/30 p-4 shadow-[0_0_40px_-12px_rgba(139,92,246,0.35)] backdrop-blur-xl sm:p-6"
+                  onPointerEnter={() => setBonusStripPaused(true)}
+                  onPointerLeave={() => setBonusStripPaused(false)}
+                >
+                  <div
+                    className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-fuchsia-500/20 blur-3xl"
+                    aria-hidden
+                  />
+                  <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="flex items-center gap-2 text-lg font-black text-violet-100 sm:text-2xl">
+                          <span className="text-2xl" aria-hidden>
+                            🎁
+                          </span>
+                          Bonus Events
+                        </h3>
+                        {playerBonusEvents.length > 0 ? (
+                          <span className="rounded-full border border-violet-400/35 bg-violet-500/20 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-widest text-fuchsia-100">
+                            Queue · {playerBonusEvents.length} active
+                          </span>
+                        ) : null}
+                        {bonusStripPaused && playerBonusEvents.length > 1 ? (
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-amber-200/80">
+                            Paused
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 max-w-xl text-[11px] font-medium text-violet-200/65 sm:text-sm">
+                        New rewards from staff and coadmin appear here, newest first. First tap wins and
+                        the drop vanishes with the existing live queue behavior.
+                      </p>
+                    </div>
+                    {playerBonusEvents.length > 1 ? (
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          aria-label="Previous bonus"
+                          onClick={() =>
+                            setBonusCarouselIndex((i) =>
+                              i <= 0 ? playerBonusEvents.length - 1 : i - 1
+                            )
+                          }
+                          className="rounded-xl border border-violet-400/40 bg-violet-500/20 px-3 py-2 text-sm font-bold text-violet-50 shadow-inner transition hover:bg-violet-500/30"
+                        >
+                          ‹
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Next bonus"
+                          onClick={() =>
+                            setBonusCarouselIndex((i) =>
+                              i >= playerBonusEvents.length - 1 ? 0 : i + 1
+                            )
+                          }
+                          className="rounded-xl border border-violet-400/40 bg-violet-500/20 px-3 py-2 text-sm font-bold text-violet-50 shadow-inner transition hover:bg-violet-500/30"
+                        >
+                          ›
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <AnimatePresence>
+                    {bonusVanishedToast ? (
+                      <motion.div
+                        key="bonus-events-vanish"
+                        initial={{ opacity: 0, y: -6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -8 }}
+                        transition={{ duration: 0.35 }}
+                        className="mb-3 flex items-center gap-2 rounded-2xl border border-amber-400/30 bg-gradient-to-r from-amber-500/20 to-rose-500/15 px-3 py-2.5 text-xs font-semibold text-amber-100 shadow-lg shadow-amber-900/20"
+                      >
+                        <span className="text-lg" aria-hidden>
+                          ✨
+                        </span>
+                        <span>
+                          A bonus was just claimed and vanished. Keep watching for the next drop.
+                        </span>
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
+
+                  {playerBonusEvents.length > 1 ? (
+                    <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                      {playerBonusEvents.map((event, index) => (
+                        <button
+                          key={event.id}
+                          type="button"
+                          onClick={() => setBonusCarouselIndex(index)}
+                          className={`max-w-[140px] truncate rounded-lg border px-2 py-1 text-left text-[10px] font-bold transition ${
+                            index === activeBonusCarouselIndex
+                              ? 'border-fuchsia-400/60 bg-fuchsia-500/25 text-fuchsia-50 shadow-[0_0_12px_rgba(217,70,239,0.35)]'
+                              : 'border-violet-500/25 bg-black/30 text-violet-200/80 hover:border-violet-400/50'
+                          }`}
+                          title={event.bonusName}
+                        >
+                          {event.bonusName}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {playerBonusEvents.length > 1 ? (
+                    <div className="mb-4 flex items-center justify-center gap-1.5" aria-hidden>
+                      {playerBonusEvents.map((event, index) => (
+                        <button
+                          key={`bonus-events-dot-${event.id}`}
+                          type="button"
+                          onClick={() => setBonusCarouselIndex(index)}
+                          aria-label={`Show bonus ${index + 1}`}
+                          className={`h-2 rounded-full transition-all ${
+                            index === activeBonusCarouselIndex
+                              ? 'w-6 bg-gradient-to-r from-fuchsia-400 to-violet-400'
+                              : 'w-2 bg-violet-600/50 hover:bg-violet-400/70'
+                          }`}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {playerBonusEvents.length === 0 ? (
+                    <div className="rounded-3xl border border-dashed border-violet-400/25 bg-black/25 px-5 py-12 text-center">
+                      <p className="text-4xl" aria-hidden>
+                        🎁
+                      </p>
+                      <p className="mt-4 text-base font-bold text-violet-100">
+                        No bonus events right now. Check back soon.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="relative min-h-[16rem]">
+                      <AnimatePresence initial={false} mode="wait">
+                        <motion.div
+                          key={playerBonusEvents[activeBonusCarouselIndex]?.id || 'bonus-events-card'}
+                          initial={{ opacity: 0, y: 14, filter: 'blur(10px)' }}
+                          animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+                          exit={{ opacity: 0, y: -12, filter: 'blur(8px)' }}
+                          transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+                          className="rounded-3xl border border-fuchsia-400/25 bg-gradient-to-br from-white/[0.08] via-violet-950/45 to-black/70 p-5 shadow-[0_0_36px_-12px_rgba(244,114,182,0.45)] sm:p-6"
+                        >
+                          {(() => {
+                            const event = playerBonusEvents[activeBonusCarouselIndex];
+                            if (!event) {
+                              return null;
+                            }
+
+                            return (
+                              <>
+                                <p className="text-xs font-bold uppercase tracking-[0.24em] text-fuchsia-200/85">
+                                  Limited drop
+                                </p>
+                                <h3 className="mt-2 text-2xl font-black text-white sm:text-3xl">
+                                  {event.bonusName}
+                                </h3>
+                                <p className="mt-2 text-sm text-violet-100/80 sm:text-base">
+                                  {event.description}
+                                </p>
+
+                                <div className="mt-5 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
+                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
+                                    <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
+                                      Game Name
+                                    </p>
+                                    <p className="mt-1 font-bold text-white">{event.gameName}</p>
+                                  </div>
+                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
+                                    <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
+                                      Bonus Name
+                                    </p>
+                                    <p className="mt-1 font-bold text-white">{event.bonusName}</p>
+                                  </div>
+                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
+                                    <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
+                                      Amount
+                                    </p>
+                                    <p className="mt-1 font-bold text-white">
+                                      ${Math.round(event.amountNpr || 0).toLocaleString('en-US')}
+                                    </p>
+                                  </div>
+                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
+                                    <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
+                                      Percentage
+                                    </p>
+                                    <p className="mt-1 font-bold text-white">+{event.bonusPercentage}%</p>
+                                  </div>
+                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
+                                    <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
+                                      Created By
+                                    </p>
+                                    <p className="mt-1 font-bold text-white">
+                                      {event.createdByRole === 'staff' ? 'Staff' : 'Coadmin'}{' '}
+                                      {event.createdByUsername}
+                                    </p>
+                                  </div>
+                                  <div className="rounded-2xl border border-fuchsia-400/25 bg-fuchsia-500/10 p-3">
+                                    <p className="text-[10px] font-black uppercase tracking-wider text-fuchsia-200/70">
+                                      Status
+                                    </p>
+                                    <p className="mt-1 font-bold text-fuchsia-50">Available now</p>
+                                  </div>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => void handleActivateBonusEvent(event)}
+                                  disabled={activatingBonusEventId === event.id}
+                                  className="mt-5 flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-fuchsia-500 via-violet-500 to-amber-400 py-3 text-sm font-black text-white shadow-lg shadow-fuchsia-500/25 transition hover:brightness-110 active:scale-[0.99] disabled:opacity-60"
+                                >
+                                  {activatingBonusEventId === event.id ? (
+                                    <>
+                                      <i className="fas fa-circle-notch fa-spin" aria-hidden />
+                                      Opening drop...
+                                    </>
+                                  ) : (
+                                    <>Claim / Open Bonus</>
+                                  )}
+                                </button>
+                              </>
+                            );
+                          })()}
+                        </motion.div>
+                      </AnimatePresence>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

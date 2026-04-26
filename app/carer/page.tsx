@@ -2027,14 +2027,14 @@ export default function CarerPage() {
 
   return (
     <ProtectedRoute allowedRoles={['carer']}>
-      <main className="flex min-h-screen bg-neutral-950 text-white">
-        <aside className="w-72 border-r border-white/10 bg-neutral-900/60 p-4">
-          <h1 className="mb-2 text-2xl font-bold">Carer Panel</h1>
-          <p className="mb-6 text-sm text-neutral-400">
+      <main className="flex min-h-screen flex-col overflow-x-hidden bg-neutral-950 text-white lg:flex-row">
+        <aside className="w-full shrink-0 border-b border-white/10 bg-neutral-900/60 p-4 lg:w-72 lg:border-b-0 lg:border-r">
+          <h1 className="mb-2 text-xl font-bold lg:text-2xl">Carer Panel</h1>
+          <p className="mb-4 text-sm text-neutral-400 lg:mb-6">
             {carerIdentity?.username || 'Carer'}
           </p>
 
-          <div className="space-y-2">
+          <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 lg:mx-0 lg:block lg:space-y-2 lg:overflow-visible lg:px-0 lg:pb-0">
             {[
               { id: 'dashboard', label: 'Dashboard' },
               { id: 'create-username', label: 'Create Username' },
@@ -2065,7 +2065,7 @@ export default function CarerPage() {
                       setShowUrgentSplash(false);
                     }
                   }}
-                  className={`flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left text-sm ${
+                  className={`flex min-h-[44px] shrink-0 items-center justify-between rounded-2xl px-4 py-3 text-left text-sm lg:w-full ${
                     activeView === view
                       ? 'bg-white text-black'
                       : view === 'urgent'
@@ -2089,7 +2089,7 @@ export default function CarerPage() {
           </div>
         </aside>
 
-        <section className="flex-1 overflow-y-auto p-6">
+        <section className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">
           {errorMessage && (
             <div className="mb-4 rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-100">
               {errorMessage}

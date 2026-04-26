@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, updateDoc, where } from 'firebase/firestore';
 import imageCompression from 'browser-image-compression';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
@@ -152,6 +152,30 @@ function addDismissedUrgentRequestIds(coadminUid: string, requestIds: string[]) 
   );
 }
 
+async function readDismissedUrgentRequestIdsFromUserDoc(
+  coadminUid: string
+): Promise<string[]> {
+  const snap = await getDoc(doc(db, 'users', coadminUid));
+  if (!snap.exists()) {
+    return [];
+  }
+  const data = snap.data() as { dismissedUrgentRequestIds?: unknown };
+  const value = data.dismissedUrgentRequestIds;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((x): x is string => typeof x === 'string' && x.length > 0);
+}
+
+async function persistDismissedUrgentRequestIdsToUserDoc(
+  coadminUid: string,
+  requestIds: string[]
+): Promise<void> {
+  await updateDoc(doc(db, 'users', coadminUid), {
+    dismissedUrgentRequestIds: requestIds,
+  });
+}
+
 export default function CoadminPage() {
   const [activeView, setActiveView] = useState<CoadminView>('dashboard');
 
@@ -207,6 +231,7 @@ export default function CoadminPage() {
   const coadminUidUrgentRef = useRef<string | null>(null);
   const hasPrimedUrgentIdListenerRef = useRef(false);
   const previousUrgentRequestIdsRef = useRef<string[]>([]);
+  const dismissedUrgentIdsRef = useRef<Set<string>>(new Set());
   const latestCarerEscalationIdRef = useRef<string | null>(null);
   const hasSeenCarerEscalationSnapshotRef = useRef(false);
   const suppressedCashoutIdsRef = useRef<Set<string>>(new Set());
@@ -602,6 +627,25 @@ export default function CoadminPage() {
           return;
         }
 
+        const localDismissed = readDismissedUrgentRequestIds(coadminUid);
+        const persistedDismissed = await readDismissedUrgentRequestIdsFromUserDoc(
+          coadminUid
+        ).catch(() => []);
+        const mergedDismissed = new Set<string>([
+          ...localDismissed,
+          ...persistedDismissed,
+        ]);
+        dismissedUrgentIdsRef.current = mergedDismissed;
+        addDismissedUrgentRequestIds(coadminUid, [...mergedDismissed]);
+        void persistDismissedUrgentRequestIdsToUserDoc(
+          coadminUid,
+          [...mergedDismissed]
+        ).catch(() => undefined);
+
+        if (isCancelled) {
+          return;
+        }
+
         unsubscribe = listenToUrgentPlayerGameRequestsByCoadmin(
           coadminUid,
           (requests) => {
@@ -615,7 +659,7 @@ export default function CoadminPage() {
             const nextCount = requests.length;
             setUrgentRequestCount(nextCount);
 
-            const dismissed = readDismissedUrgentRequestIds(coadminUid);
+            const dismissed = dismissedUrgentIdsRef.current;
             const hasUnacknowledged = requests.some((r) => !dismissed.has(r.id));
             setShowUrgentSplash(hasUnacknowledged && nextCount > 0);
 
@@ -1328,9 +1372,15 @@ export default function CoadminPage() {
     const uid = coadminUidUrgentRef.current;
     const reqs = latestUrgentRequestsRef.current;
     if (uid && reqs.length > 0) {
+      const merged = new Set(dismissedUrgentIdsRef.current);
+      reqs.forEach((r) => merged.add(r.id));
+      dismissedUrgentIdsRef.current = merged;
       addDismissedUrgentRequestIds(
         uid,
-        reqs.map((r) => r.id)
+        [...merged]
+      );
+      void persistDismissedUrgentRequestIdsToUserDoc(uid, [...merged]).catch(
+        () => undefined
       );
     }
     setShowUrgentSplash(false);
@@ -1410,11 +1460,11 @@ export default function CoadminPage() {
 
   return (
     <ProtectedRoute allowedRoles={['coadmin']}>
-      <main className="flex min-h-screen bg-neutral-950 text-white">
-        <aside className="w-72 border-r border-white/10 bg-neutral-900/60 p-4">
-          <h1 className="mb-6 text-2xl font-bold">Co-admin Panel</h1>
+      <main className="flex min-h-screen flex-col overflow-x-hidden bg-neutral-950 text-white lg:flex-row">
+        <aside className="w-full shrink-0 border-b border-white/10 bg-neutral-900/60 p-4 lg:w-72 lg:border-b-0 lg:border-r">
+          <h1 className="mb-4 text-xl font-bold lg:mb-6 lg:text-2xl">Co-admin Panel</h1>
 
-          <nav className="space-y-2">
+          <nav className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 lg:mx-0 lg:block lg:space-y-2 lg:overflow-visible lg:px-0 lg:pb-0">
             {[
               { label: 'Dashboard', view: 'dashboard' },
               { label: 'View Tasks', view: 'view-tasks' },
@@ -1454,7 +1504,7 @@ export default function CoadminPage() {
 
                   handleChangeView(item.view as CoadminView);
                 }}
-                className={`flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left text-sm ${
+                className={`flex min-h-[44px] shrink-0 items-center justify-between rounded-2xl px-4 py-3 text-left text-sm lg:w-full ${
                   activeView === item.view
                     ? 'bg-white text-black'
                     : 'bg-white/5 text-neutral-300 hover:bg-white/10'
@@ -1476,7 +1526,7 @@ export default function CoadminPage() {
           </div>
         </aside>
 
-        <section className="flex-1 p-6 overflow-y-auto">
+        <section className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">
           {message && (
             <div className="mb-4 rounded-2xl bg-white/10 p-3 text-sm text-neutral-300">
               {message}

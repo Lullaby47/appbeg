@@ -1145,16 +1145,16 @@ export default function StaffPage() {
 
   return (
     <ProtectedRoute allowedRoles={['staff']}>
-      <main className="flex min-h-screen bg-neutral-950 text-white">
-        <aside className="w-72 border-r border-white/10 bg-neutral-900/60 p-4">
-          <h1 className="mb-6 text-2xl font-bold">Staff Panel</h1>
+      <main className="flex min-h-screen flex-col overflow-x-hidden bg-neutral-950 text-white lg:flex-row">
+        <aside className="w-full shrink-0 border-b border-white/10 bg-neutral-900/60 p-4 lg:w-72 lg:border-b-0 lg:border-r">
+          <h1 className="mb-4 text-xl font-bold lg:mb-6 lg:text-2xl">Staff Panel</h1>
 
-          <nav className="space-y-2">
+          <nav className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 lg:mx-0 lg:block lg:space-y-2 lg:overflow-visible lg:px-0 lg:pb-0">
             {menuItems.map((item) => (
               <button
                 key={item.view}
                 onClick={() => handleChangeView(item.view as StaffView)}
-                className={`flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left text-sm ${
+                className={`flex min-h-[44px] shrink-0 items-center justify-between rounded-2xl px-4 py-3 text-left text-sm lg:w-full ${
                   activeView === item.view
                     ? 'bg-white text-black'
                     : 'bg-white/5 text-neutral-300 hover:bg-white/10'
@@ -1175,7 +1175,7 @@ export default function StaffPage() {
           </div>
         </aside>
 
-        <section className="flex-1 overflow-y-auto p-6">
+        <section className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">
           <div className="mb-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-emerald-200/80">
               Cash Box

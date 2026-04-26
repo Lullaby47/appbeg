@@ -609,10 +609,10 @@ export default function AdminPage() {
 
   return (
     <ProtectedRoute allowedRoles={['admin']}>
-      <main className="flex min-h-screen bg-neutral-950 text-white">
+      <main className="flex min-h-screen flex-col overflow-x-hidden bg-neutral-950 text-white lg:flex-row">
         <AdminSidebar activeView={activeView} onChangeView={handleChangeView} />
 
-        <section className="flex-1 p-6 overflow-y-auto">
+        <section className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">
           {message && (
             <div className="mb-4 rounded-2xl bg-white/10 p-3 text-sm text-neutral-300">
               {message}
