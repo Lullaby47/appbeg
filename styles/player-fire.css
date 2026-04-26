@@ -1037,6 +1037,18 @@
   }
 }
 
+/* Player route: static “fire” look only; no continuous CSS animations. */
+.player-fire-page,
+.player-fire-page *::before,
+.player-fire-page *::after,
+.player-fire-page * {
+  animation: none !important;
+}
+
+.player-fire-page .player-shimmer-sweep {
+  display: none;
+}
+
 @media (max-width: 640px) {
   .player-fire-page .player-dashboard-hero {
     margin-top: -200px !important;

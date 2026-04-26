@@ -279,30 +279,24 @@ function FloatingCasinoBackdrop() {
       aria-hidden
     >
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_120%_80%_at_50%_-20%,rgba(168,85,247,0.22),transparent),radial-gradient(ellipse_80%_50%_at_100%_50%,rgba(234,179,8,0.12),transparent),radial-gradient(ellipse_60%_40%_at_0%_80%,rgba(220,38,38,0.1),transparent)]" />
-      <motion.div
+      <div
         className="absolute -left-10 top-[15%] text-4xl opacity-[0.12] sm:text-5xl"
-        animate={{ y: [0, -14, 0], rotate: [0, 6, 0] }}
-        transition={{ duration: 5, repeat: Infinity, ease: 'easeInOut' }}
         aria-hidden
       >
         🪙
-      </motion.div>
-      <motion.div
+      </div>
+      <div
         className="absolute right-[5%] top-[25%] text-3xl opacity-[0.1] sm:text-4xl"
-        animate={{ y: [0, 12, 0], rotate: [0, -8, 0] }}
-        transition={{ duration: 6, repeat: Infinity, ease: 'easeInOut' }}
         aria-hidden
       >
         💎
-      </motion.div>
-      <motion.div
+      </div>
+      <div
         className="absolute bottom-[20%] left-[20%] text-3xl opacity-[0.08]"
-        animate={{ y: [0, -10, 0] }}
-        transition={{ duration: 4.5, repeat: Infinity, ease: 'easeInOut' }}
         aria-hidden
       >
         🎰
-      </motion.div>
+      </div>
       <div className="absolute inset-0 bg-[linear-gradient(180deg,transparent_0%,rgba(0,0,0,0.4)_100%)]" />
     </div>
   );
@@ -2220,25 +2214,16 @@ export default function PlayerPage() {
                     </div>
 
                     <div className="player-dashboard-hero__cta mx-auto flex w-full min-w-0 min-h-0 max-w-md flex-col items-stretch justify-center gap-3 self-stretch sm:max-w-lg lg:mx-0 lg:min-w-0 lg:max-w-[min(19rem,36vw)]">
-                      <motion.button
+                      <button
                         type="button"
                         onClick={() => setActiveView('play')}
-                        animate={{
-                          boxShadow: [
-                            '0 0 0 0 rgba(239,68,68,0.5)',
-                            '0 0 32px 6px rgba(239,68,68,0.45)',
-                            '0 0 0 0 rgba(239,68,68,0.5)',
-                          ],
-                        }}
-                        transition={{ duration: 2.2, repeat: Infinity }}
-                        className="fire-button fire-orange relative min-h-[56px] overflow-hidden rounded-2xl border border-red-300/60 bg-gradient-to-r from-red-600 via-red-500 to-rose-500 px-8 py-4 text-xl font-black text-white shadow-xl shadow-red-900/35 transition-all hover:scale-[1.02] hover:brightness-110 hover:shadow-[0_0_38px_6px_rgba(239,68,68,0.5)] sm:min-h-[60px] sm:text-[1.35rem]"
+                        className="fire-button fire-orange relative min-h-[56px] overflow-hidden rounded-2xl border border-red-300/60 bg-gradient-to-r from-red-600 via-red-500 to-rose-500 px-8 py-4 text-xl font-black text-white shadow-[0_0_24px_4px_rgba(239,68,68,0.4)] shadow-red-900/35 transition-all hover:scale-[1.02] hover:brightness-110 hover:shadow-[0_0_38px_6px_rgba(239,68,68,0.5)] sm:min-h-[60px] sm:text-[1.35rem]"
                       >
                         <span className="relative z-10 flex items-center justify-center gap-2">
                           🎰 Play now
                           <i className="fas fa-arrow-right text-base"></i>
                         </span>
-                        <span className="pointer-events-none absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent player-shimmer-sweep" />
-                      </motion.button>
+                      </button>
 
                       {totalUnread > 0 ? (
                         <button
@@ -2430,14 +2415,10 @@ export default function PlayerPage() {
 
                   {playerBonusEvents.length === 0 ? (
                     <div className="py-6 text-center">
-                      <motion.p
-                        animate={{ opacity: [0.5, 1, 0.5] }}
-                        transition={{ duration: 2.2, repeat: Infinity }}
-                        className="text-sm text-violet-200/50"
-                      >
+                      <p className="text-sm text-violet-200/50">
                         No bonus events right now. When staff or coadmin post one, it &apos;ll
                         appear here with a glow.
-                      </motion.p>
+                      </p>
                     </div>
                   ) : (
                     <div className="relative min-h-[12rem]">

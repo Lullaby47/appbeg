@@ -43,6 +43,11 @@ export type PlayerGameRequest = {
   completedAt?: Timestamp | null;
   pokedAt?: Timestamp | null;
   pokeMessage?: string | null;
+  /**
+   * When true, the player's `coin` was already reduced when the request was
+   * created; carer completion must not deduct again (legacy requests omit this).
+   */
+  coinDeductedOnRequest?: boolean | null;
 };
 
 function mapRequestDoc(docId: string, value: Omit<PlayerGameRequest, 'id'>) {
@@ -141,23 +146,55 @@ export async function createPlayerGameRequest(values: {
     throw new Error('Enter a valid amount.');
   }
 
+  const coadminUid = await getCurrentUserCoadminUid();
+
   if (values.type === 'recharge') {
     const playerRef = doc(db, 'users', currentUser.uid);
-    const playerMoneySnap = await getDoc(playerRef);
-    if (!playerMoneySnap.exists()) {
-      throw new Error('Player profile not found.');
-    }
-    const currentCoin = Number(
-      (playerMoneySnap.data() as { coin?: number }).coin || 0
-    );
-    if (currentCoin < requestAmount) {
-      throw new Error(
-        'Not enough coin to request this recharge. Use a lower amount or add coin first.'
-      );
-    }
-  }
+    const newRequestRef = doc(collection(db, 'playerGameRequests'));
+    const payload = {
+      playerUid: currentUser.uid,
+      gameName: values.gameName.trim(),
+      amount: requestAmount,
+      baseAmount:
+        values.baseAmount !== undefined && values.baseAmount !== null
+          ? Number(values.baseAmount)
+          : null,
+      bonusPercentage:
+        values.bonusPercentage !== undefined && values.bonusPercentage !== null
+          ? Number(values.bonusPercentage)
+          : null,
+      bonusEventId: values.bonusEventId?.trim() || null,
+      type: 'recharge' as const,
+      status: 'pending' as const,
+      createdBy: coadminUid,
+      coadminUid,
+      createdAt: serverTimestamp(),
+      completedAt: null,
+      pokedAt: null,
+      pokeMessage: null,
+      coinDeductedOnRequest: true,
+    };
 
-  const coadminUid = await getCurrentUserCoadminUid();
+    await runTransaction(db, async (transaction) => {
+      const playerMoneySnap = await transaction.get(playerRef);
+      if (!playerMoneySnap.exists()) {
+        throw new Error('Player profile not found.');
+      }
+      const currentCoin = Number(
+        (playerMoneySnap.data() as { coin?: number }).coin || 0
+      );
+      if (currentCoin < requestAmount) {
+        throw new Error(
+          'Not enough coin to request this recharge. Use a lower amount or add coin first.'
+        );
+      }
+      transaction.set(newRequestRef, payload);
+      transaction.update(playerRef, {
+        coin: currentCoin - requestAmount,
+      });
+    });
+    return;
+  }
 
   await addDoc(collection(db, 'playerGameRequests'), {
     playerUid: currentUser.uid,

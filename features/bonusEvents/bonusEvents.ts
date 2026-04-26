@@ -313,6 +313,7 @@ export async function initiateBonusEventPlay(values: {
       completedAt: null,
       pokedAt: null,
       pokeMessage: null,
+      coinDeductedOnRequest: true,
     });
 
     transaction.delete(bonusEventRef);

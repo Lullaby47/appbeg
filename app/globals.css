@@ -105,6 +105,17 @@ body {
   }
 }
 
+/* Player: keep static gradients/orbs; disable layered keyframe motion (saves paint/composite). */
+.casino-bg-player .casino-bg-base,
+.casino-bg-player .casino-ambient,
+.casino-bg-player .casino-glow-orb,
+.casino-bg-player .casino-streak,
+.casino-bg-player .casino-guide,
+.casino-bg-player .casino-icon-float {
+  animation: none !important;
+  will-change: auto;
+}
+
 .casino-bg-player {
   color: rgba(255, 255, 255, 0.08);
 }
