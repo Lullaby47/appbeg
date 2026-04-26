@@ -3,6 +3,10 @@
 import { useRef, useState } from 'react';
 import React from 'react';
 import { ChatMessage } from './types';
+import {
+  getPanelDisplayName,
+  type PanelNameMode,
+} from '@/lib/admin/displayNames';
 
 const EMOJIS = ['😀', '😂', '😍', '😎', '👍', '🙏', '🔥', '❤️', '🎉', '😢'];
 
@@ -59,6 +63,8 @@ interface Props<T extends BaseUser> {
   hasMoreOlderMessages?: boolean;
   loadingOlderMessages?: boolean;
   onLoadOlderMessages?: () => void;
+  /** Who is viewing: controls real usernames vs generic labels. Default `player` (masked). */
+  nameMode?: PanelNameMode;
 }
 
 export default function UserManagementView<T extends BaseUser>({
@@ -99,6 +105,7 @@ export default function UserManagementView<T extends BaseUser>({
   hasMoreOlderMessages = false,
   loadingOlderMessages = false,
   onLoadOlderMessages,
+  nameMode = 'player',
 }: Props<T>) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showEmojis, setShowEmojis] = useState(false);
@@ -128,11 +135,7 @@ export default function UserManagementView<T extends BaseUser>({
   }
 
   function getMaskedDisplayName(user: T) {
-    const role = String(user.role || '').toLowerCase();
-    if (role === 'admin' || role === 'staff' || role === 'coadmin') {
-      return role === 'coadmin' ? 'Co-admin' : 'Support Team';
-    }
-    return user.username;
+    return getPanelDisplayName(user, nameMode);
   }
 
   function getAvatarLetter(user: T) {

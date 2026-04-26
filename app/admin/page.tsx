@@ -810,6 +810,7 @@ export default function AdminPage() {
               onToggleBlock={handleToggleCoadminStatus}
               blocking={blocking}
               onlineByUid={adminOnlineByUid}
+              nameMode="admin"
               renderSelectedExtras={(coadmin) => {
                 const relatedStaff = [...allStaffForCoadmins]
                   .filter((staff) => belongsToCoadmin(staff, coadmin.uid))
@@ -843,10 +844,10 @@ export default function AdminPage() {
                           >
                             <div className="flex items-center justify-between gap-3">
                               <div>
-                                <p className="text-sm font-semibold text-white">Staff Account</p>
-                                <p className="text-xs text-neutral-400">
-                                  Status: {staff.status}
+                                <p className="text-sm font-semibold text-white">
+                                  {staff.username || '—'}
                                 </p>
+                                <p className="text-xs text-neutral-400">Status: {staff.status}</p>
                               </div>
 
                               <div className="flex gap-2">
@@ -915,6 +916,7 @@ export default function AdminPage() {
               onToggleBlock={handleToggleStaffStatus}
               blocking={blocking}
               onlineByUid={adminOnlineByUid}
+              nameMode="admin"
               onImageSelect={handleImageSelect}
               onClearImage={handleClearImage}
             />
@@ -1049,6 +1051,7 @@ export default function AdminPage() {
               onImageSelect={handleImageSelect}
               onClearImage={handleClearImage}
               onlineByUid={adminOnlineByUid}
+              nameMode="admin"
             />
           )}
       </RoleSidebarLayout>

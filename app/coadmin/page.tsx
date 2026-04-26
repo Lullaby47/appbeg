@@ -2213,6 +2213,7 @@ export default function CoadminPage() {
               onCoadminSetUsername={handleCoadminSetStaffUsername}
               coadminCredentialsLoading={workerCredentialsLoading}
               onlineByUid={coadminOnlineByUid}
+              nameMode="coadmin"
               onStartChat={handleStaffStartChat}
               chatUser={staffChatUser}
               messages={messages}
@@ -2264,6 +2265,7 @@ export default function CoadminPage() {
               onCoadminSetUsername={handleCoadminSetCarerUsername}
               coadminCredentialsLoading={workerCredentialsLoading}
               onlineByUid={coadminOnlineByUid}
+              nameMode="coadmin"
               renderSelectedExtras={(carer) => {
                 const rechargeTotal = Math.round(
                   carerRechargeRedeemTotals[carer.uid]?.totalRechargeAmount || 0
@@ -2389,6 +2391,7 @@ export default function CoadminPage() {
               onToggleBlock={handleTogglePlayerStatus}
               blocking={blocking}
               onlineByUid={coadminOnlineByUid}
+              nameMode="coadmin"
             />
           )}
 
@@ -2767,6 +2770,7 @@ export default function CoadminPage() {
               onImageSelect={handleImageSelect}
               onClearImage={handleClearImage}
               onlineByUid={coadminOnlineByUid}
+              nameMode="coadmin"
             />
           )}
       </RoleSidebarLayout>

@@ -3,6 +3,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { AdminUser, ChatMessage } from './types';
 import { OnlineIndicator } from '@/components/presence/OnlineIndicator';
+import {
+  getPanelDisplayName,
+  type PanelNameMode,
+} from '@/lib/admin/displayNames';
 
 const EMOJIS = ['😀', '😂', '😍', '😎', '👍', '🙏', '🔥', '❤️', '🎉', '😢'];
 
@@ -36,6 +40,7 @@ interface Props {
   onClearImage?: () => void;
   /** Real-time: uid was active recently (for green dot). */
   onlineByUid?: Record<string, boolean>;
+  nameMode?: PanelNameMode;
 }
 
 export default function ReachOutView({
@@ -56,6 +61,7 @@ export default function ReachOutView({
   loadingOlderMessages = false,
   onLoadOlderMessages,
   onlineByUid = {},
+  nameMode = 'player',
 }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const lastScrolledIdRef = useRef<string | null>(null);
@@ -90,13 +96,8 @@ export default function ReachOutView({
     0
   );
 
-  const getMaskedDisplayName = (user: AdminUser) => {
-    const role = String(user.role || '').toLowerCase();
-    if (role === 'admin' || role === 'staff' || role === 'coadmin') {
-      return 'Support Team';
-    }
-    return user.username;
-  };
+  const getMaskedDisplayName = (user: AdminUser) =>
+    getPanelDisplayName(user, nameMode);
 
   const getAvatarLetter = (user: AdminUser) => {
     const name = getMaskedDisplayName(user).trim();

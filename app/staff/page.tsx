@@ -1870,12 +1870,15 @@ export default function StaffPage() {
                         key={coadmin.uid}
                         className="rounded-2xl border border-white/10 bg-white/5 p-5"
                       >
-                        <h3 className="flex items-center gap-2 text-2xl font-bold">
+                        <h3 className="flex flex-wrap items-center gap-2 text-2xl font-bold">
                           <OnlineIndicator
                             online={Boolean(staffOnlineByUid[coadmin.uid])}
                             sizeClassName="h-3 w-3"
                           />
-                          <span>Co-admin Account</span>
+                          <span className="font-mono text-white">
+                            {coadmin.username || '—'}
+                          </span>
+                          <span className="text-base font-medium text-neutral-400">(co-admin)</span>
                         </h3>
                         <p className="mt-2 text-sm text-neutral-400">
                           Status: <span className="text-white">{coadmin.status}</span>
@@ -1902,8 +1905,10 @@ export default function StaffPage() {
                                     sizeClassName="h-2.5 w-2.5"
                                     ringClassName="ring-black/30"
                                   />
-                                  <span className="font-semibold text-white">Staff Account</span>{' '}
-                                  <span className="text-neutral-400">({staff.status})</span>
+                                  <span className="font-mono font-semibold text-white">
+                                    {staff.username || '—'}
+                                  </span>
+                                  <span className="text-neutral-400">· {staff.status}</span>
                                 </div>
                               ))}
                             </div>
@@ -1932,6 +1937,7 @@ export default function StaffPage() {
               onMessageChange={setNewMessage}
               onSendMessage={handleSendMessage}
               onlineByUid={staffOnlineByUid}
+              nameMode="staff"
             />
           )}
       </RoleSidebarLayout>
