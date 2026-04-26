@@ -4,11 +4,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import imageCompression from 'browser-image-compression';
 
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
-import AdminSidebar from '@/components/admin/AdminSidebar';
+import LogoutButton from '@/components/auth/LogoutButton';
 import DashboardView from '@/components/admin/DashboardView';
 import CreateUserForm from '@/components/admin/CreateUserForm';
 import UserManagementView from '../../components/admin/UserManagementView';
 import ReachOutView from '@/components/admin/ReachOutView';
+import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 
 import { auth } from '@/lib/firebase/client';
 import { belongsToCoadmin } from '@/lib/coadmin/scope';
@@ -607,12 +608,39 @@ export default function AdminPage() {
     return bTime - aTime;
   });
 
+  const menuItems: (NavigationItem & { view: AdminView })[] = [
+    { label: 'Dashboard', view: 'dashboard' },
+    { label: 'Create Co-admin', view: 'create-coadmin' },
+    { label: 'View Co-admins', view: 'view-coadmins' },
+    { label: 'Add Staff', view: 'add-staff' },
+    { label: 'View Staff', view: 'view-staff' },
+    { label: 'Players', view: 'players' },
+    {
+      label: 'Reach Out',
+      view: 'reach-out',
+      unread: totalUnreadCount,
+      onClick: () => {
+        if (totalUnreadCount > 0) {
+          handleOpenFirstUnreadChat();
+          return;
+        }
+
+        handleChangeView('reach-out');
+      },
+    },
+  ];
+
   return (
     <ProtectedRoute allowedRoles={['admin']}>
-      <main className="flex min-h-screen flex-col overflow-x-hidden bg-neutral-950 text-white lg:flex-row">
-        <AdminSidebar activeView={activeView} onChangeView={handleChangeView} />
-
-        <section className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">
+      <RoleSidebarLayout
+        title="Admin Panel"
+        activeView={activeView}
+        items={menuItems.map((item) => ({
+          ...item,
+          onClick: item.onClick ?? (() => handleChangeView(item.view)),
+        }))}
+        footer={<LogoutButton />}
+      >
           {message && (
             <div className="mb-4 rounded-2xl bg-white/10 p-3 text-sm text-neutral-300">
               {message}
@@ -1003,8 +1031,7 @@ export default function AdminPage() {
               onClearImage={handleClearImage}
             />
           )}
-        </section>
-      </main>
+      </RoleSidebarLayout>
     </ProtectedRoute>
   );
 }

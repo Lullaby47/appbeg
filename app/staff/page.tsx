@@ -8,6 +8,7 @@ import LogoutButton from '../../components/auth/LogoutButton';
 import DashboardView from '../../components/admin/DashboardView';
 import CreateUserForm from '../../components/admin/CreateUserForm';
 import ReachOutView from '../../components/admin/ReachOutView';
+import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 
 import { auth, db } from '@/lib/firebase/client';
 import { belongsToCoadmin, getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
@@ -1123,7 +1124,7 @@ export default function StaffPage() {
   }
 
   const isAdminCreatedStaff = creatorRole === 'admin';
-  const menuItems = isAdminCreatedStaff
+  const menuItems: (NavigationItem & { view: StaffView })[] = isAdminCreatedStaff
     ? [
         { label: 'Dashboard', view: 'dashboard' },
         { label: 'View Tasks', view: 'view-tasks' },
@@ -1142,40 +1143,19 @@ export default function StaffPage() {
         { label: 'View Players', view: 'view-players', unread: playerChatUnreadTotal },
         { label: 'Reach Out', view: 'reach-out', unread: reachOutUnread },
       ];
+  const sidebarItems = menuItems.map((item) => ({
+    ...item,
+    onClick: () => handleChangeView(item.view as StaffView),
+  }));
 
   return (
     <ProtectedRoute allowedRoles={['staff']}>
-      <main className="flex min-h-screen flex-col overflow-x-hidden bg-neutral-950 text-white lg:flex-row">
-        <aside className="w-full shrink-0 border-b border-white/10 bg-neutral-900/60 p-4 lg:w-72 lg:border-b-0 lg:border-r">
-          <h1 className="mb-4 text-xl font-bold lg:mb-6 lg:text-2xl">Staff Panel</h1>
-
-          <nav className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 lg:mx-0 lg:block lg:space-y-2 lg:overflow-visible lg:px-0 lg:pb-0">
-            {menuItems.map((item) => (
-              <button
-                key={item.view}
-                onClick={() => handleChangeView(item.view as StaffView)}
-                className={`flex min-h-[44px] shrink-0 items-center justify-between rounded-2xl px-4 py-3 text-left text-sm lg:w-full ${
-                  activeView === item.view
-                    ? 'bg-white text-black'
-                    : 'bg-white/5 text-neutral-300 hover:bg-white/10'
-                }`}
-              >
-                <span>{item.label}</span>
-                {item.unread !== undefined && item.unread > 0 && (
-                  <span className="rounded-full bg-red-500 px-2 py-0.5 text-xs font-bold text-white">
-                    {item.unread > 9 ? '9+' : item.unread}
-                  </span>
-                )}
-              </button>
-            ))}
-          </nav>
-
-          <div className="mt-8">
-            <LogoutButton />
-          </div>
-        </aside>
-
-        <section className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">
+      <RoleSidebarLayout
+        title="Staff Panel"
+        activeView={activeView}
+        items={sidebarItems}
+        footer={<LogoutButton />}
+      >
           <div className="mb-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-emerald-200/80">
               Cash Box
@@ -1864,8 +1844,7 @@ export default function StaffPage() {
               onSendMessage={handleSendMessage}
             />
           )}
-        </section>
-      </main>
+      </RoleSidebarLayout>
 
       {showRiskPanel && selectedRiskSnapshot && (
         <div

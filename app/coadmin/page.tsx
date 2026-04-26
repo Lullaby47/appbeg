@@ -10,6 +10,7 @@ import DashboardView from '../../components/admin/DashboardView';
 import CreateUserForm from '../../components/admin/CreateUserForm';
 import UserManagementView from '../../components/admin/UserManagementView';
 import ReachOutView from '../../components/admin/ReachOutView';
+import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 
 import { auth, db } from '@/lib/firebase/client';
 import {
@@ -1457,76 +1458,58 @@ export default function CoadminPage() {
   const sortedStaff = sortByNewest(staffList);
   const sortedCarers = sortByNewest(carerList);
   const sortedPlayers = sortByNewest(playerList);
+  const menuItems: (NavigationItem & { view: CoadminView })[] = [
+    { label: 'Dashboard', view: 'dashboard' },
+    { label: 'View Tasks', view: 'view-tasks' },
+    { label: 'Create Bonus Event', view: 'create-bonus-event' },
+    { label: 'View Bonus Events', view: 'view-bonus-events' },
+    { label: 'Add Staff', view: 'add-staff' },
+    {
+      label: 'View Staff',
+      view: 'view-staff',
+      unread: staffUnreadCount,
+      onClick: () => {
+        if (staffUnreadCount > 0) {
+          handleOpenFirstUnreadStaffChat();
+          return;
+        }
+
+        handleChangeView('view-staff');
+      },
+    },
+    { label: 'Create Carer', view: 'create-carer' },
+    { label: 'View Carers', view: 'view-carers' },
+    { label: 'Create Player', view: 'create-player' },
+    { label: 'View Players', view: 'view-players' },
+    { label: 'Add Games', view: 'add-games' },
+    { label: 'Game List', view: 'game-list' },
+    { label: 'Payment details (photos)', view: 'payment-details' },
+    {
+      label: 'Reach Out',
+      view: 'reach-out',
+      unread: reachOutUnreadCount,
+      onClick: () => {
+        if (reachOutUnreadCount > 0) {
+          handleOpenFirstUnreadReachOutChat();
+          return;
+        }
+
+        handleChangeView('reach-out');
+      },
+    },
+  ];
 
   return (
     <ProtectedRoute allowedRoles={['coadmin']}>
-      <main className="flex min-h-screen flex-col overflow-x-hidden bg-neutral-950 text-white lg:flex-row">
-        <aside className="w-full shrink-0 border-b border-white/10 bg-neutral-900/60 p-4 lg:w-72 lg:border-b-0 lg:border-r">
-          <h1 className="mb-4 text-xl font-bold lg:mb-6 lg:text-2xl">Co-admin Panel</h1>
-
-          <nav className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 lg:mx-0 lg:block lg:space-y-2 lg:overflow-visible lg:px-0 lg:pb-0">
-            {[
-              { label: 'Dashboard', view: 'dashboard' },
-              { label: 'View Tasks', view: 'view-tasks' },
-              { label: 'Create Bonus Event', view: 'create-bonus-event' },
-              { label: 'View Bonus Events', view: 'view-bonus-events' },
-              { label: 'Add Staff', view: 'add-staff' },
-              { label: 'View Staff', view: 'view-staff', unread: staffUnreadCount },
-              { label: 'Create Carer', view: 'create-carer' },
-              { label: 'View Carers', view: 'view-carers' },
-              { label: 'Create Player', view: 'create-player' },
-              { label: 'View Players', view: 'view-players' },
-              { label: 'Add Games', view: 'add-games' },
-              { label: 'Game List', view: 'game-list' },
-              { label: 'Payment details (photos)', view: 'payment-details' },
-              { label: 'Reach Out', view: 'reach-out', unread: reachOutUnreadCount },
-            ].map((item) => (
-              <button
-                key={item.view}
-                onClick={() => {
-                  if (
-                    item.view === 'view-staff' &&
-                    item.unread !== undefined &&
-                    item.unread > 0
-                  ) {
-                    handleOpenFirstUnreadStaffChat();
-                    return;
-                  }
-
-                  if (
-                    item.view === 'reach-out' &&
-                    item.unread !== undefined &&
-                    item.unread > 0
-                  ) {
-                    handleOpenFirstUnreadReachOutChat();
-                    return;
-                  }
-
-                  handleChangeView(item.view as CoadminView);
-                }}
-                className={`flex min-h-[44px] shrink-0 items-center justify-between rounded-2xl px-4 py-3 text-left text-sm lg:w-full ${
-                  activeView === item.view
-                    ? 'bg-white text-black'
-                    : 'bg-white/5 text-neutral-300 hover:bg-white/10'
-                }`}
-              >
-                <span>{item.label}</span>
-
-                {item.unread !== undefined && item.unread > 0 && (
-                  <span className="rounded-full bg-red-500 px-2 py-0.5 text-xs font-bold text-white">
-                    {item.unread > 9 ? '9+' : item.unread}
-                  </span>
-                )}
-              </button>
-            ))}
-          </nav>
-
-          <div className="mt-8">
-            <LogoutButton />
-          </div>
-        </aside>
-
-        <section className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">
+      <RoleSidebarLayout
+        title="Co-admin Panel"
+        activeView={activeView}
+        items={menuItems.map((item) => ({
+          ...item,
+          onClick: item.onClick ?? (() => handleChangeView(item.view as CoadminView)),
+        }))}
+        footer={<LogoutButton />}
+      >
           {message && (
             <div className="mb-4 rounded-2xl bg-white/10 p-3 text-sm text-neutral-300">
               {message}
@@ -2335,8 +2318,7 @@ export default function CoadminPage() {
               onClearImage={handleClearImage}
             />
           )}
-        </section>
-      </main>
+      </RoleSidebarLayout>
 
       {showUrgentSplash && urgentRequestCount > 0 && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-red-950/85 px-4 backdrop-blur-sm">

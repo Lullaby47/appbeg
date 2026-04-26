@@ -6,6 +6,7 @@ import { doc, getDoc } from 'firebase/firestore';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
 import LogoutButton from '../../components/auth/LogoutButton';
+import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 import { auth, db } from '@/lib/firebase/client';
 import { GameLogin } from '@/features/games/gameLogins';
 import {
@@ -2025,71 +2026,45 @@ export default function CarerPage() {
     );
   }
 
+  const menuItems: (NavigationItem & { view: CarerView })[] = [
+    { view: 'dashboard', label: 'Dashboard' },
+    { view: 'create-username', label: 'Create Username' },
+    {
+      view: 'tasks',
+      label: 'Tasks',
+      unread: claimablePendingTasks.length + myInProgressTasks.length,
+    },
+    {
+      view: 'urgent',
+      label: 'Urgent',
+      unread: urgentTasks.length,
+      tone: 'danger' as const,
+    },
+    { view: 'view-players', label: 'View Players' },
+    { view: 'login-details', label: 'Login Details' },
+  ];
+
+  function handleChangeView(view: CarerView) {
+    setActiveView(view);
+    setNoticeMessage('');
+
+    if (view === 'urgent') {
+      setShowUrgentSplash(false);
+    }
+  }
+
   return (
     <ProtectedRoute allowedRoles={['carer']}>
-      <main className="flex min-h-screen flex-col overflow-x-hidden bg-neutral-950 text-white lg:flex-row">
-        <aside className="w-full shrink-0 border-b border-white/10 bg-neutral-900/60 p-4 lg:w-72 lg:border-b-0 lg:border-r">
-          <h1 className="mb-2 text-xl font-bold lg:text-2xl">Carer Panel</h1>
-          <p className="mb-4 text-sm text-neutral-400 lg:mb-6">
-            {carerIdentity?.username || 'Carer'}
-          </p>
-
-          <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 lg:mx-0 lg:block lg:space-y-2 lg:overflow-visible lg:px-0 lg:pb-0">
-            {[
-              { id: 'dashboard', label: 'Dashboard' },
-              { id: 'create-username', label: 'Create Username' },
-              {
-                id: 'tasks',
-                label: 'Tasks',
-                count: claimablePendingTasks.length + myInProgressTasks.length,
-              },
-              {
-                id: 'urgent',
-                label: 'Urgent',
-                count: urgentTasks.length,
-              },
-              { id: 'view-players', label: 'View Players' },
-              { id: 'login-details', label: 'Login Details' },
-            ].map((item) => {
-              const view = item.id as CarerView;
-              const count = item.count || 0;
-
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => {
-                    setActiveView(view);
-                    setNoticeMessage('');
-
-                    if (view === 'urgent') {
-                      setShowUrgentSplash(false);
-                    }
-                  }}
-                  className={`flex min-h-[44px] shrink-0 items-center justify-between rounded-2xl px-4 py-3 text-left text-sm lg:w-full ${
-                    activeView === view
-                      ? 'bg-white text-black'
-                      : view === 'urgent'
-                        ? 'bg-red-500/10 text-red-100 hover:bg-red-500/20'
-                        : 'bg-white/5 text-neutral-300 hover:bg-white/10'
-                  }`}
-                >
-                  <span>{item.label}</span>
-                  {count > 0 && (
-                    <span className="rounded-full bg-red-500 px-2 py-0.5 text-xs font-bold text-white">
-                      {count > 99 ? '99+' : count}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="mt-8">
-            <LogoutButton />
-          </div>
-        </aside>
-
-        <section className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">
+      <RoleSidebarLayout
+        title="Carer Panel"
+        subtitle={carerIdentity?.username || 'Carer'}
+        activeView={activeView}
+        items={menuItems.map((item) => ({
+          ...item,
+          onClick: () => handleChangeView(item.view as CarerView),
+        }))}
+        footer={<LogoutButton />}
+      >
           {errorMessage && (
             <div className="mb-4 rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-100">
               {errorMessage}
@@ -2187,8 +2162,7 @@ export default function CarerPage() {
           {activeView === 'urgent' && renderUrgent()}
           {activeView === 'view-players' && renderPlayers()}
           {activeView === 'login-details' && renderLoginDetails()}
-        </section>
-      </main>
+      </RoleSidebarLayout>
 
       {showRiskPanel && selectedRiskSnapshot && (
         <div
