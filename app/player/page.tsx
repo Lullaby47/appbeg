@@ -16,7 +16,6 @@ import {
   getPlayerGameLoginsByPlayer,
   PlayerGameLogin,
 } from '@/features/games/playerGameLogins';
-import { GameLogin, getGameLoginsByCoadmin } from '@/features/games/gameLogins';
 import {
   createPlayerGameRequest,
   dismissPlayerRedeemRequest,
@@ -42,6 +41,7 @@ import {
 } from '@/features/cashouts/playerCashoutTasks';
 import {
   BonusEvent,
+  getStaffBonusEventsForPlayerDisplay,
   initiateBonusEventPlay,
   listenBonusEventsByCoadmin,
 } from '../../features/bonusEvents/bonusEvents';
@@ -289,7 +289,6 @@ export default function PlayerPage() {
   const [selectedAgent, setSelectedAgent] = useState<AdminUser | null>(null);
 
   const [gameLogins, setGameLogins] = useState<PlayerGameLogin[]>([]);
-  const [coadminGameLogins, setCoadminGameLogins] = useState<GameLogin[]>([]);
   const [bonusEvents, setBonusEvents] = useState<BonusEvent[]>([]);
   const [usernameCarersByGame, setUsernameCarersByGame] = useState<Record<string, string[]>>({});
   const [creatorNames, setCreatorNames] = useState<Record<string, string>>({});
@@ -351,7 +350,10 @@ export default function PlayerPage() {
   const totalUnread = agents.reduce((total, agent) => {
     return total + (unreadCounts[agent.uid] || 0);
   }, 0);
-  const staffBonusEvents = bonusEvents.filter((event) => event.createdByRole === 'staff');
+  const staffBonusEvents = useMemo(
+    () => getStaffBonusEventsForPlayerDisplay(bonusEvents),
+    [bonusEvents]
+  );
 
   useEffect(() => {
     if (staffBonusEvents.length === 0) {
@@ -610,7 +612,6 @@ export default function PlayerPage() {
         setUsernameCarersByGame({});
         setCreatorNames({});
         setSelectedCreatorUid(null);
-        setCoadminGameLogins([]);
         setRequestHistory([]);
         return;
       }
@@ -630,20 +631,12 @@ export default function PlayerPage() {
           ...(playerData as Record<string, unknown>),
         });
         setPlayerCoadminUid(resolvedCoadminUid ? String(resolvedCoadminUid) : '');
-
-        if (resolvedCoadminUid) {
-          const coadminGames = await getGameLoginsByCoadmin(String(resolvedCoadminUid));
-          setCoadminGameLogins(sortByNewest(coadminGames));
-        } else {
-          setCoadminGameLogins([]);
-        }
       } catch {
         setIsBlockedPlayer(false);
         setWallet({ coin: 0, cash: 0 });
         setPlayerCoadminUid('');
         setBonusEvents([]);
         setUsernameCarersByGame({});
-        setCoadminGameLogins([]);
       }
     });
 
@@ -1779,9 +1772,15 @@ export default function PlayerPage() {
 
                 <div className="rounded-3xl border border-violet-400/35 bg-gradient-to-br from-violet-950/60 via-black/50 to-purple-950/30 p-4 shadow-[0_0_40px_-12px_rgba(139,92,246,0.35)] backdrop-blur-xl sm:p-6">
                   <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="flex items-center gap-2 text-lg font-black text-violet-100 sm:text-xl">
-                      <span>🎁</span> Bonus events
-                    </h3>
+                    <div>
+                      <h3 className="flex items-center gap-2 text-lg font-black text-violet-100 sm:text-xl">
+                        <span>🎁</span> Bonus events
+                      </h3>
+                      <p className="mt-1 text-[11px] font-medium text-violet-200/60 sm:text-xs">
+                        Latest staff bonuses (newest first, up to 10). The first player to claim a
+                        bonus takes it; others see it disappear.
+                      </p>
+                    </div>
                     {staffBonusEvents.length > 1 ? (
                       <div className="flex gap-2">
                         <button
@@ -1960,15 +1959,7 @@ export default function PlayerPage() {
                   <>
                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
                       {gameLogins.map((game, index) => {
-                        const templateLogin =
-                          coadminGameLogins.find(
-                            (g) =>
-                              g.coadminUid === playerCoadminUid &&
-                              g.gameName.trim().toLowerCase() ===
-                                game.gameName.trim().toLowerCase()
-                          ) || null;
-                        const resolvedUsername =
-                          (templateLogin?.username || game.gameUsername || '').trim();
+                        const resolvedUsername = (game.gameUsername || '').trim();
                         const hasUsername = Boolean(resolvedUsername);
                         const isSelected = selectedGameName === game.gameName;
 
@@ -2174,16 +2165,9 @@ export default function PlayerPage() {
                     {usernamesVisibleLogins.map((login) => {
                       const gameCarers =
                         usernameCarersByGame[normalizeGameKey(login.gameName || '')] || [];
-                      const coadminGameLogin =
-                        coadminGameLogins.find(
-                          (game) =>
-                            game.coadminUid === playerCoadminUid &&
-                            game.gameName.trim().toLowerCase() ===
-                              login.gameName.trim().toLowerCase()
-                        ) || null;
                       const visible = visiblePasswords[login.id];
-                      const displayUsername = coadminGameLogin?.username || login.gameUsername;
-                      const displayPassword = coadminGameLogin?.password || login.gamePassword;
+                      const displayUsername = login.gameUsername;
+                      const displayPassword = login.gamePassword;
                       return (
                         <motion.div
                           key={login.id}

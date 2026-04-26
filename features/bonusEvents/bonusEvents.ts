@@ -42,6 +42,19 @@ function sortByNewest(list: BonusEvent[]) {
   });
 }
 
+/** Newest staff-created bonus events shown on the player dashboard (5–10 range; we use 10). */
+export const MAX_PLAYER_BONUS_EVENTS_DISPLAY = 10;
+
+/**
+ * Staff bonus offers for the player UI: newest first, capped for performance and clarity.
+ * Each list item is still a separate Firestore doc; only one player can claim a given event.
+ */
+export function getStaffBonusEventsForPlayerDisplay(events: BonusEvent[]): BonusEvent[] {
+  return sortByNewest(
+    events.filter((event) => event.createdByRole === 'staff')
+  ).slice(0, MAX_PLAYER_BONUS_EVENTS_DISPLAY);
+}
+
 // Staff reward tuning thresholds.
 const SAFE_BONUS_PERCENT = 8;
 const MID_BONUS_PERCENT = 20;
@@ -193,7 +206,9 @@ export async function initiateBonusEventPlay(values: {
     }
 
     if (!bonusEventSnap.exists()) {
-      throw new Error('Bonus event is no longer available.');
+      throw new Error(
+        'This bonus was already claimed by another player or is no longer available.'
+      );
     }
 
     const playerData = playerSnap.data() as {
