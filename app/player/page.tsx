@@ -2849,7 +2849,7 @@ export default function PlayerPage() {
                   </div>
                 ) : (
                   <>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    <div className="grid max-w-5xl grid-cols-1 gap-3 sm:grid-cols-2 sm:items-start xl:grid-cols-3">
                       {gameLogins.map((game, index) => {
                         const resolvedUsername = (game.gameUsername || '').trim();
                         const hasUsername = Boolean(resolvedUsername);
@@ -2866,7 +2866,7 @@ export default function PlayerPage() {
                               setSelectedGameName(game.gameName);
                               setShowActiveTableSplash(true);
                             }}
-                            className={`fire-panel fire-orange relative overflow-hidden rounded-3xl border p-3.5 text-left shadow-xl transition-all active:scale-[0.98] sm:p-4 ${
+                            className={`fire-panel fire-orange relative w-full self-start overflow-hidden rounded-3xl border p-3 text-left shadow-xl transition-all active:scale-[0.98] sm:p-3.5 ${
                               isSelected
                                 ? 'border-amber-400/60 bg-gradient-to-br from-amber-500/25 to-purple-900/40 shadow-[0_0_32px_-8px_rgba(234,179,8,0.55)]'
                                 : 'border-white/10 bg-black/45 hover:border-amber-400/35'
@@ -2875,10 +2875,10 @@ export default function PlayerPage() {
                             <div className="pointer-events-none absolute -right-6 -top-6 h-24 w-24 rounded-full bg-amber-400/15 blur-2xl" />
                             <div className="relative flex items-start justify-between gap-2">
                               <div className="min-w-0">
-                                <p className="text-xs font-black uppercase tracking-wider text-amber-200/70">
+                                <p className="text-[11px] font-black uppercase tracking-wider text-amber-200/70">
                                   🃏 Slot
                                 </p>
-                                <h3 className="mt-1 truncate bg-gradient-to-r from-amber-100 via-yellow-200 to-orange-300 bg-clip-text text-lg font-black text-transparent sm:text-[1.15rem]">
+                                <h3 className="mt-1 truncate bg-gradient-to-r from-amber-100 via-yellow-200 to-orange-300 bg-clip-text text-base font-black text-transparent sm:text-lg">
                                   {game.gameName}
                                 </h3>
                               </div>
@@ -2887,7 +2887,7 @@ export default function PlayerPage() {
                               </span>
                             </div>
                             <p
-                              className={`relative mt-2.5 flex items-center gap-2 text-xs font-bold sm:text-sm ${
+                              className={`relative mt-2 flex items-center gap-2 text-xs font-bold ${
                                 hasUsername ? 'text-emerald-300' : 'text-rose-300'
                               }`}
                             >
@@ -2902,7 +2902,7 @@ export default function PlayerPage() {
                               )}
                             </p>
                             <span
-                              className={`relative mt-3 flex min-h-[40px] w-full items-center justify-center rounded-2xl text-xs font-black sm:min-h-[42px] sm:text-sm ${
+                              className={`relative mt-2.5 flex min-h-[36px] w-full items-center justify-center rounded-2xl px-3 text-[11px] font-black sm:min-h-[38px] sm:text-xs ${
                                 isSelected
                                   ? 'bg-gradient-to-r from-amber-400 to-yellow-400 text-black'
                                   : 'border border-amber-400/40 bg-amber-500/15 text-amber-100'
