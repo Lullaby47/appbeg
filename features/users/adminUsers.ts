@@ -16,6 +16,8 @@ export type CoadminUser = {
   status: 'active' | 'disabled';
   createdBy: string | null;
   coadminUid?: string | null;
+  /** Reference images for player “Load coin” flow. */
+  paymentDetailPhotoUrls?: string[] | null;
   createdAt?: any;
 };
 

@@ -32,6 +32,12 @@ import {
 } from '@/features/messages/chatMessages';
 import { usePaginatedChatMessages } from '@/features/messages/usePaginatedChatMessages';
 import {
+  createCoinLoadSession,
+  deleteCoinLoadSession,
+  getSessionExpiresAtMs,
+  type CoinLoadSession,
+} from '@/features/coinLoad/coinLoadSession';
+import {
   createPlayerCredentialTask,
   getCompletedUsernameCarersByPlayer,
   sendCarerCashboxInquiryAlert,
@@ -342,6 +348,10 @@ export default function PlayerPage() {
   const [referralCode, setReferralCode] = useState('');
   const [showCashoutModal, setShowCashoutModal] = useState(false);
   const [showCoinConfirmSplash, setShowCoinConfirmSplash] = useState(false);
+  const [showLoadCoinPanel, setShowLoadCoinPanel] = useState(false);
+  const [activeCoinLoad, setActiveCoinLoad] = useState<CoinLoadSession | null>(null);
+  const [loadCoinTimeLeftSec, setLoadCoinTimeLeftSec] = useState(0);
+  const [coinLoadBusy, setCoinLoadBusy] = useState(false);
   const [cashoutPaymentDetails, setCashoutPaymentDetails] = useState('');
   const [cashoutLoading, setCashoutLoading] = useState(false);
   const [showCashoutSuccessSplash, setShowCashoutSuccessSplash] = useState(false);
@@ -1351,6 +1361,68 @@ export default function PlayerPage() {
     }
   }
 
+  useEffect(() => {
+    if (!activeCoinLoad) {
+      setLoadCoinTimeLeftSec(0);
+      return;
+    }
+    const exp = getSessionExpiresAtMs(activeCoinLoad);
+    const sessionId = activeCoinLoad.id;
+    const tick = () => {
+      const left = Math.max(0, Math.ceil((exp - Date.now()) / 1000));
+      setLoadCoinTimeLeftSec(left);
+      if (left <= 0) {
+        void deleteCoinLoadSession(sessionId)
+          .catch(() => undefined)
+          .finally(() => {
+            setActiveCoinLoad((prev) => (prev?.id === sessionId ? null : prev));
+            setShowLoadCoinPanel(false);
+            setMessage('Payment code expired. Request a new one if you still need to pay.');
+          });
+        return true;
+      }
+      return false;
+    };
+    if (tick()) {
+      return;
+    }
+    const id = setInterval(() => {
+      if (tick()) {
+        clearInterval(id);
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [activeCoinLoad]);
+
+  async function handleCreateCoinLoadSession() {
+    if (!playerCoadminUid) {
+      setMessage('No co-admin is linked to your account yet.');
+      return;
+    }
+    if (isBlockedPlayer) {
+      setMessage('Your account is restricted. Contact an agent for help with payments.');
+      return;
+    }
+    setCoinLoadBusy(true);
+    setMessage('');
+    try {
+      const s = await createCoinLoadSession(playerCoadminUid);
+      setActiveCoinLoad(s);
+    } catch (e) {
+      setMessage(
+        e instanceof Error ? e.message : 'Could not create payment code. Try again or contact an agent.'
+      );
+    } finally {
+      setCoinLoadBusy(false);
+    }
+  }
+
+  function formatLoadCoinCountdown(totalSec: number) {
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
   function renderRequestHistory() {
     return (
       <motion.div
@@ -1685,6 +1757,18 @@ export default function PlayerPage() {
                   {coinLoading ? '⏳ Transferring…' : '⇄ Transfer Cash → Coin'}
                 </button>
 
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowLoadCoinPanel(true);
+                    setMessage('');
+                  }}
+                  disabled={isBlockedPlayer}
+                  className="rounded-2xl border border-violet-400/45 bg-violet-500/20 px-5 py-3 text-sm font-black text-violet-50 shadow-md transition-all hover:bg-violet-500/35 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  ⬇ Load coin
+                </button>
+
                 <div className="rounded-2xl border border-emerald-400/35 bg-gradient-to-br from-emerald-500/25 to-emerald-900/20 px-5 py-3 text-right shadow-lg shadow-emerald-500/10">
                   <p className="text-[10px] font-black uppercase tracking-[0.28em] text-emerald-200/80">
                     💵 Cash
@@ -1734,6 +1818,17 @@ export default function PlayerPage() {
                   className="col-span-2 min-h-[48px] rounded-2xl border border-amber-400/45 bg-amber-500/20 py-3 text-sm font-black text-amber-50 active:scale-[0.99] disabled:opacity-60"
                 >
                   {coinLoading ? '⏳ Transferring…' : '⇄ Transfer all cash to coin'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowLoadCoinPanel(true);
+                    setMessage('');
+                  }}
+                  disabled={isBlockedPlayer}
+                  className="col-span-2 min-h-[48px] rounded-2xl border border-violet-400/45 bg-violet-500/25 py-3 text-sm font-black text-violet-50 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  ⬇ Load coin
                 </button>
                 <button
                   type="button"
@@ -1893,6 +1988,19 @@ export default function PlayerPage() {
                           className="rounded-xl bg-cyan-400 px-3 py-2 text-xs font-black text-black hover:bg-cyan-300 disabled:opacity-50"
                         >
                           Copy Referral Code
+                        </button>
+                      </div>
+                      <div className="mt-3 sm:max-w-md">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowLoadCoinPanel(true);
+                            setMessage('');
+                          }}
+                          disabled={isBlockedPlayer}
+                          className="w-full min-h-[48px] rounded-2xl border border-violet-400/50 bg-violet-500/20 py-3 text-sm font-black text-violet-50 transition hover:bg-violet-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          ⬇ Load coin — payment reference
                         </button>
                       </div>
                     </div>
@@ -2806,6 +2914,95 @@ export default function PlayerPage() {
             <p className="mt-4 text-xs text-amber-200/50">
               This will close when your request is finished.
             </p>
+          </div>
+        </div>
+      )}
+
+      {showLoadCoinPanel && (
+        <div
+          onClick={() => setShowLoadCoinPanel(false)}
+          className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[72]`}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            className="w-full max-w-md overflow-hidden rounded-3xl border border-violet-400/40 bg-gradient-to-br from-violet-950/95 via-zinc-900 to-black/95 p-6 text-left text-white shadow-[0_0_60px_-12px_rgba(139,92,246,0.45)] backdrop-blur-xl sm:p-7"
+          >
+            <h3 className="text-2xl font-black">Load coin</h3>
+            <p className="mt-2 text-sm text-violet-100/80">
+              Get a one-time reference image from your co-admin and a 16-digit code. Use it to pay
+              and complete your top-up. The code expires in 10 minutes.
+            </p>
+
+            {!activeCoinLoad ? (
+              <div className="mt-6">
+                <button
+                  type="button"
+                  onClick={() => void handleCreateCoinLoadSession()}
+                  disabled={coinLoadBusy || !playerCoadminUid || isBlockedPlayer}
+                  className="w-full min-h-[52px] rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-600 py-3 text-sm font-black text-white shadow-lg shadow-violet-500/25 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {coinLoadBusy ? 'Preparing…' : 'Add coins'}
+                </button>
+                {!playerCoadminUid ? (
+                  <p className="mt-2 text-xs text-amber-200/90">
+                    Your account is not linked to a co-admin yet. Contact an agent.
+                  </p>
+                ) : null}
+                {isBlockedPlayer ? (
+                  <p className="mt-2 text-xs text-rose-200/90">Restricted account — ask an agent for help.</p>
+                ) : null}
+              </div>
+            ) : (
+              <div className="mt-6 space-y-4">
+                <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/40">
+                  <img
+                    src={activeCoinLoad.paymentPhotoUrl}
+                    alt="Payment reference"
+                    className="max-h-64 w-full object-contain"
+                  />
+                </div>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wider text-violet-200/80">
+                    Your 16-digit code
+                  </p>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <code className="flex-1 break-all rounded-xl border border-violet-400/30 bg-black/50 px-3 py-2 text-center text-lg font-mono font-bold tracking-wider text-white sm:text-xl">
+                      {activeCoinLoad.hashCode}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(activeCoinLoad.hashCode);
+                          setMessage('Code copied to clipboard.');
+                        } catch {
+                          setMessage('Copy failed. Select the code and copy manually.');
+                        }
+                      }}
+                      className="shrink-0 rounded-xl border border-violet-400/40 bg-violet-500/20 px-4 py-2 text-sm font-bold text-violet-50 hover:bg-violet-500/30"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                </div>
+                <p className="text-center text-sm font-bold text-amber-200/95">
+                  Time left: {formatLoadCoinCountdown(loadCoinTimeLeftSec)}
+                </p>
+                <p className="text-center text-xs text-neutral-400">
+                  When the timer ends, this screen closes and the code is removed from the server.
+                </p>
+              </div>
+            )}
+
+            <div className="mt-6 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowLoadCoinPanel(false)}
+                className="rounded-xl bg-white/10 px-4 py-2.5 text-sm font-bold text-white hover:bg-white/20"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

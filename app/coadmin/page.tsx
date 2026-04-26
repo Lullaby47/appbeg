@@ -85,6 +85,11 @@ import {
 import { usePaginatedChatMessages } from '@/features/messages/usePaginatedChatMessages';
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
+import {
+  getCoadminPaymentDetailPhotoUrls,
+  setCoadminPaymentDetailPhotoUrls,
+  uploadCoadminPaymentDetailPhoto,
+} from '@/features/coinLoad/coinLoadSession';
 
 type CoadminView =
   | 'dashboard'
@@ -99,6 +104,7 @@ type CoadminView =
   | 'view-players'
   | 'add-games'
   | 'game-list'
+  | 'payment-details'
   | 'reach-out';
 
 function formatNprDisplay(value: number) {
@@ -150,6 +156,10 @@ export default function CoadminPage() {
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [sendingImage, setSendingImage] = useState(false);
+
+  const [paymentDetailPhotoUrls, setPaymentDetailPhotoUrls] = useState<string[]>([]);
+  const [loadingPaymentDetailPhotos, setLoadingPaymentDetailPhotos] = useState(false);
+  const [paymentDetailUploading, setPaymentDetailUploading] = useState(false);
 
   const previousUnreadRef = useRef(0);
   const previousUrgentRequestCountRef = useRef<number | null>(null);
@@ -256,6 +266,38 @@ export default function CoadminPage() {
     if (activeView === 'view-players') loadPlayerList();
     if (activeView === 'game-list') loadGameLogins();
     if (activeView === 'reach-out') loadChatUsers();
+  }, [activeView]);
+
+  useEffect(() => {
+    if (activeView !== 'payment-details') {
+      return;
+    }
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      return;
+    }
+    let cancelled = false;
+    setLoadingPaymentDetailPhotos(true);
+    setMessage('');
+    void (async () => {
+      try {
+        const urls = await getCoadminPaymentDetailPhotoUrls(uid);
+        if (!cancelled) {
+          setPaymentDetailPhotoUrls(urls);
+        }
+      } catch {
+        if (!cancelled) {
+          setMessage('Failed to load payment reference photos.');
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingPaymentDetailPhotos(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [activeView]);
 
   useEffect(() => {
@@ -1226,6 +1268,55 @@ export default function CoadminPage() {
     resetSelection();
   }
 
+  async function handleAddPaymentDetailPhotos(files: FileList | null) {
+    if (!files?.length) {
+      return;
+    }
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      return;
+    }
+    setPaymentDetailUploading(true);
+    setMessage('');
+    try {
+      const next = [...paymentDetailPhotoUrls];
+      for (const file of Array.from(files)) {
+        const compressed = await imageCompression(file, {
+          maxSizeMB: 0.7,
+          maxWidthOrHeight: 1600,
+          useWebWorker: true,
+        });
+        const url = await uploadCoadminPaymentDetailPhoto(uid, compressed);
+        next.push(url);
+      }
+      await setCoadminPaymentDetailPhotoUrls(uid, next);
+      setPaymentDetailPhotoUrls(next);
+      setMessage('Payment photos saved. Players can use them in Load coin.');
+    } catch (err: any) {
+      setMessage(err?.message || 'Failed to upload photos.');
+    } finally {
+      setPaymentDetailUploading(false);
+    }
+  }
+
+  async function handleRemovePaymentDetailPhoto(index: number) {
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      return;
+    }
+    const next = paymentDetailPhotoUrls.filter((_, i) => i !== index);
+    setPaymentDetailUploading(true);
+    setMessage('');
+    try {
+      await setCoadminPaymentDetailPhotoUrls(uid, next);
+      setPaymentDetailPhotoUrls(next);
+    } catch (err: any) {
+      setMessage(err?.message || 'Failed to remove photo.');
+    } finally {
+      setPaymentDetailUploading(false);
+    }
+  }
+
   function sortByNewest<T extends { createdAt?: any }>(list: T[]) {
     return [...list].sort((a: any, b: any) => {
       const aTime =
@@ -1266,6 +1357,7 @@ export default function CoadminPage() {
               { label: 'View Players', view: 'view-players' },
               { label: 'Add Games', view: 'add-games' },
               { label: 'Game List', view: 'game-list' },
+              { label: 'Payment details (photos)', view: 'payment-details' },
               { label: 'Reach Out', view: 'reach-out', unread: reachOutUnreadCount },
             ].map((item) => (
               <button
@@ -2024,6 +2116,77 @@ export default function CoadminPage() {
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {activeView === 'payment-details' && (
+            <div>
+              <h2 className="text-2xl font-bold">Payment details — reference photos</h2>
+              <p className="mt-2 max-w-2xl text-sm text-neutral-400">
+                Upload one or more images (QR codes, bank apps, e-wallet screenshots). When a
+                player taps <span className="text-neutral-200">Load coin</span> and then{' '}
+                <span className="text-neutral-200">Add coins</span>, they see{' '}
+                <strong>one image chosen at random</strong> and a 16-digit code that expires in 10
+                minutes.
+              </p>
+
+              <div className="mt-6 rounded-2xl border border-cyan-500/25 bg-black/30 p-5">
+                <label className="block">
+                  <span className="text-sm font-semibold text-cyan-100/90">
+                    Add photos
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    disabled={paymentDetailUploading}
+                    onChange={(e) => {
+                      void handleAddPaymentDetailPhotos(e.target.files);
+                      e.target.value = '';
+                    }}
+                    className="mt-2 block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-cyan-500/20 file:px-4 file:py-2 file:font-semibold file:text-cyan-100"
+                  />
+                </label>
+                {paymentDetailUploading ? (
+                  <p className="mt-3 text-sm text-amber-200/90">Uploading…</p>
+                ) : null}
+              </div>
+
+              <div className="mt-6">
+                {loadingPaymentDetailPhotos ? (
+                  <p className="text-sm text-neutral-500">Loading…</p>
+                ) : paymentDetailPhotoUrls.length === 0 ? (
+                  <p className="text-sm text-neutral-500">No reference photos yet.</p>
+                ) : (
+                  <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    {paymentDetailPhotoUrls.map((url, index) => (
+                      <li
+                        key={url}
+                        className="overflow-hidden rounded-2xl border border-white/10 bg-black/40"
+                      >
+                        <div className="relative aspect-[4/3] w-full">
+                          <img
+                            src={url}
+                            alt={`Payment reference ${index + 1}`}
+                            className="h-full w-full object-contain"
+                          />
+                        </div>
+                        <div className="flex items-center justify-between gap-2 p-2">
+                          <span className="text-xs text-neutral-500">#{index + 1}</span>
+                          <button
+                            type="button"
+                            disabled={paymentDetailUploading}
+                            onClick={() => void handleRemovePaymentDetailPhoto(index)}
+                            className="rounded-lg bg-rose-500/20 px-3 py-1.5 text-xs font-semibold text-rose-200 hover:bg-rose-500/30 disabled:opacity-50"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
           )}
 
