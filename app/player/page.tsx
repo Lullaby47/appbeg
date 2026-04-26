@@ -925,6 +925,20 @@ export default function PlayerPage() {
       return;
     }
 
+    const amountNum = Number(playAmount);
+    if (type === 'recharge') {
+      if (!Number.isFinite(amountNum) || amountNum <= 0) {
+        setMessage('Enter a valid amount.');
+        return;
+      }
+      if (amountNum > wallet.coin) {
+        setMessage(
+          'Not enough coin for this recharge. Lower the amount or add coin first.'
+        );
+        return;
+      }
+    }
+
     setShowActiveTableSplash(false);
     setPlayRequestSplash({
       type,
@@ -2372,7 +2386,7 @@ export default function PlayerPage() {
 
             <div className="mt-5">
               <label className="mb-2 block text-sm font-bold text-amber-100/70">
-                💰 Amount (USD)
+                💰 Amount (deducts from your coin)
               </label>
               <input
                 value={playAmount}
@@ -2384,6 +2398,19 @@ export default function PlayerPage() {
                 autoFocus
                 className="min-h-[52px] w-full rounded-2xl border border-amber-400/35 bg-black/70 px-4 py-3 text-lg text-white outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-400/30"
               />
+              <p className="mt-2 text-xs text-amber-100/50">
+                Available coin: <span className="font-bold text-amber-200">{formatWalletAmount(wallet.coin)}</span>
+                {' — '}
+                Recharge is only sent if this amount is covered.
+              </p>
+              {playAmount &&
+              Number.isFinite(Number(playAmount)) &&
+              Number(playAmount) > 0 &&
+              Number(playAmount) > wallet.coin ? (
+                <p className="mt-2 text-sm font-bold text-rose-300">
+                  Not enough coin. Lower the amount or add coin first.
+                </p>
+              ) : null}
             </div>
 
             <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -2393,7 +2420,10 @@ export default function PlayerPage() {
                   requestLoading ||
                   !selectedGameName ||
                   !playAmount ||
-                  isBlockedPlayer
+                  isBlockedPlayer ||
+                  (Number.isFinite(Number(playAmount)) &&
+                    Number(playAmount) > 0 &&
+                    Number(playAmount) > wallet.coin)
                 }
                 onClick={() => void handleGameRequest('recharge')}
                 className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 py-3 text-base font-black text-white shadow-lg shadow-emerald-500/25 transition-all hover:brightness-110 disabled:opacity-50"

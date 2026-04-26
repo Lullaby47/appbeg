@@ -136,12 +136,33 @@ export async function createPlayerGameRequest(values: {
     throw new Error('Enter a valid amount.');
   }
 
+  const requestAmount = Number(values.amount);
+  if (!Number.isFinite(requestAmount) || requestAmount <= 0) {
+    throw new Error('Enter a valid amount.');
+  }
+
+  if (values.type === 'recharge') {
+    const playerRef = doc(db, 'users', currentUser.uid);
+    const playerMoneySnap = await getDoc(playerRef);
+    if (!playerMoneySnap.exists()) {
+      throw new Error('Player profile not found.');
+    }
+    const currentCoin = Number(
+      (playerMoneySnap.data() as { coin?: number }).coin || 0
+    );
+    if (currentCoin < requestAmount) {
+      throw new Error(
+        'Not enough coin to request this recharge. Use a lower amount or add coin first.'
+      );
+    }
+  }
+
   const coadminUid = await getCurrentUserCoadminUid();
 
   await addDoc(collection(db, 'playerGameRequests'), {
     playerUid: currentUser.uid,
     gameName: values.gameName.trim(),
-    amount: values.amount,
+    amount: requestAmount,
     baseAmount:
       values.baseAmount !== undefined && values.baseAmount !== null
         ? Number(values.baseAmount)
