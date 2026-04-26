@@ -35,7 +35,7 @@ body {
 }
 
 .player-shimmer-sweep {
-  animation: player-shimmer 2.5s ease-in-out infinite;
+  animation: player-shimmer 3.4s linear infinite;
 }
 
 @keyframes casino-gradient-shift {
@@ -84,16 +84,15 @@ body {
 
 @keyframes casino-streak-drift {
   0% {
-    transform: translate3d(-18%, -8%, 0) rotate(-12deg);
-    opacity: 0;
+    transform: translate3d(-22%, -10%, 0) rotate(-12deg);
+    opacity: 0.05;
   }
-  20%,
-  80% {
-    opacity: 1;
+  50% {
+    opacity: 0.55;
   }
   100% {
-    transform: translate3d(18%, 8%, 0) rotate(-12deg);
-    opacity: 0;
+    transform: translate3d(22%, 10%, 0) rotate(-12deg);
+    opacity: 0.05;
   }
 }
 
@@ -134,8 +133,9 @@ body {
 }
 
 .casino-bg-base {
-  animation: casino-gradient-shift 18s ease-in-out infinite;
+  animation: casino-gradient-shift 30s linear infinite alternate;
   will-change: transform;
+  transform: translateZ(0);
 }
 
 .casino-bg-grid {
@@ -156,10 +156,11 @@ body {
 
 .casino-ambient {
   inset: -12%;
-  filter: blur(48px);
-  opacity: 0.28;
-  animation: casino-pulse 16s ease-in-out infinite;
+  filter: blur(40px);
+  opacity: 0.24;
+  animation: casino-pulse 22s linear infinite;
   will-change: transform, opacity;
+  transform: translateZ(0);
 }
 
 .casino-bg-player .casino-ambient-one {
@@ -192,10 +193,11 @@ body {
 
 .casino-glow-orb {
   border-radius: 9999px;
-  filter: blur(24px);
-  opacity: 0.14;
-  animation: casino-float-a 20s ease-in-out infinite;
+  filter: blur(20px);
+  opacity: 0.12;
+  animation: casino-float-a 26s linear infinite;
   will-change: transform;
+  transform: translateZ(0);
 }
 
 .casino-bg-player .casino-glow-primary {
@@ -259,11 +261,12 @@ body {
   min-width: 16rem;
   max-width: 34rem;
   height: 1px;
-  opacity: 0.09;
+  opacity: 0.07;
   filter: blur(0.3px);
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.65), transparent);
-  animation: casino-streak-drift 18s ease-in-out infinite;
+  animation: casino-streak-drift 26s linear infinite;
   will-change: transform, opacity;
+  transform: translateZ(0);
 }
 
 .casino-streak-one {
@@ -274,13 +277,15 @@ body {
 .casino-streak-two {
   right: -10%;
   top: 48%;
-  animation-delay: -6s;
+  animation-delay: -9s;
+  animation-duration: 31s;
 }
 
 .casino-streak-three {
   left: 8%;
   bottom: 22%;
-  animation-delay: -11s;
+  animation-delay: -17s;
+  animation-duration: 34s;
 }
 
 .casino-guide {
@@ -288,9 +293,10 @@ body {
   width: 28rem;
   max-width: 56vw;
   border-radius: 9999px;
-  filter: blur(30px);
-  opacity: 0.08;
-  animation: casino-guide-sweep 14s ease-in-out infinite;
+  filter: blur(24px);
+  opacity: 0.07;
+  animation: casino-guide-sweep 20s linear infinite;
+  transform: translateZ(0);
 }
 
 .casino-bg-player .casino-guide {
@@ -323,10 +329,11 @@ body {
   font-weight: 700;
   letter-spacing: 0.24em;
   text-transform: uppercase;
-  opacity: 0.08;
+  opacity: 0.06;
   text-shadow: 0 0 18px currentColor;
-  animation: casino-float-a 18s ease-in-out infinite;
+  animation: casino-float-a 24s linear infinite;
   will-change: transform;
+  transform: translateZ(0);
 }
 
 .casino-icon-float span {

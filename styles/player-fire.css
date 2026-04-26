@@ -488,17 +488,17 @@
   0% {
     background-position: 0 100%, 0 0, 50% 100%;
     transform: translateY(0) scaleY(1);
-    opacity: 0.88;
+    opacity: 0.76;
   }
   50% {
     background-position: 120px 100%, 0 0, 48% 100%;
-    transform: translateY(-4px) scaleY(1.08);
-    opacity: 1;
+    transform: translateY(-1px) scaleY(1.02);
+    opacity: 0.82;
   }
   100% {
     background-position: 240px 100%, 0 0, 52% 100%;
     transform: translateY(0) scaleY(1);
-    opacity: 0.9;
+    opacity: 0.78;
   }
 }
 
@@ -687,11 +687,11 @@
     radial-gradient(circle at 50% 100%, var(--fire-panel-glow-strong), transparent 48%);
   mix-blend-mode: screen;
   filter: blur(2px);
-  opacity: 0.72;
+  opacity: 0.78;
   transform-origin: center bottom;
   animation:
-    fireMove 2.9s linear infinite,
-    fireFlicker 2.1s ease-in-out infinite alternate;
+    fireMove 5.6s ease-in-out infinite,
+    fireFlicker 4.8s ease-in-out infinite;
   z-index: 0;
 }
 
@@ -699,7 +699,7 @@
   bottom: -18%;
   height: 55%;
   background-size: 170% 100%, auto, auto;
-  opacity: 0.6;
+  opacity: 0.68;
 }
 
 .player-fire-page .fire-panel > *,
@@ -756,6 +756,14 @@
   opacity: 0.86;
 }
 
+.player-fire-page .player-dashboard-hero {
+  min-height: auto;
+}
+
+.player-fire-page .player-dashboard-hero .relative.grid {
+  gap: 1.25rem;
+}
+
 .player-fire-page .fire-panel:hover,
 .player-fire-page .fire-panel:focus-within,
 .player-fire-page .fire-button:hover,
@@ -772,8 +780,8 @@
 .player-fire-page .fire-button:hover::after,
 .player-fire-page .fire-button:focus-visible::after,
 .player-fire-page .fire-button:active::after {
-  opacity: 0.96;
-  transform: translate3d(0, -2px, 0) scaleY(1.04);
+  opacity: 0.88;
+  transform: translate3d(0, -1px, 0) scaleY(1.02);
 }
 
 .player-fire-page .fire-panel:hover::before,
@@ -786,15 +794,15 @@
 
 @keyframes fireFlicker {
   0% {
-    opacity: 0.64;
-    transform: translate3d(0, 0, 0) scaleY(0.98);
+    opacity: 0.76;
+    transform: translate3d(0, 0, 0) scaleY(0.995);
   }
   50% {
-    opacity: 0.88;
-    transform: translate3d(0, -1px, 0) scaleY(1.04);
+    opacity: 0.82;
+    transform: translate3d(0, -0.5px, 0) scaleY(1.01);
   }
   100% {
-    opacity: 0.76;
+    opacity: 0.78;
     transform: translate3d(0, 0, 0) scaleY(1);
   }
 }
@@ -834,5 +842,30 @@
   .player-fire-page .fire-button:active::after {
     transform: none;
     opacity: 0.8;
+  }
+}
+
+@media (max-width: 640px) {
+  .player-fire-page .player-dashboard-hero {
+    padding: 1rem;
+  }
+
+  .player-fire-page .player-dashboard-hero .relative.grid {
+    gap: 1rem;
+  }
+
+  .player-fire-page .player-dashboard-hero h2 {
+    font-size: 2.5rem;
+    line-height: 1;
+  }
+
+  .player-fire-page .player-dashboard-hero p + .mt-5,
+  .player-fire-page .player-dashboard-hero .mt-4,
+  .player-fire-page .player-dashboard-hero .mt-3 {
+    margin-top: 0.75rem !important;
+  }
+
+  .player-fire-page .player-dashboard-hero .grid.grid-cols-2 {
+    gap: 0.5rem;
   }
 }

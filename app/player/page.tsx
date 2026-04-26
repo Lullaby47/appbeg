@@ -1929,10 +1929,15 @@ export default function PlayerPage() {
           <div className="relative z-10 flex min-h-0 flex-1 flex-col">
             <div className="flex min-h-0 flex-1 flex-col overflow-x-hidden px-3 pb-4 pt-4 md:px-7 md:pb-8 md:pt-6">
               <div className="mb-4 hidden shrink-0 flex-wrap items-stretch justify-end gap-3 lg:flex">
-                <div className="fire-panel fire-orange rounded-2xl border border-amber-400/35 bg-gradient-to-br from-amber-500/25 to-yellow-600/10 px-5 py-3 text-right shadow-lg shadow-amber-500/10">
-                  <p className="text-[10px] font-black uppercase tracking-[0.28em] text-amber-200/80">
-                    🪙 Coin
-                  </p>
+                <div className="fire-panel fire-orange rounded-2xl border border-amber-300/60 bg-gradient-to-br from-amber-400/35 to-yellow-500/20 px-5 py-3 text-right shadow-lg shadow-amber-400/25">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-amber-200/40 bg-amber-200/15 text-2xl shadow-[0_0_18px_rgba(251,191,36,0.35)]">
+                      🪙
+                    </span>
+                    <p className="text-[10px] font-black uppercase tracking-[0.28em] text-amber-100/90">
+                      Coin
+                    </p>
+                  </div>
                   <p className="mt-1 text-2xl font-black tabular-nums text-white">
                     {formatWalletAmount(wallet.coin)}
                   </p>
@@ -1959,10 +1964,15 @@ export default function PlayerPage() {
                   ⬇ Load coin
                 </button>
 
-                <div className="fire-panel fire-green rounded-2xl border border-emerald-400/35 bg-gradient-to-br from-emerald-500/25 to-emerald-900/20 px-5 py-3 text-right shadow-lg shadow-emerald-500/10">
-                  <p className="text-[10px] font-black uppercase tracking-[0.28em] text-emerald-200/80">
-                    💵 Cash
-                  </p>
+                <div className="fire-panel fire-green rounded-2xl border border-emerald-300/60 bg-gradient-to-br from-emerald-400/35 to-emerald-700/25 px-5 py-3 text-right shadow-lg shadow-emerald-400/25">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-200/40 bg-emerald-200/15 text-2xl shadow-[0_0_18px_rgba(74,222,128,0.35)]">
+                      💵
+                    </span>
+                    <p className="text-[10px] font-black uppercase tracking-[0.28em] text-emerald-100/90">
+                      Cash
+                    </p>
+                  </div>
                   <p className="mt-1 text-2xl font-black tabular-nums text-white">
                     {formatWalletAmount(wallet.cash)}
                   </p>
@@ -1985,17 +1995,23 @@ export default function PlayerPage() {
               </div>
 
               <div className="mb-4 grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-2 lg:hidden">
-                <div className="fire-panel fire-orange rounded-2xl border border-amber-400/35 bg-gradient-to-br from-amber-500/25 to-yellow-700/10 p-3 text-center shadow-md">
-                  <p className="text-[9px] font-black uppercase tracking-wider text-amber-200/75">
-                    🪙 Coin
+                <div className="fire-panel fire-orange rounded-2xl border border-amber-300/60 bg-gradient-to-br from-amber-400/35 to-yellow-600/20 p-3 text-center shadow-md shadow-amber-400/20">
+                  <span className="mx-auto inline-flex h-9 w-9 items-center justify-center rounded-xl border border-amber-200/40 bg-amber-200/15 text-xl shadow-[0_0_14px_rgba(251,191,36,0.35)]">
+                    🪙
+                  </span>
+                  <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-amber-100/90">
+                    Coin
                   </p>
                   <p className="mt-0.5 text-lg font-black tabular-nums text-white">
                     {formatWalletAmount(wallet.coin)}
                   </p>
                 </div>
-                <div className="fire-panel fire-green rounded-2xl border border-emerald-400/35 bg-gradient-to-br from-emerald-500/25 to-emerald-900/15 p-3 text-center shadow-md">
-                  <p className="text-[9px] font-black uppercase tracking-wider text-emerald-200/75">
-                    💵 Cash
+                <div className="fire-panel fire-green rounded-2xl border border-emerald-300/60 bg-gradient-to-br from-emerald-400/35 to-emerald-700/20 p-3 text-center shadow-md shadow-emerald-400/20">
+                  <span className="mx-auto inline-flex h-9 w-9 items-center justify-center rounded-xl border border-emerald-200/40 bg-emerald-200/15 text-xl shadow-[0_0_14px_rgba(74,222,128,0.35)]">
+                    💵
+                  </span>
+                  <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-emerald-100/90">
+                    Cash
                   </p>
                   <p className="mt-0.5 text-lg font-black tabular-nums text-white">
                     {formatWalletAmount(wallet.cash)}
@@ -2127,7 +2143,7 @@ export default function PlayerPage() {
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.45 }}
-                  className="fire-panel fire-orange fire-hero relative overflow-hidden rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/20 via-rose-600/10 to-purple-900/35 p-5 shadow-[0_0_50px_-12px_rgba(234,179,8,0.45)] sm:p-8"
+                  className="player-dashboard-hero fire-panel fire-orange fire-hero relative overflow-hidden rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/20 via-rose-600/10 to-purple-900/35 p-5 shadow-[0_0_50px_-12px_rgba(234,179,8,0.45)] sm:p-8"
                 >
                   <div className="pointer-events-none absolute -right-10 -top-10 text-8xl opacity-[0.07]">
                     🎰
@@ -2149,17 +2165,23 @@ export default function PlayerPage() {
                       </p>
 
                       <div className="mt-5 grid grid-cols-2 gap-2 sm:max-w-md">
-                        <div className="fire-panel fire-orange rounded-2xl border border-amber-400/30 bg-black/35 px-3 py-3 text-center backdrop-blur-md">
-                          <p className="text-[10px] font-black uppercase tracking-wider text-amber-200/70">
-                            🪙 Coin
+                        <div className="fire-panel fire-orange rounded-2xl border border-amber-300/60 bg-black/35 px-3 py-3 text-center backdrop-blur-md shadow-[0_0_20px_-8px_rgba(251,191,36,0.55)]">
+                          <span className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-xl border border-amber-200/40 bg-amber-200/15 text-2xl">
+                            🪙
+                          </span>
+                          <p className="mt-1 text-[10px] font-black uppercase tracking-wider text-amber-100/90">
+                            Coin
                           </p>
                           <p className="mt-1 text-lg font-black tabular-nums text-white sm:text-xl">
                             {formatWalletAmount(wallet.coin)}
                           </p>
                         </div>
-                        <div className="fire-panel fire-green rounded-2xl border border-emerald-400/30 bg-black/35 px-3 py-3 text-center backdrop-blur-md">
-                          <p className="text-[10px] font-black uppercase tracking-wider text-emerald-200/70">
-                            💵 Cash
+                        <div className="fire-panel fire-green rounded-2xl border border-emerald-300/60 bg-black/35 px-3 py-3 text-center backdrop-blur-md shadow-[0_0_20px_-8px_rgba(74,222,128,0.55)]">
+                          <span className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-200/40 bg-emerald-200/15 text-2xl">
+                            💵
+                          </span>
+                          <p className="mt-1 text-[10px] font-black uppercase tracking-wider text-emerald-100/90">
+                            Cash
                           </p>
                           <p className="mt-1 text-lg font-black tabular-nums text-white sm:text-xl">
                             {formatWalletAmount(wallet.cash)}
@@ -2479,7 +2501,7 @@ export default function PlayerPage() {
                 </div>
                 ) : null}
 
-                <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+                      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                   <div className="fire-panel fire-orange rounded-3xl border border-amber-400/25 bg-black/45 p-4 shadow-xl backdrop-blur-xl sm:p-6">
                     <h3 className="mb-4 flex items-center gap-2 text-lg font-black bg-gradient-to-r from-amber-200 to-yellow-300 bg-clip-text text-transparent sm:text-xl">
                       <span>⚡</span> Quick play
@@ -2802,14 +2824,14 @@ export default function PlayerPage() {
             {/* PLAY VIEW */}
             {activeView === 'play' && (
               <div className="space-y-5 sm:space-y-6">
-                <div className="fire-panel fire-orange fire-hero relative overflow-hidden rounded-3xl border border-amber-400/30 bg-gradient-to-r from-amber-500/20 via-rose-600/15 to-purple-900/30 p-5 shadow-lg sm:p-6">
+                <div className="fire-panel fire-orange fire-hero relative overflow-hidden rounded-3xl border border-amber-400/30 bg-gradient-to-r from-amber-500/20 via-rose-600/15 to-purple-900/30 p-4 shadow-lg sm:p-5">
                   <div className="pointer-events-none absolute right-4 top-4 text-4xl opacity-20">
                     🎲
                   </div>
                   <p className="text-xs font-black uppercase tracking-[0.35em] text-amber-200/90 sm:text-sm">
                     🎰 High-limit floor
                   </p>
-                  <h2 className="mt-2 text-3xl font-black text-white sm:text-4xl">Pick your table</h2>
+                  <h2 className="mt-2 text-2xl font-black text-white sm:text-3xl">Pick your table</h2>
                   <p className="mt-2 text-sm text-amber-100/60">
                     Tap a table to open the play screen, enter your amount in USD, then recharge ⬇️ or
                     redeem ⬆️.
@@ -2827,7 +2849,7 @@ export default function PlayerPage() {
                   </div>
                 ) : (
                   <>
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
                       {gameLogins.map((game, index) => {
                         const resolvedUsername = (game.gameUsername || '').trim();
                         const hasUsername = Boolean(resolvedUsername);
@@ -2844,7 +2866,7 @@ export default function PlayerPage() {
                               setSelectedGameName(game.gameName);
                               setShowActiveTableSplash(true);
                             }}
-                            className={`fire-panel fire-orange relative overflow-hidden rounded-3xl border p-4 text-left shadow-xl transition-all active:scale-[0.98] sm:p-5 ${
+                            className={`fire-panel fire-orange relative overflow-hidden rounded-3xl border p-3.5 text-left shadow-xl transition-all active:scale-[0.98] sm:p-4 ${
                               isSelected
                                 ? 'border-amber-400/60 bg-gradient-to-br from-amber-500/25 to-purple-900/40 shadow-[0_0_32px_-8px_rgba(234,179,8,0.55)]'
                                 : 'border-white/10 bg-black/45 hover:border-amber-400/35'
@@ -2856,16 +2878,16 @@ export default function PlayerPage() {
                                 <p className="text-xs font-black uppercase tracking-wider text-amber-200/70">
                                   🃏 Slot
                                 </p>
-                                <h3 className="mt-1 truncate text-xl font-black text-white">
+                                <h3 className="mt-1 truncate bg-gradient-to-r from-amber-100 via-yellow-200 to-orange-300 bg-clip-text text-lg font-black text-transparent sm:text-[1.15rem]">
                                   {game.gameName}
                                 </h3>
                               </div>
-                              <span className="text-2xl" aria-hidden>
+                              <span className="text-xl" aria-hidden>
                                 🎰
                               </span>
                             </div>
                             <p
-                              className={`relative mt-3 flex items-center gap-2 text-sm font-bold ${
+                              className={`relative mt-2.5 flex items-center gap-2 text-xs font-bold sm:text-sm ${
                                 hasUsername ? 'text-emerald-300' : 'text-rose-300'
                               }`}
                             >
@@ -2880,7 +2902,7 @@ export default function PlayerPage() {
                               )}
                             </p>
                             <span
-                              className={`relative mt-4 flex min-h-[44px] w-full items-center justify-center rounded-2xl text-sm font-black ${
+                              className={`relative mt-3 flex min-h-[40px] w-full items-center justify-center rounded-2xl text-xs font-black sm:min-h-[42px] sm:text-sm ${
                                 isSelected
                                   ? 'bg-gradient-to-r from-amber-400 to-yellow-400 text-black'
                                   : 'border border-amber-400/40 bg-amber-500/15 text-amber-100'
@@ -2974,14 +2996,14 @@ export default function PlayerPage() {
                         <motion.div
                           key={login.id}
                           layout
-                          className="fire-panel fire-orange group rounded-3xl border border-amber-400/25 bg-gradient-to-br from-black/60 to-purple-950/30 p-4 shadow-xl backdrop-blur-xl transition-all sm:p-5 sm:hover:border-amber-400/45 sm:hover:shadow-[0_0_28px_-8px_rgba(234,179,8,0.35)]"
+                          className="fire-panel fire-orange group rounded-3xl border border-amber-400/25 bg-gradient-to-br from-black/60 to-purple-950/30 p-3.5 shadow-xl backdrop-blur-xl transition-all sm:p-4 sm:hover:border-amber-400/45 sm:hover:shadow-[0_0_28px_-8px_rgba(234,179,8,0.35)]"
                         >
-                          <div className="mb-4 flex items-center justify-between gap-2">
+                          <div className="mb-3 flex items-center justify-between gap-2">
                             <div className="min-w-0">
                               <p className="text-xs font-bold uppercase tracking-wider text-amber-100/45">
                                 🎮 Game
                               </p>
-                              <h3 className="truncate text-xl font-black text-amber-300 sm:text-2xl">
+                              <h3 className="truncate bg-gradient-to-r from-amber-100 via-yellow-200 to-orange-300 bg-clip-text text-lg font-black text-transparent sm:text-xl">
                                 {login.gameName}
                               </h3>
                             </div>
@@ -2990,8 +3012,8 @@ export default function PlayerPage() {
                             </span>
                           </div>
 
-                          <div className="space-y-3">
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.06] p-4">
+                          <div className="space-y-2.5">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.06] p-3">
                               <div className="flex items-center justify-between gap-2">
                                 <p className="text-xs font-bold text-amber-100/55">👤 Username</p>
                                 <button
@@ -3004,12 +3026,12 @@ export default function PlayerPage() {
                                   📋 Copy
                                 </button>
                               </div>
-                              <p className="mt-2 break-words font-mono text-base font-bold tracking-wide text-white sm:text-lg">
+                              <p className="mt-1.5 break-words rounded-lg border border-white/10 bg-black/35 px-2.5 py-2 font-mono text-sm font-bold tracking-wide text-white sm:text-base">
                                 {displayUsername || '—'}
                               </p>
                             </div>
 
-                            <div className="rounded-2xl border border-cyan-400/25 bg-cyan-950/25 p-4">
+                            <div className="rounded-2xl border border-cyan-400/25 bg-cyan-950/25 p-3">
                               <p className="text-xs font-bold text-cyan-200/90">🧑‍⚕️ Carer who created this</p>
                               {gameCarers.length === 0 ? (
                                 <p className="mt-1 text-sm text-cyan-100/65">No carer info yet.</p>
@@ -3020,7 +3042,7 @@ export default function PlayerPage() {
                               )}
                             </div>
 
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.06] p-4">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.06] p-3">
                               <div className="flex items-center justify-between gap-2">
                                 <p className="text-xs font-bold text-amber-100/55">🔒 Password</p>
                                 <div className="flex gap-2">
@@ -3047,12 +3069,12 @@ export default function PlayerPage() {
                                   </button>
                                 </div>
                               </div>
-                              <p className="mt-2 break-all font-mono text-base font-bold tracking-wider text-white sm:text-lg">
+                              <p className="mt-1.5 break-all rounded-lg border border-white/10 bg-black/35 px-2.5 py-2 font-mono text-sm font-bold tracking-wider text-white sm:text-base">
                                 {visible ? displayPassword : '••••••••••••••••'}
                               </p>
                             </div>
 
-                            <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
+                            <div className="grid grid-cols-1 gap-2 pt-0.5 sm:grid-cols-2">
                               <button
                                 type="button"
                                 onClick={() => openCredentialResetModal(login, 'recreate_username')}
