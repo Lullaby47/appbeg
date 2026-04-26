@@ -1731,7 +1731,7 @@ export default function PlayerPage() {
         key={item.view}
         type="button"
         onClick={onNavigate}
-        className={`group flex w-full items-center justify-between rounded-2xl px-4 py-3.5 text-left text-sm font-bold transition-all duration-200 active:scale-[0.98] ${
+        className={`group flex w-full items-center justify-between rounded-2xl px-4 py-3.5 text-left text-base font-bold transition-all duration-200 active:scale-[0.98] lg:text-[1.05rem] ${
           isActive
             ? 'bg-gradient-to-r from-amber-400 via-yellow-500 to-amber-500 text-black shadow-[0_0_28px_-4px_rgba(234,179,8,0.65)]'
             : 'border border-white/10 bg-white/[0.04] text-amber-100/85 hover:border-amber-400/35 hover:bg-amber-500/10 hover:text-white'
@@ -1770,7 +1770,7 @@ export default function PlayerPage() {
           <button
             type="button"
             onClick={() => setMobileMenuOpen(true)}
-            className="flex min-h-[44px] min-w-[72px] items-center justify-center rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 text-xs font-black uppercase tracking-wide text-amber-100"
+            className="flex min-h-[44px] min-w-[72px] items-center justify-center rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 text-sm font-black uppercase tracking-wide text-amber-100"
             aria-label="Open menu"
           >
             ☰ Menu
@@ -1781,7 +1781,7 @@ export default function PlayerPage() {
             </p>
             <p className="text-sm font-black leading-tight text-white">🎰 Casino</p>
           </div>
-          <div className="max-w-[42%] text-right text-[11px] leading-tight">
+          <div className="max-w-[42%] text-right text-sm leading-tight">
             <p className="font-bold text-amber-200">
               🪙 {formatWalletAmount(wallet.coin)}
             </p>
@@ -1795,7 +1795,7 @@ export default function PlayerPage() {
             <button
               type="button"
               onClick={() => handleChangeView('play')}
-              className="fire-button fire-orange min-h-[40px] rounded-xl border border-amber-400/35 bg-amber-500/15 px-2 text-[11px] font-bold text-amber-100"
+              className="fire-button fire-orange min-h-[40px] rounded-xl border border-amber-400/35 bg-amber-500/15 px-2 text-sm font-bold text-amber-100"
             >
               🎰 Play
             </button>
@@ -1803,7 +1803,7 @@ export default function PlayerPage() {
               type="button"
               onClick={() => setShowCashoutModal(true)}
               disabled={wallet.cash <= 0 || isBlockedPlayer}
-              className="fire-button fire-green min-h-[40px] rounded-xl border border-cyan-400/35 bg-cyan-500/15 px-2 text-[11px] font-bold text-cyan-100 disabled:opacity-50"
+              className="fire-button fire-green min-h-[40px] rounded-xl border border-cyan-400/35 bg-cyan-500/15 px-2 text-sm font-bold text-cyan-100 disabled:opacity-50"
             >
               💸 Cashout
             </button>
@@ -1811,7 +1811,7 @@ export default function PlayerPage() {
               type="button"
               onClick={() => setShowCoinConfirmSplash(true)}
               disabled={coinLoading}
-              className="fire-button fire-orange min-h-[40px] rounded-xl border border-emerald-400/35 bg-emerald-500/15 px-2 text-[11px] font-bold text-emerald-100 disabled:opacity-50"
+              className="fire-button fire-orange min-h-[40px] rounded-xl border border-emerald-400/35 bg-emerald-500/15 px-2 text-sm font-bold text-emerald-100 disabled:opacity-50"
             >
               {coinLoading ? '⏳' : '🪙 To coin'}
             </button>
@@ -1821,7 +1821,7 @@ export default function PlayerPage() {
         <button
           type="button"
           onClick={() => setMusicEnabled((previous) => !previous)}
-          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] right-3 z-40 min-h-[44px] rounded-full border border-amber-400/35 bg-black/70 px-4 py-2 text-xs font-black uppercase tracking-wide text-amber-100 shadow-[0_0_24px_-10px_rgba(234,179,8,0.7)] backdrop-blur-xl transition hover:border-amber-300/60 hover:bg-black/80 lg:bottom-4 lg:right-4"
+          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] right-3 z-40 min-h-[44px] rounded-full border border-amber-400/35 bg-black/70 px-4 py-2 text-sm font-black uppercase tracking-wide text-amber-100 shadow-[0_0_24px_-10px_rgba(234,179,8,0.7)] backdrop-blur-xl transition hover:border-amber-300/60 hover:bg-black/80 lg:bottom-4 lg:right-4"
           aria-pressed={musicEnabled}
           aria-label={musicEnabled ? 'Turn music off' : 'Turn music on'}
         >
@@ -1934,7 +1934,7 @@ export default function PlayerPage() {
                     <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-amber-200/40 bg-amber-200/15 text-2xl shadow-[0_0_18px_rgba(251,191,36,0.35)]">
                       🪙
                     </span>
-                    <p className="text-[10px] font-black uppercase tracking-[0.28em] text-amber-100/90">
+                    <p className="text-xs font-black uppercase tracking-[0.28em] text-amber-100/90">
                       Coin
                     </p>
                   </div>
@@ -1947,7 +1947,7 @@ export default function PlayerPage() {
                   type="button"
                   onClick={() => setShowCoinConfirmSplash(true)}
                   disabled={coinLoading}
-                  className="fire-button fire-orange rounded-2xl border border-amber-400/45 bg-amber-500/20 px-5 py-3 text-sm font-black text-amber-50 shadow-md transition-all hover:bg-amber-500/35 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="fire-button fire-orange rounded-2xl border border-amber-400/45 bg-amber-500/20 px-5 py-3 text-base font-black text-amber-50 shadow-md transition-all hover:bg-amber-500/35 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {coinLoading ? '⏳ Transferring…' : '⇄ Transfer Cash → Coin'}
                 </button>
@@ -1959,7 +1959,7 @@ export default function PlayerPage() {
                     setMessage('');
                   }}
                   disabled={isBlockedPlayer}
-                  className="fire-button fire-purple rounded-2xl border border-violet-400/45 bg-violet-500/20 px-5 py-3 text-sm font-black text-violet-50 shadow-md transition-all hover:bg-violet-500/35 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="fire-button fire-purple rounded-2xl border border-violet-400/45 bg-violet-500/20 px-5 py-3 text-base font-black text-violet-50 shadow-md transition-all hover:bg-violet-500/35 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   ⬇ Load coin
                 </button>
@@ -1969,7 +1969,7 @@ export default function PlayerPage() {
                     <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-200/40 bg-emerald-200/15 text-2xl shadow-[0_0_18px_rgba(74,222,128,0.35)]">
                       💵
                     </span>
-                    <p className="text-[10px] font-black uppercase tracking-[0.28em] text-emerald-100/90">
+                    <p className="text-xs font-black uppercase tracking-[0.28em] text-emerald-100/90">
                       Cash
                     </p>
                   </div>
@@ -1981,14 +1981,14 @@ export default function PlayerPage() {
                   type="button"
                   onClick={() => setShowCashoutModal(true)}
                   disabled={wallet.cash <= 0 || isBlockedPlayer}
-                  className="fire-button fire-green rounded-2xl border border-cyan-400/45 bg-cyan-500/25 px-5 py-3 text-sm font-black text-cyan-50 shadow-md transition-all hover:bg-cyan-500/40 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="fire-button fire-green rounded-2xl border border-cyan-400/45 bg-cyan-500/25 px-5 py-3 text-base font-black text-cyan-50 shadow-md transition-all hover:bg-cyan-500/40 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   💸 Cashout
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowLogoutConfirmSplash(true)}
-                  className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-sm font-bold text-amber-100/85 transition hover:bg-white/10"
+                  className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-base font-bold text-amber-100/85 transition hover:bg-white/10"
                 >
                   Log out
                 </button>
@@ -1999,10 +1999,10 @@ export default function PlayerPage() {
                   <span className="mx-auto inline-flex h-9 w-9 items-center justify-center rounded-xl border border-amber-200/40 bg-amber-200/15 text-xl shadow-[0_0_14px_rgba(251,191,36,0.35)]">
                     🪙
                   </span>
-                  <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-amber-100/90">
+                  <p className="mt-1 text-xs font-black uppercase tracking-wider text-amber-100/90">
                     Coin
                   </p>
-                  <p className="mt-0.5 text-lg font-black tabular-nums text-white">
+                  <p className="mt-0.5 text-2xl font-black tabular-nums text-white">
                     {formatWalletAmount(wallet.coin)}
                   </p>
                 </div>
@@ -2010,10 +2010,10 @@ export default function PlayerPage() {
                   <span className="mx-auto inline-flex h-9 w-9 items-center justify-center rounded-xl border border-emerald-200/40 bg-emerald-200/15 text-xl shadow-[0_0_14px_rgba(74,222,128,0.35)]">
                     💵
                   </span>
-                  <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-emerald-100/90">
+                  <p className="mt-1 text-xs font-black uppercase tracking-wider text-emerald-100/90">
                     Cash
                   </p>
-                  <p className="mt-0.5 text-lg font-black tabular-nums text-white">
+                  <p className="mt-0.5 text-2xl font-black tabular-nums text-white">
                     {formatWalletAmount(wallet.cash)}
                   </p>
                 </div>
@@ -2021,7 +2021,7 @@ export default function PlayerPage() {
                   type="button"
                   onClick={() => setShowCoinConfirmSplash(true)}
                   disabled={coinLoading}
-                  className="fire-button fire-orange col-span-2 min-h-[48px] rounded-2xl border border-amber-400/45 bg-amber-500/20 py-3 text-sm font-black text-amber-50 active:scale-[0.99] disabled:opacity-60"
+                  className="fire-button fire-orange col-span-2 min-h-[48px] rounded-2xl border border-amber-400/45 bg-amber-500/20 py-3 text-base font-black text-amber-50 active:scale-[0.99] disabled:opacity-60"
                 >
                   {coinLoading ? '⏳ Transferring…' : '⇄ Transfer all cash to coin'}
                 </button>
@@ -2032,7 +2032,7 @@ export default function PlayerPage() {
                     setMessage('');
                   }}
                   disabled={isBlockedPlayer}
-                  className="fire-button fire-purple col-span-2 min-h-[48px] rounded-2xl border border-violet-400/45 bg-violet-500/25 py-3 text-sm font-black text-violet-50 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+                  className="fire-button fire-purple col-span-2 min-h-[48px] rounded-2xl border border-violet-400/45 bg-violet-500/25 py-3 text-base font-black text-violet-50 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   ⬇ Load coin
                 </button>
@@ -2040,7 +2040,7 @@ export default function PlayerPage() {
                   type="button"
                   onClick={() => setShowCashoutModal(true)}
                   disabled={wallet.cash <= 0 || isBlockedPlayer}
-                  className="fire-button fire-green col-span-2 min-h-[48px] rounded-2xl border border-cyan-400/45 bg-cyan-500/25 py-3 text-sm font-black text-cyan-50 active:scale-[0.99] disabled:opacity-60"
+                  className="fire-button fire-green col-span-2 min-h-[48px] rounded-2xl border border-cyan-400/45 bg-cyan-500/25 py-3 text-base font-black text-cyan-50 active:scale-[0.99] disabled:opacity-60"
                 >
                   💸 Cashout
                 </button>
@@ -2061,7 +2061,7 @@ export default function PlayerPage() {
                   }`}
                 >
                   <div className="flex items-start justify-between gap-3">
-                    <h3 className="text-base font-black text-white sm:text-lg">
+                    <h3 className="text-xl font-black text-white">
                       {playerAlert.variant === 'index'
                         ? '⚙️ '
                         : playerAlert.variant === 'lowCoin'
@@ -2072,14 +2072,14 @@ export default function PlayerPage() {
                     <button
                       type="button"
                       onClick={() => setMessage('')}
-                      className="shrink-0 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-xs font-bold text-white/80 hover:bg-white/10"
+                      className="shrink-0 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-sm font-bold text-white/80 hover:bg-white/10"
                       aria-label="Dismiss alert"
                     >
                       ✕
                     </button>
                   </div>
                   <p
-                    className={`mt-2 text-sm leading-relaxed ${
+                    className={`mt-2 text-base leading-relaxed sm:text-[1.05rem] ${
                       playerAlert.variant === 'lowCoin'
                         ? 'text-orange-50/95'
                         : 'text-amber-50/90'
@@ -2090,7 +2090,7 @@ export default function PlayerPage() {
                   {playerAlert.variant === 'lowCoin' ? null : playerAlert.variant ===
                     'index' ? (
                     <div className="mt-3 rounded-xl border border-amber-400/25 bg-black/40 px-3 py-3 text-xs text-amber-100/80">
-                      <p className="text-[11px] font-black uppercase tracking-wider text-amber-200/90">
+                      <p className="text-sm font-black uppercase tracking-wider text-amber-200/90">
                         Technical details
                       </p>
                       {(() => {
@@ -2102,7 +2102,7 @@ export default function PlayerPage() {
                             href={url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="mt-2 block w-full rounded-lg border border-amber-400/40 bg-amber-500/15 py-2.5 text-center text-[11px] font-black text-amber-100 hover:bg-amber-500/25"
+                            className="mt-2 block w-full rounded-lg border border-amber-400/40 bg-amber-500/15 py-2.5 text-center text-sm font-black text-amber-100 hover:bg-amber-500/25"
                           >
                             Open “Create index” in Firebase Console ↗
                           </a>
@@ -2143,7 +2143,7 @@ export default function PlayerPage() {
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.45 }}
-                  className="player-dashboard-hero fire-panel fire-orange fire-hero relative overflow-hidden rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/20 via-rose-600/10 to-purple-900/35 px-5 pb-5 pt-4 shadow-[0_0_50px_-12px_rgba(234,179,8,0.45)] sm:px-8 sm:pb-8 sm:pt-5"
+                  className="player-dashboard-hero fire-panel fire-orange fire-hero relative overflow-hidden rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/20 via-rose-600/10 to-purple-900/35 px-5 pb-5 pt-3 text-left shadow-[0_0_50px_-12px_rgba(234,179,8,0.45)] sm:px-8 sm:pb-8 sm:pt-4"
                 >
                   <div className="pointer-events-none absolute -right-10 -top-10 text-8xl opacity-[0.07]">
                     🎰
@@ -2151,28 +2151,28 @@ export default function PlayerPage() {
                   <div className="pointer-events-none absolute bottom-0 left-1/4 h-40 w-40 rounded-full bg-red-500/15 blur-3xl" />
                   <div className="pointer-events-none absolute right-10 top-10 h-32 w-32 rounded-full bg-amber-400/20 blur-2xl" />
 
-                  <div className="relative grid gap-6 lg:grid-cols-[1fr_auto] lg:items-start">
-                    <div>
-                      <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.35em] text-amber-200/90 sm:text-sm">
+                  <div className="relative grid content-start items-start gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:gap-6 lg:items-start">
+                    <div className="self-start">
+                      <p className="flex items-center gap-2 text-base font-black uppercase tracking-[0.3em] text-amber-200/90 sm:text-lg">
                         <span className="text-lg">👑</span> VIP welcome
                       </p>
-                      <h2 className="mt-2 text-4xl font-black leading-[1.05] bg-gradient-to-r from-white via-amber-100 to-amber-300 bg-clip-text text-transparent sm:text-5xl md:text-6xl">
+                      <h2 className="mt-2 text-[clamp(2.625rem,5vw,4.5rem)] font-black leading-[0.98] bg-gradient-to-r from-white via-amber-100 to-amber-300 bg-clip-text text-transparent">
                         Jackpot floor is open
                       </h2>
-                      <p className="mt-3 max-w-xl text-sm leading-relaxed text-amber-100/65 sm:text-base">
+                      <p className="mt-2.5 max-w-xl text-[1.05rem] leading-relaxed text-amber-100/80 sm:text-[1.18rem]">
                         💎 Luxury tables, 🔥 live agents, 🪙 instant balance — tap Play to hit the
                         reels and send recharge or redeem requests.
                       </p>
 
-                      <div className="mt-5 grid grid-cols-2 gap-2 sm:max-w-md">
+                      <div className="mt-4 grid grid-cols-2 gap-2.5 sm:max-w-lg">
                         <div className="fire-panel fire-orange rounded-2xl border border-amber-300/60 bg-black/35 px-3 py-3 text-center backdrop-blur-md shadow-[0_0_20px_-8px_rgba(251,191,36,0.55)]">
                           <span className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-xl border border-amber-200/40 bg-amber-200/15 text-2xl">
                             🪙
                           </span>
-                          <p className="mt-1 text-[10px] font-black uppercase tracking-wider text-amber-100/90">
+                          <p className="mt-1 text-sm font-black uppercase tracking-wider text-amber-100/90 sm:text-[0.95rem]">
                             Coin
                           </p>
-                          <p className="mt-1 text-lg font-black tabular-nums text-white sm:text-xl">
+                          <p className="mt-1 text-2xl font-black tabular-nums text-white sm:text-[2rem]">
                             {formatWalletAmount(wallet.coin)}
                           </p>
                         </div>
@@ -2180,29 +2180,29 @@ export default function PlayerPage() {
                           <span className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-200/40 bg-emerald-200/15 text-2xl">
                             💵
                           </span>
-                          <p className="mt-1 text-[10px] font-black uppercase tracking-wider text-emerald-100/90">
+                          <p className="mt-1 text-sm font-black uppercase tracking-wider text-emerald-100/90 sm:text-[0.95rem]">
                             Cash
                           </p>
-                          <p className="mt-1 text-lg font-black tabular-nums text-white sm:text-xl">
+                          <p className="mt-1 text-2xl font-black tabular-nums text-white sm:text-[2rem]">
                             {formatWalletAmount(wallet.cash)}
                           </p>
                         </div>
                       </div>
-                      <div className="fire-panel fire-orange mt-4 flex flex-wrap items-center gap-2 rounded-2xl border border-cyan-400/30 bg-black/35 px-3 py-3 sm:max-w-md">
-                        <p className="text-xs font-black uppercase tracking-wide text-cyan-200/80">
+                      <div className="fire-panel fire-orange mt-3 flex flex-wrap items-center gap-2 rounded-2xl border border-cyan-400/30 bg-black/35 px-3 py-3 sm:max-w-lg">
+                        <p className="text-sm font-black uppercase tracking-wide text-cyan-200/85 sm:text-base">
                           Your Referral Code:{' '}
-                          <span className="text-sm text-white">{referralCode || 'Not available'}</span>
+                          <span className="text-base text-white sm:text-lg">{referralCode || 'Not available'}</span>
                         </p>
                         <button
                           type="button"
                           onClick={() => void handleCopyReferralCode()}
                           disabled={!referralCode}
-                          className="fire-button fire-orange rounded-xl bg-cyan-400 px-3 py-2 text-xs font-black text-black hover:bg-cyan-300 disabled:opacity-50"
+                          className="fire-button fire-orange rounded-xl bg-cyan-400 px-3 py-2 text-sm font-black text-black hover:bg-cyan-300 disabled:opacity-50 sm:text-base"
                         >
                           Copy Referral Code
                         </button>
                       </div>
-                      <div className="mt-3 sm:max-w-md">
+                      <div className="mt-3 sm:max-w-lg">
                         <button
                           type="button"
                           onClick={() => {
@@ -2210,26 +2210,26 @@ export default function PlayerPage() {
                             setMessage('');
                           }}
                           disabled={isBlockedPlayer}
-                          className="fire-button fire-purple w-full min-h-[48px] rounded-2xl border border-violet-400/50 bg-violet-500/20 py-3 text-sm font-black text-violet-50 transition hover:bg-violet-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+                          className="fire-button fire-purple w-full min-h-[52px] rounded-2xl border border-violet-400/50 bg-violet-500/20 py-3 text-base font-black text-violet-50 transition hover:bg-violet-500/30 disabled:cursor-not-allowed disabled:opacity-60 sm:text-lg"
                         >
                           ⬇ Load coin — payment reference
                         </button>
                       </div>
                     </div>
 
-                    <div className="flex flex-col items-stretch gap-3">
+                    <div className="flex flex-col items-stretch self-start gap-3 lg:pt-1">
                       <motion.button
                         type="button"
                         onClick={() => setActiveView('play')}
                         animate={{
                           boxShadow: [
-                            '0 0 0 0 rgba(234,179,8,0.45)',
-                            '0 0 28px 4px rgba(234,179,8,0.35)',
-                            '0 0 0 0 rgba(234,179,8,0.45)',
+                            '0 0 0 0 rgba(239,68,68,0.5)',
+                            '0 0 32px 6px rgba(239,68,68,0.45)',
+                            '0 0 0 0 rgba(239,68,68,0.5)',
                           ],
                         }}
                         transition={{ duration: 2.2, repeat: Infinity }}
-                        className="fire-button fire-orange relative min-h-[56px] overflow-hidden rounded-2xl bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 px-8 py-4 text-lg font-black text-black shadow-xl sm:min-h-[60px] sm:text-xl"
+                        className="fire-button fire-orange relative min-h-[56px] overflow-hidden rounded-2xl border border-red-300/60 bg-gradient-to-r from-red-600 via-red-500 to-rose-500 px-8 py-4 text-xl font-black text-white shadow-xl shadow-red-900/35 transition-all hover:scale-[1.02] hover:brightness-110 hover:shadow-[0_0_38px_6px_rgba(239,68,68,0.5)] sm:min-h-[60px] sm:text-[1.35rem]"
                       >
                         <span className="relative z-10 flex items-center justify-center gap-2">
                           🎰 Play now
@@ -2242,7 +2242,7 @@ export default function PlayerPage() {
                         <button
                           type="button"
                           onClick={handleOpenFirstUnreadAgent}
-                          className="fire-button fire-orange flex min-h-[48px] items-center justify-center gap-2 rounded-2xl border border-rose-400/40 bg-rose-500/20 px-4 py-3 text-sm font-black text-rose-100 shadow-lg transition-all hover:bg-rose-500/30"
+                          className="fire-button fire-orange flex min-h-[48px] items-center justify-center gap-2 rounded-2xl border border-rose-400/40 bg-rose-500/20 px-4 py-3 text-base font-black text-rose-100 shadow-lg transition-all hover:bg-rose-500/30 sm:text-lg"
                         >
                           💬 Unread messages ({totalUnread})
                         </button>
@@ -2252,10 +2252,10 @@ export default function PlayerPage() {
                 </motion.div>
 
                 <div className="fire-panel fire-orange rounded-2xl border border-rose-500/35 bg-gradient-to-br from-rose-950/50 to-black/50 p-4 shadow-lg backdrop-blur-md sm:p-5">
-                  <p className="flex items-center gap-2 text-sm font-black uppercase tracking-wide text-rose-200/95">
+                  <p className="flex items-center gap-2 text-xl font-black uppercase tracking-wide text-rose-200/95">
                     <span className="text-lg">⚠️</span> Redeem accuracy
                   </p>
-                  <p className="mt-2 text-xs leading-relaxed text-rose-100/85 sm:text-sm">
+                  <p className="mt-2 text-base leading-relaxed text-rose-100/90 sm:text-[1.05rem]">
                     If a redeem looks too big or wrong, you risk penalties or account block. Only
                     submit truthful amounts.
                   </p>
@@ -2866,7 +2866,7 @@ export default function PlayerPage() {
                               setSelectedGameName(game.gameName);
                               setShowActiveTableSplash(true);
                             }}
-                            className={`fire-panel fire-orange relative w-full self-start overflow-hidden rounded-3xl border p-3 text-left shadow-xl transition-all active:scale-[0.98] sm:p-3.5 ${
+                            className={`fire-panel fire-orange group relative w-full self-start overflow-hidden rounded-3xl border p-3 text-left shadow-xl transition-all active:scale-[0.98] hover:scale-[1.02] hover:shadow-[0_0_32px_-6px_rgba(251,191,36,0.5)] sm:p-3.5 ${
                               isSelected
                                 ? 'border-amber-400/60 bg-gradient-to-br from-amber-500/25 to-purple-900/40 shadow-[0_0_32px_-8px_rgba(234,179,8,0.55)]'
                                 : 'border-white/10 bg-black/45 hover:border-amber-400/35'
@@ -2874,20 +2874,23 @@ export default function PlayerPage() {
                           >
                             <div className="pointer-events-none absolute -right-6 -top-6 h-24 w-24 rounded-full bg-amber-400/15 blur-2xl" />
                             <div className="relative flex items-start justify-between gap-2">
-                              <div className="min-w-0">
-                                <p className="text-[11px] font-black uppercase tracking-wider text-amber-200/70">
+                              <div className="min-w-0 flex-1 text-center">
+                                <p className="text-sm font-black uppercase tracking-[0.2em] text-amber-200/85">
                                   🃏 Slot
                                 </p>
-                                <h3 className="mt-1 truncate bg-gradient-to-r from-amber-100 via-yellow-200 to-orange-300 bg-clip-text text-base font-black text-transparent sm:text-lg">
+                                <h3 className="mt-1 truncate bg-gradient-to-r from-amber-100 via-yellow-200 to-orange-300 bg-clip-text text-2xl font-black text-transparent drop-shadow-[0_0_12px_rgba(251,191,36,0.45)] sm:text-3xl">
                                   {game.gameName}
                                 </h3>
                               </div>
-                              <span className="text-xl" aria-hidden>
+                              <span
+                                className="text-2xl transition-transform duration-300 group-hover:scale-125 group-hover:rotate-6"
+                                aria-hidden
+                              >
                                 🎰
                               </span>
                             </div>
                             <p
-                              className={`relative mt-2 flex items-center gap-2 text-xs font-bold ${
+                              className={`relative mt-3 flex items-center justify-center gap-2 text-sm font-black sm:text-base ${
                                 hasUsername ? 'text-emerald-300' : 'text-rose-300'
                               }`}
                             >
@@ -2902,10 +2905,10 @@ export default function PlayerPage() {
                               )}
                             </p>
                             <span
-                              className={`relative mt-2.5 flex min-h-[36px] w-full items-center justify-center rounded-2xl px-3 text-[11px] font-black sm:min-h-[38px] sm:text-xs ${
+                              className={`relative mt-3.5 flex min-h-[44px] w-full items-center justify-center rounded-2xl px-3 text-sm font-black transition-all duration-300 group-hover:tracking-wide sm:min-h-[46px] sm:text-base ${
                                 isSelected
-                                  ? 'bg-gradient-to-r from-amber-400 to-yellow-400 text-black'
-                                  : 'border border-amber-400/40 bg-amber-500/15 text-amber-100'
+                                  ? 'bg-gradient-to-r from-amber-300 via-yellow-300 to-orange-300 text-black shadow-[0_0_22px_-2px_rgba(251,191,36,0.7)]'
+                                  : 'border border-amber-300/60 bg-gradient-to-r from-amber-500/25 to-orange-500/20 text-amber-50 shadow-[0_0_18px_-6px_rgba(251,191,36,0.55)] group-hover:from-amber-400/40 group-hover:to-orange-400/35 group-hover:shadow-[0_0_26px_-4px_rgba(251,191,36,0.75)]'
                               }`}
                             >
                               {isSelected ? '🔥 Selected · Tap to open table' : 'Tap to open table'}

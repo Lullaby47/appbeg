@@ -758,17 +758,26 @@
 
 .player-fire-page .player-dashboard-hero {
   min-height: auto;
+  height: auto;
   padding-top: 1rem;
 }
 
 .player-fire-page .player-dashboard-hero .relative.grid {
   gap: 1.25rem;
   align-items: flex-start;
+  justify-items: stretch;
+  align-content: start;
 }
 
 .player-fire-page .player-dashboard-hero .relative.grid > :first-child,
 .player-fire-page .player-dashboard-hero .relative.grid > :first-child > :first-child {
   margin-top: 0;
+}
+
+.player-fire-page .player-dashboard-hero,
+.player-fire-page .player-dashboard-hero > .relative.grid,
+.player-fire-page .player-dashboard-hero > .relative.grid > :first-child {
+  justify-content: flex-start;
 }
 
 .player-fire-page .fire-panel:hover,
