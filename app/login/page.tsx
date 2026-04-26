@@ -152,7 +152,10 @@ export default function LoginPage() {
       const userDoc = userSnapshot.docs[0];
       const userData = userDoc.data();
 
-      if (userData.status !== 'active') {
+      const userRole = String(userData.role || '');
+      const isActive = userData.status === 'active';
+      const isBlockedPlayer = userData.status === 'disabled' && userRole === 'player';
+      if (!isActive && !isBlockedPlayer) {
         throw new Error('Account is not active.');
       }
 

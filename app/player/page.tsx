@@ -1736,7 +1736,11 @@ export default function PlayerPage() {
             {isBlockedPlayer && (
               <div className="mb-5 rounded-xl border border-rose-500/40 bg-rose-500/15 backdrop-blur-sm p-4 text-sm text-rose-100 flex items-center gap-3">
                 <i className="fas fa-ban text-rose-300 text-lg"></i>
-                <span>Your player account is blocked. Recharge, redeem, and poke features are unavailable.</span>
+                <span>
+                  Your account is restricted. You can open{' '}
+                  <span className="font-bold text-rose-50">Agents</span> to message your team. Recharge, redeem, poke, and
+                  other actions stay unavailable until a manager unblocks you.
+                </span>
               </div>
             )}
             

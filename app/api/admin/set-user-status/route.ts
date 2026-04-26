@@ -39,10 +39,19 @@ export async function POST(request: Request) {
     }
 
     const isDisabled = status === 'disabled';
+    const role = String(userData?.role || '');
+    const isPlayer = role === 'player';
 
-    await adminAuth.updateUser(uid, {
-      disabled: isDisabled,
-    });
+    if (isPlayer) {
+      // App-level "blocked" for players: keep Firebase Auth enabled so they can
+      // sign in, message staff, and request unblocking. (Old records may have
+      // disabled=true; re-enable on every update.)
+      await adminAuth.updateUser(uid, { disabled: false });
+    } else {
+      await adminAuth.updateUser(uid, {
+        disabled: isDisabled,
+      });
+    }
 
     await userRef.update({
       status,

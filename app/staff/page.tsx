@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, doc, getDoc, getDocs, onSnapshot, query, where } from 'firebase/firestore';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
@@ -11,6 +11,7 @@ import ReachOutView from '../../components/admin/ReachOutView';
 import { auth, db } from '@/lib/firebase/client';
 import { belongsToCoadmin, getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
 import {
+  blockPlayer,
   CoadminUser,
   createCoadmin,
   createPlayer,
@@ -19,6 +20,7 @@ import {
   getStaff,
   PlayerUser,
   StaffUser,
+  unblockPlayer,
 } from '@/features/users/adminUsers';
 import {
   listenToMessages,
@@ -189,6 +191,9 @@ export default function StaffPage() {
   const [riskActionLoading, setRiskActionLoading] = useState<string | null>(null);
   const latestCarerEscalationIdRef = useRef<string | null>(null);
   const hasSeenCarerEscalationSnapshotRef = useRef(false);
+  const previousPlayerChatUnreadRef = useRef(0);
+  const hasSyncedPlayerChatUnreadRef = useRef(false);
+  const [playerBlockActionUid, setPlayerBlockActionUid] = useState<string | null>(null);
 
   const reachOutUnread = useMemo(
     () => chatUsers.reduce((total, user) => total + (unreadCounts[user.uid] || 0), 0),
@@ -234,6 +239,60 @@ export default function StaffPage() {
     () => players.reduce((sum, player) => sum + (unreadCounts[player.uid] || 0), 0),
     [players, unreadCounts]
   );
+
+  const playPlayerMessageSound = useCallback(() => {
+    const audio = new Audio('/urgency-sound.mp3');
+    audio.volume = 0.6;
+    void audio.play().catch(() => undefined);
+  }, []);
+
+  const playersSortedByUnread = useMemo(() => {
+    return [...players].sort((a, b) => {
+      const unreadB = unreadCounts[b.uid] || 0;
+      const unreadA = unreadCounts[a.uid] || 0;
+      if (unreadB !== unreadA) {
+        return unreadB - unreadA;
+      }
+      const aTime = (a as { createdAt?: { toDate?: () => Date } }).createdAt?.toDate?.()?.getTime() || 0;
+      const bTime = (b as { createdAt?: { toDate?: () => Date } }).createdAt?.toDate?.()?.getTime() || 0;
+      return bTime - aTime;
+    });
+  }, [players, unreadCounts]);
+
+  useEffect(() => {
+    if (loadingList) {
+      return;
+    }
+
+    if (!hasSyncedPlayerChatUnreadRef.current) {
+      hasSyncedPlayerChatUnreadRef.current = true;
+      previousPlayerChatUnreadRef.current = playerChatUnreadTotal;
+      return;
+    }
+
+    if (playerChatUnreadTotal > previousPlayerChatUnreadRef.current) {
+      playPlayerMessageSound();
+      if (
+        typeof document !== 'undefined' &&
+        document.hidden &&
+        typeof window !== 'undefined' &&
+        'Notification' in window &&
+        window.Notification?.permission === 'granted'
+      ) {
+        try {
+          const delta = playerChatUnreadTotal - previousPlayerChatUnreadRef.current;
+          new window.Notification('New message from player', {
+            body: delta === 1 ? 'You have a new unread message.' : `${delta} new unread messages.`,
+            tag: 'staff-player-chat',
+          });
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    previousPlayerChatUnreadRef.current = playerChatUnreadTotal;
+  }, [playPlayerMessageSound, playerChatUnreadTotal, loadingList]);
 
   async function loadPlayers() {
     setLoadingList(true);
@@ -369,6 +428,11 @@ export default function StaffPage() {
   useEffect(() => {
     void loadCreatorRole();
   }, []);
+
+  useEffect(() => {
+    hasSyncedPlayerChatUnreadRef.current = false;
+    previousPlayerChatUnreadRef.current = 0;
+  }, [creatorRole]);
 
   useEffect(() => {
     const currentUser = auth.currentUser;
@@ -1012,6 +1076,39 @@ export default function StaffPage() {
     markConversationAsRead(user.uid);
   }
 
+  async function handleTogglePlayerStatus(player: PlayerUser) {
+    const wasDisabled = player.status === 'disabled';
+
+    if (!wasDisabled) {
+      const ok = window.confirm(
+        'Block this player? They can still sign in to message staff; other features stay restricted until unblocked.'
+      );
+      if (!ok) {
+        return;
+      }
+    }
+
+    setPlayerBlockActionUid(player.uid);
+    setMessage('');
+
+    try {
+      if (wasDisabled) {
+        await unblockPlayer(player);
+      } else {
+        await blockPlayer(player);
+      }
+
+      await loadPlayers();
+      setMessage(wasDisabled ? 'Player unblocked.' : 'Player blocked.');
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : 'Failed to update player status.'
+      );
+    } finally {
+      setPlayerBlockActionUid(null);
+    }
+  }
+
   function handleChangeView(view: StaffView) {
     setActiveView(view);
     setMessage('');
@@ -1484,7 +1581,7 @@ export default function StaffPage() {
                 <p className="text-sm text-neutral-400">No players found.</p>
               ) : (
                 <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                  {players.map((player) => {
+                  {playersSortedByUnread.map((player) => {
                     const unreadFromPlayer = unreadCounts[player.uid] || 0;
                     const playerRisk = riskByPlayerUid.get(player.uid);
                     const playerCardClass = getRiskPlayerCardClass(
@@ -1496,21 +1593,36 @@ export default function StaffPage() {
                     return (
                     <div
                       key={player.uid}
-                      className={playerCardClass}
+                      className={`${playerCardClass} relative overflow-hidden`}
                     >
-                      <h3 className="text-2xl font-bold capitalize">
-                        {player.username || 'Unnamed Player'}
-                      </h3>
                       {unreadFromPlayer > 0 && (
-                        <p className="mt-2 inline-flex rounded-full bg-red-500 px-2 py-0.5 text-[11px] font-bold text-white">
-                          NEW MESSAGE
-                        </p>
+                        <div
+                          className="absolute right-3 top-3 z-10 flex h-8 min-w-[2rem] items-center justify-center rounded-full bg-red-500 px-2 text-xs font-bold text-white shadow-lg ring-2 ring-red-400/40 animate-pulse"
+                          title={`${unreadFromPlayer} unread message${unreadFromPlayer === 1 ? '' : 's'}`}
+                        >
+                          {unreadFromPlayer > 99 ? '99+' : unreadFromPlayer}
+                        </div>
                       )}
+                      <h3 className={`pr-20 text-2xl font-bold capitalize`}>
+                        {player.username || 'Unnamed Player'}
+                        {unreadFromPlayer > 0 && (
+                          <span className="ml-2 inline-block align-middle text-sm font-semibold text-red-300">
+                            · Unread
+                          </span>
+                        )}
+                      </h3>
                       <p className="mt-3 text-sm text-neutral-400">
                         Role: <span className="text-white">{player.role}</span>
                       </p>
                       <p className="mt-1 text-sm text-neutral-400">
-                        Status: <span className="text-white">{player.status}</span>
+                        Status:{' '}
+                        <span
+                          className={
+                            player.status === 'disabled' ? 'text-amber-200' : 'text-white'
+                          }
+                        >
+                          {player.status}
+                        </span>
                       </p>
                       {playerRisk ? (
                         <p className="mt-2 text-xs font-semibold text-orange-200/90">
@@ -1531,13 +1643,36 @@ export default function StaffPage() {
                         <button
                           type="button"
                           onClick={() => handleOpenPlayerChat(player)}
-                          className="rounded-lg bg-cyan-500/20 px-3 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/30"
+                          className={`rounded-lg px-3 py-2 text-xs font-semibold ${
+                            unreadFromPlayer > 0
+                              ? 'bg-cyan-500/40 text-cyan-50 ring-1 ring-cyan-300/50 hover:bg-cyan-500/50'
+                              : 'bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30'
+                          }`}
                         >
                           Message Player{' '}
-                          {(unreadCounts[player.uid] || 0) > 0
-                            ? `(${unreadCounts[player.uid] > 9 ? '9+' : unreadCounts[player.uid]})`
+                          {unreadFromPlayer > 0
+                            ? `(${unreadFromPlayer > 9 ? '9+' : unreadFromPlayer} unread)`
                             : ''}
                         </button>
+                        {player.status === 'disabled' ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleTogglePlayerStatus(player)}
+                            disabled={playerBlockActionUid === player.uid}
+                            className="rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-3 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-60"
+                          >
+                            {playerBlockActionUid === player.uid ? 'Working…' : 'Unblock player'}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void handleTogglePlayerStatus(player)}
+                            disabled={playerBlockActionUid === player.uid}
+                            className="rounded-lg border border-rose-500/35 bg-rose-500/15 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/25 disabled:opacity-60"
+                          >
+                            {playerBlockActionUid === player.uid ? 'Working…' : 'Block player'}
+                          </button>
+                        )}
                       </div>
                     </div>
                     );

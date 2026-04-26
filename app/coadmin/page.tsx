@@ -21,6 +21,7 @@ import {
   CarerUser,
   PlayerUser,
   blockCarer,
+  blockPlayer,
   blockStaff,
   createStaff,
   createCarer,
@@ -32,6 +33,7 @@ import {
   getCarers,
   getPlayers,
   unblockCarer,
+  unblockPlayer,
   unblockStaff,
 } from '@/features/users/adminUsers';
 
@@ -835,6 +837,37 @@ export default function CoadminPage() {
       setMessage(err.message || 'Delete failed.');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleTogglePlayerStatus(user: PlayerUser) {
+    const wasDisabled = user.status === 'disabled';
+
+    if (!wasDisabled) {
+      const ok = window.confirm(
+        'Block this player? They can still sign in to message your team; play and wallet actions stay restricted until unblocked.'
+      );
+      if (!ok) {
+        return;
+      }
+    }
+
+    setBlocking(true);
+    setMessage('');
+
+    try {
+      if (wasDisabled) {
+        await unblockPlayer(user);
+        setMessage('Player unblocked.');
+      } else {
+        await blockPlayer(user);
+        setMessage('Player blocked.');
+      }
+      await loadPlayerList();
+    } catch (err: any) {
+      setMessage(err.message || 'Failed to update player status.');
+    } finally {
+      setBlocking(false);
     }
   }
 
@@ -1729,6 +1762,8 @@ export default function CoadminPage() {
               onSelectUser={setSelectedPlayer}
               onSetDeleteTarget={setDeletePlayerTarget}
               onDelete={handleDeletePlayer}
+              onToggleBlock={handleTogglePlayerStatus}
+              blocking={blocking}
             />
           )}
 
