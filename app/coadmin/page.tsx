@@ -5,6 +5,7 @@ import { collection, getDocs, query, where } from 'firebase/firestore';
 import imageCompression from 'browser-image-compression';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
+import LogoutButton from '../../components/auth/LogoutButton';
 import DashboardView from '../../components/admin/DashboardView';
 import CreateUserForm from '../../components/admin/CreateUserForm';
 import UserManagementView from '../../components/admin/UserManagementView';
@@ -43,7 +44,10 @@ import {
   getMyGameLogins,
   updateGameLogin,
 } from '@/features/games/gameLogins';
-import { listenToUrgentPlayerGameRequestsByCoadmin } from '@/features/games/playerGameRequests';
+import {
+  listenToUrgentPlayerGameRequestsByCoadmin,
+  type PlayerGameRequest,
+} from '@/features/games/playerGameRequests';
 import {
   CarerEscalationAlert,
   CarerRechargeRedeemTotals,
@@ -111,6 +115,43 @@ function formatNprDisplay(value: number) {
   return `NPR ${Math.round(value).toLocaleString()}`;
 }
 
+const URGENT_DISMISSED_STORAGE_PREFIX = 'coadminDismissedUrgentRequestIds:';
+
+function readDismissedUrgentRequestIds(coadminUid: string): Set<string> {
+  if (typeof window === 'undefined') {
+    return new Set();
+  }
+  try {
+    const raw = localStorage.getItem(URGENT_DISMISSED_STORAGE_PREFIX + coadminUid);
+    if (!raw) {
+      return new Set();
+    }
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) {
+      return new Set();
+    }
+    return new Set(arr.filter((x): x is string => typeof x === 'string'));
+  } catch {
+    return new Set();
+  }
+}
+
+function addDismissedUrgentRequestIds(coadminUid: string, requestIds: string[]) {
+  if (typeof window === 'undefined' || requestIds.length === 0) {
+    return;
+  }
+  const cur = readDismissedUrgentRequestIds(coadminUid);
+  for (const id of requestIds) {
+    if (id) {
+      cur.add(id);
+    }
+  }
+  localStorage.setItem(
+    URGENT_DISMISSED_STORAGE_PREFIX + coadminUid,
+    JSON.stringify([...cur])
+  );
+}
+
 export default function CoadminPage() {
   const [activeView, setActiveView] = useState<CoadminView>('dashboard');
 
@@ -162,7 +203,10 @@ export default function CoadminPage() {
   const [paymentDetailUploading, setPaymentDetailUploading] = useState(false);
 
   const previousUnreadRef = useRef(0);
-  const previousUrgentRequestCountRef = useRef<number | null>(null);
+  const latestUrgentRequestsRef = useRef<PlayerGameRequest[]>([]);
+  const coadminUidUrgentRef = useRef<string | null>(null);
+  const hasPrimedUrgentIdListenerRef = useRef(false);
+  const previousUrgentRequestIdsRef = useRef<string[]>([]);
   const latestCarerEscalationIdRef = useRef<string | null>(null);
   const hasSeenCarerEscalationSnapshotRef = useRef(false);
   const suppressedCashoutIdsRef = useRef<Set<string>>(new Set());
@@ -565,19 +609,31 @@ export default function CoadminPage() {
               return;
             }
 
+            coadminUidUrgentRef.current = coadminUid;
+            latestUrgentRequestsRef.current = requests;
+
             const nextCount = requests.length;
-            const previousCount = previousUrgentRequestCountRef.current;
-
             setUrgentRequestCount(nextCount);
-            setShowUrgentSplash(nextCount > 0);
 
-            if (previousCount !== null && nextCount > previousCount) {
+            const dismissed = readDismissedUrgentRequestIds(coadminUid);
+            const hasUnacknowledged = requests.some((r) => !dismissed.has(r.id));
+            setShowUrgentSplash(hasUnacknowledged && nextCount > 0);
+
+            const prevIdSet = new Set(previousUrgentRequestIdsRef.current);
+            const hasNewRequestId = requests.some((r) => !prevIdSet.has(r.id));
+            if (
+              hasPrimedUrgentIdListenerRef.current &&
+              hasNewRequestId &&
+              requests.length > 0
+            ) {
               const audio = new Audio('/urgency-sound.mp3');
               audio.volume = 0.9;
               audio.play().catch(() => {});
             }
-
-            previousUrgentRequestCountRef.current = nextCount;
+            if (!hasPrimedUrgentIdListenerRef.current) {
+              hasPrimedUrgentIdListenerRef.current = true;
+            }
+            previousUrgentRequestIdsRef.current = requests.map((r) => r.id);
           },
           (error) => {
             if (!isCancelled) {
@@ -1268,6 +1324,21 @@ export default function CoadminPage() {
     resetSelection();
   }
 
+  function acknowledgeUrgentSplash(options?: { openPlayers?: boolean }) {
+    const uid = coadminUidUrgentRef.current;
+    const reqs = latestUrgentRequestsRef.current;
+    if (uid && reqs.length > 0) {
+      addDismissedUrgentRequestIds(
+        uid,
+        reqs.map((r) => r.id)
+      );
+    }
+    setShowUrgentSplash(false);
+    if (options?.openPlayers) {
+      setActiveView('view-players');
+    }
+  }
+
   async function handleAddPaymentDetailPhotos(files: FileList | null) {
     if (!files?.length) {
       return;
@@ -1399,6 +1470,10 @@ export default function CoadminPage() {
               </button>
             ))}
           </nav>
+
+          <div className="mt-8">
+            <LogoutButton />
+          </div>
         </aside>
 
         <section className="flex-1 p-6 overflow-y-auto">
@@ -2229,16 +2304,15 @@ export default function CoadminPage() {
 
             <div className="mt-6 flex flex-wrap gap-3">
               <button
-                onClick={() => {
-                  setActiveView('view-players');
-                  setShowUrgentSplash(false);
-                }}
+                type="button"
+                onClick={() => acknowledgeUrgentSplash({ openPlayers: true })}
                 className="rounded-2xl bg-white px-5 py-3 text-sm font-bold text-black hover:bg-neutral-200"
               >
                 Open Players
               </button>
               <button
-                onClick={() => setShowUrgentSplash(false)}
+                type="button"
+                onClick={() => acknowledgeUrgentSplash()}
                 className="rounded-2xl bg-white/10 px-5 py-3 text-sm font-bold text-white hover:bg-white/20"
               >
                 Dismiss

@@ -5,6 +5,7 @@ import { onAuthStateChanged, User } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
+import LogoutButton from '../../components/auth/LogoutButton';
 import { auth, db } from '@/lib/firebase/client';
 import { GameLogin } from '@/features/games/gameLogins';
 import {
@@ -2081,6 +2082,10 @@ export default function CarerPage() {
                 </button>
               );
             })}
+          </div>
+
+          <div className="mt-8">
+            <LogoutButton />
           </div>
         </aside>
 

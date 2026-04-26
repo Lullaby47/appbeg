@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, doc, getDoc, getDocs, onSnapshot, query, where } from 'firebase/firestore';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
+import LogoutButton from '../../components/auth/LogoutButton';
 import DashboardView from '../../components/admin/DashboardView';
 import CreateUserForm from '../../components/admin/CreateUserForm';
 import ReachOutView from '../../components/admin/ReachOutView';
@@ -1168,6 +1169,10 @@ export default function StaffPage() {
               </button>
             ))}
           </nav>
+
+          <div className="mt-8">
+            <LogoutButton />
+          </div>
         </aside>
 
         <section className="flex-1 overflow-y-auto p-6">

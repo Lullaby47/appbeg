@@ -1,5 +1,7 @@
 'use client';
 
+import LogoutButton from '@/components/auth/LogoutButton';
+
 import { AdminView } from './types';
 
 const menuItems: { label: string; view: AdminView }[] = [
@@ -37,6 +39,10 @@ export default function AdminSidebar({ activeView, onChangeView }: Props) {
           </button>
         ))}
       </nav>
+
+      <div className="mt-8">
+        <LogoutButton />
+      </div>
     </aside>
   );
 }
