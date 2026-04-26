@@ -109,6 +109,32 @@ body {
   }
 }
 
+@keyframes casino-fire-sway {
+  0%,
+  100% {
+    opacity: 0.08;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    opacity: 0.16;
+    transform: translate3d(0, -10px, 0) scale(1.04);
+  }
+}
+
+@keyframes casino-ember-rise {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0) scale(0.75);
+  }
+  20% {
+    opacity: 0.18;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(12px, -72px, 0) scale(1);
+  }
+}
+
 .casino-bg-player {
   color: rgba(255, 255, 255, 0.08);
 }
@@ -297,6 +323,75 @@ body {
   background: linear-gradient(90deg, transparent, rgba(255, 225, 140, 0.28), transparent);
 }
 
+.casino-bg-player .casino-fire-ribbon {
+  position: absolute;
+  bottom: -4rem;
+  height: 14rem;
+  border-radius: 9999px;
+  filter: blur(28px);
+  opacity: 0.12;
+  background:
+    radial-gradient(circle at 50% 82%, rgba(255, 220, 120, 0.34), transparent 24%),
+    radial-gradient(circle at 50% 58%, rgba(255, 120, 66, 0.28), transparent 34%),
+    radial-gradient(circle at 48% 34%, rgba(244, 63, 94, 0.18), transparent 42%);
+  animation: casino-fire-sway 9s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+.casino-fire-ribbon-left {
+  left: -8%;
+  width: 22rem;
+}
+
+.casino-fire-ribbon-center {
+  left: 32%;
+  width: 18rem;
+  animation-delay: -3s;
+}
+
+.casino-fire-ribbon-right {
+  right: -6%;
+  width: 20rem;
+  animation-delay: -5.5s;
+}
+
+.casino-bg-player .casino-ember {
+  position: absolute;
+  bottom: 2.25rem;
+  height: 0.5rem;
+  width: 0.5rem;
+  border-radius: 9999px;
+  background: radial-gradient(circle, rgba(255, 240, 175, 0.9), rgba(255, 132, 61, 0.3) 65%, transparent 75%);
+  box-shadow: 0 0 16px rgba(255, 152, 76, 0.45);
+  opacity: 0;
+  animation: casino-ember-rise 7.5s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+.casino-ember-a {
+  left: 14%;
+}
+
+.casino-ember-b {
+  left: 28%;
+  animation-delay: -1.4s;
+}
+
+.casino-ember-c {
+  left: 52%;
+  animation-delay: -3.2s;
+}
+
+.casino-ember-d {
+  right: 22%;
+  animation-delay: -4.7s;
+}
+
+.casino-ember-e {
+  right: 10%;
+  animation-delay: -6.1s;
+}
+
 .casino-bg-worker .casino-guide {
   background: linear-gradient(90deg, transparent, rgba(120, 151, 255, 0.16), transparent);
 }
@@ -376,6 +471,18 @@ body {
     height: 7rem;
   }
 
+  .casino-bg-player .casino-fire-ribbon {
+    height: 10rem;
+    filter: blur(22px);
+    opacity: 0.1;
+  }
+
+  .casino-fire-ribbon-left,
+  .casino-fire-ribbon-center,
+  .casino-fire-ribbon-right {
+    width: 12rem;
+  }
+
   .casino-streak {
     width: 62vw;
     opacity: 0.06;
@@ -384,6 +491,12 @@ body {
   .casino-icon-float {
     font-size: 0.62rem;
     opacity: 0.06;
+  }
+
+  .casino-bg-player .casino-ember {
+    bottom: 1.5rem;
+    height: 0.4rem;
+    width: 0.4rem;
   }
 }
 

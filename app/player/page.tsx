@@ -2131,6 +2131,9 @@ export default function PlayerPage() {
                   </div>
                   <div className="pointer-events-none absolute bottom-0 left-1/4 h-40 w-40 rounded-full bg-red-500/15 blur-3xl" />
                   <div className="pointer-events-none absolute right-10 top-10 h-32 w-32 rounded-full bg-amber-400/20 blur-2xl" />
+                  <div className="pointer-events-none absolute -bottom-14 left-[6%] h-36 w-44 rounded-[100%] bg-[radial-gradient(circle_at_50%_100%,rgba(255,214,102,0.28),transparent_26%),radial-gradient(circle_at_48%_70%,rgba(255,122,69,0.2),transparent_42%),radial-gradient(circle_at_50%_35%,rgba(244,63,94,0.14),transparent_58%)] blur-2xl" />
+                  <div className="pointer-events-none absolute -bottom-18 right-[8%] h-44 w-52 rounded-[100%] bg-[radial-gradient(circle_at_52%_100%,rgba(255,232,153,0.24),transparent_24%),radial-gradient(circle_at_50%_68%,rgba(251,146,60,0.18),transparent_40%),radial-gradient(circle_at_48%_34%,rgba(190,24,93,0.12),transparent_56%)] blur-3xl" />
+                  <div className="pointer-events-none absolute right-[18%] top-[24%] h-28 w-40 rounded-full bg-gradient-to-r from-transparent via-amber-300/18 to-transparent blur-2xl" />
 
                   <div className="relative grid gap-6 lg:grid-cols-[1fr_auto] lg:items-center">
                     <div>
@@ -2206,6 +2209,7 @@ export default function PlayerPage() {
                         transition={{ duration: 2.2, repeat: Infinity }}
                         className="relative min-h-[56px] overflow-hidden rounded-2xl bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 px-8 py-4 text-lg font-black text-black shadow-xl sm:min-h-[60px] sm:text-xl"
                       >
+                        <span className="pointer-events-none absolute -bottom-8 left-1/2 h-20 w-28 -translate-x-1/2 rounded-full bg-[radial-gradient(circle_at_50%_100%,rgba(255,250,211,0.5),transparent_18%),radial-gradient(circle_at_50%_70%,rgba(255,167,56,0.36),transparent_42%),radial-gradient(circle_at_48%_36%,rgba(239,68,68,0.24),transparent_60%)] blur-xl" />
                         <span className="relative z-10 flex items-center justify-center gap-2">
                           🎰 Play now
                           <i className="fas fa-arrow-right text-base"></i>
@@ -3094,7 +3098,7 @@ export default function PlayerPage() {
 
             {/* AGENTS VIEW - ReachOutView integration remains the same but styled via the prop structure */}
             {activeView === 'agents' && (
-              <div className="flex min-h-0 min-w-0 max-h-[min(78dvh,calc(100dvh-11rem))] flex-1 flex-col overflow-hidden sm:max-h-[min(82dvh,calc(100dvh-10rem))]">
+              <div className="flex min-h-0 min-w-0 max-h-[min(86dvh,calc(100dvh-9rem))] flex-1 flex-col overflow-hidden sm:max-h-[min(88dvh,calc(100dvh-8.5rem))]">
                 <ReachOutView
                   chatUsers={agents}
                   selectedChatUser={selectedAgent}

@@ -48,6 +48,11 @@ import {
   PlayerRiskSnapshot,
   sendRiskAlertToStaff,
 } from '@/features/risk/playerRisk';
+import {
+  heartbeatShiftSession,
+  endShiftSession,
+  startShiftSession,
+} from '@/features/shifts/userShifts';
 
 type CarerView =
   | 'dashboard'
@@ -301,6 +306,7 @@ export default function CarerPage() {
 
   const previousPendingCountRef = useRef(0);
   const previousUrgentCountRef = useRef(0);
+  const shiftSessionIdRef = useRef<string | null>(null);
 
   const selectedPlayer = useMemo(
     () => players.find((player) => player.uid === selectedPlayerUid) || null,
@@ -567,6 +573,55 @@ export default function CarerPage() {
 
     return () => window.clearInterval(intervalId);
   }, [coadminUid]);
+
+  useEffect(() => {
+    let disposed = false;
+    let heartbeatId: number | null = null;
+
+    async function startMyShift() {
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        return;
+      }
+      const userSnap = await getDoc(doc(db, 'users', currentUser.uid));
+      if (!userSnap.exists()) {
+        return;
+      }
+      const userData = userSnap.data() as { username?: string };
+      const resolvedCoadminUid = await getCurrentUserCoadminUid();
+      const sessionId = await startShiftSession({
+        coadminUid: resolvedCoadminUid,
+        userUid: currentUser.uid,
+        userRole: 'carer',
+        userUsername: userData.username?.trim() || 'Carer',
+      });
+      if (disposed) {
+        await endShiftSession(sessionId).catch(() => undefined);
+        return;
+      }
+      shiftSessionIdRef.current = sessionId;
+      heartbeatId = window.setInterval(() => {
+        const id = shiftSessionIdRef.current;
+        if (id) {
+          void heartbeatShiftSession(id).catch(() => undefined);
+        }
+      }, 60_000);
+    }
+
+    void startMyShift().catch(() => undefined);
+
+    return () => {
+      disposed = true;
+      if (heartbeatId !== null) {
+        window.clearInterval(heartbeatId);
+      }
+      const id = shiftSessionIdRef.current;
+      shiftSessionIdRef.current = null;
+      if (id) {
+        void endShiftSession(id).catch(() => undefined);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {

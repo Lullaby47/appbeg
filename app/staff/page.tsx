@@ -63,6 +63,11 @@ import {
   setPlayerTransferBlock,
   TransferRequest,
 } from '@/features/risk/playerRisk';
+import {
+  heartbeatShiftSession,
+  endShiftSession,
+  startShiftSession,
+} from '@/features/shifts/userShifts';
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
 
@@ -195,6 +200,7 @@ export default function StaffPage() {
   const hasSeenCarerEscalationSnapshotRef = useRef(false);
   const previousPlayerChatUnreadRef = useRef(0);
   const hasSyncedPlayerChatUnreadRef = useRef(false);
+  const shiftSessionIdRef = useRef<string | null>(null);
   const [playerBlockActionUid, setPlayerBlockActionUid] = useState<string | null>(null);
 
   const pagedStaffAgentChat = usePaginatedChatMessages(selectedChatUser?.uid ?? null, {
@@ -767,6 +773,55 @@ export default function StaffPage() {
       void loadCoadminsAndStaff();
     }
   }, [activeView]);
+
+  useEffect(() => {
+    let disposed = false;
+    let heartbeatId: number | null = null;
+
+    async function startMyShift() {
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        return;
+      }
+      const userSnap = await getDoc(doc(db, 'users', currentUser.uid));
+      if (!userSnap.exists()) {
+        return;
+      }
+      const userData = userSnap.data() as { username?: string };
+      const coadminUid = await getCurrentUserCoadminUid();
+      const sessionId = await startShiftSession({
+        coadminUid,
+        userUid: currentUser.uid,
+        userRole: 'staff',
+        userUsername: userData.username?.trim() || 'Staff',
+      });
+      if (disposed) {
+        await endShiftSession(sessionId).catch(() => undefined);
+        return;
+      }
+      shiftSessionIdRef.current = sessionId;
+      heartbeatId = window.setInterval(() => {
+        const id = shiftSessionIdRef.current;
+        if (id) {
+          void heartbeatShiftSession(id).catch(() => undefined);
+        }
+      }, 60_000);
+    }
+
+    void startMyShift().catch(() => undefined);
+
+    return () => {
+      disposed = true;
+      if (heartbeatId !== null) {
+        window.clearInterval(heartbeatId);
+      }
+      const id = shiftSessionIdRef.current;
+      shiftSessionIdRef.current = null;
+      if (id) {
+        void endShiftSession(id).catch(() => undefined);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     let isCancelled = false;
@@ -1661,7 +1716,7 @@ export default function StaffPage() {
               )}
 
               {selectedPlayerChatUser && (
-                <div className="mt-6 flex max-h-[min(70dvh,32rem)] flex-col overflow-hidden rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-4 sm:max-h-[min(75dvh,36rem)]">
+                <div className="mt-6 flex max-h-[min(80dvh,42rem)] flex-col overflow-hidden rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-4 sm:max-h-[min(85dvh,46rem)]">
                   <div className="shrink-0 border-b border-cyan-400/20 pb-3">
                     <div className="flex items-center justify-between gap-3">
                       <div>

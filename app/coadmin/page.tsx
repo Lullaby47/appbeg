@@ -97,6 +97,12 @@ import {
   uploadCoadminPaymentDetailPhoto,
 } from '@/features/coinLoad/coinLoadSession';
 import ImageUploadField from '@/components/common/ImageUploadField';
+import {
+  calculateWorkedHoursLast24h,
+  cutWorkerReward,
+  listenShiftSessionsByCoadmin,
+  type ShiftSession,
+} from '@/features/shifts/userShifts';
 
 type CoadminView =
   | 'dashboard'
@@ -112,10 +118,23 @@ type CoadminView =
   | 'add-games'
   | 'game-list'
   | 'payment-details'
+  | 'shifts'
   | 'reach-out';
 
 function formatNprDisplay(value: number) {
   return `NPR ${Math.round(value).toLocaleString()}`;
+}
+
+function formatDateTime(value?: { toDate?: () => Date } | null) {
+  const date = value?.toDate?.();
+  if (!date) {
+    return '—';
+  }
+  return date.toLocaleString();
+}
+
+function formatHours(value: number) {
+  return `${value.toFixed(2)} h`;
 }
 
 const URGENT_DISMISSED_STORAGE_PREFIX = 'coadminDismissedUrgentRequestIds:';
@@ -228,6 +247,10 @@ export default function CoadminPage() {
   const [paymentDetailPhotos, setPaymentDetailPhotos] = useState<PaymentDetailPhoto[]>([]);
   const [loadingPaymentDetailPhotos, setLoadingPaymentDetailPhotos] = useState(false);
   const [paymentDetailUploading, setPaymentDetailUploading] = useState(false);
+  const [shiftSessions, setShiftSessions] = useState<ShiftSession[]>([]);
+  const [rewardCutAmountByUid, setRewardCutAmountByUid] = useState<Record<string, string>>({});
+  const [rewardCutReasonByUid, setRewardCutReasonByUid] = useState<Record<string, string>>({});
+  const [rewardCutBusyUid, setRewardCutBusyUid] = useState<string | null>(null);
 
   const previousUnreadRef = useRef(0);
   const latestUrgentRequestsRef = useRef<PlayerGameRequest[]>([]);
@@ -335,6 +358,10 @@ export default function CoadminPage() {
 
     if (activeView === 'view-staff') loadStaffList();
     if (activeView === 'view-carers') loadCarerList();
+    if (activeView === 'shifts') {
+      loadStaffList();
+      loadCarerList();
+    }
     if (activeView === 'view-players') loadPlayerList();
     if (activeView === 'game-list') loadGameLogins();
     if (activeView === 'reach-out') loadChatUsers();
@@ -405,6 +432,44 @@ export default function CoadminPage() {
     }
 
     void startBonusEventsListener();
+
+    return () => {
+      isCancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let isCancelled = false;
+    let unsubscribe: (() => void) | undefined;
+
+    async function startShiftSessionListener() {
+      try {
+        const coadminUid = await getCurrentUserCoadminUid();
+        if (isCancelled) {
+          return;
+        }
+        unsubscribe = listenShiftSessionsByCoadmin(
+          coadminUid,
+          (items) => {
+            if (!isCancelled) {
+              setShiftSessions(items);
+            }
+          },
+          (error) => {
+            if (!isCancelled) {
+              setMessage(error.message || 'Failed to listen for shifts.');
+            }
+          }
+        );
+      } catch (error: any) {
+        if (!isCancelled) {
+          setMessage(error.message || 'Failed to start shifts listener.');
+        }
+      }
+    }
+
+    void startShiftSessionListener();
 
     return () => {
       isCancelled = true;
@@ -1223,6 +1288,51 @@ export default function CoadminPage() {
     }
   }
 
+  async function handleCutRewardForWorker(values: {
+    uid: string;
+    username: string;
+    role: 'staff' | 'carer';
+  }) {
+    const amountText = rewardCutAmountByUid[values.uid] || '';
+    const reasonText = rewardCutReasonByUid[values.uid] || '';
+    const amountNpr = Math.round(Number(amountText || 0));
+    if (amountNpr <= 0) {
+      setMessage('Enter a valid reward cut amount.');
+      return;
+    }
+
+    setRewardCutBusyUid(values.uid);
+    setMessage('');
+    try {
+      const result = await cutWorkerReward({
+        workerUid: values.uid,
+        workerRole: values.role,
+        workerUsername: values.username,
+        amountNpr,
+        reason: reasonText,
+      });
+      if (values.role === 'staff') {
+        setStaffList((prev) =>
+          prev.map((item) =>
+            item.uid === values.uid ? { ...item, cashBoxNpr: result.updatedCashBox } : item
+          )
+        );
+      } else {
+        setCarerList((prev) =>
+          prev.map((item) =>
+            item.uid === values.uid ? { ...item, cashBoxNpr: result.updatedCashBox } : item
+          )
+        );
+      }
+      setRewardCutAmountByUid((prev) => ({ ...prev, [values.uid]: '' }));
+      setMessage(`Reward cut applied for ${values.username || values.role}.`);
+    } catch (error: any) {
+      setMessage(error?.message || 'Failed to cut reward.');
+    } finally {
+      setRewardCutBusyUid(null);
+    }
+  }
+
   async function handleImageSelect(file: File) {
     try {
       const compressed = await imageCompression(file, {
@@ -1460,6 +1570,40 @@ export default function CoadminPage() {
   const sortedStaff = sortByNewest(staffList);
   const sortedCarers = sortByNewest(carerList);
   const sortedPlayers = sortByNewest(playerList);
+  const shiftsRows = useMemo(() => {
+    const byUser = new Map<string, ShiftSession[]>();
+    for (const item of shiftSessions) {
+      const list = byUser.get(item.userUid) || [];
+      list.push(item);
+      byUser.set(item.userUid, list);
+    }
+
+    const workers = [
+      ...sortedStaff.map((user) => ({ ...user, workerRole: 'staff' as const })),
+      ...sortedCarers.map((user) => ({ ...user, workerRole: 'carer' as const })),
+    ];
+
+    return workers.map((worker) => {
+      const sessions = byUser.get(worker.uid) || [];
+      const latest = [...sessions].sort((a, b) => {
+        const aMs = a.loginAt?.toMillis?.() || 0;
+        const bMs = b.loginAt?.toMillis?.() || 0;
+        return bMs - aMs;
+      })[0];
+      const workedHoursLast24h = calculateWorkedHoursLast24h(sessions);
+      return {
+        uid: worker.uid,
+        username: worker.username,
+        role: worker.workerRole,
+        cashBoxNpr: Number(worker.cashBoxNpr || 0),
+        latestLoginAt: latest?.loginAt || null,
+        latestLogoutAt: latest?.logoutAt || null,
+        isActive: Boolean(latest?.isActive),
+        lastSeenAt: latest?.lastSeenAt || null,
+        workedHoursLast24h,
+      };
+    });
+  }, [shiftSessions, sortedCarers, sortedStaff]);
   const menuItems: (NavigationItem & { view: CoadminView })[] = [
     { label: 'Dashboard', view: 'dashboard' },
     { label: 'View Tasks', view: 'view-tasks' },
@@ -1486,6 +1630,7 @@ export default function CoadminPage() {
     { label: 'Add Games', view: 'add-games' },
     { label: 'Game List', view: 'game-list' },
     { label: 'Payment details (photos)', view: 'payment-details' },
+    { label: 'Shifts', view: 'shifts' },
     {
       label: 'Reach Out',
       view: 'reach-out',
@@ -2329,6 +2474,121 @@ export default function CoadminPage() {
                   </ul>
                 )}
               </div>
+            </div>
+          )}
+
+          {activeView === 'shifts' && (
+            <div>
+              <h2 className="text-2xl font-bold">Shifts</h2>
+              <p className="mt-2 text-sm text-neutral-400">
+                Live login/logout status for staff and carers, total worked hours in last 24 hours,
+                and reward cut controls.
+              </p>
+
+              <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {shiftsRows.map((row) => (
+                  <article
+                    key={`${row.role}:${row.uid}`}
+                    className="rounded-2xl border border-white/10 bg-black/30 p-4"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-base font-semibold text-white">
+                          {row.role === 'staff' ? 'Staff' : 'Carer'} Account
+                        </p>
+                        <p className="text-xs uppercase tracking-wide text-neutral-500">
+                          {row.username || 'User'}
+                        </p>
+                      </div>
+                      <span
+                        className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                          row.isActive
+                            ? 'bg-emerald-500/20 text-emerald-200'
+                            : 'bg-neutral-700/50 text-neutral-200'
+                        }`}
+                      >
+                        {row.isActive ? 'Logged in' : 'Logged out'}
+                      </span>
+                    </div>
+
+                    <dl className="mt-3 space-y-1 text-sm text-neutral-300">
+                      <div className="flex justify-between gap-3">
+                        <dt>Last login</dt>
+                        <dd className="text-right">{formatDateTime(row.latestLoginAt)}</dd>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <dt>Last logout</dt>
+                        <dd className="text-right">{formatDateTime(row.latestLogoutAt)}</dd>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <dt>Last seen</dt>
+                        <dd className="text-right">{formatDateTime(row.lastSeenAt)}</dd>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <dt>Worked (24h)</dt>
+                        <dd className="text-right font-semibold text-cyan-200">
+                          {formatHours(row.workedHoursLast24h)}
+                        </dd>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <dt>Current reward</dt>
+                        <dd className="text-right font-semibold text-amber-200">
+                          {formatNprDisplay(row.cashBoxNpr)}
+                        </dd>
+                      </div>
+                    </dl>
+
+                    <div className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/5 p-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-rose-200/90">
+                        Cut reward
+                      </p>
+                      <input
+                        type="number"
+                        min={1}
+                        value={rewardCutAmountByUid[row.uid] || ''}
+                        onChange={(e) =>
+                          setRewardCutAmountByUid((prev) => ({
+                            ...prev,
+                            [row.uid]: e.target.value,
+                          }))
+                        }
+                        placeholder="Amount (NPR)"
+                        className="mt-2 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none ring-cyan-400/40 placeholder:text-neutral-500 focus:ring-2"
+                      />
+                      <input
+                        type="text"
+                        value={rewardCutReasonByUid[row.uid] || ''}
+                        onChange={(e) =>
+                          setRewardCutReasonByUid((prev) => ({
+                            ...prev,
+                            [row.uid]: e.target.value,
+                          }))
+                        }
+                        placeholder="Reason (optional)"
+                        className="mt-2 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none ring-cyan-400/40 placeholder:text-neutral-500 focus:ring-2"
+                      />
+                      <button
+                        type="button"
+                        disabled={rewardCutBusyUid === row.uid}
+                        onClick={() =>
+                          void handleCutRewardForWorker({
+                            uid: row.uid,
+                            username: row.username,
+                            role: row.role,
+                          })
+                        }
+                        className="mt-2 min-h-[44px] w-full rounded-xl bg-rose-500 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-400 disabled:opacity-60"
+                      >
+                        {rewardCutBusyUid === row.uid ? 'Applying…' : 'Apply Cut'}
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              {shiftsRows.length === 0 && (
+                <p className="mt-6 text-sm text-neutral-500">No staff or carer accounts found.</p>
+              )}
             </div>
           )}
 

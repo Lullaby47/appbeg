@@ -52,6 +52,20 @@ export default function CasinoBackground({
       <div className="casino-guide casino-guide-bonus" />
       <div className="casino-guide casino-guide-play" />
 
+      {isPlayer ? (
+        <>
+          <div className="casino-fire-ribbon casino-fire-ribbon-left" />
+          <div className="casino-fire-ribbon casino-fire-ribbon-center" />
+          <div className="casino-fire-ribbon casino-fire-ribbon-right" />
+
+          <div className="casino-ember casino-ember-a" />
+          <div className="casino-ember casino-ember-b" />
+          <div className="casino-ember casino-ember-c" />
+          <div className="casino-ember casino-ember-d" />
+          <div className="casino-ember casino-ember-e" />
+        </>
+      ) : null}
+
       {icons.map((item) => (
         <div key={`${variant}-${item.icon}-${item.className}`} className={item.className}>
           <span>{item.icon}</span>

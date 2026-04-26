@@ -34,6 +34,7 @@ export type StaffUser = {
   status: 'active' | 'disabled';
   createdBy: string | null;
   coadminUid?: string | null;
+  cashBoxNpr?: number;
   createdAt?: any;
 };
 

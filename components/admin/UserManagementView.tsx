@@ -350,7 +350,7 @@ export default function UserManagementView<T extends BaseUser>({
 
             {isChatOpen && (
               <div
-                className={`mt-8 flex min-h-0 max-h-[min(52dvh,28rem)] flex-1 flex-col overflow-hidden rounded-2xl border sm:max-h-[min(58dvh,32rem)] ${
+                className={`mt-8 flex min-h-0 max-h-[min(64dvh,38rem)] flex-1 flex-col overflow-hidden rounded-2xl border sm:max-h-[min(70dvh,42rem)] ${
                   carersVisualTheme
                     ? 'border-amber-500/25 bg-black/45 shadow-inner shadow-black/40'
                     : 'border-white/10 bg-neutral-950/60'
