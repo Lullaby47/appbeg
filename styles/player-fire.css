@@ -13,6 +13,8 @@
   --fire-lime: #b6ff5d;
   --fire-purple: #b86aff;
   --fire-magenta: #f278ff;
+  --player-font-heading-track: -0.03em;
+  --player-font-body-track: 0.018em;
 }
 
 .player-fire-page {
@@ -20,11 +22,34 @@
   min-height: 100vh;
   overflow: hidden;
   color: var(--player-fire-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1;
+  letter-spacing: var(--player-font-body-track);
+  line-height: 1.5;
   background:
     radial-gradient(circle at top left, rgba(255, 243, 183, 0.42), transparent 28%),
     radial-gradient(circle at 85% 15%, rgba(255, 116, 47, 0.24), transparent 24%),
     radial-gradient(circle at 50% 100%, rgba(255, 205, 103, 0.24), transparent 38%),
     linear-gradient(145deg, #5b180f 0%, #863318 34%, #c85d1e 66%, #f1a03c 100%);
+}
+
+.player-fire-page h1,
+.player-fire-page h2,
+.player-fire-page h3 {
+  font-weight: 900;
+  line-height: 1.08;
+  letter-spacing: var(--player-font-heading-track);
+  text-wrap: balance;
+}
+
+.player-fire-page p {
+  line-height: 1.58;
+}
+
+.player-fire-page > header {
+  line-height: 1.35;
 }
 
 .player-fire-shell {
@@ -819,6 +844,48 @@
   min-width: 0 !important;
   width: 100% !important;
   transform: none !important;
+}
+
+/* VIP welcome: stronger type hierarchy + aligned columns */
+.player-fire-page .player-dashboard-hero__intro,
+.player-fire-page .player-dashboard-hero__main,
+.player-fire-page .player-dashboard-hero__cta {
+  width: 100%;
+  max-width: 100%;
+}
+
+.player-fire-page .player-dashboard-hero__intro > p:first-of-type {
+  letter-spacing: 0.28em;
+  text-shadow: 0 0 22px rgba(251, 191, 36, 0.28);
+}
+
+.player-fire-page .player-dashboard-hero__intro h2 {
+  /* bg-clip-text + text-transparent: use drop-shadow, not text-shadow */
+  filter: drop-shadow(0 2px 20px rgba(0, 0, 0, 0.55)) drop-shadow(0 0 40px rgba(251, 191, 36, 0.18));
+}
+
+.player-fire-page .player-dashboard-hero__intro > p:last-of-type {
+  max-width: 40rem;
+  line-height: 1.62;
+  letter-spacing: 0.02em;
+  color: rgba(255, 245, 232, 0.92);
+}
+
+.player-fire-page .player-dashboard-hero__main .grid.max-w-lg {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.player-fire-page .player-dashboard-hero__main .fire-panel p {
+  line-height: 1.35;
+}
+
+.player-fire-page .player-dashboard-hero__main .tabular-nums,
+.player-fire-page .player-dashboard-hero .tabular-nums {
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-shadow: 0 1px 18px rgba(0, 0, 0, 0.35);
 }
 
 .player-fire-page .player-dashboard-hero .player-dashboard-hero__content > :first-child {
