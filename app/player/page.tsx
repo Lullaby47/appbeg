@@ -416,13 +416,13 @@ export default function PlayerPage() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [musicEnabled, setMusicEnabled] = useState(() => {
     if (typeof window === 'undefined') {
-      return true;
+      return false;
     }
 
     try {
-      return window.localStorage.getItem(PLAYER_MUSIC_STORAGE_KEY) !== 'false';
+      return window.localStorage.getItem(PLAYER_MUSIC_STORAGE_KEY) === 'true';
     } catch {
-      return true;
+      return false;
     }
   });
   const [bonusCarouselIndex, setBonusCarouselIndex] = useState(0);
@@ -432,7 +432,7 @@ export default function PlayerPage() {
   const [bonusVanishedToast, setBonusVanishedToast] = useState(false);
   const selfClaimedBonusIdRef = useRef<string | null>(null);
   const lastBonusIdsRef = useRef<string[]>([]);
-  const musicEnabledRef = useRef(true);
+  const musicEnabledRef = useRef(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const currentTrackRef = useRef<string | null>(null);
   const playRandomTrackRef = useRef<((previousTrack?: string | null) => Promise<void>) | null>(null);
