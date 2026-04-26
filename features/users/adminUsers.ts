@@ -63,6 +63,10 @@ export type PlayerUser = {
   status: 'active' | 'disabled';
   createdBy: string | null;
   coadminUid?: string | null;
+  /** In-app coin (game balance). */
+  coin?: number;
+  /** Cash / redeem balance (optional; shown when present). */
+  cash?: number;
   createdAt?: any;
 };
 

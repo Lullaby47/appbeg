@@ -112,7 +112,7 @@ async function assertCurrentPlayerIsActive(playerUid: string) {
 
   if (playerData.status === 'disabled') {
     throw new Error(
-      'Your account is blocked. Recharge, redeem, and poke features are disabled.'
+      'Your account is blocked. Recharge and redeem features are disabled.'
     );
   }
 }
@@ -229,6 +229,7 @@ export async function getPendingPlayerGameRequests(
 
   const allRequests = await Promise.all(
     playerUids.map((playerUid) =>
+      // Include legacy poked / pending_review so carer task sync can normalize them to pending.
       getRequestsByStatuses(playerUid, ['pending', 'poked', 'pending_review'])
     )
   );
@@ -278,140 +279,12 @@ export function listenToPlayerGameRequestsByPlayer(
   );
 }
 
-export function listenToUrgentPlayerGameRequestsByCoadmin(
-  coadminUid: string,
-  onChange: (requests: PlayerGameRequest[]) => void,
-  onError?: (error: Error) => void
-) {
-  const requestsQuery = query(
-    collection(db, 'playerGameRequests'),
-    where('coadminUid', '==', coadminUid)
-  );
-
-  return onSnapshot(
-    requestsQuery,
-    (snapshot) => {
-      const requests = snapshot.docs
-        .map((docSnap) =>
-          mapRequestDoc(
-            docSnap.id,
-            docSnap.data() as Omit<PlayerGameRequest, 'id'>
-          )
-        )
-        .filter(
-          (request) =>
-            request.status === 'poked' || request.status === 'pending_review'
-        );
-
-      onChange(sortByNewest(requests));
-    },
-    (error) => {
-      onError?.(error as Error);
-    }
-  );
-}
-
 export async function markPlayerGameRequestDone(requestId: string) {
   await updateDoc(doc(db, 'playerGameRequests', requestId), {
     status: 'completed',
     completedAt: serverTimestamp(),
     pokedAt: null,
     pokeMessage: null,
-  });
-}
-
-export async function pokePlayerGameRequest(
-  requestId: string,
-  pokeMessage?: string
-) {
-  const currentUser = auth.currentUser;
-
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-
-  await assertCurrentPlayerIsActive(currentUser.uid);
-
-  const requestRef = doc(db, 'playerGameRequests', requestId);
-  const taskRef = doc(db, 'carerTasks', `request__${requestId}`);
-
-  await runTransaction(db, async (transaction) => {
-    const [requestSnap, taskSnap] = await Promise.all([
-      transaction.get(requestRef),
-      transaction.get(taskRef),
-    ]);
-
-    if (!requestSnap.exists()) {
-      throw new Error('Request not found.');
-    }
-
-    if (!taskSnap.exists()) {
-      throw new Error('Related carer task not found.');
-    }
-
-    const requestData = requestSnap.data() as Omit<PlayerGameRequest, 'id'>;
-    const taskData = taskSnap.data() as {
-      type?: PlayerGameRequestType;
-      requestId?: string | null;
-      status?: string;
-      assignedCarerUid?: string | null;
-      assignedCarerUsername?: string | null;
-      completedByCarerUid?: string | null;
-      completedByCarerUsername?: string | null;
-      completedAt?: Timestamp | null;
-    };
-
-    if (requestData.playerUid !== currentUser.uid) {
-      throw new Error('You can only poke your own request.');
-    }
-
-    if (
-      requestData.type !== 'recharge' &&
-      requestData.type !== 'redeem'
-    ) {
-      throw new Error('Only recharge and redeem requests can be poked.');
-    }
-
-    if (requestData.status !== 'completed') {
-      throw new Error('Only completed requests can be poked.');
-    }
-
-    if (taskData.requestId !== requestId || taskData.status !== 'completed') {
-      throw new Error('Only completed carer tasks can be poked.');
-    }
-
-    const originalCarerUid =
-      taskData.completedByCarerUid || taskData.assignedCarerUid || null;
-    const originalCarerUsername =
-      taskData.completedByCarerUsername || taskData.assignedCarerUsername || null;
-
-    if (!originalCarerUid) {
-      throw new Error('The original completing carer could not be determined.');
-    }
-
-    const now = Timestamp.now();
-    const nextPokeMessage = pokeMessage?.trim() || null;
-    const previousCompletedAt = taskData.completedAt || requestData.completedAt || now;
-
-    transaction.update(taskRef, {
-      status: 'urgent',
-      isPoked: true,
-      pokedAt: now,
-      pokeMessage: nextPokeMessage,
-      assignedCarerUid: originalCarerUid,
-      assignedCarerUsername: originalCarerUsername,
-      completedByCarerUid: originalCarerUid,
-      completedByCarerUsername: originalCarerUsername,
-      completedAt: previousCompletedAt,
-      startedAt: null,
-      expiresAt: null,
-    });
-
-    transaction.update(requestRef, {
-      status: 'poked',
-      pokedAt: now,
-      pokeMessage: nextPokeMessage,
-    });
   });
 }
 

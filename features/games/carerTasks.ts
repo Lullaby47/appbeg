@@ -164,11 +164,7 @@ function getTaskStatusFromRequestStatus(
   if (requestStatus === 'completed') {
     return 'completed';
   }
-
-  if (requestStatus === 'poked' || requestStatus === 'pending_review') {
-    return 'urgent';
-  }
-
+  // Includes pending, plus legacy poked / pending_review from the removed poke flow.
   return 'pending';
 }
 
@@ -375,9 +371,9 @@ function buildRequestTask(
     expiresAt: null,
     completedAt: request.completedAt || null,
     createdAt: request.createdAt || null,
-    isPoked: nextStatus === 'urgent',
-    pokedAt: request.pokedAt || null,
-    pokeMessage: request.pokeMessage || null,
+    isPoked: false,
+    pokedAt: null,
+    pokeMessage: null,
     completedByCarerUid: null,
     completedByCarerUsername: null,
   });
@@ -460,7 +456,7 @@ export function getCarerTaskCountdown(task: CarerTask) {
 
 export function getEffectiveCarerTaskStatus(task: CarerTask): CarerTaskStatus {
   if (task.status === 'in_progress' && isExpiredTimestamp(task.expiresAt)) {
-    return task.isPoked ? 'urgent' : 'pending';
+    return 'pending';
   }
 
   return task.status;
@@ -587,11 +583,9 @@ export async function syncCarerTasks({
     const existingEffectiveStatus =
       existingTask ? getEffectiveCarerTaskStatus(existingTask) : null;
     const shouldPreserveExistingStatus =
-      (desiredStatus === 'pending' &&
-        (existingEffectiveStatus === 'in_progress' ||
-          existingEffectiveStatus === 'urgent' ||
-          existingEffectiveStatus === 'completed')) ||
-      (desiredStatus === 'urgent' && existingEffectiveStatus === 'in_progress');
+      desiredStatus === 'pending' &&
+      (existingEffectiveStatus === 'in_progress' ||
+        existingEffectiveStatus === 'completed');
     const nextStatus = shouldPreserveExistingStatus
       ? existingEffectiveStatus
       : desiredStatus;
@@ -648,10 +642,9 @@ export async function syncCarerTasks({
               ? request.completedAt || existingCompletedAt || null
               : null,
         createdAt: request.createdAt || existingTask?.createdAt || serverTimestamp(),
-        isPoked: nextStatus === 'urgent',
-        pokedAt: nextStatus === 'urgent' ? request.pokedAt || null : null,
-        pokeMessage:
-          nextStatus === 'urgent' ? request.pokeMessage || null : null,
+        isPoked: false,
+        pokedAt: null,
+        pokeMessage: null,
         completedByCarerUid:
           nextStatus === 'completed' || nextStatus === 'urgent'
             ? existingCompletedByUid
@@ -864,15 +857,6 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
   const batch = writeBatch(db);
 
   for (const task of expiredTasks) {
-    if (task.isPoked) {
-      batch.update(doc(db, 'carerTasks', task.id), {
-        status: 'urgent',
-        startedAt: null,
-        expiresAt: null,
-      });
-      continue;
-    }
-
     batch.update(doc(db, 'carerTasks', task.id), {
       status: 'pending',
       assignedCarerUid: null,
@@ -1317,15 +1301,8 @@ export async function completeRechargeRedeemTask(task: CarerTask) {
       throw new Error('Only the assigned carer can complete this task.');
     }
 
-    const isUrgentOrPoked =
-      Boolean(taskData.isPoked) ||
-      requestData.status === 'poked' ||
-      requestData.status === 'pending_review';
     const rewardWithBonusNpr = applyNightBonusNpr(baseRewardNpr);
-    const finalRewardNpr = applyUrgentPenaltyNpr(
-      rewardWithBonusNpr,
-      isUrgentOrPoked
-    );
+    const finalRewardNpr = applyUrgentPenaltyNpr(rewardWithBonusNpr, false);
     finalRewardFromTransaction = finalRewardNpr;
 
     if (requestData.type === 'recharge') {

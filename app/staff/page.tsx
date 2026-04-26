@@ -24,6 +24,7 @@ import {
   StaffUser,
   unblockPlayer,
 } from '@/features/users/adminUsers';
+import { adjustPlayerCoin } from '@/features/users/coadminPlayerCoin';
 import {
   listenToUnreadCounts,
   markConversationAsRead,
@@ -204,6 +205,10 @@ export default function StaffPage() {
   const hasSyncedPlayerChatUnreadRef = useRef(false);
   const shiftSessionIdRef = useRef<string | null>(null);
   const [playerBlockActionUid, setPlayerBlockActionUid] = useState<string | null>(null);
+  const [playerCoinAmountByUid, setPlayerCoinAmountByUid] = useState<Record<string, string>>(
+    {}
+  );
+  const [playerCoinAdjustBusyUid, setPlayerCoinAdjustBusyUid] = useState<string | null>(null);
 
   const pagedStaffAgentChat = usePaginatedChatMessages(selectedChatUser?.uid ?? null, {
     scrollContainerRef: staffReachOutScrollRef,
@@ -1174,6 +1179,47 @@ export default function StaffPage() {
     }
   }
 
+  async function handleAdjustPlayerCoin(player: PlayerUser, mode: 'add' | 'deduct') {
+    const raw = (playerCoinAmountByUid[player.uid] || '').trim();
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setMessage('Enter a positive amount.');
+      return;
+    }
+
+    const amount = Math.floor(parsed);
+    if (amount <= 0) {
+      setMessage('Enter a positive amount.');
+      return;
+    }
+
+    const delta = mode === 'add' ? amount : -amount;
+
+    setPlayerCoinAdjustBusyUid(player.uid);
+    setMessage('');
+
+    try {
+      await adjustPlayerCoin({ playerUid: player.uid, delta });
+      setMessage(
+        mode === 'add'
+          ? `Added ${amount} coin for ${player.username || 'player'}.`
+          : `Deducted ${amount} coin from ${player.username || 'player'}.`
+      );
+      setPlayerCoinAmountByUid((prev) => {
+        const next = { ...prev };
+        delete next[player.uid];
+        return next;
+      });
+      await loadPlayers();
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : 'Could not update coin balance.'
+      );
+    } finally {
+      setPlayerCoinAdjustBusyUid(null);
+    }
+  }
+
   function handleChangeView(view: StaffView) {
     setActiveView(view);
     setMessage('');
@@ -1186,6 +1232,7 @@ export default function StaffPage() {
     if (view !== 'view-players') {
       setSelectedPlayerChatUser(null);
       setNewPlayerMessage('');
+      setPlayerCoinAmountByUid({});
     }
   }
 
@@ -1681,6 +1728,66 @@ export default function StaffPage() {
                           Risk: {String(playerRisk.riskLevel).toUpperCase()} ({playerRisk.riskScore || 0})
                         </p>
                       ) : null}
+                      <p className="mt-2 text-sm text-neutral-300">
+                        Coin:{' '}
+                        <span className="font-bold tabular-nums text-amber-200">
+                          {Math.max(0, Math.floor(Number(player.coin || 0))).toLocaleString()}
+                        </span>
+                      </p>
+                      {player.cash != null && (
+                        <p className="mt-0.5 text-xs text-neutral-500">
+                          Cash (view only):{' '}
+                          {Math.max(0, Math.floor(Number(player.cash || 0))).toLocaleString()}
+                        </p>
+                      )}
+                      <div className="mt-3 rounded-xl border border-amber-500/20 bg-black/20 p-3">
+                        <p className="text-xs font-semibold text-amber-200/80">Add or deduct coin</p>
+                        <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-2">
+                          <input
+                            type="number"
+                            min={1}
+                            step={1}
+                            inputMode="numeric"
+                            value={playerCoinAmountByUid[player.uid] ?? ''}
+                            onChange={(e) =>
+                              setPlayerCoinAmountByUid((prev) => ({
+                                ...prev,
+                                [player.uid]: e.target.value,
+                              }))
+                            }
+                            disabled={playerCoinAdjustBusyUid === player.uid}
+                            placeholder="Amount"
+                            className="min-w-0 flex-1 rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-amber-400/50 disabled:opacity-50"
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void handleAdjustPlayerCoin(player, 'add')}
+                              disabled={
+                                playerBlockActionUid === player.uid ||
+                                playerCoinAdjustBusyUid === player.uid
+                              }
+                              className="whitespace-nowrap rounded-lg bg-emerald-500/90 px-3 py-2 text-xs font-bold text-black hover:bg-emerald-400 disabled:opacity-50"
+                            >
+                              {playerCoinAdjustBusyUid === player.uid ? '...' : 'Add'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleAdjustPlayerCoin(player, 'deduct')}
+                              disabled={
+                                playerBlockActionUid === player.uid ||
+                                playerCoinAdjustBusyUid === player.uid
+                              }
+                              className="whitespace-nowrap rounded-lg border border-rose-500/50 bg-rose-950/50 px-3 py-2 text-xs font-bold text-rose-100 hover:bg-rose-900/50 disabled:opacity-50"
+                            >
+                              {playerCoinAdjustBusyUid === player.uid ? '...' : 'Deduct'}
+                            </button>
+                          </div>
+                        </div>
+                        <p className="mt-2 text-[11px] text-neutral-500">
+                          Whole numbers only. Cannot deduct below zero.
+                        </p>
+                      </div>
                       <div className="mt-4 flex flex-wrap gap-2">
                         <button
                           type="button"

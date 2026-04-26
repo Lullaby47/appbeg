@@ -25,7 +25,9 @@ export type FinancialEventType =
   | 'transfer'
   | 'bonus'
   | 'recharge'
-  | 'redeem';
+  | 'redeem'
+  | 'coadmin_coin_add'
+  | 'coadmin_coin_deduct';
 
 export type FinancialActivityWindow = {
   cashouts: number;

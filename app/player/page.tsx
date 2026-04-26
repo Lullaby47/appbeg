@@ -24,7 +24,6 @@ import {
   dismissPlayerRedeemRequest,
   listenToPlayerGameRequestsByPlayer,
   PlayerGameRequest,
-  pokePlayerGameRequest,
 } from '@/features/games/playerGameRequests';
 import {
   listenToUnreadCounts,
@@ -117,25 +116,12 @@ function getRequestStatusLabel(status: PlayerGameRequest['status']) {
   if (status === 'completed') {
     return 'Completed';
   }
-
-  if (status === 'poked') {
-    return 'Poked';
-  }
-
-  if (status === 'pending_review') {
-    return 'Pending Review';
-  }
-
   return 'Pending';
 }
 
 function getRequestStatusClass(status: PlayerGameRequest['status']) {
   if (status === 'completed') {
     return 'bg-emerald-500/20 text-emerald-200';
-  }
-
-  if (status === 'poked' || status === 'pending_review') {
-    return 'bg-rose-500/20 text-rose-200';
   }
 
   return 'bg-amber-500/20 text-amber-200';
@@ -160,8 +146,6 @@ function sortByNewest<T extends { createdAt?: unknown; completedAt?: unknown; po
 
 /** Cap for request history list (20–30 range). */
 const MAX_REQUEST_HISTORY_DISPLAY = 30;
-/** Poke is only available on the N most recent completed recharge/redeem tasks. */
-const MAX_POKEABLE_COMPLETED = 5;
 
 /** Full-screen player overlays: consistent splash look (blur + glass). */
 const PLAYER_SPLASH_BACKDROP =
@@ -344,7 +328,6 @@ export default function PlayerPage() {
   const [coinLoading, setCoinLoading] = useState(false);
   const [requestHistory, setRequestHistory] = useState<PlayerGameRequest[]>([]);
   const [dismissRedeemLoadingId, setDismissRedeemLoadingId] = useState<string | null>(null);
-  const [pokeLoadingId, setPokeLoadingId] = useState<string | null>(null);
   const [isBlockedPlayer, setIsBlockedPlayer] = useState(false);
   const [wallet, setWallet] = useState<PlayerWallet>({ coin: 0, cash: 0 });
   const [referralCode, setReferralCode] = useState('');
@@ -362,8 +345,6 @@ export default function PlayerPage() {
   const [sendingCashoutInquiry, setSendingCashoutInquiry] = useState(false);
   const [activatingBonusEventId, setActivatingBonusEventId] = useState<string | null>(null);
   const [bonusErrorSplashMessage, setBonusErrorSplashMessage] = useState('');
-  const [pokeConfirmRequest, setPokeConfirmRequest] = useState<PlayerGameRequest | null>(null);
-  const [pokeReason, setPokeReason] = useState('');
   const [credentialTaskLoadingKey, setCredentialTaskLoadingKey] = useState<string | null>(
     null
   );
@@ -493,19 +474,6 @@ export default function PlayerPage() {
     () => requestHistory.slice(0, MAX_REQUEST_HISTORY_DISPLAY),
     [requestHistory]
   );
-
-  const latestPokeableCompletedIds = useMemo(() => {
-    const completed = requestHistory.filter(
-      (r) =>
-        r.status === 'completed' &&
-        (r.type === 'recharge' || r.type === 'redeem')
-    );
-    return new Set(
-      sortByNewest([...completed])
-        .slice(0, MAX_POKEABLE_COMPLETED)
-        .map((r) => r.id)
-    );
-  }, [requestHistory]);
 
   const usernamesCreatorFilterKeys = useMemo(() => {
     const uidSet = new Set<string>();
@@ -1230,40 +1198,6 @@ export default function PlayerPage() {
     }
   }
 
-  async function handlePokeRequest(request: PlayerGameRequest, rawPokeMessage: string) {
-    if (isBlockedPlayer) {
-      setMessage('Your account is blocked. Poke is disabled.');
-      return;
-    }
-
-    const pokeAllowed =
-      request.status === 'completed' &&
-      (request.type === 'recharge' || request.type === 'redeem') &&
-      latestPokeableCompletedIds.has(request.id);
-    if (!pokeAllowed) {
-      setMessage(
-        'You can only poke the latest 5 completed recharge or redeem requests.'
-      );
-      return;
-    }
-
-    setPokeLoadingId(request.id);
-    setMessage('');
-
-    try {
-      await pokePlayerGameRequest(request.id, rawPokeMessage);
-      setMessage(
-        'Urgent poke sent. Misuse of poke may lead to account suspension or permanent block.'
-      );
-      setPokeConfirmRequest(null);
-      setPokeReason('');
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to poke request.');
-    } finally {
-      setPokeLoadingId(null);
-    }
-  }
-
   async function handleDismissRedeemRequest(request: PlayerGameRequest) {
     setDismissRedeemLoadingId(request.id);
     setMessage('');
@@ -1613,9 +1547,8 @@ export default function PlayerPage() {
             <span aria-hidden>📜</span> Request History
           </h3>
           <p className="mt-2 text-xs text-amber-100/55 sm:text-sm">
-            Only the latest 5 completed recharge or redeem tasks can be poked if the game
-            action was not actually done. Showing up to {MAX_REQUEST_HISTORY_DISPLAY} most
-            recent requests.
+            Showing up to {MAX_REQUEST_HISTORY_DISPLAY} most recent recharge and redeem
+            requests.
           </p>
         </div>
 
@@ -1624,10 +1557,6 @@ export default function PlayerPage() {
         ) : (
           <div className="space-y-4">
             {displayedRequestHistory.map((request) => {
-              const canPoke =
-                request.status === 'completed' &&
-                (request.type === 'recharge' || request.type === 'redeem') &&
-                latestPokeableCompletedIds.has(request.id);
               const canDismissRedeem =
                 request.type === 'redeem' && request.status === 'pending';
 
@@ -1664,9 +1593,6 @@ export default function PlayerPage() {
                         <p className="text-amber-100/60">Amount: <span className="text-white font-bold">${formatWalletAmount(Number(request.amount || 0))}</span></p>
                         <p className="text-amber-100/60">Requested: <span className="text-white">{formatDateTime(request.createdAt)}</span></p>
                         <p className="text-amber-100/60">Completed: <span className="text-white">{formatDateTime(request.completedAt)}</span></p>
-                        {(request.status === 'poked' || request.status === 'pending_review') && (
-                          <p className="text-rose-200">Poked: {formatDateTime(request.pokedAt)}</p>
-                        )}
                       </div>
                     </div>
 
@@ -1679,24 +1605,6 @@ export default function PlayerPage() {
                           className="rounded-xl bg-white/10 px-4 py-2 text-xs font-bold text-white hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {dismissRedeemLoadingId === request.id ? 'Dismissing...' : 'Dismiss'}
-                        </button>
-                      )}
-                      {canPoke && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPokeConfirmRequest(request);
-                            setPokeReason('');
-                            setMessage('');
-                          }}
-                          disabled={pokeLoadingId === request.id || isBlockedPlayer}
-                          className="rounded-xl bg-gradient-to-r from-rose-600 to-rose-700 px-5 py-2.5 text-sm font-black text-white shadow-lg shadow-rose-500/30 transition-all hover:from-rose-500 hover:to-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {pokeLoadingId === request.id ? (
-                            <><i className="fas fa-spinner fa-spin mr-2"></i>Poking...</>
-                          ) : (
-                            <><i className="fas fa-bolt mr-2"></i>Poke</>
-                          )}
                         </button>
                       )}
                     </div>
@@ -2127,7 +2035,7 @@ export default function PlayerPage() {
                 <i className="fas fa-ban text-rose-300 text-lg"></i>
                 <span>
                   Your account is restricted. You can open{' '}
-                  <span className="font-bold text-rose-50">Agents</span> to message your team. Recharge, redeem, poke, and
+                  <span className="font-bold text-rose-50">Agents</span> to message your team. Recharge, redeem, and
                   other actions stay unavailable until a manager unblocks you.
                 </span>
               </div>
@@ -3699,49 +3607,6 @@ export default function PlayerPage() {
           </motion.div>
         )}
       </AnimatePresence>
-
-      {/* Poke splash */}
-      {pokeConfirmRequest && (
-        <div
-          onClick={() => {
-            if (!pokeLoadingId) {
-              setPokeConfirmRequest(null);
-              setPokeReason('');
-            }
-          }}
-          className="fixed inset-0 z-[86] flex items-center justify-center bg-black/85 p-4 backdrop-blur-xl"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-xl rounded-3xl border border-rose-500/40 bg-gradient-to-b from-[#1a0a0f] to-[#0a040f] p-6 shadow-2xl shadow-rose-900/20"
-          >
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 rounded-full bg-rose-500/20 flex items-center justify-center"><i className="fas fa-exclamation-triangle text-rose-400 text-xl"></i></div>
-              <p className="text-xs font-black uppercase tracking-[0.3em] text-rose-300">Urgent Action Required</p>
-            </div>
-            <h3 className="text-2xl font-black text-white">Send urgent poke for this completed task?</h3>
-            <p className="mt-3 text-sm text-rose-100/80">Use poke only when the recharge/redeem is truly not done. False or repeated misuse may result in account suspension.</p>
-
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-amber-100">
-              <p><span className="font-bold text-amber-300">Task:</span> {pokeConfirmRequest.type} / {pokeConfirmRequest.gameName} / {pokeConfirmRequest.amount}</p>
-            </div>
-
-            <label className="mt-4 block text-sm text-neutral-300">
-              Reason for poke <span className="text-rose-400">(required)</span>
-              <textarea value={pokeReason} onChange={(e) => setPokeReason(e.target.value)} placeholder="Explain exactly what was not done." className="mt-2 min-h-24 w-full rounded-xl border border-white/20 bg-black/80 px-4 py-3 text-white outline-none focus:border-rose-400 focus:ring-1 focus:ring-rose-400" />
-            </label>
-
-            <div className="mt-6 flex gap-3">
-              <button onClick={() => { setPokeConfirmRequest(null); setPokeReason(''); }} disabled={Boolean(pokeLoadingId)} className="flex-1 rounded-xl bg-white/10 px-4 py-3 font-bold text-white hover:bg-white/20 transition-all disabled:opacity-50">
-                Cancel
-              </button>
-              <button disabled={Boolean(pokeLoadingId) || pokeReason.trim().length < 10} onClick={() => void handlePokeRequest(pokeConfirmRequest, pokeReason.trim())} className="flex-1 rounded-xl bg-gradient-to-r from-rose-600 to-rose-700 px-4 py-3 font-black text-white shadow-lg shadow-rose-500/30 transition-all hover:from-rose-500 hover:to-rose-600 disabled:opacity-50">
-                {pokeLoadingId ? <><i className="fas fa-spinner fa-spin mr-2"></i>Sending...</> : 'Confirm Urgent Poke'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </ProtectedRoute>
   );
 }

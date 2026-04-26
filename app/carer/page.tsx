@@ -60,7 +60,6 @@ type CarerView =
   | 'dashboard'
   | 'create-username'
   | 'tasks'
-  | 'urgent'
   | 'view-players'
   | 'login-details';
 
@@ -78,7 +77,7 @@ type DashboardCard = {
   tone?: 'default' | 'amber' | 'blue' | 'red';
 };
 
-type TaskSection = 'pending' | 'mine' | 'completed' | 'urgent';
+type TaskSection = 'pending' | 'mine' | 'completed';
 
 function getTimestampMs(value: unknown) {
   if (!value) {
@@ -285,7 +284,6 @@ export default function CarerPage() {
   const [errorMessage, setErrorMessage] = useState('');
   const [noticeMessage, setNoticeMessage] = useState('');
   const [showTaskSplash, setShowTaskSplash] = useState(false);
-  const [showUrgentSplash, setShowUrgentSplash] = useState(false);
   const [loginDetailsTask, setLoginDetailsTask] = useState<CarerTask | null>(null);
   const [countdownTick, setCountdownTick] = useState(0);
   const [cashBoxNpr, setCashBoxNpr] = useState(0);
@@ -307,7 +305,6 @@ export default function CarerPage() {
   const [riskActionLoading, setRiskActionLoading] = useState<string | null>(null);
 
   const previousPendingCountRef = useRef(0);
-  const previousUrgentCountRef = useRef(0);
   const shiftSessionIdRef = useRef<string | null>(null);
 
   const selectedPlayer = useMemo(
@@ -356,20 +353,7 @@ export default function CarerPage() {
         tasks.filter(
           (task) =>
             getEffectiveCarerTaskStatus(task) === 'in_progress' &&
-            task.assignedCarerUid === carerIdentity?.uid &&
-            !task.isPoked
-        )
-      ),
-    [carerIdentity?.uid, countdownTick, tasks]
-  );
-
-  const urgentTasks = useMemo(
-    () =>
-      sortByNewest(
-        tasks.filter(
-          (task) =>
-            task.assignedCarerUid === carerIdentity?.uid &&
-            (getEffectiveCarerTaskStatus(task) === 'urgent' || Boolean(task.isPoked))
+            task.assignedCarerUid === carerIdentity?.uid
         )
       ),
     [carerIdentity?.uid, countdownTick, tasks]
@@ -477,7 +461,6 @@ export default function CarerPage() {
     { label: 'Games Available', value: gameOptions.length },
     { label: 'Username Needed', value: usernameNeededCount, tone: 'amber' },
     { label: 'Pending Requests', value: pendingRequestCount, tone: 'blue' },
-    { label: 'Urgent Tasks', value: urgentTasks.length, tone: 'red' },
   ];
   const riskyPlayers = useMemo(
     () => riskSnapshots.filter((entry) => entry.riskLevel !== 'low').slice(0, 8),
@@ -653,21 +636,6 @@ export default function CarerPage() {
   }, [claimablePendingTasks.length]);
 
   useEffect(() => {
-    const urgentCount = urgentTasks.length;
-
-    if (urgentCount > previousUrgentCountRef.current) {
-      playUrgentNotificationSound();
-      setShowUrgentSplash(true);
-    }
-
-    if (urgentCount === 0) {
-      setShowUrgentSplash(false);
-    }
-
-    previousUrgentCountRef.current = urgentCount;
-  }, [urgentTasks.length]);
-
-  useEffect(() => {
     if (claimablePendingTasks.length === 0) {
       return;
     }
@@ -679,19 +647,6 @@ export default function CarerPage() {
 
     return () => window.clearInterval(intervalId);
   }, [claimablePendingTasks.length]);
-
-  useEffect(() => {
-    if (urgentTasks.length === 0) {
-      return;
-    }
-
-    const intervalId = window.setInterval(() => {
-      setShowUrgentSplash(true);
-      playUrgentNotificationSound();
-    }, 15000);
-
-    return () => window.clearInterval(intervalId);
-  }, [urgentTasks.length]);
 
   useEffect(() => {
     if (!selectedPlayerUid) {
@@ -806,12 +761,6 @@ export default function CarerPage() {
     void audio.play().catch(() => undefined);
   }
 
-  function playUrgentNotificationSound() {
-    const audio = new Audio('/notification.mp3');
-    audio.volume = 0.95;
-    void audio.play().catch(() => undefined);
-  }
-
   async function handleUsernameSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -891,8 +840,6 @@ export default function CarerPage() {
 
       if (isUsernameWorkflowTask(task)) {
         continueUsernameTask(task);
-      } else if (task.isPoked || task.status === 'urgent') {
-        setActiveView('urgent');
       } else {
         setActiveView('tasks');
       }
@@ -1223,7 +1170,7 @@ export default function CarerPage() {
         <div>
           <h2 className="text-3xl font-bold">Dashboard</h2>
           <p className="mt-2 text-sm text-neutral-400">
-            Track players, games, missing usernames, shared requests, and urgent poke follow-ups.
+            Track players, games, missing usernames, and shared recharge/redeem requests.
           </p>
         </div>
 
@@ -1401,15 +1348,6 @@ export default function CarerPage() {
             Open Tasks
           </button>
 
-          <button
-            onClick={() => {
-              setActiveView('urgent');
-              setShowUrgentSplash(false);
-            }}
-            className="rounded-2xl bg-red-500 px-4 py-3 text-sm font-bold text-white hover:bg-red-600"
-          >
-            Open Urgent
-          </button>
           <button
             onClick={() => {
               const firstRiskPlayer = riskyPlayers[0]?.playerUid || players[0]?.uid || '';
@@ -1649,28 +1587,19 @@ export default function CarerPage() {
 
     const isRequestTask = task.type === 'recharge' || task.type === 'redeem';
     const showTimer =
-      effectiveStatus === 'in_progress' &&
-      (section === 'mine' || section === 'urgent');
+      effectiveStatus === 'in_progress' && section === 'mine';
 
     const statusLabel =
       section === 'pending'
         ? 'Pending'
         : section === 'mine'
           ? 'In Progress'
-          : section === 'urgent'
-            ? effectiveStatus === 'in_progress'
-              ? 'Urgent In Progress'
-              : 'Urgent'
-            : 'Completed';
+          : 'Completed';
 
     return (
       <div
         key={task.id}
-        className={`rounded-2xl border p-4 ${
-          section === 'urgent'
-            ? 'border-red-500/30 bg-red-950/30'
-            : 'border-white/10 bg-neutral-950/70'
-        }`}
+        className="rounded-2xl border border-white/10 bg-neutral-950/70 p-4"
       >
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
@@ -1688,12 +1617,6 @@ export default function CarerPage() {
               {showTimer && (
                 <span className="rounded-full bg-blue-500/20 px-3 py-1 text-xs font-bold text-blue-200">
                   {formatCountdown(task)}
-                </span>
-              )}
-
-              {task.isPoked && (
-                <span className="rounded-full bg-red-500/20 px-3 py-1 text-xs font-bold text-red-200">
-                  Poked
                 </span>
               )}
             </div>
@@ -1728,12 +1651,6 @@ export default function CarerPage() {
               <p className="mt-1 text-sm text-neutral-400">
                 Assigned Carer:{' '}
                 <span className="text-white">{task.assignedCarerUsername}</span>
-              </p>
-            )}
-
-            {task.pokeMessage && (
-              <p className="mt-1 text-sm text-red-200">
-                Poke message: {task.pokeMessage}
               </p>
             )}
           </div>
@@ -1808,61 +1725,6 @@ export default function CarerPage() {
             </div>
           )}
 
-          {section === 'urgent' && effectiveStatus === 'urgent' && (
-            <div className="flex flex-col gap-2">
-              <button
-                onClick={() => setLoginDetailsTask(task)}
-                className="rounded-xl bg-blue-500/20 px-4 py-2 text-sm font-bold text-blue-100 hover:bg-blue-500/30"
-              >
-                Login Details
-              </button>
-              <button
-                onClick={() => void handleStartTask(task)}
-                disabled={taskLoadingId === task.id}
-                className="rounded-xl bg-red-500 px-4 py-2 text-sm font-bold text-white hover:bg-red-600 disabled:opacity-60"
-              >
-                {taskLoadingId === task.id ? 'Starting...' : 'Start Urgent Task'}
-              </button>
-              <button
-                onClick={() => void handleCarerEscalation(task)}
-                disabled={taskLoadingId === task.id}
-                className="rounded-xl bg-rose-950 px-4 py-2 text-sm font-bold text-red-100 hover:bg-rose-900 disabled:opacity-60"
-              >
-                {taskLoadingId === task.id
-                  ? 'Sending...'
-                  : 'Help This Player Is Killing Me'}
-              </button>
-            </div>
-          )}
-
-          {section === 'urgent' && effectiveStatus === 'in_progress' && isRequestTask && (
-            <div className="flex flex-col gap-2">
-              <button
-                onClick={() => setLoginDetailsTask(task)}
-                className="rounded-xl bg-blue-500/20 px-4 py-2 text-sm font-bold text-blue-100 hover:bg-blue-500/30"
-              >
-                Login Details
-              </button>
-              <button
-                onClick={() => void handleCompleteRechargeRedeem(task)}
-                disabled={taskLoadingId === task.id}
-                className="rounded-xl bg-white px-4 py-2 text-sm font-bold text-black hover:bg-neutral-200 disabled:opacity-60"
-              >
-                {taskLoadingId === task.id
-                  ? 'Saving...'
-                  : `${getTaskActionLabel(task)} (${formatCountdown(task)})`}
-              </button>
-              <button
-                onClick={() => void handleCarerEscalation(task)}
-                disabled={taskLoadingId === task.id}
-                className="rounded-xl bg-rose-950 px-4 py-2 text-sm font-bold text-red-100 hover:bg-rose-900 disabled:opacity-60"
-              >
-                {taskLoadingId === task.id
-                  ? 'Sending...'
-                  : 'Help This Player Is Killing Me'}
-              </button>
-            </div>
-          )}
         </div>
       </div>
     );
@@ -1958,39 +1820,6 @@ export default function CarerPage() {
               </div>
             )}
           </div>
-        </div>
-      </div>
-    );
-  }
-
-  function renderUrgent() {
-    return (
-      <div className="space-y-6">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <h2 className="text-3xl font-bold">Urgent</h2>
-            <p className="mt-2 text-sm text-neutral-400">
-              Poked tasks are only visible to the original completing carer and never return to the shared task pool.
-            </p>
-          </div>
-
-          <button
-            onClick={() => void refreshPageData()}
-            className="rounded-xl bg-white px-4 py-2 text-sm font-bold text-black hover:bg-neutral-200"
-          >
-            Refresh
-          </button>
-        </div>
-
-        <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-5">
-          <h3 className="mb-4 text-xl font-bold text-red-200">Urgent Tasks For Me</h3>
-          {urgentTasks.length === 0 ? (
-            <p className="text-sm text-red-100/70">No urgent tasks assigned to you.</p>
-          ) : (
-            <div className="space-y-3">
-              {urgentTasks.map((task) => renderTaskCard(task, 'urgent'))}
-            </div>
-          )}
         </div>
       </div>
     );
@@ -2109,12 +1938,6 @@ export default function CarerPage() {
       label: 'Tasks',
       unread: claimablePendingTasks.length + myInProgressTasks.length,
     },
-    {
-      view: 'urgent',
-      label: 'Urgent',
-      unread: urgentTasks.length,
-      tone: 'danger' as const,
-    },
     { view: 'view-players', label: 'View Players' },
     { view: 'login-details', label: 'Login Details' },
   ];
@@ -2122,10 +1945,6 @@ export default function CarerPage() {
   function handleChangeView(view: CarerView) {
     setActiveView(view);
     setNoticeMessage('');
-
-    if (view === 'urgent') {
-      setShowUrgentSplash(false);
-    }
   }
 
   return (
@@ -2149,42 +1968,6 @@ export default function CarerPage() {
           {noticeMessage && (
             <div className="mb-4 rounded-2xl border border-green-500/20 bg-green-500/10 p-4 text-sm text-green-100">
               {noticeMessage}
-            </div>
-          )}
-
-          {showUrgentSplash && urgentTasks.length > 0 && (
-            <div className="mb-6 rounded-3xl border border-red-400/30 bg-red-500/10 p-5">
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-[0.2em] text-red-200">
-                    Urgent Alert
-                  </p>
-                  <h2 className="mt-2 text-2xl font-bold">
-                    Urgent: Player poked a completed recharge/redeem task. Please verify.
-                  </h2>
-                  <p className="mt-1 text-sm text-red-100/80">
-                    This task is locked to you until it is completed correctly.
-                  </p>
-                </div>
-
-                <div className="flex gap-3">
-                  <button
-                    onClick={() => {
-                      setActiveView('urgent');
-                      setShowUrgentSplash(false);
-                    }}
-                    className="rounded-2xl bg-white px-4 py-3 text-sm font-bold text-black hover:bg-neutral-200"
-                  >
-                    Open Urgent
-                  </button>
-                  <button
-                    onClick={() => setShowUrgentSplash(false)}
-                    className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold text-white hover:bg-white/20"
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              </div>
             </div>
           )}
 
@@ -2234,7 +2017,6 @@ export default function CarerPage() {
           {activeView === 'dashboard' && renderDashboard()}
           {activeView === 'create-username' && renderCreateUsername()}
           {activeView === 'tasks' && renderTasks()}
-          {activeView === 'urgent' && renderUrgent()}
           {activeView === 'view-players' && renderPlayers()}
           {activeView === 'login-details' && renderLoginDetails()}
       </RoleSidebarLayout>

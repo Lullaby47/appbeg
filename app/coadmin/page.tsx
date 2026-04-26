@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { collection, doc, getDoc, getDocs, query, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import imageCompression from 'browser-image-compression';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
@@ -39,6 +39,7 @@ import {
   unblockPlayer,
   unblockStaff,
 } from '@/features/users/adminUsers';
+import { adjustPlayerCoin } from '@/features/users/coadminPlayerCoin';
 
 import {
   GameLogin,
@@ -46,10 +47,6 @@ import {
   getMyGameLogins,
   updateGameLogin,
 } from '@/features/games/gameLogins';
-import {
-  listenToUrgentPlayerGameRequestsByCoadmin,
-  type PlayerGameRequest,
-} from '@/features/games/playerGameRequests';
 import {
   CarerEscalationAlert,
   CarerRechargeRedeemTotals,
@@ -139,67 +136,6 @@ function formatHours(value: number) {
   return `${value.toFixed(2)} h`;
 }
 
-const URGENT_DISMISSED_STORAGE_PREFIX = 'coadminDismissedUrgentRequestIds:';
-
-function readDismissedUrgentRequestIds(coadminUid: string): Set<string> {
-  if (typeof window === 'undefined') {
-    return new Set();
-  }
-  try {
-    const raw = localStorage.getItem(URGENT_DISMISSED_STORAGE_PREFIX + coadminUid);
-    if (!raw) {
-      return new Set();
-    }
-    const arr = JSON.parse(raw) as unknown;
-    if (!Array.isArray(arr)) {
-      return new Set();
-    }
-    return new Set(arr.filter((x): x is string => typeof x === 'string'));
-  } catch {
-    return new Set();
-  }
-}
-
-function addDismissedUrgentRequestIds(coadminUid: string, requestIds: string[]) {
-  if (typeof window === 'undefined' || requestIds.length === 0) {
-    return;
-  }
-  const cur = readDismissedUrgentRequestIds(coadminUid);
-  for (const id of requestIds) {
-    if (id) {
-      cur.add(id);
-    }
-  }
-  localStorage.setItem(
-    URGENT_DISMISSED_STORAGE_PREFIX + coadminUid,
-    JSON.stringify([...cur])
-  );
-}
-
-async function readDismissedUrgentRequestIdsFromUserDoc(
-  coadminUid: string
-): Promise<string[]> {
-  const snap = await getDoc(doc(db, 'users', coadminUid));
-  if (!snap.exists()) {
-    return [];
-  }
-  const data = snap.data() as { dismissedUrgentRequestIds?: unknown };
-  const value = data.dismissedUrgentRequestIds;
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.filter((x): x is string => typeof x === 'string' && x.length > 0);
-}
-
-async function persistDismissedUrgentRequestIdsToUserDoc(
-  coadminUid: string,
-  requestIds: string[]
-): Promise<void> {
-  await updateDoc(doc(db, 'users', coadminUid), {
-    dismissedUrgentRequestIds: requestIds,
-  });
-}
-
 export default function CoadminPage() {
   const [activeView, setActiveView] = useState<CoadminView>('dashboard');
 
@@ -221,6 +157,8 @@ export default function CoadminPage() {
   const [playerList, setPlayerList] = useState<PlayerUser[]>([]);
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerUser | null>(null);
   const [deletePlayerTarget, setDeletePlayerTarget] = useState<PlayerUser | null>(null);
+  const [playerCoinAmountInput, setPlayerCoinAmountInput] = useState('');
+  const [playerCoinAdjustBusy, setPlayerCoinAdjustBusy] = useState(false);
 
   const [gameName, setGameName] = useState('');
   const [gameUsername, setGameUsername] = useState('');
@@ -255,11 +193,6 @@ export default function CoadminPage() {
   const [rewardCutBusyUid, setRewardCutBusyUid] = useState<string | null>(null);
 
   const previousUnreadRef = useRef(0);
-  const latestUrgentRequestsRef = useRef<PlayerGameRequest[]>([]);
-  const coadminUidUrgentRef = useRef<string | null>(null);
-  const hasPrimedUrgentIdListenerRef = useRef(false);
-  const previousUrgentRequestIdsRef = useRef<string[]>([]);
-  const dismissedUrgentIdsRef = useRef<Set<string>>(new Set());
   const latestCarerEscalationIdRef = useRef<string | null>(null);
   const hasSeenCarerEscalationSnapshotRef = useRef(false);
   const suppressedCashoutIdsRef = useRef<Set<string>>(new Set());
@@ -269,8 +202,6 @@ export default function CoadminPage() {
   const [workerCredentialsLoading, setWorkerCredentialsLoading] = useState(false);
   const [blocking, setBlocking] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
-  const [urgentRequestCount, setUrgentRequestCount] = useState(0);
-  const [showUrgentSplash, setShowUrgentSplash] = useState(false);
   const [latestCarerEscalation, setLatestCarerEscalation] =
     useState<CarerEscalationAlert | null>(null);
   const [showCarerEscalationSplash, setShowCarerEscalationSplash] = useState(false);
@@ -369,6 +300,10 @@ export default function CoadminPage() {
     if (activeView === 'game-list') loadGameLogins();
     if (activeView === 'reach-out') loadChatUsers();
   }, [activeView]);
+
+  useEffect(() => {
+    setPlayerCoinAmountInput('');
+  }, [selectedPlayer?.uid]);
 
   useEffect(() => {
     if (activeView !== 'payment-details') {
@@ -685,95 +620,6 @@ export default function CoadminPage() {
 
     previousUnreadRef.current = totalUnread;
   }, [totalUnread]);
-
-  useEffect(() => {
-    let isCancelled = false;
-    let unsubscribe: (() => void) | undefined;
-
-    async function startUrgentListener() {
-      try {
-        const coadminUid = await getCurrentUserCoadminUid();
-
-        if (isCancelled) {
-          return;
-        }
-
-        const localDismissed = readDismissedUrgentRequestIds(coadminUid);
-        const persistedDismissed = await readDismissedUrgentRequestIdsFromUserDoc(
-          coadminUid
-        ).catch(() => []);
-        const mergedDismissed = new Set<string>([
-          ...localDismissed,
-          ...persistedDismissed,
-        ]);
-        dismissedUrgentIdsRef.current = mergedDismissed;
-        addDismissedUrgentRequestIds(coadminUid, [...mergedDismissed]);
-        void persistDismissedUrgentRequestIdsToUserDoc(
-          coadminUid,
-          [...mergedDismissed]
-        ).catch(() => undefined);
-
-        if (isCancelled) {
-          return;
-        }
-
-        unsubscribe = listenToUrgentPlayerGameRequestsByCoadmin(
-          coadminUid,
-          (requests) => {
-            if (isCancelled) {
-              return;
-            }
-
-            coadminUidUrgentRef.current = coadminUid;
-            latestUrgentRequestsRef.current = requests;
-
-            const nextCount = requests.length;
-            setUrgentRequestCount(nextCount);
-
-            const dismissed = dismissedUrgentIdsRef.current;
-            const hasUnacknowledged = requests.some((r) => !dismissed.has(r.id));
-            setShowUrgentSplash(hasUnacknowledged && nextCount > 0);
-
-            const prevIdSet = new Set(previousUrgentRequestIdsRef.current);
-            const hasNewRequestId = requests.some((r) => !prevIdSet.has(r.id));
-            if (
-              hasPrimedUrgentIdListenerRef.current &&
-              hasNewRequestId &&
-              requests.length > 0
-            ) {
-              const audio = new Audio('/urgency-sound.mp3');
-              audio.volume = 0.9;
-              audio.play().catch(() => {});
-            }
-            if (!hasPrimedUrgentIdListenerRef.current) {
-              hasPrimedUrgentIdListenerRef.current = true;
-            }
-            previousUrgentRequestIdsRef.current = requests.map((r) => r.id);
-          },
-          (error) => {
-            if (!isCancelled) {
-              setMessage(error.message || 'Failed to listen for urgent player requests.');
-            }
-          }
-        );
-      } catch (err: unknown) {
-        if (!isCancelled) {
-          setMessage(
-            err instanceof Error
-              ? err.message
-              : 'Failed to start urgent player request listener.'
-          );
-        }
-      }
-    }
-
-    void startUrgentListener();
-
-    return () => {
-      isCancelled = true;
-      unsubscribe?.();
-    };
-  }, []);
 
   useEffect(() => {
     let isCancelled = false;
@@ -1256,6 +1102,44 @@ export default function CoadminPage() {
     }
   }
 
+  async function handleAdjustPlayerCoin(player: PlayerUser, mode: 'add' | 'deduct') {
+    const raw = playerCoinAmountInput.trim();
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setMessage('Enter a positive amount.');
+      return;
+    }
+
+    const amount = Math.floor(parsed);
+    if (amount <= 0) {
+      setMessage('Enter a positive amount.');
+      return;
+    }
+
+    const delta = mode === 'add' ? amount : -amount;
+
+    setPlayerCoinAdjustBusy(true);
+    setMessage('');
+
+    try {
+      await adjustPlayerCoin({ playerUid: player.uid, delta });
+      setMessage(
+        mode === 'add'
+          ? `Added ${amount} coin for ${player.username || 'player'}.`
+          : `Deducted ${amount} coin from ${player.username || 'player'}.`
+      );
+      setPlayerCoinAmountInput('');
+
+      const list = await getUsersForCurrentCoadmin(getPlayers);
+      setPlayerList(list);
+      setSelectedPlayer(list.find((p) => p.uid === player.uid) ?? null);
+    } catch (err: any) {
+      setMessage(err?.message || 'Could not update coin balance.');
+    } finally {
+      setPlayerCoinAdjustBusy(false);
+    }
+  }
+
   async function handleCompleteCashout(request: CarerCashoutRequest) {
     setLoading(true);
     setMessage('');
@@ -1614,27 +1498,6 @@ export default function CoadminPage() {
   function handleChangeView(view: CoadminView) {
     setActiveView(view);
     resetSelection();
-  }
-
-  function acknowledgeUrgentSplash(options?: { openPlayers?: boolean }) {
-    const uid = coadminUidUrgentRef.current;
-    const reqs = latestUrgentRequestsRef.current;
-    if (uid && reqs.length > 0) {
-      const merged = new Set(dismissedUrgentIdsRef.current);
-      reqs.forEach((r) => merged.add(r.id));
-      dismissedUrgentIdsRef.current = merged;
-      addDismissedUrgentRequestIds(
-        uid,
-        [...merged]
-      );
-      void persistDismissedUrgentRequestIdsToUserDoc(uid, [...merged]).catch(
-        () => undefined
-      );
-    }
-    setShowUrgentSplash(false);
-    if (options?.openPlayers) {
-      setActiveView('view-players');
-    }
   }
 
   async function handleAddPaymentDetailPhotos(files: FileList | null) {
@@ -2392,6 +2255,62 @@ export default function CoadminPage() {
               blocking={blocking}
               onlineByUid={coadminOnlineByUid}
               nameMode="coadmin"
+              renderSelectedExtras={(user) => (
+                <div className="mt-5 w-full max-w-md rounded-2xl border border-emerald-500/20 bg-emerald-950/30 p-4">
+                  <p className="text-xs font-bold uppercase tracking-wider text-emerald-200/80">
+                    Coin balance
+                  </p>
+                  <p className="mt-1 text-2xl font-bold text-white tabular-nums">
+                    {Math.max(0, Math.floor(Number(user.coin || 0))).toLocaleString()} coin
+                  </p>
+                  {user.cash != null && (
+                    <p className="mt-1 text-sm text-neutral-500">
+                      Cash (view only):{' '}
+                      <span className="text-neutral-300">
+                        {Math.max(0, Math.floor(Number(user.cash || 0))).toLocaleString()}
+                      </span>
+                    </p>
+                  )}
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
+                    <label className="min-w-0 flex-1 text-sm text-neutral-400">
+                      Amount
+                      <input
+                        type="number"
+                        min={1}
+                        step={1}
+                        inputMode="numeric"
+                        value={playerCoinAmountInput}
+                        onChange={(e) => setPlayerCoinAmountInput(e.target.value)}
+                        disabled={playerCoinAdjustBusy}
+                        placeholder="0"
+                        className="mt-1 w-full rounded-xl border border-white/15 bg-black/40 px-3 py-2 text-white outline-none focus:border-emerald-500/50 disabled:opacity-50"
+                      />
+                    </label>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleAdjustPlayerCoin(user, 'add')}
+                        disabled={playerCoinAdjustBusy || blocking}
+                        className="whitespace-nowrap rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-black hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {playerCoinAdjustBusy ? '...' : 'Add coin'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleAdjustPlayerCoin(user, 'deduct')}
+                        disabled={playerCoinAdjustBusy || blocking}
+                        className="whitespace-nowrap rounded-xl border border-rose-500/50 bg-rose-950/40 px-4 py-2.5 text-sm font-bold text-rose-100 hover:bg-rose-900/50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {playerCoinAdjustBusy ? '...' : 'Deduct coin'}
+                      </button>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-xs text-neutral-500">
+                    Whole numbers only. Deductions cannot make coin go below zero. Cash
+                    is shown for reference; only coin is changed here.
+                  </p>
+                </div>
+              )}
             />
           )}
 
@@ -2774,40 +2693,6 @@ export default function CoadminPage() {
             />
           )}
       </RoleSidebarLayout>
-
-      {showUrgentSplash && urgentRequestCount > 0 && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-red-950/85 px-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-3xl border border-red-300/30 bg-gradient-to-br from-red-950 via-red-900 to-black p-8 text-white shadow-2xl">
-            <p className="text-xs font-bold uppercase tracking-[0.3em] text-red-200">
-              Urgent Player Alert
-            </p>
-            <h2 className="mt-3 text-3xl font-bold">
-              Help Me request received from player side.
-            </h2>
-            <p className="mt-3 text-sm text-red-100/80">
-              {urgentRequestCount} urgent player request
-              {urgentRequestCount === 1 ? '' : 's'} need attention right now.
-            </p>
-
-            <div className="mt-6 flex flex-wrap gap-3">
-              <button
-                type="button"
-                onClick={() => acknowledgeUrgentSplash({ openPlayers: true })}
-                className="rounded-2xl bg-white px-5 py-3 text-sm font-bold text-black hover:bg-neutral-200"
-              >
-                Open Players
-              </button>
-              <button
-                type="button"
-                onClick={() => acknowledgeUrgentSplash()}
-                className="rounded-2xl bg-white/10 px-5 py-3 text-sm font-bold text-white hover:bg-white/20"
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {showCarerEscalationSplash && latestCarerEscalation && (
         <div
