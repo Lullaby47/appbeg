@@ -5,7 +5,6 @@ import {
   getDoc,
   getDocs,
   onSnapshot,
-  orderBy,
   query,
   runTransaction,
   serverTimestamp,
@@ -200,8 +199,7 @@ export function listenToPlayerGameRequestsByPlayer(
 ) {
   const requestsQuery = query(
     collection(db, 'playerGameRequests'),
-    where('playerUid', '==', playerUid),
-    orderBy('createdAt', 'desc')
+    where('playerUid', '==', playerUid)
   );
 
   return onSnapshot(
@@ -229,8 +227,7 @@ export function listenToUrgentPlayerGameRequestsByCoadmin(
 ) {
   const requestsQuery = query(
     collection(db, 'playerGameRequests'),
-    where('coadminUid', '==', coadminUid),
-    orderBy('createdAt', 'desc')
+    where('coadminUid', '==', coadminUid)
   );
 
   return onSnapshot(

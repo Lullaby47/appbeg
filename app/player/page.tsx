@@ -41,7 +41,7 @@ import {
 } from '@/features/cashouts/playerCashoutTasks';
 import {
   BonusEvent,
-  getStaffBonusEventsForPlayerDisplay,
+  getBonusEventsForPlayerDisplay,
   initiateBonusEventPlay,
   listenBonusEventsByCoadmin,
 } from '../../features/bonusEvents/bonusEvents';
@@ -304,6 +304,7 @@ export default function PlayerPage() {
     gameName: string;
     amountText: string;
   }>(null);
+  const [showActiveTableSplash, setShowActiveTableSplash] = useState(false);
   const [coinLoading, setCoinLoading] = useState(false);
   const [requestHistory, setRequestHistory] = useState<PlayerGameRequest[]>([]);
   const [dismissRedeemLoadingId, setDismissRedeemLoadingId] = useState<string | null>(null);
@@ -355,20 +356,20 @@ export default function PlayerPage() {
   const totalUnread = agents.reduce((total, agent) => {
     return total + (unreadCounts[agent.uid] || 0);
   }, 0);
-  const staffBonusEvents = useMemo(
-    () => getStaffBonusEventsForPlayerDisplay(bonusEvents),
+  const playerBonusEvents = useMemo(
+    () => getBonusEventsForPlayerDisplay(bonusEvents),
     [bonusEvents]
   );
 
   useEffect(() => {
-    if (staffBonusEvents.length === 0) {
+    if (playerBonusEvents.length === 0) {
       setBonusCarouselIndex(0);
       return;
     }
     setBonusCarouselIndex((index) =>
-      Math.min(index, Math.max(0, staffBonusEvents.length - 1))
+      Math.min(index, Math.max(0, playerBonusEvents.length - 1))
     );
-  }, [staffBonusEvents.length]);
+  }, [playerBonusEvents.length]);
 
   const displayedRequestHistory = useMemo(
     () => requestHistory.slice(0, MAX_REQUEST_HISTORY_DISPLAY),
@@ -882,6 +883,12 @@ export default function PlayerPage() {
   }, [activeView, loadAgents, loadPlayerUsernames, playerUid]);
 
   useEffect(() => {
+    if (activeView !== 'play') {
+      setShowActiveTableSplash(false);
+    }
+  }, [activeView]);
+
+  useEffect(() => {
     if (!selectedAgent) {
       return;
     }
@@ -918,6 +925,7 @@ export default function PlayerPage() {
       return;
     }
 
+    setShowActiveTableSplash(false);
     setPlayRequestSplash({
       type,
       gameName: selectedGameName,
@@ -1786,18 +1794,19 @@ export default function PlayerPage() {
                         <span>🎁</span> Bonus events
                       </h3>
                       <p className="mt-1 text-[11px] font-medium text-violet-200/60 sm:text-xs">
-                        Latest staff bonuses (newest first, up to 10). The first player to claim a
-                        bonus takes it; others see it disappear.
+                        All players under your team see the same list (newest first, up to 10). First
+                        to tap Claim takes the bonus; then it is gone for everyone (first come, first
+                        served).
                       </p>
                     </div>
-                    {staffBonusEvents.length > 1 ? (
+                    {playerBonusEvents.length > 1 ? (
                       <div className="flex gap-2">
                         <button
                           type="button"
                           aria-label="Previous bonus"
                           onClick={() =>
                             setBonusCarouselIndex((i) =>
-                              i <= 0 ? staffBonusEvents.length - 1 : i - 1
+                              i <= 0 ? playerBonusEvents.length - 1 : i - 1
                             )
                           }
                           className="rounded-xl border border-violet-400/40 bg-violet-500/15 px-3 py-2 text-sm font-bold text-violet-100"
@@ -1809,7 +1818,7 @@ export default function PlayerPage() {
                           aria-label="Next bonus"
                           onClick={() =>
                             setBonusCarouselIndex((i) =>
-                              i >= staffBonusEvents.length - 1 ? 0 : i + 1
+                              i >= playerBonusEvents.length - 1 ? 0 : i + 1
                             )
                           }
                           className="rounded-xl border border-violet-400/40 bg-violet-500/15 px-3 py-2 text-sm font-bold text-violet-100"
@@ -1820,12 +1829,12 @@ export default function PlayerPage() {
                     ) : null}
                   </div>
 
-                  {staffBonusEvents.length === 0 ? (
+                  {playerBonusEvents.length === 0 ? (
                     <p className="text-sm text-violet-200/55">No bonus events right now. Check back soon.</p>
                   ) : (
                     <AnimatePresence mode="wait">
                       <motion.div
-                        key={staffBonusEvents[bonusCarouselIndex]?.id || 'bonus'}
+                        key={playerBonusEvents[bonusCarouselIndex]?.id || 'bonus'}
                         initial={{ opacity: 0, x: 16 }}
                         animate={{ opacity: 1, x: 0 }}
                         exit={{ opacity: 0, x: -16 }}
@@ -1833,18 +1842,22 @@ export default function PlayerPage() {
                         className="rounded-2xl border border-violet-300/25 bg-black/40 p-4 sm:p-5"
                       >
                         {(() => {
-                          const event = staffBonusEvents[bonusCarouselIndex];
+                          const event = playerBonusEvents[bonusCarouselIndex];
                           if (!event) return null;
                           return (
                             <>
                               <p className="text-xl font-black text-white">{event.bonusName}</p>
                               <p className="mt-2 text-sm text-violet-100/85">
-                                🎯 {event.gameName} · 💰 $
-                                {Math.round(event.amountNpr || 0).toLocaleString()}
+                                🎯 {event.gameName} ·{' '}
+                                <span className="font-semibold text-violet-50">
+                                  ${Math.round(event.amountNpr || 0).toLocaleString('en-US')} USD
+                                </span>
                               </p>
                               <p className="mt-2 text-sm text-violet-100/80">{event.description}</p>
                               <p className="mt-2 text-xs text-violet-200/65">
-                                Bonus {event.bonusPercentage}% · By {event.createdByUsername}
+                                Bonus {event.bonusPercentage}% ·{' '}
+                                {event.createdByRole === 'staff' ? 'Staff' : 'Coadmin'} ·{' '}
+                                {event.createdByUsername}
                               </p>
                               <button
                                 type="button"
@@ -1951,7 +1964,8 @@ export default function PlayerPage() {
                   </p>
                   <h2 className="mt-2 text-3xl font-black text-white sm:text-4xl">Pick your table</h2>
                   <p className="mt-2 text-sm text-amber-100/60">
-                    Tap a casino card, enter amount, then fire recharge ⬇️ or redeem ⬆️.
+                    Tap a table to open the play screen, enter your amount in USD, then recharge ⬇️ or
+                    redeem ⬆️.
                   </p>
                 </div>
 
@@ -1979,7 +1993,10 @@ export default function PlayerPage() {
                             initial={{ opacity: 0, y: 16 }}
                             animate={{ opacity: 1, y: 0 }}
                             transition={{ delay: index * 0.05 }}
-                            onClick={() => setSelectedGameName(game.gameName)}
+                            onClick={() => {
+                              setSelectedGameName(game.gameName);
+                              setShowActiveTableSplash(true);
+                            }}
                             className={`relative overflow-hidden rounded-3xl border p-4 text-left shadow-xl transition-all active:scale-[0.98] sm:p-5 ${
                               isSelected
                                 ? 'border-amber-400/60 bg-gradient-to-br from-amber-500/25 to-purple-900/40 shadow-[0_0_32px_-8px_rgba(234,179,8,0.55)]'
@@ -2022,70 +2039,11 @@ export default function PlayerPage() {
                                   : 'border border-amber-400/40 bg-amber-500/15 text-amber-100'
                               }`}
                             >
-                              {isSelected ? '🔥 Selected · Play below' : 'Tap to select'}
+                              {isSelected ? '🔥 Selected · Tap to open table' : 'Tap to open table'}
                             </span>
                           </motion.button>
                         );
                       })}
-                    </div>
-
-                    <div className="rounded-3xl border border-amber-400/30 bg-black/50 p-4 shadow-2xl backdrop-blur-xl sm:p-6">
-                      <p className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-200/60">
-                        Active table
-                      </p>
-                      <h3 className="mt-1 text-2xl font-black text-amber-300 sm:text-3xl">
-                        {selectedGameName || '— Tap a card above —'}
-                      </h3>
-
-                      <div className="mt-5">
-                        <label className="mb-2 block text-sm font-bold text-amber-100/70">
-                          💰 Amount
-                        </label>
-                        <input
-                          value={playAmount}
-                          onChange={(event) => setPlayAmount(event.target.value)}
-                          type="number"
-                          min="1"
-                          inputMode="decimal"
-                          placeholder="Enter amount"
-                          className="min-h-[52px] w-full rounded-2xl border border-amber-400/35 bg-black/70 px-4 py-3 text-lg text-white outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-400/30"
-                        />
-                      </div>
-
-                      <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <button
-                          type="button"
-                          disabled={
-                            requestLoading ||
-                            !selectedGameName ||
-                            !playAmount ||
-                            isBlockedPlayer
-                          }
-                          onClick={() => void handleGameRequest('recharge')}
-                          className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 py-3 text-base font-black text-white shadow-lg shadow-emerald-500/25 transition-all hover:brightness-110 disabled:opacity-50"
-                        >
-                          <span>⬇️</span> Recharge
-                        </button>
-
-                        <button
-                          type="button"
-                          disabled={
-                            requestLoading ||
-                            !selectedGameName ||
-                            !playAmount ||
-                            isBlockedPlayer
-                          }
-                          onClick={() => void handleGameRequest('redeem')}
-                          className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-700 to-red-600 px-4 py-3 text-base font-black text-white shadow-lg shadow-rose-500/25 transition-all hover:brightness-110 disabled:opacity-50"
-                        >
-                          <span>⬆️</span> Redeem
-                        </button>
-                      </div>
-
-                      <div className="mt-5 flex items-start gap-2 rounded-2xl border border-white/10 bg-white/[0.06] p-4 text-sm text-amber-100/60">
-                        <span className="text-lg">🛡️</span>
-                        <span>Requests go to your team for secure processing.</span>
-                      </div>
                     </div>
                   </>
                 )}
@@ -2356,9 +2314,93 @@ export default function PlayerPage() {
         </nav>
       </main>
 
+      {showActiveTableSplash && selectedGameName ? (
+        <div
+          className="fixed inset-0 z-[73] flex items-center justify-center bg-black/88 px-4 py-6 backdrop-blur-sm"
+          onClick={() => setShowActiveTableSplash(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="active-table-title"
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            className="relative w-full max-w-lg overflow-hidden rounded-3xl border border-amber-400/30 bg-gradient-to-b from-black/80 to-zinc-950/95 p-5 shadow-2xl backdrop-blur-xl sm:p-6"
+          >
+            <button
+              type="button"
+              aria-label="Close"
+              onClick={() => setShowActiveTableSplash(false)}
+              className="absolute right-3 top-3 z-10 flex h-10 w-10 items-center justify-center rounded-xl border border-amber-500/35 bg-black/60 text-xl font-bold leading-none text-amber-100 transition hover:bg-amber-500/15"
+            >
+              ×
+            </button>
+            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-200/60">
+              Active table
+            </p>
+            <h3
+              id="active-table-title"
+              className="mt-1 pr-12 text-2xl font-black text-amber-300 sm:text-3xl"
+            >
+              {selectedGameName}
+            </h3>
+
+            <div className="mt-5">
+              <label className="mb-2 block text-sm font-bold text-amber-100/70">
+                💰 Amount (USD)
+              </label>
+              <input
+                value={playAmount}
+                onChange={(event) => setPlayAmount(event.target.value)}
+                type="number"
+                min="1"
+                inputMode="decimal"
+                placeholder="Enter amount in USD"
+                autoFocus
+                className="min-h-[52px] w-full rounded-2xl border border-amber-400/35 bg-black/70 px-4 py-3 text-lg text-white outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-400/30"
+              />
+            </div>
+
+            <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                disabled={
+                  requestLoading ||
+                  !selectedGameName ||
+                  !playAmount ||
+                  isBlockedPlayer
+                }
+                onClick={() => void handleGameRequest('recharge')}
+                className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 py-3 text-base font-black text-white shadow-lg shadow-emerald-500/25 transition-all hover:brightness-110 disabled:opacity-50"
+              >
+                <span>⬇️</span> Recharge
+              </button>
+
+              <button
+                type="button"
+                disabled={
+                  requestLoading ||
+                  !selectedGameName ||
+                  !playAmount ||
+                  isBlockedPlayer
+                }
+                onClick={() => void handleGameRequest('redeem')}
+                className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-700 to-red-600 px-4 py-3 text-base font-black text-white shadow-lg shadow-rose-500/25 transition-all hover:brightness-110 disabled:opacity-50"
+              >
+                <span>⬆️</span> Redeem
+              </button>
+            </div>
+
+            <div className="mt-5 flex items-start gap-2 rounded-2xl border border-white/10 bg-white/[0.06] p-4 text-sm text-amber-100/60">
+              <span className="text-lg">🛡️</span>
+              <span>Requests go to your team for secure processing.</span>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {playRequestSplash && (
         <div
-          className="fixed inset-0 z-[72] flex items-center justify-center bg-black/88 px-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[75] flex items-center justify-center bg-black/88 px-4 backdrop-blur-sm"
           role="alert"
           aria-live="polite"
           aria-busy="true"
@@ -2376,7 +2418,10 @@ export default function PlayerPage() {
               <span className="font-bold text-amber-200">🎰 {playRequestSplash.gameName}</span>
             </p>
             <p className="mt-1 text-sm text-amber-100/60">
-              Amount: <span className="font-mono font-bold text-white">${playRequestSplash.amountText}</span>
+              Amount:{' '}
+              <span className="font-mono font-bold text-white">
+                ${playRequestSplash.amountText} USD
+              </span>
             </p>
             <div className="mt-7 flex items-center justify-center gap-2">
               <i className="fas fa-circle-notch fa-spin text-2xl text-amber-300" aria-hidden></i>

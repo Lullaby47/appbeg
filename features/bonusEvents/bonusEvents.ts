@@ -42,17 +42,21 @@ function sortByNewest(list: BonusEvent[]) {
   });
 }
 
-/** Newest staff-created bonus events shown on the player dashboard (5–10 range; we use 10). */
+/** Newest bonus events shown on the player dashboard (up to 10). */
 export const MAX_PLAYER_BONUS_EVENTS_DISPLAY = 10;
 
 /**
- * Staff bonus offers for the player UI: newest first, capped for performance and clarity.
- * Each list item is still a separate Firestore doc; only one player can claim a given event.
+ * All bonus events for the player’s coadmin (staff- or coadmin-created), newest first.
+ * `listenBonusEventsByCoadmin` already scopes by coadmin — every player under that coadmin sees the same list.
+ * Each doc is first-come-first-served: the first player to claim removes it (see `initiateBonusEventPlay`).
  */
-export function getStaffBonusEventsForPlayerDisplay(events: BonusEvent[]): BonusEvent[] {
-  return sortByNewest(
-    events.filter((event) => event.createdByRole === 'staff')
-  ).slice(0, MAX_PLAYER_BONUS_EVENTS_DISPLAY);
+export function getBonusEventsForPlayerDisplay(events: BonusEvent[]): BonusEvent[] {
+  return sortByNewest(events).slice(0, MAX_PLAYER_BONUS_EVENTS_DISPLAY);
+}
+
+/** @deprecated Use {@link getBonusEventsForPlayerDisplay} — staff-only filter removed. */
+export function getStaffBonusEventsForPlayerDisplay(events: BonusEvent[]) {
+  return getBonusEventsForPlayerDisplay(events);
 }
 
 // Staff reward tuning thresholds.
