@@ -417,15 +417,17 @@ export default function PlayerPage() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [musicEnabled, setMusicEnabled] = useState(() => {
     if (typeof window === 'undefined') {
-      return false;
+      return true;
     }
 
     try {
-      return window.localStorage.getItem(PLAYER_MUSIC_STORAGE_KEY) === 'true';
+      const storedValue = window.localStorage.getItem(PLAYER_MUSIC_STORAGE_KEY);
+      return storedValue === null ? true : storedValue === 'true';
     } catch {
-      return false;
+      return true;
     }
   });
+  const [musicPlaying, setMusicPlaying] = useState(false);
   const [bonusCarouselIndex, setBonusCarouselIndex] = useState(0);
   const [bonusStripPaused, setBonusStripPaused] = useState(false);
   const [showLogoutConfirmSplash, setShowLogoutConfirmSplash] = useState(false);
@@ -576,21 +578,53 @@ export default function PlayerPage() {
     audio.onerror = null;
     audio.src = '';
     audioRef.current = null;
+    setMusicPlaying(false);
   }, []);
 
   const playCurrentAudio = useCallback(async () => {
     const audio = audioRef.current;
     if (!audio || !musicEnabledRef.current) {
+      setMusicPlaying(false);
       return false;
     }
 
     try {
       audio.volume = DEFAULT_PLAYER_MUSIC_VOLUME;
       await audio.play();
+      setMusicPlaying(true);
       clearInteractionListener();
       clearAutoplayRetry();
       return true;
     } catch {
+      setMusicPlaying(false);
+      return false;
+    }
+  }, [clearAutoplayRetry, clearInteractionListener]);
+
+  const tryBootstrapAutoplay = useCallback(async () => {
+    const audio = audioRef.current;
+    if (!audio || !musicEnabledRef.current) {
+      setMusicPlaying(false);
+      return false;
+    }
+
+    const previousMuted = audio.muted;
+    const previousVolume = audio.volume;
+
+    try {
+      audio.muted = true;
+      audio.volume = 0;
+      await audio.play();
+      audio.muted = previousMuted;
+      audio.volume = DEFAULT_PLAYER_MUSIC_VOLUME;
+      setMusicPlaying(true);
+      clearInteractionListener();
+      clearAutoplayRetry();
+      return true;
+    } catch {
+      audio.muted = previousMuted;
+      audio.volume = previousVolume;
+      setMusicPlaying(false);
       return false;
     }
   }, [clearAutoplayRetry, clearInteractionListener]);
@@ -627,9 +661,11 @@ export default function PlayerPage() {
       audio.volume = DEFAULT_PLAYER_MUSIC_VOLUME;
       audio.preload = 'auto';
       audio.onended = () => {
+        setMusicPlaying(false);
         void playRandomTrackRef.current?.(nextTrack);
       };
       audio.onerror = () => {
+        setMusicPlaying(false);
         clearAutoplayRetry();
         autoplayRetryTimeoutRef.current = window.setTimeout(() => {
           autoplayRetryTimeoutRef.current = null;
@@ -640,7 +676,7 @@ export default function PlayerPage() {
       audioRef.current = audio;
       currentTrackRef.current = nextTrack;
 
-      const didPlay = await playCurrentAudio();
+      const didPlay = (await tryBootstrapAutoplay()) || (await playCurrentAudio());
       if (!didPlay) {
         attachInteractionListener();
       }
@@ -651,6 +687,7 @@ export default function PlayerPage() {
       cleanupAudioElement,
       clearAutoplayRetry,
       playCurrentAudio,
+      tryBootstrapAutoplay,
     ]
   );
   useEffect(() => {
@@ -1822,7 +1859,7 @@ export default function PlayerPage() {
           aria-pressed={musicEnabled}
           aria-label={musicEnabled ? 'Turn music off' : 'Turn music on'}
         >
-          {musicEnabled ? 'Music On' : 'Music Off'}
+          {musicEnabled ? (musicPlaying ? 'Music On' : 'Music Starting') : 'Music Off'}
         </button>
 
         <AnimatePresence>
