@@ -2143,7 +2143,7 @@ export default function PlayerPage() {
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.45 }}
-                  className="player-dashboard-hero fire-panel fire-orange fire-hero relative overflow-hidden rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/20 via-rose-600/10 to-purple-900/35 px-5 pb-5 pt-3 text-left shadow-[0_0_50px_-12px_rgba(234,179,8,0.45)] sm:px-8 sm:pb-8 sm:pt-4"
+                  className="player-dashboard-hero hero-card jackpot-card vip-hero lobby-hero fire-panel fire-orange fire-hero relative overflow-hidden rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/20 via-rose-600/10 to-purple-900/35 px-5 pb-5 pt-3 text-left shadow-[0_0_50px_-12px_rgba(234,179,8,0.45)] sm:px-8 sm:pb-8 sm:pt-4"
                 >
                   <div className="pointer-events-none absolute -right-10 -top-10 text-8xl opacity-[0.07]">
                     🎰
@@ -2151,7 +2151,7 @@ export default function PlayerPage() {
                   <div className="pointer-events-none absolute bottom-0 left-1/4 h-40 w-40 rounded-full bg-red-500/15 blur-3xl" />
                   <div className="pointer-events-none absolute right-10 top-10 h-32 w-32 rounded-full bg-amber-400/20 blur-2xl" />
 
-                  <div className="relative grid content-start items-start gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:gap-6 lg:items-start">
+                  <div className="hero-content jackpot-content vip-welcome-wrap relative grid content-start items-start gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:gap-6 lg:items-start">
                     <div className="self-start">
                       <p className="flex items-center gap-2 text-base font-black uppercase tracking-[0.3em] text-amber-200/90 sm:text-lg">
                         <span className="text-lg">👑</span> VIP welcome

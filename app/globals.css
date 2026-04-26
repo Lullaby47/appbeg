@@ -406,3 +406,29 @@ body {
     animation-iteration-count: 1 !important;
   }
 }
+
+.hero-card,
+.jackpot-card,
+.vip-hero,
+.lobby-hero {
+  min-height: 360px !important;
+  height: auto !important;
+  padding: 32px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: flex-start !important;
+  align-items: flex-start !important;
+}
+
+.hero-content,
+.jackpot-content,
+.vip-welcome-wrap {
+  position: relative !important;
+  top: auto !important;
+  bottom: auto !important;
+  left: auto !important;
+  transform: none !important;
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+  align-self: flex-start !important;
+}
