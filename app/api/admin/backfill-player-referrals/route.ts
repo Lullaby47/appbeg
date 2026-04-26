@@ -1,66 +1,131 @@
+import { FieldValue } from 'firebase-admin/firestore';
+import type { DocumentReference } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
+
 import { adminDb } from '@/lib/firebase/admin';
+import {
+  findUniqueReferralCodeWithQueries,
+  generateCandidateReferralCode,
+  isReferralCodeGloballyFree,
+  isValidReferralCodeString,
+  REFERRAL_CODE_INDEX,
+} from '@/lib/referral/referralCodeAdmin';
 
-function isValidReferralCode(value: unknown) {
-  return /^\d{6,10}$/.test(String(value || '').trim());
-}
-
-function randomInt(min: number, max: number) {
-  const safeMin = Math.min(min, max);
-  const safeMax = Math.max(min, max);
-  return Math.floor(Math.random() * (safeMax - safeMin + 1)) + safeMin;
-}
-
-function generateCandidateReferralCode() {
-  const length = randomInt(6, 10);
-  let code = '';
-  for (let index = 0; index < length; index += 1) {
-    const digit = index === 0 ? randomInt(1, 9) : randomInt(0, 9);
-    code += String(digit);
-  }
-  return code;
-}
+type Row = {
+  ref: DocumentReference;
+  uid: string;
+  codeRaw: string;
+};
 
 export async function POST() {
   try {
     const snapshot = await adminDb.collection('users').where('role', '==', 'player').get();
-    const players = snapshot.docs;
+    const rows: Row[] = snapshot.docs.map((docSnap) => ({
+      ref: docSnap.ref,
+      uid: docSnap.id,
+      codeRaw: String((docSnap.data() as { referralCode?: string }).referralCode || '').trim(),
+    }));
 
-    const usedCodes = new Set<string>();
-    const invalidOrMissingRefs: FirebaseFirestore.DocumentReference[] = [];
-
-    players.forEach((docSnap) => {
-      const data = docSnap.data() as { referralCode?: string };
-      const referralCode = String(data.referralCode || '').trim();
-      if (isValidReferralCode(referralCode) && !usedCodes.has(referralCode)) {
-        usedCodes.add(referralCode);
-        return;
+    const byCode = new Map<string, Row[]>();
+    for (const row of rows) {
+      if (!isValidReferralCodeString(row.codeRaw)) {
+        continue;
       }
-      invalidOrMissingRefs.push(docSnap.ref);
-    });
+      if (!byCode.has(row.codeRaw)) {
+        byCode.set(row.codeRaw, []);
+      }
+      byCode.get(row.codeRaw)!.push(row);
+    }
 
-    const batch = adminDb.batch();
-    let updatedCount = 0;
+    const assigned = new Map<string, { ref: DocumentReference; code: string }>();
+    const toReassign: Row[] = [];
 
-    invalidOrMissingRefs.forEach((ref) => {
-      let code = '';
-      do {
-        code = generateCandidateReferralCode();
-      } while (usedCodes.has(code));
+    for (const list of byCode.values()) {
+      if (list.length === 1) {
+        assigned.set(list[0].uid, { ref: list[0].ref, code: list[0].codeRaw });
+      } else {
+        const sorted = [...list].sort((a, b) => a.uid.localeCompare(b.uid));
+        assigned.set(sorted[0].uid, { ref: sorted[0].ref, code: sorted[0].codeRaw });
+        for (let i = 1; i < sorted.length; i += 1) {
+          toReassign.push(sorted[i]);
+        }
+      }
+    }
 
-      usedCodes.add(code);
-      updatedCount += 1;
-      batch.update(ref, { referralCode: code });
-    });
+    for (const row of rows) {
+      if (assigned.has(row.uid)) {
+        continue;
+      }
+      if (!isValidReferralCodeString(row.codeRaw)) {
+        toReassign.push(row);
+      }
+    }
 
-    if (updatedCount > 0) {
+    const reservedCodes = new Set(
+      Array.from(assigned.values())
+        .map((entry) => entry.code)
+        .filter(Boolean)
+    );
+
+    for (const row of toReassign) {
+      let nextCode = '';
+      for (let attempt = 0; attempt < 200 && !nextCode; attempt += 1) {
+        const candidate = generateCandidateReferralCode();
+        if (reservedCodes.has(candidate)) {
+          continue;
+        }
+        if (await isReferralCodeGloballyFree(adminDb, candidate)) {
+          nextCode = candidate;
+        }
+      }
+      if (!nextCode) {
+        nextCode = await findUniqueReferralCodeWithQueries(adminDb);
+      }
+      reservedCodes.add(nextCode);
+      assigned.set(row.uid, { ref: row.ref, code: nextCode });
+    }
+
+    let batch = adminDb.batch();
+    let ops = 0;
+
+    const commitIfNeeded = async () => {
+      if (ops >= 450) {
+        await batch.commit();
+        batch = adminDb.batch();
+        ops = 0;
+      }
+    };
+
+    const rowByUid = new Map(rows.map((r) => [r.uid, r]));
+
+    for (const { ref, code } of assigned.values()) {
+      const row = rowByUid.get(ref.id);
+      if (!row || row.codeRaw !== code) {
+        batch.update(ref, { referralCode: code });
+        ops += 1;
+        await commitIfNeeded();
+      }
+      batch.set(
+        adminDb.collection(REFERRAL_CODE_INDEX).doc(code),
+        { playerUid: ref.id, createdAt: FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+      ops += 1;
+      await commitIfNeeded();
+    }
+
+    if (ops > 0) {
       await batch.commit();
     }
 
-    return NextResponse.json({ success: true, updatedCount });
+    return NextResponse.json({
+      success: true,
+      totalPlayers: rows.length,
+      finalAssignments: assigned.size,
+    });
   } catch (error: any) {
     return NextResponse.json(
-      { error: error.message || 'Failed to backfill player referral codes.' },
+      { error: error?.message || 'Failed to backfill player referral codes.' },
       { status: 500 }
     );
   }

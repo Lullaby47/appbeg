@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import {
+  buildUniqueReferralCodeCandidates,
+  findFreeReferralCodeInTransaction,
+  setReferralCodeIndexInTransaction,
+} from '@/lib/referral/referralCodeAdmin';
 
 type CreatableRole = 'staff' | 'carer' | 'player';
 
@@ -15,33 +20,6 @@ function randomInt(min: number, max: number) {
   const safeMin = Math.min(min, max);
   const safeMax = Math.max(min, max);
   return Math.floor(Math.random() * (safeMax - safeMin + 1)) + safeMin;
-}
-
-function generateCandidateReferralCode() {
-  const length = randomInt(6, 10);
-  let code = '';
-  for (let index = 0; index < length; index += 1) {
-    const digit = index === 0 ? randomInt(1, 9) : randomInt(0, 9);
-    code += String(digit);
-  }
-  return code;
-}
-
-async function generateUniqueReferralCode() {
-  for (let attempts = 0; attempts < 20; attempts += 1) {
-    const code = generateCandidateReferralCode();
-    const existing = await adminDb
-      .collection('users')
-      .where('referralCode', '==', code)
-      .limit(1)
-      .get();
-
-    if (existing.empty) {
-      return code;
-    }
-  }
-
-  throw new Error('Failed to generate a unique referral code. Please try again.');
 }
 
 function parseReferralCodeInput(value: unknown) {
@@ -142,7 +120,7 @@ export async function POST(request: Request) {
     let referredByCode: string | null = null;
 
     if (role === 'player') {
-      const referralCode = await generateUniqueReferralCode();
+      const referralCandidates = buildUniqueReferralCodeCandidates(40);
       const now = new Date();
 
       await adminDb.runTransaction(async (transaction) => {
@@ -167,6 +145,16 @@ export async function POST(request: Request) {
           referralApplied = true;
         }
 
+        const nextReferralCode = await findFreeReferralCodeInTransaction(
+          adminDb,
+          transaction,
+          referralCandidates
+        );
+        if (!nextReferralCode) {
+          throw new Error('Failed to generate a unique referral code. Please try again.');
+        }
+        setReferralCodeIndexInTransaction(adminDb, transaction, nextReferralCode, authUser.uid);
+
         transaction.set(userRef, {
           uid: authUser.uid,
           username,
@@ -178,7 +166,7 @@ export async function POST(request: Request) {
           status: 'active',
           coin: 0,
           cash: 0,
-          referralCode,
+          referralCode: nextReferralCode,
           referredByUid,
           referredByCode,
           referralBonusCoins: referralApplied ? referralBonusCoins : 0,

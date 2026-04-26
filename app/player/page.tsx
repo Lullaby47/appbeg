@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { onAuthStateChanged } from 'firebase/auth';
-import { collection, doc, getDoc, getDocs, onSnapshot, query, setDoc, where } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import imageCompression from 'browser-image-compression';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
@@ -299,6 +299,11 @@ export default function PlayerPage() {
   const [selectedGameName, setSelectedGameName] = useState('');
   const [playAmount, setPlayAmount] = useState('');
   const [requestLoading, setRequestLoading] = useState(false);
+  const [playRequestSplash, setPlayRequestSplash] = useState<null | {
+    type: 'recharge' | 'redeem';
+    gameName: string;
+    amountText: string;
+  }>(null);
   const [coinLoading, setCoinLoading] = useState(false);
   const [requestHistory, setRequestHistory] = useState<PlayerGameRequest[]>([]);
   const [dismissRedeemLoadingId, setDismissRedeemLoadingId] = useState<string | null>(null);
@@ -450,49 +455,47 @@ export default function PlayerPage() {
     }
   }
 
-  function generateCandidateReferralCode() {
-    const length = Math.floor(Math.random() * 5) + 6; // 6-10 digits
-    let code = '';
-    for (let index = 0; index < length; index += 1) {
-      const digit = index === 0 ? Math.floor(Math.random() * 9) + 1 : Math.floor(Math.random() * 10);
-      code += String(digit);
-    }
-    return code;
-  }
-
   async function ensureCurrentPlayerReferralCode(currentPlayerUid: string) {
     if (!currentPlayerUid || referralCodeEnsureInFlightRef.current) {
       return;
     }
 
+    const playerRef = doc(db, 'users', currentPlayerUid);
+    const playerSnap = await getDoc(playerRef);
+    if (!playerSnap.exists()) {
+      return;
+    }
+
+    const existingCode = String(
+      (playerSnap.data() as { referralCode?: string }).referralCode || ''
+    ).trim();
+    if (/^\d{6,10}$/.test(existingCode)) {
+      setReferralCode(existingCode);
+    }
+
     referralCodeEnsureInFlightRef.current = true;
     try {
-      const playerRef = doc(db, 'users', currentPlayerUid);
-      const playerSnap = await getDoc(playerRef);
-      if (!playerSnap.exists()) {
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
         return;
       }
-
-      const existingCode = String((playerSnap.data() as { referralCode?: string }).referralCode || '').trim();
-      if (/^\d{6,10}$/.test(existingCode)) {
-        setReferralCode(existingCode);
-        return;
+      const token = await currentUser.getIdToken();
+      const res = await fetch('/api/player/ensure-referral-code', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = (await res.json()) as {
+        success?: boolean;
+        referralCode?: string;
+        error?: string;
+      };
+      if (data.success && data.referralCode) {
+        setReferralCode(String(data.referralCode).trim());
+      } else if (data.error) {
+        console.warn('Referral code ensure failed:', data.error);
       }
-
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        const candidate = generateCandidateReferralCode();
-        const duplicateSnap = await getDocs(
-          query(collection(db, 'users'), where('referralCode', '==', candidate))
-        );
-
-        if (!duplicateSnap.empty) {
-          continue;
-        }
-
-        await setDoc(playerRef, { referralCode: candidate }, { merge: true });
-        setReferralCode(candidate);
-        return;
-      }
+    } catch (error) {
+      console.error(error);
     } finally {
       referralCodeEnsureInFlightRef.current = false;
     }
@@ -915,6 +918,11 @@ export default function PlayerPage() {
       return;
     }
 
+    setPlayRequestSplash({
+      type,
+      gameName: selectedGameName,
+      amountText: String(playAmount),
+    });
     setRequestLoading(true);
     setMessage('');
 
@@ -931,6 +939,7 @@ export default function PlayerPage() {
       setMessage(error instanceof Error ? error.message : 'Request failed.');
     } finally {
       setRequestLoading(false);
+      setPlayRequestSplash(null);
     }
   }
 
@@ -2055,13 +2064,7 @@ export default function PlayerPage() {
                           onClick={() => void handleGameRequest('recharge')}
                           className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 py-3 text-base font-black text-white shadow-lg shadow-emerald-500/25 transition-all hover:brightness-110 disabled:opacity-50"
                         >
-                          {requestLoading ? (
-                            <i className="fas fa-spinner fa-spin"></i>
-                          ) : (
-                            <>
-                              <span>⬇️</span> Recharge
-                            </>
-                          )}
+                          <span>⬇️</span> Recharge
                         </button>
 
                         <button
@@ -2075,13 +2078,7 @@ export default function PlayerPage() {
                           onClick={() => void handleGameRequest('redeem')}
                           className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-700 to-red-600 px-4 py-3 text-base font-black text-white shadow-lg shadow-rose-500/25 transition-all hover:brightness-110 disabled:opacity-50"
                         >
-                          {requestLoading ? (
-                            <i className="fas fa-spinner fa-spin"></i>
-                          ) : (
-                            <>
-                              <span>⬆️</span> Redeem
-                            </>
-                          )}
+                          <span>⬆️</span> Redeem
                         </button>
                       </div>
 
@@ -2358,6 +2355,39 @@ export default function PlayerPage() {
           })}
         </nav>
       </main>
+
+      {playRequestSplash && (
+        <div
+          className="fixed inset-0 z-[72] flex items-center justify-center bg-black/88 px-4 backdrop-blur-sm"
+          role="alert"
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <div className="w-full max-w-md overflow-hidden rounded-3xl border border-amber-400/40 bg-gradient-to-br from-amber-900/90 via-zinc-900 to-fuchsia-950/90 p-7 text-center text-white shadow-[0_0_60px_-12px_rgba(234,179,8,0.4)]">
+            <p className="text-xs font-black uppercase tracking-[0.3em] text-amber-200/90">
+              Active table
+            </p>
+            <h3 className="mt-3 text-2xl font-black sm:text-3xl">
+              {playRequestSplash.type === 'recharge'
+                ? 'Sending recharge request'
+                : 'Sending redeem request'}
+            </h3>
+            <p className="mt-2 line-clamp-2 text-sm text-amber-100/80">
+              <span className="font-bold text-amber-200">🎰 {playRequestSplash.gameName}</span>
+            </p>
+            <p className="mt-1 text-sm text-amber-100/60">
+              Amount: <span className="font-mono font-bold text-white">${playRequestSplash.amountText}</span>
+            </p>
+            <div className="mt-7 flex items-center justify-center gap-2">
+              <i className="fas fa-circle-notch fa-spin text-2xl text-amber-300" aria-hidden></i>
+              <span className="text-sm font-bold text-amber-100/90">Please wait…</span>
+            </div>
+            <p className="mt-4 text-xs text-amber-200/50">
+              This will close when your request is finished.
+            </p>
+          </div>
+        </div>
+      )}
 
       {showCoinConfirmSplash && (
         <div

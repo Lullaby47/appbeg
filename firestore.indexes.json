@@ -1,0 +1,29 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "playerGameRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "playerUid", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "playerGameRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "coadminUid", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "playerGameRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "playerUid", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

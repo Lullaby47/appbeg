@@ -1,6 +1,13 @@
+import { FieldValue } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import {
+  findUniqueReferralCodeWithQueries,
+  isReferralCodeReusableByPlayer,
+  isValidReferralCodeString,
+  REFERRAL_CODE_INDEX,
+} from '@/lib/referral/referralCodeAdmin';
 
 type DeletedPlayerDoc = {
   uid: string;
@@ -24,37 +31,6 @@ type DeletedPlayerDoc = {
 function defaultPasswordFor(username: string) {
   const clean = (username || 'player').replace(/[^a-zA-Z0-9]/g, '');
   return `${clean || 'player'}@12345`;
-}
-
-function randomInt(min: number, max: number) {
-  const safeMin = Math.min(min, max);
-  const safeMax = Math.max(min, max);
-  return Math.floor(Math.random() * (safeMax - safeMin + 1)) + safeMin;
-}
-
-function generateCandidateReferralCode() {
-  const length = randomInt(6, 10);
-  let code = '';
-  for (let index = 0; index < length; index += 1) {
-    const digit = index === 0 ? randomInt(1, 9) : randomInt(0, 9);
-    code += String(digit);
-  }
-  return code;
-}
-
-async function generateUniqueReferralCode() {
-  for (let attempts = 0; attempts < 20; attempts += 1) {
-    const code = generateCandidateReferralCode();
-    const existing = await adminDb
-      .collection('users')
-      .where('referralCode', '==', code)
-      .limit(1)
-      .get();
-    if (existing.empty) {
-      return code;
-    }
-  }
-  throw new Error('Failed to generate unique referral code.');
 }
 
 export async function GET() {
@@ -110,9 +86,15 @@ export async function POST(request: Request) {
 
     const defaultPassword = defaultPasswordFor(username);
     const referralCodeFromArchive = String(deletedData.referralCode || '').trim();
-    const referralCode = /^\d{6,10}$/.test(referralCodeFromArchive)
-      ? referralCodeFromArchive
-      : await generateUniqueReferralCode();
+    let referralCode: string;
+    if (
+      isValidReferralCodeString(referralCodeFromArchive) &&
+      (await isReferralCodeReusableByPlayer(adminDb, referralCodeFromArchive, uid))
+    ) {
+      referralCode = referralCodeFromArchive;
+    } else {
+      referralCode = await findUniqueReferralCodeWithQueries(adminDb);
+    }
 
     try {
       await adminAuth.createUser({
@@ -160,6 +142,14 @@ export async function POST(request: Request) {
       createdAt: new Date(),
       restoredAt: new Date(),
     });
+
+    await adminDb
+      .collection(REFERRAL_CODE_INDEX)
+      .doc(referralCode)
+      .set(
+        { playerUid: uid, createdAt: FieldValue.serverTimestamp() },
+        { merge: true }
+      );
 
     await deletedRef.delete();
 
