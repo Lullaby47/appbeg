@@ -1,12 +1,23 @@
 /**
  * Who is viewing admin-style lists / chat. Controls whether internal usernames are shown.
- * - `player` — players only see generic labels (privacy).
+ * - `player` — co-admins: “Co-admin”; staff: first 3 letters of login only; other roles as below.
  * - `staff` — see real usernames for admins, other staff, players, etc.; only co-accounts are hidden (“Co-admin”).
  * - `carer` — like staff for hiding co-admins; peer staff in some UIs can stay generic (see below).
  * - `coadmin` — see real names for staff, carers, players, and global admins in reach-out.
  * - `admin` — full real usernames everywhere.
  */
 export type PanelNameMode = 'player' | 'staff' | 'carer' | 'coadmin' | 'admin';
+
+function playerVisibleStaffPrefix(username: string) {
+  const s = String(username || '').trim().toLowerCase();
+  if (!s) {
+    return '—';
+  }
+  if (s.length <= 3) {
+    return s;
+  }
+  return s.slice(0, 3);
+}
 
 export function getPanelDisplayName(
   user: { username?: string | null; role?: string | null },
@@ -39,11 +50,14 @@ export function getPanelDisplayName(
     return u;
   }
 
-  // mode === 'player' — no internal usernames
+  // mode === 'player' — co-admin hidden; staff: only first 3 letters of login
   if (role === 'coadmin') {
     return 'Co-admin';
   }
-  if (role === 'admin' || role === 'staff') {
+  if (role === 'staff') {
+    return playerVisibleStaffPrefix(u);
+  }
+  if (role === 'admin') {
     return 'Support Team';
   }
   return u;
