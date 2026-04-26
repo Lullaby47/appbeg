@@ -47,6 +47,11 @@ interface Props<T extends BaseUser> {
   onSendMessage?: (e: React.FormEvent) => void;
   onImageSelect?: (file: File) => void;
   onClearImage?: () => void;
+
+  messagesScrollRef?: React.RefObject<HTMLDivElement | null>;
+  hasMoreOlderMessages?: boolean;
+  loadingOlderMessages?: boolean;
+  onLoadOlderMessages?: () => void;
 }
 
 export default function UserManagementView<T extends BaseUser>({
@@ -79,6 +84,10 @@ export default function UserManagementView<T extends BaseUser>({
   onSendMessage,
   onImageSelect,
   onClearImage,
+  messagesScrollRef,
+  hasMoreOlderMessages = false,
+  loadingOlderMessages = false,
+  onLoadOlderMessages,
 }: Props<T>) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showEmojis, setShowEmojis] = useState(false);
@@ -361,7 +370,28 @@ export default function UserManagementView<T extends BaseUser>({
                   </div>
                 </div>
 
-                <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain p-4">
+                <div
+                  ref={messagesScrollRef}
+                  className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain p-4"
+                >
+                  {onLoadOlderMessages && hasMoreOlderMessages ? (
+                    <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-center">
+                      <button
+                        type="button"
+                        disabled={loadingOlderMessages}
+                        onClick={() => onLoadOlderMessages()}
+                        className={`rounded-full border px-4 py-2 text-xs font-semibold shadow-sm backdrop-blur-sm disabled:opacity-50 ${
+                          carersVisualTheme
+                            ? 'border-amber-500/35 bg-black/50 text-amber-100/90 hover:border-amber-400/50 hover:bg-black/60'
+                            : 'border-white/15 bg-black/40 text-neutral-100 hover:border-white/25 hover:bg-black/55'
+                        }`}
+                      >
+                        {loadingOlderMessages
+                          ? 'Loading…'
+                          : 'Load previous messages'}
+                      </button>
+                    </div>
+                  ) : null}
                   {messages.length === 0 ? (
                     <div className="flex h-full items-center justify-center text-sm text-neutral-500">
                       No messages yet. Start the conversation.

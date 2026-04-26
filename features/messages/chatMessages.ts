@@ -2,12 +2,16 @@ import {
   addDoc,
   collection,
   doc,
+  getDoc,
+  getDocs,
   increment,
+  limit,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
   setDoc,
+  startAfter,
   where,
 } from 'firebase/firestore';
 
@@ -35,6 +39,11 @@ export type UnreadConversationNotice = {
 export function getConversationId(uid1: string, uid2: string) {
   return [uid1, uid2].sort().join('_');
 }
+
+/** Newest messages for the live window (realtime listener + pagination). */
+export const CHAT_RECENT_MESSAGE_WINDOW = 50;
+/** How many older messages to fetch per "Load previous" action. */
+export const CHAT_OLDER_MESSAGE_PAGE_SIZE = 50;
 
 export async function sendChatMessage(receiverUid: string, text: string) {
   const currentUser = auth.currentUser;
@@ -131,9 +140,34 @@ export async function sendImageMessage(receiverUid: string, file: File) {
   });
 }
 
+function compareChatMessagesChronological(
+  a: FirestoreChatMessage,
+  b: FirestoreChatMessage
+) {
+  const ta = a.createdAt?.toMillis?.() ?? a.createdAt?.toDate?.()?.getTime?.() ?? 0;
+  const tb = b.createdAt?.toMillis?.() ?? b.createdAt?.toDate?.()?.getTime?.() ?? 0;
+  if (ta !== tb) {
+    return ta - tb;
+  }
+  return a.id.localeCompare(b.id);
+}
+
+export type ListenToMessagesOptions = {
+  /**
+   * Max recent messages to keep in the live snapshot (newest only).
+   * Omit or set very high to mirror legacy “load all” (not recommended).
+   */
+  limit?: number;
+};
+
+/**
+ * Listens to the newest slice of a conversation in realtime (default last 50).
+ * Older messages are loaded via `fetchMessagesOlderThan`.
+ */
 export function listenToMessages(
   receiverUid: string,
-  callback: (messages: FirestoreChatMessage[]) => void
+  callback: (messages: FirestoreChatMessage[]) => void,
+  options?: ListenToMessagesOptions
 ) {
   const currentUser = auth.currentUser;
 
@@ -143,11 +177,22 @@ export function listenToMessages(
   }
 
   const conversationId = getConversationId(currentUser.uid, receiverUid);
-
-  const messagesQuery = query(
-    collection(db, 'conversations', conversationId, 'messages'),
-    orderBy('createdAt', 'asc')
+  const collectionRef = collection(
+    db,
+    'conversations',
+    conversationId,
+    'messages'
   );
+  const windowLimit = options?.limit;
+
+  const messagesQuery =
+    windowLimit == null
+      ? query(collectionRef, orderBy('createdAt', 'asc'))
+      : query(
+          collectionRef,
+          orderBy('createdAt', 'desc'),
+          limit(Math.max(1, windowLimit))
+        );
 
   return onSnapshot(messagesQuery, (snapshot) => {
     const messages = snapshot.docs.map((docSnap) => ({
@@ -155,8 +200,66 @@ export function listenToMessages(
       ...(docSnap.data() as Omit<FirestoreChatMessage, 'id'>),
     }));
 
+    if (windowLimit == null) {
+      messages.sort(compareChatMessagesChronological);
+    } else {
+      messages.reverse();
+    }
+
     callback(messages);
   });
+}
+
+/**
+ * Fetches messages older than a given message (the chronologically first one currently shown).
+ * Returns messages sorted ascending (oldest first in the batch).
+ */
+export async function fetchMessagesOlderThan(
+  receiverUid: string,
+  olderThanMessageId: string,
+  pageSize: number = CHAT_OLDER_MESSAGE_PAGE_SIZE
+): Promise<FirestoreChatMessage[]> {
+  const currentUser = auth.currentUser;
+
+  if (!currentUser) {
+    return [];
+  }
+
+  const conversationId = getConversationId(currentUser.uid, receiverUid);
+  const collectionRef = collection(
+    db,
+    'conversations',
+    conversationId,
+    'messages'
+  );
+  const cursorRef = doc(
+    db,
+    'conversations',
+    conversationId,
+    'messages',
+    olderThanMessageId
+  );
+  const cursorSnap = await getDoc(cursorRef);
+
+  if (!cursorSnap.exists()) {
+    return [];
+  }
+
+  const size = Math.max(1, pageSize);
+  const olderQuery = query(
+    collectionRef,
+    orderBy('createdAt', 'desc'),
+    startAfter(cursorSnap),
+    limit(size)
+  );
+
+  const snap = await getDocs(olderQuery);
+  const batch = snap.docs.map((d) => ({
+    id: d.id,
+    ...(d.data() as Omit<FirestoreChatMessage, 'id'>),
+  }));
+  batch.reverse();
+  return batch;
 }
 
 export async function markConversationAsRead(receiverUid: string) {

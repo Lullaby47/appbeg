@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import imageCompression from 'browser-image-compression';
 
@@ -77,12 +77,12 @@ import {
 } from '@/features/risk/playerRisk';
 
 import {
-  listenToMessages,
   listenToUnreadCounts,
   markConversationAsRead,
   sendChatMessage,
   sendImageMessage,
 } from '@/features/messages/chatMessages';
+import { usePaginatedChatMessages } from '@/features/messages/usePaginatedChatMessages';
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
 
@@ -143,8 +143,8 @@ export default function CoadminPage() {
   const [reachOutChatUser, setReachOutChatUser] = useState<AdminUser | null>(null);
   const [staffChatUser, setStaffChatUser] = useState<StaffUser | null>(null);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [newMessage, setNewMessage] = useState('');
+  const coadminChatScrollRef = useRef<HTMLDivElement>(null);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
 
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
@@ -186,6 +186,29 @@ export default function CoadminPage() {
 
   const activeChatUser =
     activeView === 'reach-out' ? reachOutChatUser : staffChatUser;
+
+  const pagedCoadminChat = usePaginatedChatMessages(activeChatUser?.uid ?? null, {
+    scrollContainerRef: coadminChatScrollRef,
+    onWindowMessages: () => {
+      if (activeChatUser) {
+        markConversationAsRead(activeChatUser.uid);
+      }
+    },
+  });
+
+  const messages: ChatMessage[] = useMemo(() => {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      return [];
+    }
+    return pagedCoadminChat.items.map((msg) => ({
+      id: msg.id,
+      text: msg.text,
+      imageUrl: msg.imageUrl,
+      sender: msg.senderUid === currentUser.uid ? 'admin' : 'user',
+      timestamp: msg.createdAt?.toDate?.() || new Date(),
+    }));
+  }, [pagedCoadminChat.items]);
 
   const totalUnread = Object.values(unreadCounts).reduce(
     (total, count) => total + count,
@@ -609,34 +632,6 @@ export default function CoadminPage() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!activeChatUser) return;
-
-    const currentUser = auth.currentUser;
-
-    if (!currentUser) {
-      setMessage('Not authenticated.');
-      return;
-    }
-
-    markConversationAsRead(activeChatUser.uid);
-
-    const unsubscribe = listenToMessages(activeChatUser.uid, (items) => {
-      const mappedMessages: ChatMessage[] = items.map((msg) => ({
-        id: msg.id,
-        text: msg.text,
-        imageUrl: msg.imageUrl,
-        sender: msg.senderUid === currentUser.uid ? 'admin' : 'user',
-        timestamp: msg.createdAt?.toDate?.() || new Date(),
-      }));
-
-      setMessages(mappedMessages);
-      markConversationAsRead(activeChatUser.uid);
-    });
-
-    return () => unsubscribe();
-  }, [activeChatUser]);
-
   function playNotificationSound() {
     const audio = new Audio('/notification.mp3');
     audio.volume = 0.6;
@@ -839,7 +834,6 @@ export default function CoadminPage() {
 
       if (staffChatUser?.uid === deleteStaffTarget.uid) {
         setStaffChatUser(null);
-        setMessages([]);
       }
 
       setSelectedStaff(null);
@@ -1136,7 +1130,6 @@ export default function CoadminPage() {
   function handleStaffStartChat(user: StaffUser) {
     if (staffChatUser?.uid === user.uid) {
       setStaffChatUser(null);
-      setMessages([]);
       setNewMessage('');
       handleClearImage();
       return;
@@ -1144,7 +1137,6 @@ export default function CoadminPage() {
 
     setStaffChatUser(user);
     setReachOutChatUser(null);
-    setMessages([]);
     setNewMessage('');
     handleClearImage();
     markConversationAsRead(user.uid);
@@ -1153,7 +1145,6 @@ export default function CoadminPage() {
   function handleReachOutUserSelect(user: AdminUser) {
     setReachOutChatUser(user);
     setStaffChatUser(null);
-    setMessages([]);
     setNewMessage('');
     handleClearImage();
     markConversationAsRead(user.uid);
@@ -1176,7 +1167,6 @@ export default function CoadminPage() {
       setSelectedStaff(unreadStaff);
       setStaffChatUser(unreadStaff);
       setReachOutChatUser(null);
-      setMessages([]);
       setNewMessage('');
       handleClearImage();
       markConversationAsRead(unreadStaff.uid);
@@ -1199,7 +1189,6 @@ export default function CoadminPage() {
     if (unreadUser) {
       setReachOutChatUser(unreadUser);
       setStaffChatUser(null);
-      setMessages([]);
       setNewMessage('');
       handleClearImage();
       markConversationAsRead(unreadUser.uid);
@@ -1228,7 +1217,6 @@ export default function CoadminPage() {
     setStaffChatUser(null);
     setReachOutChatUser(null);
     setEditingGame(null);
-    setMessages([]);
     setNewMessage('');
     handleClearImage();
   }
@@ -1735,6 +1723,10 @@ export default function CoadminPage() {
               onSendMessage={handleSendMessage}
               onImageSelect={handleImageSelect}
               onClearImage={handleClearImage}
+              messagesScrollRef={coadminChatScrollRef}
+              hasMoreOlderMessages={pagedCoadminChat.hasMoreOlder}
+              loadingOlderMessages={pagedCoadminChat.loadingOlder}
+              onLoadOlderMessages={pagedCoadminChat.loadOlder}
             />
           )}
 
@@ -2044,6 +2036,10 @@ export default function CoadminPage() {
               unreadCounts={unreadCounts}
               imagePreview={imagePreview}
               sendingImage={sendingImage}
+              messagesScrollRef={coadminChatScrollRef}
+              hasMoreOlderMessages={pagedCoadminChat.hasMoreOlder}
+              loadingOlderMessages={pagedCoadminChat.loadingOlder}
+              onLoadOlderMessages={pagedCoadminChat.loadOlder}
               onSelectUser={handleReachOutUserSelect}
               onMessageChange={setNewMessage}
               onSendMessage={handleSendMessage}

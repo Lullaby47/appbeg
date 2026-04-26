@@ -25,12 +25,12 @@ import {
   pokePlayerGameRequest,
 } from '@/features/games/playerGameRequests';
 import {
-  listenToMessages,
   listenToUnreadCounts,
   markConversationAsRead,
   sendChatMessage,
   sendImageMessage,
 } from '@/features/messages/chatMessages';
+import { usePaginatedChatMessages } from '@/features/messages/usePaginatedChatMessages';
 import {
   createPlayerCredentialTask,
   getCompletedUsernameCarersByPlayer,
@@ -360,15 +360,36 @@ export default function PlayerPage() {
     taskType: 'reset_password' | 'recreate_username';
   }>(null);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+  const agentsScrollRef = useRef<HTMLDivElement>(null);
 
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [sendingImage, setSendingImage] = useState(false);
 
   const previousUnreadRef = useRef(0);
+  const pagedAgentChat = usePaginatedChatMessages(selectedAgent?.uid ?? null, {
+    scrollContainerRef: agentsScrollRef,
+    onWindowMessages: () => {
+      if (selectedAgent) {
+        markConversationAsRead(selectedAgent.uid);
+      }
+    },
+  });
+  const messages: ChatMessage[] = useMemo(() => {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      return [];
+    }
+    return pagedAgentChat.items.map((msg) => ({
+      id: msg.id,
+      text: msg.text,
+      imageUrl: msg.imageUrl,
+      sender: msg.senderUid === currentUser.uid ? 'admin' : 'user',
+      timestamp: msg.createdAt?.toDate?.() || new Date(),
+    }));
+  }, [pagedAgentChat.items]);
   const hasSeenCashoutTaskSnapshotRef = useRef(false);
   const knownCompletedCashoutTaskIdsRef = useRef<Set<string>>(new Set());
   const cashoutSplashSeenIdsRef = useRef<Set<string>>(new Set());
@@ -959,35 +980,6 @@ export default function PlayerPage() {
     }
   }, [activeView]);
 
-  useEffect(() => {
-    if (!selectedAgent) {
-      return;
-    }
-
-    const currentUser = auth.currentUser;
-
-    if (!currentUser) {
-      return;
-    }
-
-    markConversationAsRead(selectedAgent.uid);
-
-    const unsubscribe = listenToMessages(selectedAgent.uid, (items) => {
-      const mappedMessages: ChatMessage[] = items.map((chatMessage) => ({
-        id: chatMessage.id,
-        text: chatMessage.text,
-        imageUrl: chatMessage.imageUrl,
-        sender: chatMessage.senderUid === currentUser.uid ? 'admin' : 'user',
-        timestamp: chatMessage.createdAt?.toDate?.() || new Date(),
-      }));
-
-      setMessages(mappedMessages);
-      markConversationAsRead(selectedAgent.uid);
-    });
-
-    return () => unsubscribe();
-  }, [selectedAgent]);
-
   async function handleGameRequest(type: 'recharge' | 'redeem') {
     if (isBlockedPlayer) {
       setMessage(
@@ -1197,7 +1189,6 @@ export default function PlayerPage() {
 
   function handleAgentSelect(agent: AdminUser) {
     setSelectedAgent(agent);
-    setMessages([]);
     setNewMessage('');
     handleClearImage();
     markConversationAsRead(agent.uid);
@@ -1219,7 +1210,6 @@ export default function PlayerPage() {
     setMobileMenuOpen(false);
     setMessage('');
     setSelectedAgent(null);
-    setMessages([]);
     setNewMessage('');
     handleClearImage();
   }
@@ -2570,6 +2560,10 @@ export default function PlayerPage() {
                   unreadCounts={unreadCounts}
                   imagePreview={imagePreview}
                   sendingImage={sendingImage}
+                  messagesScrollRef={agentsScrollRef}
+                  hasMoreOlderMessages={pagedAgentChat.hasMoreOlder}
+                  loadingOlderMessages={pagedAgentChat.loadingOlder}
+                  onLoadOlderMessages={pagedAgentChat.loadOlder}
                   onSelectUser={handleAgentSelect}
                   onMessageChange={setNewMessage}
                   onSendMessage={handleSendMessage}

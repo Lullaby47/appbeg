@@ -36,12 +36,12 @@ import {
 } from '@/features/users/adminUsers';
 
 import {
-  listenToMessages,
   listenToUnreadCounts,
   markConversationAsRead,
   sendChatMessage,
   sendImageMessage,
 } from '@/features/messages/chatMessages';
+import { usePaginatedChatMessages } from '@/features/messages/usePaginatedChatMessages';
 
 import { AdminUser, AdminView, ChatMessage } from '@/components/admin/types';
 
@@ -68,14 +68,37 @@ export default function AdminPage() {
 
   const [chatUsers, setChatUsers] = useState<AdminUser[]>([]);
   const [selectedChatUser, setSelectedChatUser] = useState<AdminUser | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [newMessage, setNewMessage] = useState('');
+  const reachOutScrollRef = useRef<HTMLDivElement>(null);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [sendingImage, setSendingImage] = useState(false);
 
   const previousTotalUnreadRef = useRef(0);
+
+  const pagedReachOut = usePaginatedChatMessages(selectedChatUser?.uid ?? null, {
+    scrollContainerRef: reachOutScrollRef,
+    onWindowMessages: () => {
+      if (selectedChatUser) {
+        markConversationAsRead(selectedChatUser.uid);
+      }
+    },
+  });
+
+  const messages: ChatMessage[] = useMemo(() => {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      return [];
+    }
+    return pagedReachOut.items.map((msg) => ({
+      id: msg.id,
+      text: msg.text,
+      imageUrl: msg.imageUrl,
+      sender: msg.senderUid === currentUser.uid ? 'admin' : 'user',
+      timestamp: msg.createdAt?.toDate?.() || new Date(),
+    }));
+  }, [pagedReachOut.items]);
 
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
@@ -169,33 +192,6 @@ export default function AdminPage() {
 
     previousTotalUnreadRef.current = totalUnreadCount;
   }, [totalUnreadCount]);
-
-  useEffect(() => {
-    if (!selectedChatUser) return;
-
-    const currentUser = auth.currentUser;
-
-    if (!currentUser) {
-      setMessage('Not authenticated.');
-      return;
-    }
-
-    markConversationAsRead(selectedChatUser.uid);
-
-    const unsubscribe = listenToMessages(selectedChatUser.uid, (items) => {
-      const mappedMessages: ChatMessage[] = items.map((msg) => ({
-        id: msg.id,
-        text: msg.text,
-        sender: msg.senderUid === currentUser.uid ? 'admin' : 'user',
-        timestamp: msg.createdAt?.toDate?.() || new Date(),
-      }));
-
-      setMessages(mappedMessages);
-      markConversationAsRead(selectedChatUser.uid);
-    });
-
-    return () => unsubscribe();
-  }, [selectedChatUser]);
 
   function playNotificationSound() {
     const audio = new Audio('/notification.mp3');
@@ -341,7 +337,6 @@ export default function AdminPage() {
 
       if (selectedChatUser?.uid === deleteTarget.uid) {
         setSelectedChatUser(null);
-        setMessages([]);
       }
 
       setSelectedCoadmin(null);
@@ -366,7 +361,6 @@ export default function AdminPage() {
 
       if (selectedChatUser?.uid === deleteStaffTarget.uid) {
         setSelectedChatUser(null);
-        setMessages([]);
       }
 
       setSelectedStaff(null);
@@ -388,7 +382,6 @@ export default function AdminPage() {
 
       if (selectedChatUser?.uid === staff.uid) {
         setSelectedChatUser(null);
-        setMessages([]);
       }
 
       setMessage('Staff deleted.');
@@ -540,7 +533,6 @@ export default function AdminPage() {
 
   function handleUserSelect(user: AdminUser) {
     setSelectedChatUser(user);
-    setMessages([]);
     setNewMessage('');
     markConversationAsRead(user.uid);
   }
@@ -562,7 +554,6 @@ export default function AdminPage() {
 
     if (unreadUser) {
       setSelectedChatUser(unreadUser);
-      setMessages([]);
       setNewMessage('');
       markConversationAsRead(unreadUser.uid);
     }
@@ -578,7 +569,6 @@ export default function AdminPage() {
 
     if (view !== 'reach-out') {
       setSelectedChatUser(null);
-      setMessages([]);
       setNewMessage('');
     }
   }
@@ -1002,6 +992,10 @@ export default function AdminPage() {
               unreadCounts={unreadCounts}
               imagePreview={imagePreview}
               sendingImage={sendingImage}
+              messagesScrollRef={reachOutScrollRef}
+              hasMoreOlderMessages={pagedReachOut.hasMoreOlder}
+              loadingOlderMessages={pagedReachOut.loadingOlder}
+              onLoadOlderMessages={pagedReachOut.loadOlder}
               onSelectUser={handleUserSelect}
               onMessageChange={setNewMessage}
               onSendMessage={handleSendMessage}

@@ -23,11 +23,11 @@ import {
   unblockPlayer,
 } from '@/features/users/adminUsers';
 import {
-  listenToMessages,
   listenToUnreadCounts,
   markConversationAsRead,
   sendChatMessage,
 } from '@/features/messages/chatMessages';
+import { usePaginatedChatMessages } from '@/features/messages/usePaginatedChatMessages';
 import {
   CarerEscalationAlert,
   deleteCarerEscalationAlert,
@@ -154,9 +154,9 @@ export default function StaffPage() {
   const [chatUsers, setChatUsers] = useState<AdminUser[]>([]);
   const [selectedChatUser, setSelectedChatUser] = useState<AdminUser | null>(null);
   const [selectedPlayerChatUser, setSelectedPlayerChatUser] = useState<PlayerUser | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [playerMessages, setPlayerMessages] = useState<ChatMessage[]>([]);
   const [newMessage, setNewMessage] = useState('');
+  const staffReachOutScrollRef = useRef<HTMLDivElement | null>(null);
+  const staffPlayerScrollRef = useRef<HTMLDivElement | null>(null);
   const [newPlayerMessage, setNewPlayerMessage] = useState('');
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [message, setMessage] = useState('');
@@ -194,6 +194,51 @@ export default function StaffPage() {
   const previousPlayerChatUnreadRef = useRef(0);
   const hasSyncedPlayerChatUnreadRef = useRef(false);
   const [playerBlockActionUid, setPlayerBlockActionUid] = useState<string | null>(null);
+
+  const pagedStaffAgentChat = usePaginatedChatMessages(selectedChatUser?.uid ?? null, {
+    scrollContainerRef: staffReachOutScrollRef,
+    onWindowMessages: () => {
+      if (selectedChatUser) {
+        markConversationAsRead(selectedChatUser.uid);
+      }
+    },
+  });
+  const pagedStaffPlayerChat = usePaginatedChatMessages(selectedPlayerChatUser?.uid ?? null, {
+    scrollContainerRef: staffPlayerScrollRef,
+    onWindowMessages: () => {
+      if (selectedPlayerChatUser) {
+        markConversationAsRead(selectedPlayerChatUser.uid);
+      }
+    },
+  });
+
+  const messages: ChatMessage[] = useMemo(() => {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      return [];
+    }
+    return pagedStaffAgentChat.items.map((msg) => ({
+      id: msg.id,
+      text: msg.text,
+      imageUrl: msg.imageUrl,
+      sender: msg.senderUid === currentUser.uid ? 'admin' : 'user',
+      timestamp: msg.createdAt?.toDate?.() || new Date(),
+    }));
+  }, [pagedStaffAgentChat.items]);
+
+  const playerMessages: ChatMessage[] = useMemo(() => {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      return [];
+    }
+    return pagedStaffPlayerChat.items.map((msg) => ({
+      id: msg.id,
+      text: msg.text,
+      imageUrl: msg.imageUrl,
+      sender: msg.senderUid === currentUser.uid ? 'admin' : 'user',
+      timestamp: msg.createdAt?.toDate?.() || new Date(),
+    }));
+  }, [pagedStaffPlayerChat.items]);
 
   const reachOutUnread = useMemo(
     () => chatUsers.reduce((total, user) => total + (unreadCounts[user.uid] || 0), 0),
@@ -722,54 +767,6 @@ export default function StaffPage() {
   }, [activeView]);
 
   useEffect(() => {
-    if (!selectedChatUser) return;
-
-    const currentUser = auth.currentUser;
-    if (!currentUser) return;
-
-    markConversationAsRead(selectedChatUser.uid);
-
-    const unsubscribe = listenToMessages(selectedChatUser.uid, (items) => {
-      const mappedMessages: ChatMessage[] = items.map((chatMessage) => ({
-        id: chatMessage.id,
-        text: chatMessage.text,
-        imageUrl: chatMessage.imageUrl,
-        sender: chatMessage.senderUid === currentUser.uid ? 'admin' : 'user',
-        timestamp: chatMessage.createdAt?.toDate?.() || new Date(),
-      }));
-
-      setMessages(mappedMessages);
-      markConversationAsRead(selectedChatUser.uid);
-    });
-
-    return () => unsubscribe();
-  }, [selectedChatUser]);
-
-  useEffect(() => {
-    if (!selectedPlayerChatUser) return;
-
-    const currentUser = auth.currentUser;
-    if (!currentUser) return;
-
-    markConversationAsRead(selectedPlayerChatUser.uid);
-
-    const unsubscribe = listenToMessages(selectedPlayerChatUser.uid, (items) => {
-      const mappedMessages: ChatMessage[] = items.map((chatMessage) => ({
-        id: chatMessage.id,
-        text: chatMessage.text,
-        imageUrl: chatMessage.imageUrl,
-        sender: chatMessage.senderUid === currentUser.uid ? 'admin' : 'user',
-        timestamp: chatMessage.createdAt?.toDate?.() || new Date(),
-      }));
-
-      setPlayerMessages(mappedMessages);
-      markConversationAsRead(selectedPlayerChatUser.uid);
-    });
-
-    return () => unsubscribe();
-  }, [selectedPlayerChatUser]);
-
-  useEffect(() => {
     let isCancelled = false;
     let unsubscribe: (() => void) | undefined;
 
@@ -1066,14 +1063,12 @@ export default function StaffPage() {
 
   function handleSelectReachOutUser(user: AdminUser) {
     setSelectedChatUser(user);
-    setMessages([]);
     setNewMessage('');
     markConversationAsRead(user.uid);
   }
 
   function handleOpenPlayerChat(user: PlayerUser) {
     setSelectedPlayerChatUser(user);
-    setPlayerMessages([]);
     setNewPlayerMessage('');
     markConversationAsRead(user.uid);
   }
@@ -1117,13 +1112,11 @@ export default function StaffPage() {
 
     if (view !== 'reach-out') {
       setSelectedChatUser(null);
-      setMessages([]);
       setNewMessage('');
     }
 
     if (view !== 'view-players') {
       setSelectedPlayerChatUser(null);
-      setPlayerMessages([]);
       setNewPlayerMessage('');
     }
   }
@@ -1702,7 +1695,24 @@ export default function StaffPage() {
                     </div>
                   </div>
 
-                  <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain rounded-xl bg-black/25 p-3">
+                  <div
+                    ref={staffPlayerScrollRef}
+                    className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain rounded-xl bg-black/25 p-3"
+                  >
+                    {pagedStaffPlayerChat.hasMoreOlder ? (
+                      <div className="sticky top-0 z-10 -mt-0.5 mb-2 flex justify-center">
+                        <button
+                          type="button"
+                          disabled={pagedStaffPlayerChat.loadingOlder}
+                          onClick={() => void pagedStaffPlayerChat.loadOlder()}
+                          className="rounded-full border border-cyan-400/35 bg-black/50 px-4 py-1.5 text-xs font-semibold text-cyan-100/90 shadow-sm hover:border-cyan-300/50 disabled:opacity-50"
+                        >
+                          {pagedStaffPlayerChat.loadingOlder
+                            ? 'Loading…'
+                            : 'Load previous messages'}
+                        </button>
+                      </div>
+                    ) : null}
                     {playerMessages.length === 0 ? (
                       <p className="text-sm text-cyan-100/60">
                         No messages yet. Send first message to player.
@@ -1840,6 +1850,10 @@ export default function StaffPage() {
               messages={messages}
               newMessage={newMessage}
               unreadCounts={reachOutUnreadCounts}
+              messagesScrollRef={staffReachOutScrollRef}
+              hasMoreOlderMessages={pagedStaffAgentChat.hasMoreOlder}
+              loadingOlderMessages={pagedStaffAgentChat.loadingOlder}
+              onLoadOlderMessages={pagedStaffAgentChat.loadOlder}
               onSelectUser={handleSelectReachOutUser}
               onMessageChange={setNewMessage}
               onSendMessage={handleSendMessage}
