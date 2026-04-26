@@ -328,21 +328,6 @@ export default function LoginPage() {
                     <div className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/20 to-transparent transition-transform duration-500 group-hover:translate-x-full" />
                   </button>
 
-                  <div className="flex items-center justify-between pt-2 text-sm">
-                    <button
-                      type="button"
-                      className="font-medium text-blue-600 transition-colors hover:text-blue-700 hover:underline"
-                    >
-                      Forgot password?
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => router.push('/signup')}
-                      className="font-medium text-slate-500 transition-colors hover:text-slate-700 hover:underline"
-                    >
-                      Create account
-                    </button>
-                  </div>
                 </form>
               </>
             )}
