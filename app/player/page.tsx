@@ -2143,28 +2143,30 @@ export default function PlayerPage() {
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.45 }}
-                  className="player-dashboard-hero hero-card jackpot-card vip-hero lobby-hero fire-panel fire-orange fire-hero relative overflow-hidden rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/20 via-rose-600/10 to-purple-900/35 px-5 pb-5 pt-3 text-left shadow-[0_0_50px_-12px_rgba(234,179,8,0.45)] sm:px-8 sm:pb-8 sm:pt-4"
+                  className="player-dashboard-hero fire-panel fire-orange fire-hero relative grid h-auto min-h-0 w-full max-w-full content-center items-center overflow-hidden rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/20 via-rose-600/10 to-purple-900/35 text-left shadow-[0_0_50px_-12px_rgba(234,179,8,0.45)]"
                 >
-                  <div className="pointer-events-none absolute -right-10 -top-10 text-8xl opacity-[0.07]">
+                  <div className="pointer-events-none absolute -right-8 top-1 text-7xl opacity-[0.04] sm:-right-10 sm:-top-10 sm:text-8xl sm:opacity-[0.07]">
                     🎰
                   </div>
-                  <div className="pointer-events-none absolute bottom-0 left-1/4 h-40 w-40 rounded-full bg-red-500/15 blur-3xl" />
-                  <div className="pointer-events-none absolute right-10 top-10 h-32 w-32 rounded-full bg-amber-400/20 blur-2xl" />
+                  <div className="pointer-events-none absolute bottom-0 left-1/4 h-32 w-32 rounded-full bg-red-500/12 blur-3xl sm:h-40 sm:w-40 sm:bg-red-500/15" />
+                  <div className="pointer-events-none absolute right-8 top-4 h-20 w-20 rounded-full bg-amber-400/12 blur-2xl sm:right-10 sm:top-10 sm:h-32 sm:w-32 sm:bg-amber-400/20" />
 
-                  <div className="hero-content jackpot-content vip-welcome-wrap relative grid content-start items-start gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:gap-6 lg:items-start">
-                    <div className="self-start">
+                  <div className="player-dashboard-hero__content relative row-start-1 w-full min-w-0 self-center pt-0">
+                    <div className="player-dashboard-hero__intro min-w-0 w-full text-left">
                       <p className="flex items-center gap-2 text-base font-black uppercase tracking-[0.3em] text-amber-200/90 sm:text-lg">
                         <span className="text-lg">👑</span> VIP welcome
                       </p>
                       <h2 className="mt-2 text-[clamp(2.625rem,5vw,4.5rem)] font-black leading-[0.98] bg-gradient-to-r from-white via-amber-100 to-amber-300 bg-clip-text text-transparent">
                         Jackpot floor is open
                       </h2>
-                      <p className="mt-2.5 max-w-xl text-[1.05rem] leading-relaxed text-amber-100/80 sm:text-[1.18rem]">
+                      <p className="mt-2.5 max-w-xl text-[1.05rem] leading-relaxed text-amber-100/80 sm:mt-3 sm:text-[1.18rem]">
                         💎 Luxury tables, 🔥 live agents, 🪙 instant balance — tap Play to hit the
                         reels and send recharge or redeem requests.
                       </p>
+                    </div>
 
-                      <div className="mt-4 grid grid-cols-2 gap-2.5 sm:max-w-lg">
+                    <div className="player-dashboard-hero__main flex min-w-0 w-full flex-col gap-3.5 sm:gap-4">
+                      <div className="grid max-w-lg grid-cols-2 gap-2.5">
                         <div className="fire-panel fire-orange rounded-2xl border border-amber-300/60 bg-black/35 px-3 py-3 text-center backdrop-blur-md shadow-[0_0_20px_-8px_rgba(251,191,36,0.55)]">
                           <span className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-xl border border-amber-200/40 bg-amber-200/15 text-2xl">
                             🪙
@@ -2188,7 +2190,7 @@ export default function PlayerPage() {
                           </p>
                         </div>
                       </div>
-                      <div className="fire-panel fire-orange mt-3 flex flex-wrap items-center gap-2 rounded-2xl border border-cyan-400/30 bg-black/35 px-3 py-3 sm:max-w-lg">
+                      <div className="fire-panel fire-orange flex flex-wrap items-center gap-2 rounded-2xl border border-cyan-400/30 bg-black/35 px-3 py-3 sm:max-w-lg">
                         <p className="text-sm font-black uppercase tracking-wide text-cyan-200/85 sm:text-base">
                           Your Referral Code:{' '}
                           <span className="text-base text-white sm:text-lg">{referralCode || 'Not available'}</span>
@@ -2202,7 +2204,7 @@ export default function PlayerPage() {
                           Copy Referral Code
                         </button>
                       </div>
-                      <div className="mt-3 sm:max-w-lg">
+                      <div className="sm:max-w-lg">
                         <button
                           type="button"
                           onClick={() => {
@@ -2217,7 +2219,7 @@ export default function PlayerPage() {
                       </div>
                     </div>
 
-                    <div className="flex flex-col items-stretch self-start gap-3 lg:pt-1">
+                    <div className="player-dashboard-hero__cta mx-auto flex w-full min-w-0 min-h-0 max-w-md flex-col items-stretch justify-center gap-3 self-stretch sm:max-w-lg lg:mx-0 lg:min-w-0 lg:max-w-[min(19rem,36vw)]">
                       <motion.button
                         type="button"
                         onClick={() => setActiveView('play')}

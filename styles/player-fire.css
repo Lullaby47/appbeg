@@ -487,18 +487,18 @@
 @keyframes fireMove {
   0% {
     background-position: 0 100%, 0 0, 50% 100%;
-    transform: translateY(0) scaleY(1);
-    opacity: 0.76;
+    transform: translateY(0.4px) scaleY(0.992);
+    opacity: 0.62;
   }
   50% {
-    background-position: 120px 100%, 0 0, 48% 100%;
-    transform: translateY(-1px) scaleY(1.02);
-    opacity: 0.82;
+    background-position: 78px 100%, 0 0, 49% 100%;
+    transform: translateY(-0.6px) scaleY(1.012);
+    opacity: 0.84;
   }
   100% {
-    background-position: 240px 100%, 0 0, 52% 100%;
-    transform: translateY(0) scaleY(1);
-    opacity: 0.78;
+    background-position: 156px 100%, 0 0, 51% 100%;
+    transform: translateY(0.2px) scaleY(0.998);
+    opacity: 0.66;
   }
 }
 
@@ -690,8 +690,8 @@
   opacity: 0.78;
   transform-origin: center bottom;
   animation:
-    fireMove 5.6s ease-in-out infinite,
-    fireFlicker 4.8s ease-in-out infinite;
+    fireMove 6.2s ease-in-out infinite alternate,
+    fireFlicker 4.2s ease-in-out infinite alternate;
   z-index: 0;
 }
 
@@ -746,10 +746,14 @@
 }
 
 .player-fire-page .fire-hero::after {
-  height: 46%;
-  bottom: -8%;
-  opacity: 0.82;
-  background-size: 185% 100%, auto, auto;
+  height: 18%;
+  bottom: 0;
+  opacity: 0.68;
+  background-size: 135% 72%, auto, auto;
+  background-position:
+    center 18%,
+    0 0,
+    50% 100%;
 }
 
 .player-fire-page .fire-hero::before {
@@ -757,16 +761,118 @@
 }
 
 .player-fire-page .player-dashboard-hero {
+  display: grid !important;
+  grid-auto-rows: max-content;
+  align-items: stretch !important;
+  align-content: start !important;
+  justify-items: stretch !important;
+  place-content: start !important;
   min-height: auto;
+  max-height: none;
   height: auto;
-  padding-top: 1rem;
+  /* Negative top offset: padding can’t be negative, so we pull the panel up with margin */
+  margin-top: -200px !important;
+  padding: 0 1.25rem 100px !important;
 }
 
-.player-fire-page .player-dashboard-hero .relative.grid {
-  gap: 1.25rem;
-  align-items: flex-start;
-  justify-items: stretch;
-  align-content: start;
+/* Small screens: panel height + content vertically centered in the card */
+@media (max-width: 1023px) {
+  .player-fire-page .player-dashboard-hero {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    justify-content: center !important;
+    margin-top: -200px !important;
+    padding-top: 0 !important;
+    padding-bottom: 100px !important;
+    min-height: min(32rem, calc(100svh - 9rem)) !important;
+    min-height: min(32rem, calc(100dvh - 9rem)) !important;
+  }
+}
+
+/* VIP welcome hero: animated fire band at bottom of card */
+.player-fire-page .player-dashboard-hero::after {
+  height: min(7.5rem, 13%) !important;
+  max-height: 120px !important;
+  bottom: 0 !important;
+  opacity: 0.5 !important;
+  background-size: 128% 70%, auto, auto !important;
+  background-position:
+    center 20%,
+    0 0,
+    50% 100% !important;
+}
+
+.player-fire-page .player-dashboard-hero .player-dashboard-hero__content {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 1.2rem !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  padding-top: 0 !important;
+  align-self: stretch !important;
+  justify-self: stretch !important;
+  min-width: 0 !important;
+  width: 100% !important;
+  transform: none !important;
+}
+
+.player-fire-page .player-dashboard-hero .player-dashboard-hero__content > :first-child {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+}
+
+.player-fire-page .player-dashboard-hero .player-dashboard-hero__content > * {
+  margin-top: 0;
+}
+
+@media (max-width: 1023px) {
+  .player-fire-page .player-dashboard-hero .player-dashboard-hero__content {
+    flex: 0 1 auto !important;
+    min-height: 0 !important;
+    justify-content: center !important;
+    gap: 1.1rem 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0.5rem !important;
+  }
+}
+
+@media (min-width: 1024px) {
+  .player-fire-page .player-dashboard-hero {
+    display: grid !important;
+    min-height: auto !important;
+    margin-top: 0 !important;
+    padding: 100px 1.25rem 100px !important;
+  }
+
+  .player-fire-page .player-dashboard-hero .player-dashboard-hero__content {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1.15fr) minmax(10.5rem, auto) !important;
+    grid-template-rows: auto auto !important;
+    column-gap: 2rem !important;
+    row-gap: 1.1rem !important;
+    align-items: start !important;
+    justify-content: start !important;
+    justify-items: stretch !important;
+  }
+
+  .player-fire-page .player-dashboard-hero .player-dashboard-hero__intro {
+    grid-column: 1 / 2;
+    grid-row: 1 / 2;
+  }
+
+  .player-fire-page .player-dashboard-hero .player-dashboard-hero__main {
+    grid-column: 1 / 2;
+    grid-row: 2 / 3;
+  }
+
+  .player-fire-page .player-dashboard-hero .player-dashboard-hero__cta {
+    grid-column: 2 / 3;
+    grid-row: 1 / 3;
+    width: 100% !important;
+    align-self: center !important;
+  }
 }
 
 .player-fire-page .player-dashboard-hero .relative.grid > :first-child,
@@ -774,7 +880,7 @@
   margin-top: 0;
 }
 
-.player-fire-page .player-dashboard-hero,
+/* Do not set justify-content on .player-dashboard-hero: it would pin flex layout to the top on mobile. */
 .player-fire-page .player-dashboard-hero > .relative.grid,
 .player-fire-page .player-dashboard-hero > .relative.grid > :first-child {
   justify-content: flex-start;
@@ -810,16 +916,16 @@
 
 @keyframes fireFlicker {
   0% {
-    opacity: 0.76;
-    transform: translate3d(0, 0, 0) scaleY(0.995);
+    opacity: 0.62;
+    transform: translate3d(0, 0.3px, 0) scaleY(0.992);
   }
   50% {
-    opacity: 0.82;
-    transform: translate3d(0, -0.5px, 0) scaleY(1.01);
+    opacity: 0.9;
+    transform: translate3d(0, -0.45px, 0) scaleY(1.01);
   }
   100% {
-    opacity: 0.78;
-    transform: translate3d(0, 0, 0) scaleY(1);
+    opacity: 0.64;
+    transform: translate3d(0, 0.2px, 0) scaleY(0.996);
   }
 }
 
@@ -863,12 +969,28 @@
 
 @media (max-width: 640px) {
   .player-fire-page .player-dashboard-hero {
-    padding: 1rem;
-    padding-top: 0.875rem;
+    margin-top: -200px !important;
+    padding: 0 0.9rem 100px !important;
   }
 
-  .player-fire-page .player-dashboard-hero .relative.grid {
-    gap: 1rem;
+  .player-fire-page .player-dashboard-hero .player-dashboard-hero__content {
+    margin-top: 0 !important;
+  }
+
+  .player-fire-page .player-dashboard-hero::after {
+    height: min(5.5rem, 12%) !important;
+    max-height: 88px !important;
+    bottom: 0 !important;
+    opacity: 0.44 !important;
+    background-size: 120% 65%, auto, auto !important;
+    background-position:
+      center 14%,
+      0 0,
+      50% 100% !important;
+  }
+
+  .player-fire-page .player-dashboard-hero::before {
+    opacity: 0.72 !important;
   }
 
   .player-fire-page .player-dashboard-hero h2 {
