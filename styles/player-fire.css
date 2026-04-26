@@ -599,3 +599,240 @@
     width: 100%;
   }
 }
+
+.player-fire-page {
+  isolation: isolate;
+}
+
+.player-fire-page .ember-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  opacity: 0.58;
+  mix-blend-mode: screen;
+}
+
+.player-fire-page .ember-overlay::before,
+.player-fire-page .ember-overlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.player-fire-page .ember-overlay::before {
+  background:
+    url('/assets/player/embers.png') center top / cover repeat-y,
+    radial-gradient(circle at 20% 100%, rgba(255, 173, 79, 0.14), transparent 30%),
+    radial-gradient(circle at 85% 75%, rgba(255, 219, 124, 0.12), transparent 24%);
+  opacity: 0.82;
+  animation: emberFloat 24s linear infinite;
+}
+
+.player-fire-page .ember-overlay::after {
+  background:
+    linear-gradient(180deg, rgba(255, 200, 124, 0.02), rgba(255, 88, 22, 0.12) 68%, rgba(10, 4, 12, 0.08)),
+    radial-gradient(circle at 50% 25%, rgba(255, 240, 185, 0.08), transparent 34%);
+  opacity: 0.66;
+  animation: heatWave 8s ease-in-out infinite;
+}
+
+.player-fire-page .fire-panel,
+.player-fire-page .fire-button {
+  --fire-panel-image: url('/assets/player/fire-orange.png');
+  --fire-panel-glow: rgba(255, 145, 44, 0.28);
+  --fire-panel-glow-strong: rgba(255, 196, 91, 0.42);
+  --fire-panel-border: rgba(255, 232, 204, 0.18);
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.player-fire-page .fire-panel::before,
+.player-fire-page .fire-panel::after,
+.player-fire-page .fire-button::before,
+.player-fire-page .fire-button::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.player-fire-page .fire-panel::before,
+.player-fire-page .fire-button::before {
+  border-radius: inherit;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(140deg, rgba(255, 246, 229, 0.2), transparent 28%, transparent 72%, rgba(255, 233, 197, 0.18)),
+    linear-gradient(90deg, transparent, var(--fire-panel-border), transparent);
+  mix-blend-mode: screen;
+  opacity: 0.68;
+  animation: borderBurn 5.8s linear infinite;
+  z-index: 0;
+}
+
+.player-fire-page .fire-panel::after,
+.player-fire-page .fire-button::after {
+  left: 0;
+  right: 0;
+  top: auto;
+  bottom: -10%;
+  height: 38%;
+  border-radius: 0 0 inherit inherit;
+  background:
+    var(--fire-panel-image) center bottom / 150% 100% repeat-x,
+    linear-gradient(180deg, rgba(255, 193, 89, 0) 0%, var(--fire-panel-glow) 60%, rgba(255, 72, 26, 0.55) 100%),
+    radial-gradient(circle at 50% 100%, var(--fire-panel-glow-strong), transparent 48%);
+  mix-blend-mode: screen;
+  filter: blur(2px);
+  opacity: 0.72;
+  transform-origin: center bottom;
+  animation:
+    fireMove 2.9s linear infinite,
+    fireFlicker 2.1s ease-in-out infinite alternate;
+  z-index: 0;
+}
+
+.player-fire-page .fire-button::after {
+  bottom: -18%;
+  height: 55%;
+  background-size: 170% 100%, auto, auto;
+  opacity: 0.6;
+}
+
+.player-fire-page .fire-panel > *,
+.player-fire-page .fire-button > * {
+  position: relative;
+  z-index: 2;
+}
+
+.player-fire-page .fire-orange {
+  --fire-panel-image: url('/assets/player/fire-orange.png');
+  --fire-panel-glow: rgba(255, 133, 31, 0.32);
+  --fire-panel-glow-strong: rgba(255, 208, 91, 0.5);
+  --fire-panel-border: rgba(255, 218, 171, 0.24);
+}
+
+.player-fire-page .fire-green {
+  --fire-panel-image: url('/assets/player/fire-green.png');
+  --fire-panel-glow: rgba(89, 255, 164, 0.28);
+  --fire-panel-glow-strong: rgba(178, 255, 126, 0.4);
+  --fire-panel-border: rgba(198, 255, 216, 0.22);
+}
+
+.player-fire-page .fire-green.fire-panel::after,
+.player-fire-page .fire-green.fire-button::after {
+  background:
+    var(--fire-panel-image) center bottom / 150% 100% repeat-x,
+    linear-gradient(180deg, rgba(159, 255, 195, 0) 0%, var(--fire-panel-glow) 60%, rgba(27, 170, 113, 0.52) 100%),
+    radial-gradient(circle at 50% 100%, var(--fire-panel-glow-strong), transparent 48%);
+}
+
+.player-fire-page .fire-purple {
+  --fire-panel-image: url('/assets/player/fire-purple.png');
+  --fire-panel-glow: rgba(184, 106, 255, 0.3);
+  --fire-panel-glow-strong: rgba(242, 120, 255, 0.42);
+  --fire-panel-border: rgba(232, 197, 255, 0.24);
+}
+
+.player-fire-page .fire-purple.fire-panel::after,
+.player-fire-page .fire-purple.fire-button::after {
+  background:
+    var(--fire-panel-image) center bottom / 150% 100% repeat-x,
+    linear-gradient(180deg, rgba(232, 163, 255, 0) 0%, var(--fire-panel-glow) 62%, rgba(137, 63, 217, 0.54) 100%),
+    radial-gradient(circle at 50% 100%, var(--fire-panel-glow-strong), transparent 48%);
+}
+
+.player-fire-page .fire-hero::after {
+  height: 46%;
+  bottom: -8%;
+  opacity: 0.82;
+  background-size: 185% 100%, auto, auto;
+}
+
+.player-fire-page .fire-hero::before {
+  opacity: 0.86;
+}
+
+.player-fire-page .fire-panel:hover,
+.player-fire-page .fire-panel:focus-within,
+.player-fire-page .fire-button:hover,
+.player-fire-page .fire-button:focus-visible,
+.player-fire-page .fire-button:active {
+  box-shadow:
+    0 0 0 1px rgba(255, 240, 218, 0.08) inset,
+    0 0 24px var(--fire-panel-glow),
+    0 0 56px color-mix(in srgb, var(--fire-panel-glow-strong) 62%, transparent);
+}
+
+.player-fire-page .fire-panel:hover::after,
+.player-fire-page .fire-panel:focus-within::after,
+.player-fire-page .fire-button:hover::after,
+.player-fire-page .fire-button:focus-visible::after,
+.player-fire-page .fire-button:active::after {
+  opacity: 0.96;
+  transform: translate3d(0, -2px, 0) scaleY(1.04);
+}
+
+.player-fire-page .fire-panel:hover::before,
+.player-fire-page .fire-panel:focus-within::before,
+.player-fire-page .fire-button:hover::before,
+.player-fire-page .fire-button:focus-visible::before,
+.player-fire-page .fire-button:active::before {
+  opacity: 1;
+}
+
+@keyframes fireFlicker {
+  0% {
+    opacity: 0.64;
+    transform: translate3d(0, 0, 0) scaleY(0.98);
+  }
+  50% {
+    opacity: 0.88;
+    transform: translate3d(0, -1px, 0) scaleY(1.04);
+  }
+  100% {
+    opacity: 0.76;
+    transform: translate3d(0, 0, 0) scaleY(1);
+  }
+}
+
+@keyframes heatWave {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.46;
+  }
+  50% {
+    transform: translate3d(0, -1.5%, 0) scale(1.02);
+    opacity: 0.7;
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .player-fire-page .ember-overlay::before,
+  .player-fire-page .ember-overlay::after,
+  .player-fire-page .fire-panel::before,
+  .player-fire-page .fire-panel::after,
+  .player-fire-page .fire-button::before,
+  .player-fire-page .fire-button::after,
+  .player-fire-page .player-fire-ember,
+  .player-fire-page .fire-surface {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .player-fire-page .fire-panel:hover::after,
+  .player-fire-page .fire-panel:focus-within::after,
+  .player-fire-page .fire-button:hover::after,
+  .player-fire-page .fire-button:focus-visible::after,
+  .player-fire-page .fire-button:active::after {
+    transform: none;
+    opacity: 0.8;
+  }
+}

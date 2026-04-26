@@ -1,5 +1,7 @@
 'use client';
 
+import '../../styles/player-fire.css';
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AnimatePresence, motion } from 'motion/react';
@@ -1760,9 +1762,10 @@ export default function PlayerPage() {
 
   return (
     <ProtectedRoute allowedRoles={['player']}>
-      <main className="relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white lg:flex-row lg:pb-0">
+      <main className="player-fire-page relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white lg:flex-row lg:pb-0">
+        <div className="ember-overlay" aria-hidden="true" />
 
-        <header className="sticky top-0 z-30 shrink-0 border-b border-amber-500/20 bg-black/65 px-3 py-2.5 backdrop-blur-2xl lg:hidden">
+        <header className="fire-panel fire-orange sticky top-0 z-30 shrink-0 border-b border-amber-500/20 bg-black/65 px-3 py-2.5 backdrop-blur-2xl lg:hidden">
           <div className="flex items-center justify-between gap-2">
           <button
             type="button"
@@ -1792,7 +1795,7 @@ export default function PlayerPage() {
             <button
               type="button"
               onClick={() => handleChangeView('play')}
-              className="min-h-[40px] rounded-xl border border-amber-400/35 bg-amber-500/15 px-2 text-[11px] font-bold text-amber-100"
+              className="fire-button fire-orange min-h-[40px] rounded-xl border border-amber-400/35 bg-amber-500/15 px-2 text-[11px] font-bold text-amber-100"
             >
               🎰 Play
             </button>
@@ -1800,7 +1803,7 @@ export default function PlayerPage() {
               type="button"
               onClick={() => setShowCashoutModal(true)}
               disabled={wallet.cash <= 0 || isBlockedPlayer}
-              className="min-h-[40px] rounded-xl border border-cyan-400/35 bg-cyan-500/15 px-2 text-[11px] font-bold text-cyan-100 disabled:opacity-50"
+              className="fire-button fire-green min-h-[40px] rounded-xl border border-cyan-400/35 bg-cyan-500/15 px-2 text-[11px] font-bold text-cyan-100 disabled:opacity-50"
             >
               💸 Cashout
             </button>
@@ -1808,7 +1811,7 @@ export default function PlayerPage() {
               type="button"
               onClick={() => setShowCoinConfirmSplash(true)}
               disabled={coinLoading}
-              className="min-h-[40px] rounded-xl border border-emerald-400/35 bg-emerald-500/15 px-2 text-[11px] font-bold text-emerald-100 disabled:opacity-50"
+              className="fire-button fire-orange min-h-[40px] rounded-xl border border-emerald-400/35 bg-emerald-500/15 px-2 text-[11px] font-bold text-emerald-100 disabled:opacity-50"
             >
               {coinLoading ? '⏳' : '🪙 To coin'}
             </button>
@@ -1842,9 +1845,9 @@ export default function PlayerPage() {
                 animate={{ x: 0 }}
                 exit={{ x: '-105%' }}
                 transition={{ type: 'spring', damping: 26, stiffness: 280 }}
-                className="fixed bottom-0 left-0 top-0 z-50 flex w-[min(22rem,88vw)] flex-col overflow-y-auto border-r border-amber-500/30 bg-[#0a0612]/97 p-4 shadow-2xl shadow-purple-900/40 backdrop-blur-2xl lg:hidden"
+                className="fire-panel fire-orange fixed bottom-0 left-0 top-0 z-50 flex w-[min(22rem,88vw)] flex-col overflow-y-auto border-r border-amber-500/30 bg-[#0a0612]/97 p-4 shadow-2xl shadow-purple-900/40 backdrop-blur-2xl lg:hidden"
               >
-                <div className="mb-6 rounded-2xl border border-amber-400/35 bg-gradient-to-br from-amber-500/15 via-purple-900/20 to-black/40 p-4 text-center">
+                <div className="fire-panel fire-orange fire-hero mb-6 rounded-2xl border border-amber-400/35 bg-gradient-to-br from-amber-500/15 via-purple-900/20 to-black/40 p-4 text-center">
                   <p className="text-xs font-black uppercase tracking-[0.35em] text-amber-300">
                     Jackpot Club
                   </p>
@@ -1881,12 +1884,12 @@ export default function PlayerPage() {
           ) : null}
         </AnimatePresence>
 
-        <aside className="relative z-20 hidden w-72 shrink-0 overflow-y-auto border-r border-amber-500/25 bg-black/45 p-5 backdrop-blur-2xl xl:w-80 lg:block">
+        <aside className="fire-panel fire-orange relative z-20 hidden w-72 shrink-0 overflow-y-auto border-r border-amber-500/25 bg-black/45 p-5 backdrop-blur-2xl xl:w-80 lg:block">
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-amber-500/[0.07] via-transparent to-purple-600/10" />
           <div className="pointer-events-none absolute top-0 left-0 h-40 w-full bg-[radial-gradient(ellipse_at_top,rgba(250,204,21,0.18),transparent_70%)]" />
 
           <div className="relative z-10">
-            <div className="mb-8 rounded-2xl border border-amber-400/35 bg-gradient-to-br from-amber-500/15 to-purple-900/25 p-5 text-center shadow-[0_0_40px_-12px_rgba(234,179,8,0.4)]">
+            <div className="fire-panel fire-orange fire-hero mb-8 rounded-2xl border border-amber-400/35 bg-gradient-to-br from-amber-500/15 to-purple-900/25 p-5 text-center shadow-[0_0_40px_-12px_rgba(234,179,8,0.4)]">
               <p className="text-xs font-black uppercase tracking-[0.4em] text-amber-300">
                 Royal
               </p>
@@ -1926,7 +1929,7 @@ export default function PlayerPage() {
           <div className="relative z-10 flex min-h-0 flex-1 flex-col">
             <div className="flex min-h-0 flex-1 flex-col overflow-x-hidden px-3 pb-4 pt-4 md:px-7 md:pb-8 md:pt-6">
               <div className="mb-4 hidden shrink-0 flex-wrap items-stretch justify-end gap-3 lg:flex">
-                <div className="rounded-2xl border border-amber-400/35 bg-gradient-to-br from-amber-500/25 to-yellow-600/10 px-5 py-3 text-right shadow-lg shadow-amber-500/10">
+                <div className="fire-panel fire-orange rounded-2xl border border-amber-400/35 bg-gradient-to-br from-amber-500/25 to-yellow-600/10 px-5 py-3 text-right shadow-lg shadow-amber-500/10">
                   <p className="text-[10px] font-black uppercase tracking-[0.28em] text-amber-200/80">
                     🪙 Coin
                   </p>
@@ -1939,7 +1942,7 @@ export default function PlayerPage() {
                   type="button"
                   onClick={() => setShowCoinConfirmSplash(true)}
                   disabled={coinLoading}
-                  className="rounded-2xl border border-amber-400/45 bg-amber-500/20 px-5 py-3 text-sm font-black text-amber-50 shadow-md transition-all hover:bg-amber-500/35 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="fire-button fire-orange rounded-2xl border border-amber-400/45 bg-amber-500/20 px-5 py-3 text-sm font-black text-amber-50 shadow-md transition-all hover:bg-amber-500/35 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {coinLoading ? '⏳ Transferring…' : '⇄ Transfer Cash → Coin'}
                 </button>
@@ -1951,12 +1954,12 @@ export default function PlayerPage() {
                     setMessage('');
                   }}
                   disabled={isBlockedPlayer}
-                  className="rounded-2xl border border-violet-400/45 bg-violet-500/20 px-5 py-3 text-sm font-black text-violet-50 shadow-md transition-all hover:bg-violet-500/35 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="fire-button fire-purple rounded-2xl border border-violet-400/45 bg-violet-500/20 px-5 py-3 text-sm font-black text-violet-50 shadow-md transition-all hover:bg-violet-500/35 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   ⬇ Load coin
                 </button>
 
-                <div className="rounded-2xl border border-emerald-400/35 bg-gradient-to-br from-emerald-500/25 to-emerald-900/20 px-5 py-3 text-right shadow-lg shadow-emerald-500/10">
+                <div className="fire-panel fire-green rounded-2xl border border-emerald-400/35 bg-gradient-to-br from-emerald-500/25 to-emerald-900/20 px-5 py-3 text-right shadow-lg shadow-emerald-500/10">
                   <p className="text-[10px] font-black uppercase tracking-[0.28em] text-emerald-200/80">
                     💵 Cash
                   </p>
@@ -1968,7 +1971,7 @@ export default function PlayerPage() {
                   type="button"
                   onClick={() => setShowCashoutModal(true)}
                   disabled={wallet.cash <= 0 || isBlockedPlayer}
-                  className="rounded-2xl border border-cyan-400/45 bg-cyan-500/25 px-5 py-3 text-sm font-black text-cyan-50 shadow-md transition-all hover:bg-cyan-500/40 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="fire-button fire-green rounded-2xl border border-cyan-400/45 bg-cyan-500/25 px-5 py-3 text-sm font-black text-cyan-50 shadow-md transition-all hover:bg-cyan-500/40 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   💸 Cashout
                 </button>
@@ -1982,7 +1985,7 @@ export default function PlayerPage() {
               </div>
 
               <div className="mb-4 grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-2 lg:hidden">
-                <div className="rounded-2xl border border-amber-400/35 bg-gradient-to-br from-amber-500/25 to-yellow-700/10 p-3 text-center shadow-md">
+                <div className="fire-panel fire-orange rounded-2xl border border-amber-400/35 bg-gradient-to-br from-amber-500/25 to-yellow-700/10 p-3 text-center shadow-md">
                   <p className="text-[9px] font-black uppercase tracking-wider text-amber-200/75">
                     🪙 Coin
                   </p>
@@ -1990,7 +1993,7 @@ export default function PlayerPage() {
                     {formatWalletAmount(wallet.coin)}
                   </p>
                 </div>
-                <div className="rounded-2xl border border-emerald-400/35 bg-gradient-to-br from-emerald-500/25 to-emerald-900/15 p-3 text-center shadow-md">
+                <div className="fire-panel fire-green rounded-2xl border border-emerald-400/35 bg-gradient-to-br from-emerald-500/25 to-emerald-900/15 p-3 text-center shadow-md">
                   <p className="text-[9px] font-black uppercase tracking-wider text-emerald-200/75">
                     💵 Cash
                   </p>
@@ -2002,7 +2005,7 @@ export default function PlayerPage() {
                   type="button"
                   onClick={() => setShowCoinConfirmSplash(true)}
                   disabled={coinLoading}
-                  className="col-span-2 min-h-[48px] rounded-2xl border border-amber-400/45 bg-amber-500/20 py-3 text-sm font-black text-amber-50 active:scale-[0.99] disabled:opacity-60"
+                  className="fire-button fire-orange col-span-2 min-h-[48px] rounded-2xl border border-amber-400/45 bg-amber-500/20 py-3 text-sm font-black text-amber-50 active:scale-[0.99] disabled:opacity-60"
                 >
                   {coinLoading ? '⏳ Transferring…' : '⇄ Transfer all cash to coin'}
                 </button>
@@ -2013,7 +2016,7 @@ export default function PlayerPage() {
                     setMessage('');
                   }}
                   disabled={isBlockedPlayer}
-                  className="col-span-2 min-h-[48px] rounded-2xl border border-violet-400/45 bg-violet-500/25 py-3 text-sm font-black text-violet-50 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+                  className="fire-button fire-purple col-span-2 min-h-[48px] rounded-2xl border border-violet-400/45 bg-violet-500/25 py-3 text-sm font-black text-violet-50 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   ⬇ Load coin
                 </button>
@@ -2021,7 +2024,7 @@ export default function PlayerPage() {
                   type="button"
                   onClick={() => setShowCashoutModal(true)}
                   disabled={wallet.cash <= 0 || isBlockedPlayer}
-                  className="col-span-2 min-h-[48px] rounded-2xl border border-cyan-400/45 bg-cyan-500/25 py-3 text-sm font-black text-cyan-50 active:scale-[0.99] disabled:opacity-60"
+                  className="fire-button fire-green col-span-2 min-h-[48px] rounded-2xl border border-cyan-400/45 bg-cyan-500/25 py-3 text-sm font-black text-cyan-50 active:scale-[0.99] disabled:opacity-60"
                 >
                   💸 Cashout
                 </button>
@@ -2031,7 +2034,7 @@ export default function PlayerPage() {
                 <motion.div
                   initial={{ opacity: 0, y: -10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className={`mb-4 rounded-2xl border p-4 shadow-xl backdrop-blur-md sm:p-5 ${
+                  className={`fire-panel fire-orange mb-4 rounded-2xl border p-4 shadow-xl backdrop-blur-md sm:p-5 ${
                     playerAlert.variant === 'index'
                       ? 'border-amber-400/50 bg-gradient-to-br from-amber-950/90 via-[#1a1008] to-black/80'
                       : playerAlert.variant === 'permission'
@@ -2107,7 +2110,7 @@ export default function PlayerPage() {
               ) : null}
 
             {isBlockedPlayer && (
-              <div className="mb-5 rounded-xl border border-rose-500/40 bg-rose-500/15 backdrop-blur-sm p-4 text-sm text-rose-100 flex items-center gap-3">
+              <div className="fire-panel fire-orange mb-5 rounded-xl border border-rose-500/40 bg-rose-500/15 backdrop-blur-sm p-4 text-sm text-rose-100 flex items-center gap-3">
                 <i className="fas fa-ban text-rose-300 text-lg"></i>
                 <span>
                   Your account is restricted. You can open{' '}
@@ -2124,7 +2127,7 @@ export default function PlayerPage() {
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.45 }}
-                  className="relative overflow-hidden rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/20 via-rose-600/10 to-purple-900/35 p-5 shadow-[0_0_50px_-12px_rgba(234,179,8,0.45)] sm:p-8"
+                  className="fire-panel fire-orange fire-hero relative overflow-hidden rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/20 via-rose-600/10 to-purple-900/35 p-5 shadow-[0_0_50px_-12px_rgba(234,179,8,0.45)] sm:p-8"
                 >
                   <div className="pointer-events-none absolute -right-10 -top-10 text-8xl opacity-[0.07]">
                     🎰
@@ -2146,7 +2149,7 @@ export default function PlayerPage() {
                       </p>
 
                       <div className="mt-5 grid grid-cols-2 gap-2 sm:max-w-md">
-                        <div className="rounded-2xl border border-amber-400/30 bg-black/35 px-3 py-3 text-center backdrop-blur-md">
+                        <div className="fire-panel fire-orange rounded-2xl border border-amber-400/30 bg-black/35 px-3 py-3 text-center backdrop-blur-md">
                           <p className="text-[10px] font-black uppercase tracking-wider text-amber-200/70">
                             🪙 Coin
                           </p>
@@ -2154,7 +2157,7 @@ export default function PlayerPage() {
                             {formatWalletAmount(wallet.coin)}
                           </p>
                         </div>
-                        <div className="rounded-2xl border border-emerald-400/30 bg-black/35 px-3 py-3 text-center backdrop-blur-md">
+                        <div className="fire-panel fire-green rounded-2xl border border-emerald-400/30 bg-black/35 px-3 py-3 text-center backdrop-blur-md">
                           <p className="text-[10px] font-black uppercase tracking-wider text-emerald-200/70">
                             💵 Cash
                           </p>
@@ -2163,7 +2166,7 @@ export default function PlayerPage() {
                           </p>
                         </div>
                       </div>
-                      <div className="mt-4 flex flex-wrap items-center gap-2 rounded-2xl border border-cyan-400/30 bg-black/35 px-3 py-3 sm:max-w-md">
+                      <div className="fire-panel fire-orange mt-4 flex flex-wrap items-center gap-2 rounded-2xl border border-cyan-400/30 bg-black/35 px-3 py-3 sm:max-w-md">
                         <p className="text-xs font-black uppercase tracking-wide text-cyan-200/80">
                           Your Referral Code:{' '}
                           <span className="text-sm text-white">{referralCode || 'Not available'}</span>
@@ -2172,7 +2175,7 @@ export default function PlayerPage() {
                           type="button"
                           onClick={() => void handleCopyReferralCode()}
                           disabled={!referralCode}
-                          className="rounded-xl bg-cyan-400 px-3 py-2 text-xs font-black text-black hover:bg-cyan-300 disabled:opacity-50"
+                          className="fire-button fire-orange rounded-xl bg-cyan-400 px-3 py-2 text-xs font-black text-black hover:bg-cyan-300 disabled:opacity-50"
                         >
                           Copy Referral Code
                         </button>
@@ -2185,7 +2188,7 @@ export default function PlayerPage() {
                             setMessage('');
                           }}
                           disabled={isBlockedPlayer}
-                          className="w-full min-h-[48px] rounded-2xl border border-violet-400/50 bg-violet-500/20 py-3 text-sm font-black text-violet-50 transition hover:bg-violet-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+                          className="fire-button fire-purple w-full min-h-[48px] rounded-2xl border border-violet-400/50 bg-violet-500/20 py-3 text-sm font-black text-violet-50 transition hover:bg-violet-500/30 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           ⬇ Load coin — payment reference
                         </button>
@@ -2204,7 +2207,7 @@ export default function PlayerPage() {
                           ],
                         }}
                         transition={{ duration: 2.2, repeat: Infinity }}
-                        className="relative min-h-[56px] overflow-hidden rounded-2xl bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 px-8 py-4 text-lg font-black text-black shadow-xl sm:min-h-[60px] sm:text-xl"
+                        className="fire-button fire-orange relative min-h-[56px] overflow-hidden rounded-2xl bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 px-8 py-4 text-lg font-black text-black shadow-xl sm:min-h-[60px] sm:text-xl"
                       >
                         <span className="relative z-10 flex items-center justify-center gap-2">
                           🎰 Play now
@@ -2217,7 +2220,7 @@ export default function PlayerPage() {
                         <button
                           type="button"
                           onClick={handleOpenFirstUnreadAgent}
-                          className="flex min-h-[48px] items-center justify-center gap-2 rounded-2xl border border-rose-400/40 bg-rose-500/20 px-4 py-3 text-sm font-black text-rose-100 shadow-lg transition-all hover:bg-rose-500/30"
+                          className="fire-button fire-orange flex min-h-[48px] items-center justify-center gap-2 rounded-2xl border border-rose-400/40 bg-rose-500/20 px-4 py-3 text-sm font-black text-rose-100 shadow-lg transition-all hover:bg-rose-500/30"
                         >
                           💬 Unread messages ({totalUnread})
                         </button>
@@ -2226,7 +2229,7 @@ export default function PlayerPage() {
                   </div>
                 </motion.div>
 
-                <div className="rounded-2xl border border-rose-500/35 bg-gradient-to-br from-rose-950/50 to-black/50 p-4 shadow-lg backdrop-blur-md sm:p-5">
+                <div className="fire-panel fire-orange rounded-2xl border border-rose-500/35 bg-gradient-to-br from-rose-950/50 to-black/50 p-4 shadow-lg backdrop-blur-md sm:p-5">
                   <p className="flex items-center gap-2 text-sm font-black uppercase tracking-wide text-rose-200/95">
                     <span className="text-lg">⚠️</span> Redeem accuracy
                   </p>
@@ -2253,7 +2256,7 @@ export default function PlayerPage() {
                       initial={{ opacity: 0, y: 12 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: index * 0.05 }}
-                      className={`rounded-2xl border p-4 text-center shadow-lg backdrop-blur-md transition-all active:scale-[0.98] sm:p-5 ${
+                      className={`fire-panel fire-orange rounded-2xl border p-4 text-center shadow-lg backdrop-blur-md transition-all active:scale-[0.98] sm:p-5 ${
                         card.tone === 'alert'
                           ? 'border-rose-400/40 bg-rose-500/15'
                           : 'border-white/10 bg-black/40 hover:border-amber-400/30'
@@ -2477,7 +2480,7 @@ export default function PlayerPage() {
                 ) : null}
 
                 <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-                  <div className="rounded-3xl border border-amber-400/25 bg-black/45 p-4 shadow-xl backdrop-blur-xl sm:p-6">
+                  <div className="fire-panel fire-orange rounded-3xl border border-amber-400/25 bg-black/45 p-4 shadow-xl backdrop-blur-xl sm:p-6">
                     <h3 className="mb-4 flex items-center gap-2 text-lg font-black bg-gradient-to-r from-amber-200 to-yellow-300 bg-clip-text text-transparent sm:text-xl">
                       <span>⚡</span> Quick play
                     </h3>
@@ -2497,7 +2500,7 @@ export default function PlayerPage() {
                               setSelectedGameName(game.gameName);
                               setActiveView('play');
                             }}
-                            className="flex min-h-[52px] w-full items-center justify-between rounded-2xl border border-white/10 bg-white/[0.06] p-4 text-left transition-all active:scale-[0.99] hover:border-amber-400/40 hover:bg-amber-500/10"
+                            className="fire-panel fire-orange flex min-h-[52px] w-full items-center justify-between rounded-2xl border border-white/10 bg-white/[0.06] p-4 text-left transition-all active:scale-[0.99] hover:border-amber-400/40 hover:bg-amber-500/10"
                           >
                             <div className="min-w-0">
                               <p className="truncate font-black text-amber-200">{game.gameName}</p>
@@ -2512,7 +2515,7 @@ export default function PlayerPage() {
                     )}
                   </div>
 
-                  <div className="rounded-3xl border border-fuchsia-400/25 bg-black/45 p-4 shadow-xl backdrop-blur-xl sm:p-6">
+                  <div className="fire-panel fire-orange rounded-3xl border border-fuchsia-400/25 bg-black/45 p-4 shadow-xl backdrop-blur-xl sm:p-6">
                     <h3 className="mb-4 flex items-center gap-2 text-lg font-black bg-gradient-to-r from-fuchsia-200 to-purple-300 bg-clip-text text-transparent sm:text-xl">
                       <span>🏆</span> Recent requests
                     </h3>
@@ -2524,7 +2527,7 @@ export default function PlayerPage() {
                         {requestHistory.slice(0, 4).map((request) => (
                           <div
                             key={request.id}
-                            className="rounded-2xl border border-white/10 bg-white/[0.05] p-4 transition-all hover:border-fuchsia-400/25"
+                            className="fire-panel fire-orange rounded-2xl border border-white/10 bg-white/[0.05] p-4 transition-all hover:border-fuchsia-400/25"
                           >
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <div className="min-w-0">
@@ -2553,7 +2556,7 @@ export default function PlayerPage() {
 
             {activeView === 'bonus-events' && (
               <div className="space-y-5 sm:space-y-6">
-                <div className="relative overflow-hidden rounded-3xl border border-fuchsia-400/40 bg-gradient-to-br from-fuchsia-700/25 via-amber-500/10 to-black/60 p-5 shadow-[0_0_48px_-12px_rgba(217,70,239,0.45)] sm:p-6">
+                <div className="fire-panel fire-purple fire-hero relative overflow-hidden rounded-3xl border border-fuchsia-400/40 bg-gradient-to-br from-fuchsia-700/25 via-amber-500/10 to-black/60 p-5 shadow-[0_0_48px_-12px_rgba(217,70,239,0.45)] sm:p-6">
                   <div className="pointer-events-none absolute -right-10 top-0 h-36 w-36 rounded-full bg-fuchsia-400/25 blur-3xl" />
                   <div className="pointer-events-none absolute bottom-0 left-0 h-28 w-28 rounded-full bg-amber-400/20 blur-2xl" />
                   <p className="text-xs font-black uppercase tracking-[0.35em] text-fuchsia-200/90 sm:text-sm">
@@ -2566,7 +2569,7 @@ export default function PlayerPage() {
                 </div>
 
                 <div
-                  className="group/bonus relative overflow-hidden rounded-3xl border border-violet-400/35 bg-gradient-to-br from-violet-950/70 via-black/55 to-fuchsia-950/30 p-4 shadow-[0_0_40px_-12px_rgba(139,92,246,0.35)] backdrop-blur-xl sm:p-6"
+                  className="fire-panel fire-purple group/bonus relative overflow-hidden rounded-3xl border border-violet-400/35 bg-gradient-to-br from-violet-950/70 via-black/55 to-fuchsia-950/30 p-4 shadow-[0_0_40px_-12px_rgba(139,92,246,0.35)] backdrop-blur-xl sm:p-6"
                   onPointerEnter={() => setBonusStripPaused(true)}
                   onPointerLeave={() => setBonusStripPaused(false)}
                 >
@@ -2774,7 +2777,7 @@ export default function PlayerPage() {
                                   type="button"
                                   onClick={() => void handleActivateBonusEvent(event)}
                                   disabled={activatingBonusEventId === event.id}
-                                  className="mt-5 flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-fuchsia-500 via-violet-500 to-amber-400 py-3 text-sm font-black text-white shadow-lg shadow-fuchsia-500/25 transition hover:brightness-110 active:scale-[0.99] disabled:opacity-60"
+                                  className="fire-button fire-purple mt-5 flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-fuchsia-500 via-violet-500 to-amber-400 py-3 text-sm font-black text-white shadow-lg shadow-fuchsia-500/25 transition hover:brightness-110 active:scale-[0.99] disabled:opacity-60"
                                 >
                                   {activatingBonusEventId === event.id ? (
                                     <>
@@ -2799,7 +2802,7 @@ export default function PlayerPage() {
             {/* PLAY VIEW */}
             {activeView === 'play' && (
               <div className="space-y-5 sm:space-y-6">
-                <div className="relative overflow-hidden rounded-3xl border border-amber-400/30 bg-gradient-to-r from-amber-500/20 via-rose-600/15 to-purple-900/30 p-5 shadow-lg sm:p-6">
+                <div className="fire-panel fire-orange fire-hero relative overflow-hidden rounded-3xl border border-amber-400/30 bg-gradient-to-r from-amber-500/20 via-rose-600/15 to-purple-900/30 p-5 shadow-lg sm:p-6">
                   <div className="pointer-events-none absolute right-4 top-4 text-4xl opacity-20">
                     🎲
                   </div>
@@ -2841,7 +2844,7 @@ export default function PlayerPage() {
                               setSelectedGameName(game.gameName);
                               setShowActiveTableSplash(true);
                             }}
-                            className={`relative overflow-hidden rounded-3xl border p-4 text-left shadow-xl transition-all active:scale-[0.98] sm:p-5 ${
+                            className={`fire-panel fire-orange relative overflow-hidden rounded-3xl border p-4 text-left shadow-xl transition-all active:scale-[0.98] sm:p-5 ${
                               isSelected
                                 ? 'border-amber-400/60 bg-gradient-to-br from-amber-500/25 to-purple-900/40 shadow-[0_0_32px_-8px_rgba(234,179,8,0.55)]'
                                 : 'border-white/10 bg-black/45 hover:border-amber-400/35'
@@ -2899,7 +2902,7 @@ export default function PlayerPage() {
             {/* USERNAMES VIEW */}
             {activeView === 'usernames' && (
               <div className="space-y-5 sm:space-y-6">
-                <div className="rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/15 via-fuchsia-900/20 to-black/50 p-5 shadow-lg sm:p-6">
+                <div className="fire-panel fire-orange fire-hero rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/15 via-fuchsia-900/20 to-black/50 p-5 shadow-lg sm:p-6">
                   <p className="text-xs font-black uppercase tracking-[0.35em] text-amber-200/90 sm:text-sm">
                     🔐 VIP vault
                   </p>
@@ -2971,7 +2974,7 @@ export default function PlayerPage() {
                         <motion.div
                           key={login.id}
                           layout
-                          className="group rounded-3xl border border-amber-400/25 bg-gradient-to-br from-black/60 to-purple-950/30 p-4 shadow-xl backdrop-blur-xl transition-all sm:p-5 sm:hover:border-amber-400/45 sm:hover:shadow-[0_0_28px_-8px_rgba(234,179,8,0.35)]"
+                          className="fire-panel fire-orange group rounded-3xl border border-amber-400/25 bg-gradient-to-br from-black/60 to-purple-950/30 p-4 shadow-xl backdrop-blur-xl transition-all sm:p-5 sm:hover:border-amber-400/45 sm:hover:shadow-[0_0_28px_-8px_rgba(234,179,8,0.35)]"
                         >
                           <div className="mb-4 flex items-center justify-between gap-2">
                             <div className="min-w-0">
@@ -3360,7 +3363,7 @@ export default function PlayerPage() {
         >
           <div
             onClick={(event) => event.stopPropagation()}
-            className="w-full max-w-md overflow-hidden rounded-3xl border border-violet-400/40 bg-gradient-to-br from-violet-950/95 via-zinc-900 to-black/95 p-6 text-left text-white shadow-[0_0_60px_-12px_rgba(139,92,246,0.45)] backdrop-blur-xl sm:p-7"
+            className="fire-panel fire-purple w-full max-w-md overflow-hidden rounded-3xl border border-violet-400/40 bg-gradient-to-br from-violet-950/95 via-zinc-900 to-black/95 p-6 text-left text-white shadow-[0_0_60px_-12px_rgba(139,92,246,0.45)] backdrop-blur-xl sm:p-7"
           >
             <h3 className="text-2xl font-black">Load coin</h3>
             <p className="mt-2 text-sm text-violet-100/80">
@@ -3374,7 +3377,7 @@ export default function PlayerPage() {
                   type="button"
                   onClick={() => void handleCreateCoinLoadSession()}
                   disabled={coinLoadBusy || !playerCoadminUid || isBlockedPlayer}
-                  className="w-full min-h-[52px] rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-600 py-3 text-sm font-black text-white shadow-lg shadow-violet-500/25 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="fire-button fire-purple w-full min-h-[52px] rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-600 py-3 text-sm font-black text-white shadow-lg shadow-violet-500/25 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {coinLoadBusy ? 'Preparing…' : 'Add coins'}
                 </button>
@@ -3449,7 +3452,7 @@ export default function PlayerPage() {
         >
           <div
             onClick={(event) => event.stopPropagation()}
-            className={`${PLAYER_SPLASH_CARD} text-white`}
+            className={`${PLAYER_SPLASH_CARD} fire-panel fire-orange text-white`}
           >
             <h3 className="text-2xl font-black">Transfer to coin?</h3>
             <p className="mt-2 text-sm text-amber-100/85">
@@ -3473,7 +3476,7 @@ export default function PlayerPage() {
                   void handleCoinButtonClick();
                 }}
                 disabled={coinLoading}
-                className="flex-1 rounded-xl bg-amber-400 px-4 py-3 text-sm font-black text-black hover:bg-amber-300 disabled:opacity-60"
+                className="fire-button fire-orange flex-1 rounded-xl bg-amber-400 px-4 py-3 text-sm font-black text-black hover:bg-amber-300 disabled:opacity-60"
               >
                 {coinLoading ? 'Transferring...' : 'Yes, transfer'}
               </button>
@@ -3489,7 +3492,7 @@ export default function PlayerPage() {
         >
           <div
             onClick={(event) => event.stopPropagation()}
-            className={`${PLAYER_SPLASH_CARD_WIDE} text-white`}
+            className={`${PLAYER_SPLASH_CARD_WIDE} fire-panel fire-green text-white`}
           >
             <h3 className="text-2xl font-black">Player Cashout</h3>
             <p className="mt-2 text-sm text-cyan-100/80">
@@ -3521,7 +3524,7 @@ export default function PlayerPage() {
                 type="button"
                 onClick={() => void handlePlayerCashoutRequest()}
                 disabled={cashoutLoading}
-                className="flex-1 rounded-xl bg-cyan-400 px-4 py-3 text-sm font-black text-black hover:bg-cyan-300 disabled:opacity-60"
+                className="fire-button fire-green flex-1 rounded-xl bg-cyan-400 px-4 py-3 text-sm font-black text-black hover:bg-cyan-300 disabled:opacity-60"
               >
                 {cashoutLoading ? 'Sending...' : 'Send Cashout'}
               </button>
@@ -3540,7 +3543,7 @@ export default function PlayerPage() {
         >
           <div
             onClick={(event) => event.stopPropagation()}
-            className="w-full max-w-2xl rounded-3xl border border-emerald-300/40 bg-gradient-to-br from-emerald-600 via-emerald-700 to-emerald-900 p-7 text-white shadow-2xl shadow-emerald-900/30 backdrop-blur-xl"
+            className="fire-panel fire-green w-full max-w-2xl rounded-3xl border border-emerald-300/40 bg-gradient-to-br from-emerald-600 via-emerald-700 to-emerald-900 p-7 text-white shadow-2xl shadow-emerald-900/30 backdrop-blur-xl"
           >
             <p className="text-xs font-black uppercase tracking-[0.28em] text-emerald-100/90">
               Cashout Successful
