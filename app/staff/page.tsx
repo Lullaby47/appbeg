@@ -1875,10 +1875,7 @@ export default function StaffPage() {
                             online={Boolean(staffOnlineByUid[coadmin.uid])}
                             sizeClassName="h-3 w-3"
                           />
-                          <span className="font-mono text-white">
-                            {coadmin.username || '—'}
-                          </span>
-                          <span className="text-base font-medium text-neutral-400">(co-admin)</span>
+                          <span className="text-white">Co-admin</span>
                         </h3>
                         <p className="mt-2 text-sm text-neutral-400">
                           Status: <span className="text-white">{coadmin.status}</span>
