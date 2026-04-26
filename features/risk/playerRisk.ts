@@ -15,6 +15,7 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
+import { resolveCoadminUid } from '@/lib/coadmin/scope';
 
 export type RiskLevel = 'low' | 'medium' | 'high';
 export type TransferRequestStatus = 'pending' | 'approved' | 'rejected';
@@ -548,6 +549,19 @@ export async function createCashToCoinTransferRequest(playerUid: string) {
     throw new Error('Only players can transfer cash to coin.');
   }
 
+  const coadminUidForRequest = String(
+    resolveCoadminUid({
+      uid: playerUid,
+      ...playerData,
+    }) || ''
+  ).trim();
+
+  if (!coadminUidForRequest) {
+    throw new Error(
+      'This player is not linked to a co-admin account. Contact support to fix the profile.'
+    );
+  }
+
   const transferBlockedUntilMs = toMs(playerData.transferBlockedUntil || null);
   if (transferBlockedUntilMs > Date.now()) {
     throw new Error('Transfer is temporarily blocked. Contact staff.');
@@ -591,7 +605,7 @@ export async function createCashToCoinTransferRequest(playerUid: string) {
   const transferRef = await addDoc(collection(db, 'transferRequests'), {
     playerUid,
     playerUsername: playerData.username?.trim() || 'Player',
-    coadminUid: String(playerData.coadminUid || playerData.createdBy || '').trim(),
+    coadminUid: coadminUidForRequest,
     amountNpr: cashAmount,
     cashBalanceSnapshot: cashAmount,
     status: 'pending',
@@ -613,7 +627,7 @@ export async function createCashToCoinTransferRequest(playerUid: string) {
   await createRiskAction({
     playerUid,
     playerUsername: playerData.username?.trim() || 'Player',
-    coadminUid: String(playerData.coadminUid || playerData.createdBy || '').trim(),
+    coadminUid: coadminUidForRequest,
     action: 'transfer_request_created',
     details: `Requested NPR ${cashAmount} cash to coin`,
   });

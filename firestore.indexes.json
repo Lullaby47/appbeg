@@ -23,6 +23,14 @@
         { "fieldPath": "playerUid", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "transferRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "coadminUid", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

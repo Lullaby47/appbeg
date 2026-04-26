@@ -926,7 +926,9 @@ export default function StaffPage() {
     setMessage('');
     try {
       await approveTransferRequest(requestId);
-      setMessage('Transfer approved and converted to coin.');
+      setMessage(
+        'Transfer approved and converted to coin. Most profit comes from cashouts. Repeated cash-to-coin transfers may reduce long-term gains.'
+      );
     } catch (error: any) {
       setMessage(error.message || 'Failed to approve transfer request.');
     } finally {
