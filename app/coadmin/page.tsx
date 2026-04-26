@@ -34,6 +34,7 @@ import {
   getStaff,
   getCarers,
   getPlayers,
+  resetCoadminWorkerCredentials,
   unblockCarer,
   unblockPlayer,
   unblockStaff,
@@ -103,6 +104,7 @@ import {
   listenShiftSessionsByCoadmin,
   type ShiftSession,
 } from '@/features/shifts/userShifts';
+import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 
 type CoadminView =
   | 'dashboard'
@@ -264,6 +266,7 @@ export default function CoadminPage() {
 
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const [workerCredentialsLoading, setWorkerCredentialsLoading] = useState(false);
   const [blocking, setBlocking] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
   const [urgentRequestCount, setUrgentRequestCount] = useState(0);
@@ -1073,6 +1076,138 @@ export default function CoadminPage() {
     }
   }
 
+  async function handleCoadminSetStaffPassword(user: StaffUser) {
+    const pw1 = window.prompt('New password (at least 6 characters):', '');
+    if (pw1 === null) {
+      return;
+    }
+    if (pw1.length < 6) {
+      setMessage('Password must be at least 6 characters.');
+      return;
+    }
+    const pw2 = window.prompt('Confirm new password:', '');
+    if (pw2 === null) {
+      return;
+    }
+    if (pw1 !== pw2) {
+      setMessage('Passwords do not match.');
+      return;
+    }
+    setWorkerCredentialsLoading(true);
+    setMessage('');
+    try {
+      await resetCoadminWorkerCredentials(user, { newPassword: pw1 });
+      await loadStaffList();
+      const fresh =
+        (await getUsersForCurrentCoadmin(getStaff)).find((s) => s.uid === user.uid) ?? null;
+      setSelectedStaff(fresh);
+      setMessage('Password updated. Send it to this person through a private channel only.');
+    } catch (err: any) {
+      setMessage(err?.message || 'Failed to set password.');
+    } finally {
+      setWorkerCredentialsLoading(false);
+    }
+  }
+
+  async function handleCoadminSetStaffUsername(user: StaffUser) {
+    const next = window.prompt(
+      `New login username (lowercase, no spaces; current: ${user.username}):`,
+      user.username
+    );
+    if (next === null) {
+      return;
+    }
+    const clean = next.trim().toLowerCase();
+    if (!clean) {
+      setMessage('Username is required.');
+      return;
+    }
+    if (clean === user.username) {
+      setMessage('That is already the login username.');
+      return;
+    }
+    setWorkerCredentialsLoading(true);
+    setMessage('');
+    try {
+      await resetCoadminWorkerCredentials(user, { newUsername: clean });
+      await loadStaffList();
+      const fresh =
+        (await getUsersForCurrentCoadmin(getStaff)).find((s) => s.uid === user.uid) ?? null;
+      setSelectedStaff(fresh);
+      setMessage('Login username updated. It must be unique across the app.');
+    } catch (err: any) {
+      setMessage(err?.message || 'Failed to change username.');
+    } finally {
+      setWorkerCredentialsLoading(false);
+    }
+  }
+
+  async function handleCoadminSetCarerPassword(user: CarerUser) {
+    const pw1 = window.prompt('New password (at least 6 characters):', '');
+    if (pw1 === null) {
+      return;
+    }
+    if (pw1.length < 6) {
+      setMessage('Password must be at least 6 characters.');
+      return;
+    }
+    const pw2 = window.prompt('Confirm new password:', '');
+    if (pw2 === null) {
+      return;
+    }
+    if (pw1 !== pw2) {
+      setMessage('Passwords do not match.');
+      return;
+    }
+    setWorkerCredentialsLoading(true);
+    setMessage('');
+    try {
+      await resetCoadminWorkerCredentials(user, { newPassword: pw1 });
+      await loadCarerList();
+      const fresh =
+        (await getUsersForCurrentCoadmin(getCarers)).find((c) => c.uid === user.uid) ?? null;
+      setSelectedCarer(fresh);
+      setMessage('Password updated. Send it to this person through a private channel only.');
+    } catch (err: any) {
+      setMessage(err?.message || 'Failed to set password.');
+    } finally {
+      setWorkerCredentialsLoading(false);
+    }
+  }
+
+  async function handleCoadminSetCarerUsername(user: CarerUser) {
+    const next = window.prompt(
+      `New login username (lowercase, no spaces; current: ${user.username}):`,
+      user.username
+    );
+    if (next === null) {
+      return;
+    }
+    const clean = next.trim().toLowerCase();
+    if (!clean) {
+      setMessage('Username is required.');
+      return;
+    }
+    if (clean === user.username) {
+      setMessage('That is already the login username.');
+      return;
+    }
+    setWorkerCredentialsLoading(true);
+    setMessage('');
+    try {
+      await resetCoadminWorkerCredentials(user, { newUsername: clean });
+      await loadCarerList();
+      const fresh =
+        (await getUsersForCurrentCoadmin(getCarers)).find((c) => c.uid === user.uid) ?? null;
+      setSelectedCarer(fresh);
+      setMessage('Login username updated. It must be unique across the app.');
+    } catch (err: any) {
+      setMessage(err?.message || 'Failed to change username.');
+    } finally {
+      setWorkerCredentialsLoading(false);
+    }
+  }
+
   async function handleDeletePlayer() {
     if (!deletePlayerTarget) return;
     setLoading(true);
@@ -1570,6 +1705,18 @@ export default function CoadminPage() {
   const sortedStaff = sortByNewest(staffList);
   const sortedCarers = sortByNewest(carerList);
   const sortedPlayers = sortByNewest(playerList);
+
+  const coadminPresenceUids = useMemo(() => {
+    const s = new Set<string>();
+    for (const u of staffList) s.add(u.uid);
+    for (const u of carerList) s.add(u.uid);
+    for (const u of playerList) s.add(u.uid);
+    for (const u of chatUsers) s.add(u.uid);
+    return Array.from(s);
+  }, [staffList, carerList, playerList, chatUsers]);
+
+  const coadminOnlineByUid = usePresenceOnlineMap(coadminPresenceUids);
+
   const shiftsRows = useMemo(() => {
     const byUser = new Map<string, ShiftSession[]>();
     for (const item of shiftSessions) {
@@ -2062,6 +2209,10 @@ export default function CoadminPage() {
               onDelete={handleDeleteStaff}
               onToggleBlock={handleToggleStaffStatus}
               blocking={blocking}
+              onCoadminSetPassword={handleCoadminSetStaffPassword}
+              onCoadminSetUsername={handleCoadminSetStaffUsername}
+              coadminCredentialsLoading={workerCredentialsLoading}
+              onlineByUid={coadminOnlineByUid}
               onStartChat={handleStaffStartChat}
               chatUser={staffChatUser}
               messages={messages}
@@ -2109,6 +2260,10 @@ export default function CoadminPage() {
               onDelete={handleDeleteCarer}
               onToggleBlock={handleToggleCarerStatus}
               blocking={blocking}
+              onCoadminSetPassword={handleCoadminSetCarerPassword}
+              onCoadminSetUsername={handleCoadminSetCarerUsername}
+              coadminCredentialsLoading={workerCredentialsLoading}
+              onlineByUid={coadminOnlineByUid}
               renderSelectedExtras={(carer) => {
                 const rechargeTotal = Math.round(
                   carerRechargeRedeemTotals[carer.uid]?.totalRechargeAmount || 0
@@ -2233,6 +2388,7 @@ export default function CoadminPage() {
               onDelete={handleDeletePlayer}
               onToggleBlock={handleTogglePlayerStatus}
               blocking={blocking}
+              onlineByUid={coadminOnlineByUid}
             />
           )}
 
@@ -2610,6 +2766,7 @@ export default function CoadminPage() {
               onSendMessage={handleSendMessage}
               onImageSelect={handleImageSelect}
               onClearImage={handleClearImage}
+              onlineByUid={coadminOnlineByUid}
             />
           )}
       </RoleSidebarLayout>

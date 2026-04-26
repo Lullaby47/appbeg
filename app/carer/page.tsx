@@ -53,6 +53,8 @@ import {
   endShiftSession,
   startShiftSession,
 } from '@/features/shifts/userShifts';
+import { usePresenceOnlineMap } from '@/features/presence/userPresence';
+import { OnlineIndicator } from '@/components/presence/OnlineIndicator';
 
 type CarerView =
   | 'dashboard'
@@ -481,6 +483,9 @@ export default function CarerPage() {
     () => riskSnapshots.filter((entry) => entry.riskLevel !== 'low').slice(0, 8),
     [riskSnapshots]
   );
+
+  const carerPlayerPresenceUids = useMemo(() => players.map((p) => p.uid), [players]);
+  const carerPlayerOnlineByUid = usePresenceOnlineMap(carerPlayerPresenceUids);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -2014,7 +2019,13 @@ export default function CarerPage() {
               >
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <h3 className="text-2xl font-bold">{player.username || 'Unnamed Player'}</h3>
+                    <h3 className="flex flex-wrap items-center gap-2 text-2xl font-bold">
+                      <OnlineIndicator
+                        online={Boolean(carerPlayerOnlineByUid[player.uid])}
+                        sizeClassName="h-3 w-3"
+                      />
+                      <span>{player.username || 'Unnamed Player'}</span>
+                    </h3>
                     <p className="mt-2 text-sm text-neutral-400">
                       Status: <span className="text-white">{player.status}</span>
                     </p>

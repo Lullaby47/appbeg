@@ -59,6 +59,7 @@ import {
   createCashToCoinTransferRequest,
   listenTransferRequestsByPlayer,
 } from '@/features/risk/playerRisk';
+import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
 
@@ -443,6 +444,8 @@ export default function PlayerPage() {
   const totalUnread = agents.reduce((total, agent) => {
     return total + (unreadCounts[agent.uid] || 0);
   }, 0);
+  const agentPresenceUids = useMemo(() => agents.map((a) => a.uid), [agents]);
+  const agentOnlineByUid = usePresenceOnlineMap(agentPresenceUids);
   const playerBonusEvents = useMemo(
     () => getBonusEventsForPlayerDisplay(bonusEvents),
     [bonusEvents]
@@ -3123,6 +3126,7 @@ export default function PlayerPage() {
                   onSendMessage={handleSendMessage}
                   onImageSelect={handleImageSelect}
                   onClearImage={handleClearImage}
+                  onlineByUid={agentOnlineByUid}
                 />
               </div>
             )}

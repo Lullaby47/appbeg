@@ -43,6 +43,8 @@ import {
   sendImageMessage,
 } from '@/features/messages/chatMessages';
 import { usePaginatedChatMessages } from '@/features/messages/usePaginatedChatMessages';
+import { usePresenceOnlineMap } from '@/features/presence/userPresence';
+import { OnlineIndicator } from '@/components/presence/OnlineIndicator';
 
 import { AdminUser, AdminView, ChatMessage } from '@/components/admin/types';
 
@@ -608,6 +610,17 @@ export default function AdminPage() {
     return bTime - aTime;
   });
 
+  const adminPresenceUids = useMemo(() => {
+    const s = new Set<string>();
+    for (const u of coadmins) s.add(u.uid);
+    for (const u of staffList) s.add(u.uid);
+    for (const u of players) s.add(u.uid);
+    for (const u of chatUsers) s.add(u.uid);
+    return Array.from(s);
+  }, [coadmins, staffList, players, chatUsers]);
+
+  const adminOnlineByUid = usePresenceOnlineMap(adminPresenceUids);
+
   const menuItems: (NavigationItem & { view: AdminView })[] = [
     { label: 'Dashboard', view: 'dashboard' },
     { label: 'Create Co-admin', view: 'create-coadmin' },
@@ -796,6 +809,7 @@ export default function AdminPage() {
               onDelete={handleDeleteCoadmin}
               onToggleBlock={handleToggleCoadminStatus}
               blocking={blocking}
+              onlineByUid={adminOnlineByUid}
               renderSelectedExtras={(coadmin) => {
                 const relatedStaff = [...allStaffForCoadmins]
                   .filter((staff) => belongsToCoadmin(staff, coadmin.uid))
@@ -900,6 +914,7 @@ export default function AdminPage() {
               onDelete={handleDeleteStaff}
               onToggleBlock={handleToggleStaffStatus}
               blocking={blocking}
+              onlineByUid={adminOnlineByUid}
               onImageSelect={handleImageSelect}
               onClearImage={handleClearImage}
             />
@@ -930,7 +945,13 @@ export default function AdminPage() {
                       >
                         <div className="flex flex-wrap items-start justify-between gap-4">
                           <div>
-                            <p className="text-lg font-semibold text-white">{player.username}</p>
+                            <p className="flex flex-wrap items-center gap-2 text-lg font-semibold text-white">
+                              <OnlineIndicator
+                                online={Boolean(adminOnlineByUid[player.uid])}
+                                sizeClassName="h-3 w-3"
+                              />
+                              <span>{player.username}</span>
+                            </p>
                             <p className="text-sm text-neutral-400">UID: {player.uid}</p>
                             <p className="text-sm text-neutral-400">
                               Coin: {Number((player as any).coin || 0)} / Cash:{' '}
@@ -1027,6 +1048,7 @@ export default function AdminPage() {
               onSendMessage={handleSendMessage}
               onImageSelect={handleImageSelect}
               onClearImage={handleClearImage}
+              onlineByUid={adminOnlineByUid}
             />
           )}
       </RoleSidebarLayout>

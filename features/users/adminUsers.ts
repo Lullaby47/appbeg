@@ -444,3 +444,40 @@ export async function blockCoadmin(coadmin: CoadminUser) {
 export async function unblockCoadmin(coadmin: CoadminUser) {
   return setManagedUserStatus(coadmin.uid, 'active');
 }
+
+/** Coadmin: change password and/or app login username for a staff or carer you manage. */
+export async function resetCoadminWorkerCredentials(
+  user: StaffUser | CarerUser,
+  options: { newPassword?: string; newUsername?: string }
+) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  if (!options.newPassword && options.newUsername === undefined) {
+    throw new Error('New password or new username is required.');
+  }
+  if (options.newUsername !== undefined && !String(options.newUsername).trim()) {
+    throw new Error('Username cannot be empty.');
+  }
+
+  const token = await currentUser.getIdToken();
+  const response = await fetch('/api/coadmin/reset-worker-credentials', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      targetUid: user.uid,
+      newPassword: options.newPassword,
+      newUsername: options.newUsername,
+    }),
+  });
+
+  const data = await parseApiResponse(response);
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to update sign-in details.');
+  }
+  return data;
+}

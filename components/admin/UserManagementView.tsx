@@ -33,6 +33,13 @@ interface Props<T extends BaseUser> {
   onDelete: () => void;
   onToggleBlock?: (user: T) => void;
   blocking?: boolean;
+  /** Coadmin: set sign-in password for staff/carer. */
+  onCoadminSetPassword?: (user: T) => void;
+  /** Coadmin: change login username for staff/carer. */
+  onCoadminSetUsername?: (user: T) => void;
+  coadminCredentialsLoading?: boolean;
+  /** Firestore-based presence: uid → online (overrides `user.isOnline` when set). */
+  onlineByUid?: Record<string, boolean>;
   renderSelectedExtras?: (user: T) => React.ReactNode;
   /** Coadmin “View carers” — responsive grid, amber VIP panels, scrollable list. */
   carersVisualTheme?: boolean;
@@ -71,6 +78,10 @@ export default function UserManagementView<T extends BaseUser>({
   onDelete,
   onToggleBlock,
   blocking = false,
+  onCoadminSetPassword,
+  onCoadminSetUsername,
+  coadminCredentialsLoading = false,
+  onlineByUid,
   renderSelectedExtras,
   carersVisualTheme = false,
 
@@ -93,8 +104,15 @@ export default function UserManagementView<T extends BaseUser>({
   const [showEmojis, setShowEmojis] = useState(false);
   const [openImageUrl, setOpenImageUrl] = useState<string | null>(null);
 
+  function isUserOnline(user: T) {
+    if (onlineByUid && user.uid in onlineByUid) {
+      return onlineByUid[user.uid];
+    }
+    return Boolean(user.isOnline);
+  }
+
   function getOnlineLabel(user: T) {
-    return user.isOnline ? 'Online' : 'Offline';
+    return isUserOnline(user) ? 'Online' : 'Offline';
   }
 
   function formatTime(date: Date) {
@@ -199,7 +217,7 @@ export default function UserManagementView<T extends BaseUser>({
                     <div className="mt-1 flex items-center gap-2">
                       <span
                         className={`h-2 w-2 rounded-full ${
-                          user.isOnline ? 'bg-green-500' : 'bg-neutral-500'
+                          isUserOnline(user) ? 'bg-emerald-500' : 'bg-neutral-500'
                         }`}
                       />
 
@@ -291,6 +309,36 @@ export default function UserManagementView<T extends BaseUser>({
                         : 'Block'}
                   </button>
                 )}
+
+                {onCoadminSetPassword && (
+                  <button
+                    type="button"
+                    onClick={() => onCoadminSetPassword(selectedUser)}
+                    disabled={coadminCredentialsLoading}
+                    className={
+                      carersVisualTheme
+                        ? 'rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-4 py-2.5 text-sm font-bold text-cyan-100 hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-60'
+                        : 'rounded-xl border border-cyan-500/30 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-60'
+                    }
+                  >
+                    {coadminCredentialsLoading ? 'Saving…' : 'Set password'}
+                  </button>
+                )}
+
+                {onCoadminSetUsername && (
+                  <button
+                    type="button"
+                    onClick={() => onCoadminSetUsername(selectedUser)}
+                    disabled={coadminCredentialsLoading}
+                    className={
+                      carersVisualTheme
+                        ? 'rounded-xl border border-sky-500/40 bg-sky-500/15 px-4 py-2.5 text-sm font-bold text-sky-100 hover:bg-sky-500/25 disabled:cursor-not-allowed disabled:opacity-60'
+                        : 'rounded-xl border border-sky-500/30 bg-sky-500/15 px-4 py-2 text-sm font-semibold text-sky-200 hover:bg-sky-500/25 disabled:cursor-not-allowed disabled:opacity-60'
+                    }
+                  >
+                    {coadminCredentialsLoading ? 'Saving…' : 'Change username'}
+                  </button>
+                )}
               </div>
 
               <h2
@@ -326,6 +374,23 @@ export default function UserManagementView<T extends BaseUser>({
                   </span>
                 </p>
 
+                {(onCoadminSetPassword || onCoadminSetUsername) && (
+                  <p
+                    className={
+                      carersVisualTheme ? 'text-sm text-amber-100/70' : 'text-sm text-neutral-300'
+                    }
+                  >
+                    Login username:{' '}
+                    <span
+                      className={
+                        carersVisualTheme ? 'font-mono text-amber-50' : 'font-mono text-white'
+                      }
+                    >
+                      {selectedUser.username}
+                    </span>
+                  </p>
+                )}
+
                 <div
                   className={`flex items-center gap-2 text-sm ${
                     carersVisualTheme ? 'text-amber-100/55' : 'text-neutral-400'
@@ -335,7 +400,7 @@ export default function UserManagementView<T extends BaseUser>({
 
                   <span
                     className={`h-2.5 w-2.5 rounded-full ${
-                      selectedUser.isOnline ? 'bg-green-500' : 'bg-neutral-500'
+                      isUserOnline(selectedUser) ? 'bg-emerald-500' : 'bg-neutral-500'
                     }`}
                   />
 
@@ -365,8 +430,8 @@ export default function UserManagementView<T extends BaseUser>({
 
                       <div
                         className={`absolute bottom-0 right-0 h-3 w-3 rounded-full ring-2 ring-neutral-950 ${
-                          selectedUser.isOnline
-                            ? 'bg-green-500'
+                          isUserOnline(selectedUser)
+                            ? 'bg-emerald-500'
                             : 'bg-neutral-500'
                         }`}
                       />

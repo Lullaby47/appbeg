@@ -2,8 +2,19 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { AdminUser, ChatMessage } from './types';
+import { OnlineIndicator } from '@/components/presence/OnlineIndicator';
 
 const EMOJIS = ['😀', '😂', '😍', '😎', '👍', '🙏', '🔥', '❤️', '🎉', '😢'];
+
+function getOnlineStatusLabel(
+  onlineByUid: Record<string, boolean>,
+  user: AdminUser
+) {
+  if (user.uid in onlineByUid) {
+    return onlineByUid[user.uid] ? 'Online' : 'Offline';
+  }
+  return 'Offline';
+}
 
 interface Props {
   chatUsers: AdminUser[];
@@ -23,6 +34,8 @@ interface Props {
   onSendMessage: (e: React.FormEvent) => void;
   onImageSelect?: (file: File) => void;
   onClearImage?: () => void;
+  /** Real-time: uid was active recently (for green dot). */
+  onlineByUid?: Record<string, boolean>;
 }
 
 export default function ReachOutView({
@@ -42,6 +55,7 @@ export default function ReachOutView({
   hasMoreOlderMessages = false,
   loadingOlderMessages = false,
   onLoadOlderMessages,
+  onlineByUid = {},
 }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const lastScrolledIdRef = useRef<string | null>(null);
@@ -129,14 +143,18 @@ export default function ReachOutView({
                     </div>
 
                     {unreadCount > 0 && (
-                      <div className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold text-white">
+                      <div className="absolute -right-1 -top-1 z-[1] flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold text-white">
                         {unreadCount > 9 ? '9+' : unreadCount}
                       </div>
                     )}
 
-                    {unreadCount === 0 && (
-                      <div className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-green-500 ring-2 ring-neutral-900" />
-                    )}
+                    <div className="absolute bottom-0 right-0 z-[1]">
+                      <OnlineIndicator
+                        online={Boolean(onlineByUid[user.uid])}
+                        sizeClassName="h-2.5 w-2.5"
+                        ringClassName="ring-neutral-800"
+                      />
+                    </div>
                   </div>
 
                   <div className="min-w-0 flex-1">
@@ -167,7 +185,7 @@ export default function ReachOutView({
                             : 'text-neutral-500'
                       }`}
                     >
-                      {user.role}
+                      {getOnlineStatusLabel(onlineByUid, user)} · {user.role}
                     </p>
                   </div>
                 </button>
@@ -194,7 +212,12 @@ export default function ReachOutView({
                   <div className="flex h-10 w-10 items-center justify-center rounded-full bg-neutral-700 font-bold">
                     {getAvatarLetter(selectedChatUser)}
                   </div>
-                  <div className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-green-500 ring-2 ring-neutral-900" />
+                  <div className="absolute bottom-0 right-0 z-[1]">
+                    <OnlineIndicator
+                      online={Boolean(onlineByUid[selectedChatUser.uid])}
+                      sizeClassName="h-3 w-3"
+                    />
+                  </div>
                 </div>
 
                 <div>
@@ -202,6 +225,7 @@ export default function ReachOutView({
                     {getMaskedDisplayName(selectedChatUser)}
                   </h3>
                   <p className="text-xs text-neutral-400">
+                    {getOnlineStatusLabel(onlineByUid, selectedChatUser)} ·{' '}
                     {selectedChatUser.role}
                   </p>
                 </div>

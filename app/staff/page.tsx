@@ -68,6 +68,8 @@ import {
   endShiftSession,
   startShiftSession,
 } from '@/features/shifts/userShifts';
+import { usePresenceOnlineMap } from '@/features/presence/userPresence';
+import { OnlineIndicator } from '@/components/presence/OnlineIndicator';
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
 
@@ -311,6 +313,15 @@ export default function StaffPage() {
       return bTime - aTime;
     });
   }, [players, unreadCounts]);
+
+  const staffPresenceUids = useMemo(() => {
+    const s = new Set<string>();
+    for (const p of players) s.add(p.uid);
+    for (const u of chatUsers) s.add(u.uid);
+    for (const c of coadmins) s.add(c.uid);
+    return Array.from(s);
+  }, [players, chatUsers, coadmins]);
+  const staffOnlineByUid = usePresenceOnlineMap(staffPresenceUids);
 
   useEffect(() => {
     if (loadingList) {
@@ -1638,10 +1649,16 @@ export default function StaffPage() {
                           {unreadFromPlayer > 99 ? '99+' : unreadFromPlayer}
                         </div>
                       )}
-                      <h3 className={`pr-20 text-2xl font-bold capitalize`}>
-                        {player.username || 'Unnamed Player'}
+                      <h3
+                        className={`flex flex-wrap items-center gap-2 pr-20 text-2xl font-bold capitalize`}
+                      >
+                        <OnlineIndicator
+                          online={Boolean(staffOnlineByUid[player.uid])}
+                          sizeClassName="h-3 w-3"
+                        />
+                        <span>{player.username || 'Unnamed Player'}</span>
                         {unreadFromPlayer > 0 && (
-                          <span className="ml-2 inline-block align-middle text-sm font-semibold text-red-300">
+                          <span className="ml-1 inline-block align-middle text-sm font-semibold text-red-300">
                             · Unread
                           </span>
                         )}
@@ -1719,11 +1736,17 @@ export default function StaffPage() {
                 <div className="mt-6 flex max-h-[min(80dvh,42rem)] flex-col overflow-hidden rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-4 sm:max-h-[min(85dvh,46rem)]">
                   <div className="shrink-0 border-b border-cyan-400/20 pb-3">
                     <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <h3 className="text-lg font-bold text-cyan-100">
-                          Chat with {selectedPlayerChatUser.username}
-                        </h3>
-                        <p className="text-xs text-cyan-100/70">Player support conversation</p>
+                      <div className="flex items-center gap-2">
+                        <OnlineIndicator
+                          online={Boolean(staffOnlineByUid[selectedPlayerChatUser.uid])}
+                          sizeClassName="h-3 w-3"
+                        />
+                        <div>
+                          <h3 className="text-lg font-bold text-cyan-100">
+                            Chat with {selectedPlayerChatUser.username}
+                          </h3>
+                          <p className="text-xs text-cyan-100/70">Player support conversation</p>
+                        </div>
                       </div>
                       <button
                         type="button"
@@ -1847,7 +1870,13 @@ export default function StaffPage() {
                         key={coadmin.uid}
                         className="rounded-2xl border border-white/10 bg-white/5 p-5"
                       >
-                        <h3 className="text-2xl font-bold">Co-admin Account</h3>
+                        <h3 className="flex items-center gap-2 text-2xl font-bold">
+                          <OnlineIndicator
+                            online={Boolean(staffOnlineByUid[coadmin.uid])}
+                            sizeClassName="h-3 w-3"
+                          />
+                          <span>Co-admin Account</span>
+                        </h3>
                         <p className="mt-2 text-sm text-neutral-400">
                           Status: <span className="text-white">{coadmin.status}</span>
                         </p>
@@ -1866,8 +1895,13 @@ export default function StaffPage() {
                               {coadminStaff.map((staff) => (
                                 <div
                                   key={staff.uid}
-                                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm"
+                                  className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm"
                                 >
+                                  <OnlineIndicator
+                                    online={Boolean(staffOnlineByUid[staff.uid])}
+                                    sizeClassName="h-2.5 w-2.5"
+                                    ringClassName="ring-black/30"
+                                  />
                                   <span className="font-semibold text-white">Staff Account</span>{' '}
                                   <span className="text-neutral-400">({staff.status})</span>
                                 </div>
@@ -1897,6 +1931,7 @@ export default function StaffPage() {
               onSelectUser={handleSelectReachOutUser}
               onMessageChange={setNewMessage}
               onSendMessage={handleSendMessage}
+              onlineByUid={staffOnlineByUid}
             />
           )}
       </RoleSidebarLayout>

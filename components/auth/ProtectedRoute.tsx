@@ -7,6 +7,7 @@ import { doc, getDoc } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
 import { UserRole } from '@/lib/auth/roles';
+import UserPresenceSync from '@/components/presence/UserPresenceSync';
 
 type ProtectedRouteProps = {
   allowedRoles: UserRole[];
@@ -57,5 +58,10 @@ export default function ProtectedRoute({
     );
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      <UserPresenceSync />
+      {children}
+    </>
+  );
 }
