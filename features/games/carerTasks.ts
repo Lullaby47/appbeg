@@ -1323,8 +1323,14 @@ export async function completeRechargeRedeemTask(task: CarerTask) {
       completedEventType = 'deposit';
       completedEventAmount = rechargeAmount;
       completedEventCoadminUid = requestData.coadminUid || task.coadminUid;
+      const currentCoin = Number(playerData.coin || 0);
+      if (currentCoin < rechargeAmount) {
+        throw new Error(
+          'Cannot complete: player no longer has enough coin for this recharge. Dismiss the task or wait for the player to top up.'
+        );
+      }
       const nextPlayerUpdate: Record<string, unknown> = {
-        coin: Number(playerData.coin || 0) - rechargeAmount,
+        coin: currentCoin - rechargeAmount,
       };
 
       if (bonusStaffUid && bonusStaffRef) {
@@ -1355,6 +1361,9 @@ export async function completeRechargeRedeemTask(task: CarerTask) {
         nextPlayerUpdate.activeBonusPercentage = null;
       }
 
+      // Deduct coin (and any bonus cleanup on user) before marking task/request completed
+      transaction.update(playerRef, nextPlayerUpdate);
+
       transaction.update(taskRef, buildCompletedTaskUpdate({
         carerUid,
         carerUsername,
@@ -1366,8 +1375,6 @@ export async function completeRechargeRedeemTask(task: CarerTask) {
         pokedAt: null,
         pokeMessage: null,
       });
-
-      transaction.update(playerRef, nextPlayerUpdate);
     } else if (requestData.type === 'redeem') {
       const redeemAmount = Math.max(0, Number(requestData.amount || 0));
       completedEventType = 'redeem';
