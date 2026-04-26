@@ -182,7 +182,7 @@ function buildCreatorDisplayLabel(data: { role?: string; username?: string } | u
 }
 
 type PlayerAlertInfo = {
-  variant: 'index' | 'permission' | 'generic';
+  variant: 'index' | 'permission' | 'lowCoin' | 'generic';
   title: string;
   body: string;
   raw: string;
@@ -221,6 +221,20 @@ function getPlayerAlertInfo(raw: string): PlayerAlertInfo | null {
       variant: 'permission',
       title: 'Access restricted',
       body: 'Your account may not have permission for this action. If this is unexpected, contact support.',
+      raw: text,
+    };
+  }
+
+  if (
+    lower.includes('not enough coin') ||
+    lower.includes('insufficient coin') ||
+    (lower.includes('recharge') &&
+      (lower.includes('add coin first') || lower.includes('low coin')))
+  ) {
+    return {
+      variant: 'lowCoin',
+      title: 'Not enough coin for recharge',
+      body: text,
       raw: text,
     };
   }
@@ -327,6 +341,10 @@ export default function PlayerPage() {
   const [credentialTaskLoadingKey, setCredentialTaskLoadingKey] = useState<string | null>(
     null
   );
+  const [credentialResetModal, setCredentialResetModal] = useState<null | {
+    gameLogin: PlayerGameLogin;
+    taskType: 'reset_password' | 'recreate_username';
+  }>(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [newMessage, setNewMessage] = useState('');
@@ -886,6 +904,9 @@ export default function PlayerPage() {
     if (activeView !== 'play') {
       setShowActiveTableSplash(false);
     }
+    if (activeView !== 'usernames') {
+      setCredentialResetModal(null);
+    }
   }, [activeView]);
 
   useEffect(() => {
@@ -931,9 +952,24 @@ export default function PlayerPage() {
         setMessage('Enter a valid amount.');
         return;
       }
-      if (amountNum > wallet.coin) {
+      const uid = auth.currentUser?.uid;
+      if (uid) {
+        const liveSnap = await getDoc(doc(db, 'users', uid));
+        if (liveSnap.exists()) {
+          const liveCoin = Number(
+            (liveSnap.data() as { coin?: number }).coin || 0
+          );
+          setWallet((w) => ({ ...w, coin: liveCoin }));
+          if (liveCoin < amountNum) {
+            setMessage(
+              'Not enough coin to send a recharge. Add coin first — for example use “Transfer all cash to coin” when you have cash, or use a lower amount.'
+            );
+            return;
+          }
+        }
+      } else if (amountNum > wallet.coin) {
         setMessage(
-          'Not enough coin for this recharge. Lower the amount or add coin first.'
+          'Not enough coin to send a recharge. Add coin first — for example use “Transfer all cash to coin” when you have cash, or use a lower amount.'
         );
         return;
       }
@@ -1013,20 +1049,17 @@ export default function PlayerPage() {
     }
   }
 
-  async function handleCredentialResetTask(
+  function openCredentialResetModal(
     gameLogin: PlayerGameLogin,
     taskType: 'reset_password' | 'recreate_username'
   ) {
-    const taskLabel =
-      taskType === 'reset_password' ? 'reset password' : 'recreate username';
-    const confirmed = window.confirm(
-      `Are you sure you want to ${taskLabel} for ${gameLogin.gameName}?`
-    );
+    setCredentialResetModal({ gameLogin, taskType });
+  }
 
-    if (!confirmed) {
-      return;
-    }
-
+  async function executeCredentialResetTask(
+    gameLogin: PlayerGameLogin,
+    taskType: 'reset_password' | 'recreate_username'
+  ) {
     const loadingKey = `${taskType}:${gameLogin.id}`;
     setCredentialTaskLoadingKey(loadingKey);
     setMessage('');
@@ -1050,6 +1083,15 @@ export default function PlayerPage() {
     } finally {
       setCredentialTaskLoadingKey(null);
     }
+  }
+
+  async function confirmCredentialResetModal() {
+    if (!credentialResetModal) {
+      return;
+    }
+    const { gameLogin, taskType } = credentialResetModal;
+    setCredentialResetModal(null);
+    await executeCredentialResetTask(gameLogin, taskType);
   }
 
   async function handleImageSelect(file: File) {
@@ -1621,12 +1663,18 @@ export default function PlayerPage() {
                       ? 'border-amber-400/50 bg-gradient-to-br from-amber-950/90 via-[#1a1008] to-black/80'
                       : playerAlert.variant === 'permission'
                         ? 'border-rose-400/45 bg-gradient-to-br from-rose-950/85 to-black/80'
-                        : 'border-violet-400/40 bg-gradient-to-br from-violet-950/80 to-black/80'
+                        : playerAlert.variant === 'lowCoin'
+                          ? 'border-orange-400/55 bg-gradient-to-br from-orange-950/90 via-[#1a0f08] to-black/85'
+                          : 'border-violet-400/40 bg-gradient-to-br from-violet-950/80 to-black/80'
                   }`}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <h3 className="text-base font-black text-white sm:text-lg">
-                      {playerAlert.variant === 'index' ? '⚙️ ' : '⚠️ '}
+                      {playerAlert.variant === 'index'
+                        ? '⚙️ '
+                        : playerAlert.variant === 'lowCoin'
+                          ? '🪙 '
+                          : '⚠️ '}
                       {playerAlert.title}
                     </h3>
                     <button
@@ -1638,10 +1686,17 @@ export default function PlayerPage() {
                       ✕
                     </button>
                   </div>
-                  <p className="mt-2 text-sm leading-relaxed text-amber-50/90">
+                  <p
+                    className={`mt-2 text-sm leading-relaxed ${
+                      playerAlert.variant === 'lowCoin'
+                        ? 'text-orange-50/95'
+                        : 'text-amber-50/90'
+                    }`}
+                  >
                     {playerAlert.body}
                   </p>
-                  {playerAlert.variant === 'index' ? (
+                  {playerAlert.variant === 'lowCoin' ? null : playerAlert.variant ===
+                    'index' ? (
                     <div className="mt-3 rounded-xl border border-amber-400/25 bg-black/40 px-3 py-3 text-xs text-amber-100/80">
                       <p className="text-[11px] font-black uppercase tracking-wider text-amber-200/90">
                         Technical details
@@ -2248,7 +2303,7 @@ export default function PlayerPage() {
                             <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
                               <button
                                 type="button"
-                                onClick={() => void handleCredentialResetTask(login, 'recreate_username')}
+                                onClick={() => openCredentialResetModal(login, 'recreate_username')}
                                 disabled={
                                   credentialTaskLoadingKey === `recreate_username:${login.id}`
                                 }
@@ -2264,7 +2319,7 @@ export default function PlayerPage() {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => void handleCredentialResetTask(login, 'reset_password')}
+                                onClick={() => openCredentialResetModal(login, 'reset_password')}
                                 disabled={credentialTaskLoadingKey === `reset_password:${login.id}`}
                                 className="min-h-[48px] rounded-2xl bg-gradient-to-r from-fuchsia-600 to-purple-600 px-3 py-2 text-sm font-black text-white transition-all hover:from-fuchsia-500 hover:to-purple-500 disabled:opacity-50"
                               >
@@ -2353,6 +2408,61 @@ export default function PlayerPage() {
           })}
         </nav>
       </main>
+
+      {credentialResetModal ? (
+        <div
+          className="fixed inset-0 z-[78] flex items-end justify-center bg-black/86 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-10 backdrop-blur-md sm:items-center sm:px-4 sm:pb-0"
+          onClick={() => setCredentialResetModal(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="credential-reset-title"
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            className="w-full max-w-md rounded-t-3xl border border-amber-400/35 bg-gradient-to-b from-[#1a1020] via-zinc-950 to-black p-5 shadow-2xl sm:rounded-3xl sm:p-6"
+          >
+            <p className="text-center text-2xl" aria-hidden>
+              {credentialResetModal.taskType === 'reset_password' ? '🔑' : '🔁'}
+            </p>
+            <h3
+              id="credential-reset-title"
+              className="mt-2 text-center text-xl font-black text-white sm:text-2xl"
+            >
+              {credentialResetModal.taskType === 'reset_password'
+                ? 'Reset game password?'
+                : 'Recreate game username?'}
+            </h3>
+            <p className="mt-3 text-center text-sm leading-relaxed text-amber-100/75">
+              <span className="font-bold text-amber-200">
+                {credentialResetModal.gameLogin.gameName}
+              </span>
+              {' — '}
+              {credentialResetModal.taskType === 'reset_password'
+                ? 'A carer will set a new password for this table.'
+                : 'A carer will assign a new username for this table.'}
+            </p>
+            <p className="mt-2 text-center text-xs text-amber-200/50">
+              Your team is notified. You can continue playing other tables while this is processed.
+            </p>
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row-reverse">
+              <button
+                type="button"
+                onClick={() => void confirmCredentialResetModal()}
+                className="min-h-[52px] flex-1 rounded-2xl bg-gradient-to-r from-amber-400 to-yellow-400 py-3.5 text-base font-black text-black shadow-lg shadow-amber-500/20 transition hover:brightness-110 active:scale-[0.99]"
+              >
+                Yes, request it
+              </button>
+              <button
+                type="button"
+                onClick={() => setCredentialResetModal(null)}
+                className="min-h-[52px] flex-1 rounded-2xl border border-white/20 bg-white/5 py-3.5 text-base font-bold text-amber-100 transition hover:bg-white/10"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showActiveTableSplash && selectedGameName ? (
         <div
