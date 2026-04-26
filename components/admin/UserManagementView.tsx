@@ -113,16 +113,16 @@ export default function UserManagementView<T extends BaseUser>({
     selectedUser && chatUser && selectedUser.uid === chatUser.uid;
 
   const rootLayoutClass = carersVisualTheme
-    ? 'flex min-h-0 flex-1 flex-col gap-4 lg:grid lg:h-[min(88dvh,calc(100vh-7rem))] lg:grid-cols-[minmax(0,300px)_1fr] lg:gap-6'
-    : 'grid h-[calc(100vh-48px)] grid-cols-1 gap-4 lg:grid-cols-[minmax(0,320px)_1fr] lg:gap-6';
+    ? 'flex min-h-0 flex-1 flex-col gap-4 overflow-hidden lg:grid lg:h-[min(88dvh,calc(100vh-7rem))] lg:max-h-[min(88dvh,calc(100vh-7rem))] lg:min-h-0 lg:grid-cols-[minmax(0,300px)_1fr] lg:grid-rows-1 lg:gap-6'
+    : 'grid h-[calc(100vh-48px)] min-h-0 max-h-[calc(100vh-48px)] grid-cols-1 gap-4 overflow-hidden lg:grid-cols-[minmax(0,320px)_1fr] lg:gap-6';
 
   const sidebarClass = carersVisualTheme
-    ? 'max-h-[42vh] shrink-0 overflow-y-auto rounded-2xl border border-amber-500/30 bg-gradient-to-b from-amber-950/55 via-[#0f0a14] to-black/70 p-4 shadow-[0_0_40px_-12px_rgba(234,179,8,0.15)] backdrop-blur-md lg:max-h-none'
+    ? 'max-h-[42vh] min-h-0 shrink-0 overflow-y-auto overflow-x-hidden overscroll-contain rounded-2xl border border-amber-500/30 bg-gradient-to-b from-amber-950/55 via-[#0f0a14] to-black/70 p-4 shadow-[0_0_40px_-12px_rgba(234,179,8,0.15)] backdrop-blur-md lg:max-h-full'
     : 'rounded-2xl border border-white/10 bg-neutral-900/60 p-4';
 
   const detailClass = carersVisualTheme
-    ? 'flex min-h-[min(52dvh,28rem)] flex-1 flex-col rounded-2xl border border-amber-500/25 bg-black/50 p-5 shadow-xl shadow-amber-900/10 backdrop-blur-md lg:min-h-0'
-    : 'flex flex-col rounded-2xl border border-white/10 bg-white/5 p-6';
+    ? 'flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-amber-500/25 bg-black/50 p-5 shadow-xl shadow-amber-900/10 backdrop-blur-md'
+    : 'flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/5 p-6';
 
   const listTitleClass = carersVisualTheme
     ? 'mb-4 text-lg font-black tracking-tight text-amber-100'
@@ -225,8 +225,8 @@ export default function UserManagementView<T extends BaseUser>({
             )}
           </div>
         ) : (
-          <>
-            <div>
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <div className="min-h-0 shrink-0 overflow-y-auto">
               <div className="mb-6 flex flex-wrap justify-end gap-2 sm:gap-3">
                 {onStartChat && (
                   <button
@@ -328,13 +328,13 @@ export default function UserManagementView<T extends BaseUser>({
 
             {isChatOpen && (
               <div
-                className={`mt-8 flex min-h-[420px] flex-1 flex-col rounded-2xl border ${
+                className={`mt-8 flex min-h-0 max-h-[min(52dvh,28rem)] flex-1 flex-col overflow-hidden rounded-2xl border sm:max-h-[min(58dvh,32rem)] ${
                   carersVisualTheme
                     ? 'border-amber-500/25 bg-black/45 shadow-inner shadow-black/40'
                     : 'border-white/10 bg-neutral-950/60'
                 }`}
               >
-                <div className="border-b border-white/10 p-4">
+                <div className="shrink-0 border-b border-white/10 p-4">
                   <div className="flex items-center gap-3">
                     <div className="relative">
                       <div className="flex h-10 w-10 items-center justify-center rounded-full bg-neutral-700 font-bold">
@@ -361,7 +361,7 @@ export default function UserManagementView<T extends BaseUser>({
                   </div>
                 </div>
 
-                <div className="flex-1 space-y-3 overflow-y-auto p-4">
+                <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain p-4">
                   {messages.length === 0 ? (
                     <div className="flex h-full items-center justify-center text-sm text-neutral-500">
                       No messages yet. Start the conversation.
@@ -446,7 +446,7 @@ export default function UserManagementView<T extends BaseUser>({
                 {onSendMessage && onMessageChange && (
                   <form
                     onSubmit={onSendMessage}
-                    className="border-t border-white/10 p-4"
+                    className="shrink-0 border-t border-white/10 p-4"
                   >
                     {showEmojis && (
                       <div className="mb-3 flex flex-wrap gap-2 rounded-2xl border border-white/10 bg-neutral-900 p-3">
@@ -512,7 +512,7 @@ export default function UserManagementView<T extends BaseUser>({
                 )}
               </div>
             )}
-          </>
+          </div>
         )}
       </div>
 

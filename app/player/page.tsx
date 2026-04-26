@@ -1,8 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { AnimatePresence, motion } from 'motion/react';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import imageCompression from 'browser-image-compression';
 
@@ -44,6 +45,7 @@ import {
   getBonusEventsForPlayerDisplay,
   initiateBonusEventPlay,
   listenBonusEventsByCoadmin,
+  MAX_PLAYER_BONUS_EVENTS_DISPLAY,
 } from '../../features/bonusEvents/bonusEvents';
 import {
   createCashToCoinTransferRequest,
@@ -151,6 +153,17 @@ function sortByNewest<T extends { createdAt?: unknown; completedAt?: unknown; po
 const MAX_REQUEST_HISTORY_DISPLAY = 30;
 /** Poke is only available on the N most recent completed recharge/redeem tasks. */
 const MAX_POKEABLE_COMPLETED = 5;
+
+/** Full-screen player overlays: consistent splash look (blur + glass). */
+const PLAYER_SPLASH_BACKDROP =
+  'fixed inset-0 flex items-end justify-center bg-black/80 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-10 backdrop-blur-xl sm:items-center sm:px-4 sm:pb-0';
+const PLAYER_SPLASH_BACKDROP_CENTER =
+  'fixed inset-0 flex items-center justify-center bg-black/82 p-4 backdrop-blur-xl';
+const PLAYER_SPLASH_CARD =
+  'w-full max-w-md rounded-3xl border border-amber-400/25 bg-gradient-to-b from-[#121018] via-zinc-950/98 to-black p-6 shadow-2xl shadow-amber-500/10 sm:rounded-3xl sm:p-7';
+const PLAYER_SPLASH_CARD_WIDE =
+  'w-full max-w-lg rounded-3xl border border-amber-400/25 bg-gradient-to-b from-[#121018] via-zinc-950/98 to-black p-6 shadow-2xl shadow-amber-500/10 sm:max-w-2xl sm:p-7';
+const BONUS_ROTATE_MS = 7500;
 
 function normalizeGameKey(gameName: string) {
   return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
@@ -296,6 +309,7 @@ const NAV_ITEMS: {
 ];
 
 export default function PlayerPage() {
+  const router = useRouter();
   const [activeView, setActiveView] = useState<PlayerView>('dashboard');
   const [playerUid, setPlayerUid] = useState('');
 
@@ -366,6 +380,12 @@ export default function PlayerPage() {
   const [loadingList, setLoadingList] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [bonusCarouselIndex, setBonusCarouselIndex] = useState(0);
+  const [bonusStripPaused, setBonusStripPaused] = useState(false);
+  const [showLogoutConfirmSplash, setShowLogoutConfirmSplash] = useState(false);
+  const [logoutLoading, setLogoutLoading] = useState(false);
+  const [bonusVanishedToast, setBonusVanishedToast] = useState(false);
+  const selfClaimedBonusIdRef = useRef<string | null>(null);
+  const lastBonusIdsRef = useRef<string[]>([]);
 
   const formatWalletAmount = useCallback((value: number) => {
     return new Intl.NumberFormat('en-US').format(value);
@@ -388,6 +408,36 @@ export default function PlayerPage() {
       Math.min(index, Math.max(0, playerBonusEvents.length - 1))
     );
   }, [playerBonusEvents.length]);
+
+  useEffect(() => {
+    const len = playerBonusEvents.length;
+    if (len <= 1 || bonusStripPaused) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      setBonusCarouselIndex((i) => (i + 1) % len);
+    }, BONUS_ROTATE_MS);
+    return () => window.clearInterval(intervalId);
+  }, [playerBonusEvents.length, bonusStripPaused]);
+
+  useEffect(() => {
+    const nextIds = playerBonusEvents.map((e) => e.id);
+    const previous = lastBonusIdsRef.current;
+    if (previous.length > 0) {
+      for (const id of previous) {
+        if (!nextIds.includes(id)) {
+          if (selfClaimedBonusIdRef.current === id) {
+            selfClaimedBonusIdRef.current = null;
+          } else {
+            setBonusVanishedToast(true);
+            window.setTimeout(() => setBonusVanishedToast(false), 4500);
+          }
+          break;
+        }
+      }
+    }
+    lastBonusIdsRef.current = nextIds;
+  }, [playerBonusEvents]);
 
   const displayedRequestHistory = useMemo(
     () => requestHistory.slice(0, MAX_REQUEST_HISTORY_DISPLAY),
@@ -1241,19 +1291,42 @@ export default function PlayerPage() {
         playerUid,
         bonusEventId: bonusEvent.id,
       });
+      selfClaimedBonusIdRef.current = bonusEvent.id;
       setMessage(
         `Bonus "${bonusEvent.bonusName}" started. Coins deducted and recharge task created automatically.`
       );
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : 'Failed to activate bonus event.';
-      if (errorMessage.toLowerCase().includes('low coins')) {
+      const lower = errorMessage.toLowerCase();
+      if (
+        lower.includes('low coin') ||
+        lower.includes('already') ||
+        lower.includes('no longer available') ||
+        lower.includes('blocked')
+      ) {
         setBonusErrorSplashMessage(errorMessage);
       } else {
         setMessage(errorMessage);
       }
     } finally {
       setActivatingBonusEventId(null);
+    }
+  }
+
+  async function performLogout() {
+    setLogoutLoading(true);
+    setMessage('');
+    try {
+      await signOut(auth);
+      setShowLogoutConfirmSplash(false);
+      router.replace('/login');
+    } catch (err) {
+      setMessage(
+        err instanceof Error ? err.message : 'Could not sign out. Try again.'
+      );
+    } finally {
+      setLogoutLoading(false);
     }
   }
 
@@ -1542,6 +1615,18 @@ export default function PlayerPage() {
                     })
                   )}
                 </nav>
+                <div className="mt-6 border-t border-amber-500/20 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowLogoutConfirmSplash(true);
+                      setMobileMenuOpen(false);
+                    }}
+                    className="w-full rounded-2xl border border-rose-500/40 bg-rose-500/10 py-3.5 text-sm font-black text-rose-100 transition hover:bg-rose-500/20"
+                  >
+                    Log out
+                  </button>
+                </div>
               </motion.aside>
             </>
           ) : null}
@@ -1573,6 +1658,15 @@ export default function PlayerPage() {
                 })
               )}
             </nav>
+            <div className="mt-8">
+              <button
+                type="button"
+                onClick={() => setShowLogoutConfirmSplash(true)}
+                className="w-full rounded-2xl border border-rose-500/40 bg-rose-950/40 py-3.5 text-sm font-bold text-rose-100 transition hover:bg-rose-500/15"
+              >
+                Log out
+              </button>
+            </div>
           </div>
         </aside>
 
@@ -1581,8 +1675,8 @@ export default function PlayerPage() {
           <div className="pointer-events-none absolute top-0 right-0 h-72 w-72 rounded-full bg-amber-500/10 blur-3xl" />
 
           <div className="relative z-10 flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-x-hidden px-3 pb-4 pt-4 md:px-7 md:pb-8 md:pt-6">
-              <div className="mb-4 hidden flex-wrap items-stretch justify-end gap-3 lg:flex">
+            <div className="flex min-h-0 flex-1 flex-col overflow-x-hidden px-3 pb-4 pt-4 md:px-7 md:pb-8 md:pt-6">
+              <div className="mb-4 hidden shrink-0 flex-wrap items-stretch justify-end gap-3 lg:flex">
                 <div className="rounded-2xl border border-amber-400/35 bg-gradient-to-br from-amber-500/25 to-yellow-600/10 px-5 py-3 text-right shadow-lg shadow-amber-500/10">
                   <p className="text-[10px] font-black uppercase tracking-[0.28em] text-amber-200/80">
                     🪙 Coin
@@ -1617,9 +1711,16 @@ export default function PlayerPage() {
                 >
                   💸 Cashout
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setShowLogoutConfirmSplash(true)}
+                  className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-sm font-bold text-amber-100/85 transition hover:bg-white/10"
+                >
+                  Log out
+                </button>
               </div>
 
-              <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-2 lg:hidden">
+              <div className="mb-4 grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-2 lg:hidden">
                 <div className="rounded-2xl border border-amber-400/35 bg-gradient-to-br from-amber-500/25 to-yellow-700/10 p-3 text-center shadow-md">
                   <p className="text-[9px] font-black uppercase tracking-wider text-amber-200/75">
                     🪙 Coin
@@ -1886,16 +1987,40 @@ export default function PlayerPage() {
                   ))}
                 </div>
 
-                <div className="rounded-3xl border border-violet-400/35 bg-gradient-to-br from-violet-950/60 via-black/50 to-purple-950/30 p-4 shadow-[0_0_40px_-12px_rgba(139,92,246,0.35)] backdrop-blur-xl sm:p-6">
-                  <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                <div
+                  className="group/bonus relative overflow-hidden rounded-3xl border border-violet-400/35 bg-gradient-to-br from-violet-950/60 via-black/50 to-fuchsia-950/25 p-4 shadow-[0_0_40px_-12px_rgba(139,92,246,0.35)] backdrop-blur-xl sm:p-6"
+                  onPointerEnter={() => setBonusStripPaused(true)}
+                  onPointerLeave={() => setBonusStripPaused(false)}
+                >
+                  <div
+                    className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-fuchsia-500/20 blur-3xl"
+                    aria-hidden
+                  />
+                  <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <h3 className="flex items-center gap-2 text-lg font-black text-violet-100 sm:text-xl">
-                        <span>🎁</span> Bonus events
-                      </h3>
-                      <p className="mt-1 text-[11px] font-medium text-violet-200/60 sm:text-xs">
-                        All players under your team see the same list (newest first, up to 10). First
-                        to tap Claim takes the bonus; then it is gone for everyone (first come, first
-                        served).
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="flex items-center gap-2 text-lg font-black text-violet-100 sm:text-xl">
+                          <span className="text-2xl" aria-hidden>
+                            🎁
+                          </span>
+                          Bonus drops
+                        </h3>
+                        {playerBonusEvents.length > 0 ? (
+                          <span className="rounded-full border border-violet-400/35 bg-violet-500/20 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-widest text-fuchsia-100">
+                            Queue · {playerBonusEvents.length} active
+                          </span>
+                        ) : null}
+                        {bonusStripPaused && playerBonusEvents.length > 1 ? (
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-amber-200/80">
+                            Paused
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 max-w-xl text-[11px] font-medium text-violet-200/60 sm:text-xs">
+                        New rewards from your staff &amp; coadmin queue here (up to{' '}
+                        {MAX_PLAYER_BONUS_EVENTS_DISPLAY}, newest first). The carousel rotates
+                        &mdash; hover to pause. First tap wins; then it vanishes for everyone, with
+                        a soft fade.
                       </p>
                     </div>
                     {playerBonusEvents.length > 1 ? (
@@ -1908,7 +2033,7 @@ export default function PlayerPage() {
                               i <= 0 ? playerBonusEvents.length - 1 : i - 1
                             )
                           }
-                          className="rounded-xl border border-violet-400/40 bg-violet-500/15 px-3 py-2 text-sm font-bold text-violet-100"
+                          className="rounded-xl border border-violet-400/40 bg-violet-500/20 px-3 py-2 text-sm font-bold text-violet-50 shadow-inner transition hover:bg-violet-500/30"
                         >
                           ‹
                         </button>
@@ -1920,7 +2045,7 @@ export default function PlayerPage() {
                               i >= playerBonusEvents.length - 1 ? 0 : i + 1
                             )
                           }
-                          className="rounded-xl border border-violet-400/40 bg-violet-500/15 px-3 py-2 text-sm font-bold text-violet-100"
+                          className="rounded-xl border border-violet-400/40 bg-violet-500/20 px-3 py-2 text-sm font-bold text-violet-50 shadow-inner transition hover:bg-violet-500/30"
                         >
                           ›
                         </button>
@@ -1928,51 +2053,138 @@ export default function PlayerPage() {
                     ) : null}
                   </div>
 
-                  {playerBonusEvents.length === 0 ? (
-                    <p className="text-sm text-violet-200/55">No bonus events right now. Check back soon.</p>
-                  ) : (
-                    <AnimatePresence mode="wait">
+                  <AnimatePresence>
+                    {bonusVanishedToast ? (
                       <motion.div
-                        key={playerBonusEvents[bonusCarouselIndex]?.id || 'bonus'}
-                        initial={{ opacity: 0, x: 16 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -16 }}
-                        transition={{ duration: 0.25 }}
-                        className="rounded-2xl border border-violet-300/25 bg-black/40 p-4 sm:p-5"
+                        key="vanish"
+                        initial={{ opacity: 0, y: -6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -8 }}
+                        transition={{ duration: 0.35 }}
+                        className="mb-3 flex items-center gap-2 rounded-2xl border border-amber-400/30 bg-gradient-to-r from-amber-500/20 to-rose-500/15 px-3 py-2.5 text-xs font-semibold text-amber-100 shadow-lg shadow-amber-900/20"
                       >
-                        {(() => {
-                          const event = playerBonusEvents[bonusCarouselIndex];
-                          if (!event) return null;
-                          return (
-                            <>
-                              <p className="text-xl font-black text-white">{event.bonusName}</p>
-                              <p className="mt-2 text-sm text-violet-100/85">
-                                🎯 {event.gameName} ·{' '}
-                                <span className="font-semibold text-violet-50">
-                                  ${Math.round(event.amountNpr || 0).toLocaleString('en-US')} USD
-                                </span>
-                              </p>
-                              <p className="mt-2 text-sm text-violet-100/80">{event.description}</p>
-                              <p className="mt-2 text-xs text-violet-200/65">
-                                Bonus {event.bonusPercentage}% ·{' '}
-                                {event.createdByRole === 'staff' ? 'Staff' : 'Coadmin'} ·{' '}
-                                {event.createdByUsername}
-                              </p>
-                              <button
-                                type="button"
-                                onClick={() => void handleActivateBonusEvent(event)}
-                                disabled={activatingBonusEventId === event.id}
-                                className="mt-4 min-h-[48px] w-full rounded-2xl bg-gradient-to-r from-violet-400 to-fuchsia-500 py-3 text-sm font-black text-black shadow-lg transition-all hover:brightness-110 disabled:opacity-60"
-                              >
-                                {activatingBonusEventId === event.id
-                                  ? '⏳ Activating…'
-                                  : '🎰 Claim bonus'}
-                              </button>
-                            </>
-                          );
-                        })()}
+                        <span className="text-lg" aria-hidden>
+                          ✨
+                        </span>
+                        <span>
+                          A bonus you were eyeing was just claimed — it&apos;s gone in a snap. Next
+                          drop loading…
+                        </span>
                       </motion.div>
-                    </AnimatePresence>
+                    ) : null}
+                  </AnimatePresence>
+
+                  {playerBonusEvents.length > 1 ? (
+                    <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                      {playerBonusEvents.map((e, i) => (
+                        <button
+                          key={e.id}
+                          type="button"
+                          onClick={() => setBonusCarouselIndex(i)}
+                          className={`max-w-[140px] truncate rounded-lg border px-2 py-1 text-left text-[10px] font-bold transition ${
+                            i === bonusCarouselIndex
+                              ? 'border-fuchsia-400/60 bg-fuchsia-500/25 text-fuchsia-50 shadow-[0_0_12px_rgba(217,70,239,0.35)]'
+                              : 'border-violet-500/25 bg-black/30 text-violet-200/80 hover:border-violet-400/50'
+                          }`}
+                          title={e.bonusName}
+                        >
+                          {e.bonusName}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {playerBonusEvents.length > 1 ? (
+                    <div
+                      className="mb-4 flex items-center justify-center gap-1.5"
+                      aria-hidden
+                    >
+                      {playerBonusEvents.map((e, i) => (
+                        <button
+                          key={`dot-${e.id}`}
+                          type="button"
+                          onClick={() => setBonusCarouselIndex(i)}
+                          aria-label={`Show bonus ${i + 1}`}
+                          className={`h-2 rounded-full transition-all ${
+                            i === bonusCarouselIndex
+                              ? 'w-6 bg-gradient-to-r from-fuchsia-400 to-violet-400'
+                              : 'w-2 bg-violet-600/50 hover:bg-violet-400/70'
+                          }`}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {playerBonusEvents.length === 0 ? (
+                    <div className="py-6 text-center">
+                      <motion.p
+                        animate={{ opacity: [0.5, 1, 0.5] }}
+                        transition={{ duration: 2.2, repeat: Infinity }}
+                        className="text-sm text-violet-200/50"
+                      >
+                        No bonus events right now. When staff or coadmin post one, it &apos;ll
+                        appear here with a glow.
+                      </motion.p>
+                    </div>
+                  ) : (
+                    <div className="relative min-h-[12rem]">
+                      <AnimatePresence initial={false} mode="wait">
+                        <motion.div
+                          key={playerBonusEvents[bonusCarouselIndex]?.id || 'bonus'}
+                          initial={{ opacity: 0, y: 14, filter: 'blur(10px)' }}
+                          animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+                          exit={{ opacity: 0, y: -12, filter: 'blur(8px)' }}
+                          transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+                          className="rounded-2xl border border-fuchsia-400/20 bg-gradient-to-b from-violet-950/40 to-black/50 p-4 shadow-inner sm:p-5"
+                        >
+                          {(() => {
+                            const event = playerBonusEvents[bonusCarouselIndex];
+                            if (!event) {
+                              return null;
+                            }
+                            return (
+                              <>
+                                <p className="text-xs font-bold uppercase tracking-[0.2em] text-fuchsia-200/80">
+                                  Featured drop
+                                </p>
+                                <p className="mt-1 text-xl font-black text-white sm:text-2xl">
+                                  {event.bonusName}
+                                </p>
+                                <p className="mt-2 text-sm text-violet-100/85">
+                                  🎯 {event.gameName} ·{' '}
+                                  <span className="font-semibold text-fuchsia-100">
+                                    ${Math.round(event.amountNpr || 0).toLocaleString('en-US')} USD
+                                  </span>
+                                </p>
+                                <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-violet-100/80">
+                                  {event.description}
+                                </p>
+                                <p className="mt-2 text-xs text-violet-200/60">
+                                  +{event.bonusPercentage}% boost · from{' '}
+                                  {event.createdByRole === 'staff' ? 'Staff' : 'Coadmin'}{' '}
+                                  <span className="text-violet-100/90">{event.createdByUsername}</span>
+                                </p>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleActivateBonusEvent(event)}
+                                  disabled={activatingBonusEventId === event.id}
+                                  className="mt-4 flex min-h-[50px] w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-fuchsia-500 via-violet-500 to-fuchsia-600 py-3 text-sm font-black text-white shadow-lg shadow-fuchsia-500/25 transition hover:brightness-110 active:scale-[0.99] disabled:opacity-60"
+                                >
+                                  {activatingBonusEventId === event.id ? (
+                                    <>
+                                      <i className="fas fa-circle-notch fa-spin" aria-hidden />
+                                      Locking in…
+                                    </>
+                                  ) : (
+                                    <>🎰 Claim this drop</>
+                                  )}
+                                </button>
+                              </>
+                            );
+                          })()}
+                        </motion.div>
+                      </AnimatePresence>
+                    </div>
                   )}
                 </div>
 
@@ -2349,7 +2561,7 @@ export default function PlayerPage() {
 
             {/* AGENTS VIEW - ReachOutView integration remains the same but styled via the prop structure */}
             {activeView === 'agents' && (
-              <div className="flex min-h-[min(70dvh,calc(100dvh-14rem))] min-h-0 flex-1 flex-col lg:min-h-[calc(100vh-10rem)]">
+              <div className="flex min-h-0 min-w-0 max-h-[min(78dvh,calc(100dvh-11rem))] flex-1 flex-col overflow-hidden sm:max-h-[min(82dvh,calc(100dvh-10rem))]">
                 <ReachOutView
                   chatUsers={agents}
                   selectedChatUser={selectedAgent}
@@ -2415,7 +2627,7 @@ export default function PlayerPage() {
 
       {credentialResetModal ? (
         <div
-          className="fixed inset-0 z-[78] flex items-end justify-center bg-black/86 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-10 backdrop-blur-md sm:items-center sm:px-4 sm:pb-0"
+          className={`${PLAYER_SPLASH_BACKDROP} z-[78]`}
           onClick={() => setCredentialResetModal(null)}
           role="dialog"
           aria-modal="true"
@@ -2423,7 +2635,7 @@ export default function PlayerPage() {
         >
           <div
             onClick={(event) => event.stopPropagation()}
-            className="w-full max-w-md rounded-t-3xl border border-amber-400/35 bg-gradient-to-b from-[#1a1020] via-zinc-950 to-black p-5 shadow-2xl sm:rounded-3xl sm:p-6"
+            className={`${PLAYER_SPLASH_CARD} sm:max-w-md`}
           >
             <p className="text-center text-2xl" aria-hidden>
               {credentialResetModal.taskType === 'reset_password' ? '🔑' : '🔁'}
@@ -2470,7 +2682,7 @@ export default function PlayerPage() {
 
       {showActiveTableSplash && selectedGameName ? (
         <div
-          className="fixed inset-0 z-[73] flex items-center justify-center bg-black/88 px-4 py-6 backdrop-blur-sm"
+          className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[74]`}
           onClick={() => setShowActiveTableSplash(false)}
           role="dialog"
           aria-modal="true"
@@ -2478,7 +2690,7 @@ export default function PlayerPage() {
         >
           <div
             onClick={(event) => event.stopPropagation()}
-            className="relative w-full max-w-lg overflow-hidden rounded-3xl border border-amber-400/30 bg-gradient-to-b from-black/80 to-zinc-950/95 p-5 shadow-2xl backdrop-blur-xl sm:p-6"
+            className="relative w-full max-w-lg overflow-hidden rounded-3xl border border-amber-400/30 bg-gradient-to-b from-black/85 to-zinc-950/98 p-5 shadow-2xl shadow-amber-900/20 backdrop-blur-xl sm:p-6"
           >
             <button
               type="button"
@@ -2570,12 +2782,12 @@ export default function PlayerPage() {
 
       {playRequestSplash && (
         <div
-          className="fixed inset-0 z-[75] flex items-center justify-center bg-black/88 px-4 backdrop-blur-sm"
+          className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[75] bg-gradient-to-b from-black/80 to-zinc-950/95`}
           role="alert"
           aria-live="polite"
           aria-busy="true"
         >
-          <div className="w-full max-w-md overflow-hidden rounded-3xl border border-amber-400/40 bg-gradient-to-br from-amber-900/90 via-zinc-900 to-fuchsia-950/90 p-7 text-center text-white shadow-[0_0_60px_-12px_rgba(234,179,8,0.4)]">
+          <div className="w-full max-w-md overflow-hidden rounded-3xl border border-amber-400/40 bg-gradient-to-br from-amber-900/90 via-zinc-900 to-fuchsia-950/90 p-7 text-center text-white shadow-[0_0_60px_-12px_rgba(234,179,8,0.4)] backdrop-blur-xl">
             <p className="text-xs font-black uppercase tracking-[0.3em] text-amber-200/90">
               Active table
             </p>
@@ -2607,11 +2819,11 @@ export default function PlayerPage() {
       {showCoinConfirmSplash && (
         <div
           onClick={() => setShowCoinConfirmSplash(false)}
-          className="fixed inset-0 z-[69] flex items-center justify-center bg-black/80 px-4"
+          className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[72]`}
         >
           <div
             onClick={(event) => event.stopPropagation()}
-            className="w-full max-w-md rounded-2xl border border-amber-500/40 bg-neutral-900 p-6 text-white"
+            className={`${PLAYER_SPLASH_CARD} text-white`}
           >
             <h3 className="text-2xl font-black">Transfer to coin?</h3>
             <p className="mt-2 text-sm text-amber-100/85">
@@ -2647,11 +2859,11 @@ export default function PlayerPage() {
       {showCashoutModal && (
         <div
           onClick={() => setShowCashoutModal(false)}
-          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 px-4"
+          className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[73]`}
         >
           <div
             onClick={(event) => event.stopPropagation()}
-            className="w-full max-w-lg rounded-2xl border border-cyan-500/40 bg-neutral-900 p-6 text-white"
+            className={`${PLAYER_SPLASH_CARD_WIDE} text-white`}
           >
             <h3 className="text-2xl font-black">Player Cashout</h3>
             <p className="mt-2 text-sm text-cyan-100/80">
@@ -2698,11 +2910,11 @@ export default function PlayerPage() {
             setShowCashoutSuccessSplash(false);
             setShowCashoutInquiryPanel(false);
           }}
-          className="fixed inset-0 z-[75] flex items-center justify-center bg-black/85 px-4"
+          className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[76]`}
         >
           <div
             onClick={(event) => event.stopPropagation()}
-            className="w-full max-w-2xl rounded-3xl border border-emerald-300/40 bg-gradient-to-br from-emerald-600 via-emerald-700 to-emerald-900 p-7 text-white shadow-2xl"
+            className="w-full max-w-2xl rounded-3xl border border-emerald-300/40 bg-gradient-to-br from-emerald-600 via-emerald-700 to-emerald-900 p-7 text-white shadow-2xl shadow-emerald-900/30 backdrop-blur-xl"
           >
             <p className="text-xs font-black uppercase tracking-[0.28em] text-emerald-100/90">
               Cashout Successful
@@ -2763,11 +2975,11 @@ export default function PlayerPage() {
       {bonusErrorSplashMessage && (
         <div
           onClick={() => setBonusErrorSplashMessage('')}
-          className="fixed inset-0 z-[80] flex items-center justify-center bg-red-900/85 px-4"
+          className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[80] bg-gradient-to-b from-red-950/90 to-black/90`}
         >
           <div
             onClick={(event) => event.stopPropagation()}
-            className="w-full max-w-xl rounded-3xl border border-red-300/45 bg-gradient-to-br from-red-700 via-red-800 to-red-950 p-7 text-white shadow-2xl"
+            className="w-full max-w-xl rounded-3xl border border-red-300/45 bg-gradient-to-br from-red-800/95 via-rose-950/95 to-black/90 p-7 text-white shadow-2xl shadow-red-900/30 backdrop-blur-xl"
           >
             <p className="text-xs font-black uppercase tracking-[0.28em] text-red-100">
               Bonus Event Failed
@@ -2785,10 +2997,83 @@ export default function PlayerPage() {
         </div>
       )}
 
-      {/* Poke Confirmation Modal */}
+      <AnimatePresence>
+        {showLogoutConfirmSplash && (
+          <motion.div
+            key="logout-splash"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/88 p-4 backdrop-blur-2xl"
+            onClick={() => {
+              if (!logoutLoading) {
+                setShowLogoutConfirmSplash(false);
+              }
+            }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="logout-confirm-title"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.96, opacity: 0, y: 12 }}
+              transition={{ type: 'spring', damping: 26, stiffness: 320 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md rounded-3xl border border-rose-500/40 bg-gradient-to-b from-rose-950/95 via-zinc-950 to-black p-6 shadow-[0_0_60px_-12px_rgba(244,63,94,0.45)] sm:p-8"
+            >
+              <p className="text-center text-4xl" aria-hidden>
+                👋
+              </p>
+              <h2
+                id="logout-confirm-title"
+                className="mt-3 text-center text-2xl font-black text-white sm:text-3xl"
+              >
+                Sign out of VIP Lounge?
+              </h2>
+              <p className="mt-3 text-center text-sm leading-relaxed text-rose-100/80">
+                You can come back anytime with your username and password. The browser
+                <span className="font-semibold text-amber-200"> back </span>button alone does
+                not sign you out.
+              </p>
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row-reverse">
+                <button
+                  type="button"
+                  onClick={() => void performLogout()}
+                  disabled={logoutLoading}
+                  className="min-h-[52px] flex-1 rounded-2xl bg-gradient-to-r from-rose-500 to-rose-700 py-3.5 text-base font-black text-white shadow-lg shadow-rose-500/30 transition hover:brightness-110 disabled:opacity-50"
+                >
+                  {logoutLoading ? 'Signing out…' : 'Yes, sign out'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowLogoutConfirmSplash(false)}
+                  disabled={logoutLoading}
+                  className="min-h-[52px] flex-1 rounded-2xl border border-white/20 bg-white/5 py-3.5 text-base font-bold text-amber-100 transition hover:bg-white/10 disabled:opacity-50"
+                >
+                  Stay playing
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Poke splash */}
       {pokeConfirmRequest && (
-        <div onClick={() => { if (!pokeLoadingId) { setPokeConfirmRequest(null); setPokeReason(''); } }} className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm px-4">
-          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-xl rounded-2xl border border-rose-500/40 bg-gradient-to-br from-[#1a0a0f] to-[#0f0515] p-6 shadow-2xl">
+        <div
+          onClick={() => {
+            if (!pokeLoadingId) {
+              setPokeConfirmRequest(null);
+              setPokeReason('');
+            }
+          }}
+          className="fixed inset-0 z-[86] flex items-center justify-center bg-black/85 p-4 backdrop-blur-xl"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-xl rounded-3xl border border-rose-500/40 bg-gradient-to-b from-[#1a0a0f] to-[#0a040f] p-6 shadow-2xl shadow-rose-900/20"
+          >
             <div className="flex items-center gap-3 mb-3">
               <div className="w-10 h-10 rounded-full bg-rose-500/20 flex items-center justify-center"><i className="fas fa-exclamation-triangle text-rose-400 text-xl"></i></div>
               <p className="text-xs font-black uppercase tracking-[0.3em] text-rose-300">Urgent Action Required</p>

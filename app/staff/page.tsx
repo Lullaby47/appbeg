@@ -1683,24 +1683,26 @@ export default function StaffPage() {
               )}
 
               {selectedPlayerChatUser && (
-                <div className="mt-6 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-4">
-                  <div className="flex items-center justify-between gap-3 border-b border-cyan-400/20 pb-3">
-                    <div>
-                      <h3 className="text-lg font-bold text-cyan-100">
-                        Chat with {selectedPlayerChatUser.username}
-                      </h3>
-                      <p className="text-xs text-cyan-100/70">Player support conversation</p>
+                <div className="mt-6 flex max-h-[min(70dvh,32rem)] flex-col overflow-hidden rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-4 sm:max-h-[min(75dvh,36rem)]">
+                  <div className="shrink-0 border-b border-cyan-400/20 pb-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-lg font-bold text-cyan-100">
+                          Chat with {selectedPlayerChatUser.username}
+                        </h3>
+                        <p className="text-xs text-cyan-100/70">Player support conversation</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedPlayerChatUser(null)}
+                        className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/25"
+                      >
+                        Close
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedPlayerChatUser(null)}
-                      className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/25"
-                    >
-                      Close
-                    </button>
                   </div>
 
-                  <div className="mt-3 max-h-80 space-y-2 overflow-y-auto rounded-xl bg-black/25 p-3">
+                  <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain rounded-xl bg-black/25 p-3">
                     {playerMessages.length === 0 ? (
                       <p className="text-sm text-cyan-100/60">
                         No messages yet. Send first message to player.
@@ -1738,7 +1740,10 @@ export default function StaffPage() {
                     )}
                   </div>
 
-                  <form onSubmit={handleSendPlayerMessage} className="mt-3 flex gap-2">
+                  <form
+                    onSubmit={handleSendPlayerMessage}
+                    className="mt-3 flex shrink-0 gap-2"
+                  >
                     <input
                       value={newPlayerMessage}
                       onChange={(event) => setNewPlayerMessage(event.target.value)}

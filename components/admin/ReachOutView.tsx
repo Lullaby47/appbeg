@@ -55,9 +55,9 @@ export default function ReachOutView({
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 lg:grid lg:h-[min(85dvh,calc(100vh-8rem))] lg:grid-cols-[minmax(0,300px)_1fr] lg:gap-6">
-      <div className="max-h-[38vh] min-h-0 shrink-0 overflow-hidden rounded-2xl border border-violet-500/25 bg-gradient-to-b from-violet-950/80 to-black/60 p-3 shadow-lg shadow-violet-500/10 backdrop-blur-md sm:max-h-[42vh] lg:max-h-none lg:overflow-auto lg:p-4">
-        <div className="mb-3 flex items-center justify-between lg:mb-4">
+    <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col gap-4 overflow-hidden lg:grid lg:max-h-full lg:min-h-0 lg:grid-cols-[minmax(0,300px)_1fr] lg:grid-rows-1 lg:gap-6">
+      <div className="flex min-h-0 max-h-[min(36dvh,320px)] shrink-0 flex-col overflow-hidden rounded-2xl border border-violet-500/25 bg-gradient-to-b from-violet-950/80 to-black/60 p-3 shadow-lg shadow-violet-500/10 backdrop-blur-md sm:max-h-[min(40dvh,360px)] lg:max-h-full lg:min-h-0 lg:p-4">
+        <div className="mb-3 flex shrink-0 items-center justify-between lg:mb-4">
           <h2 className="text-lg font-black tracking-tight text-amber-100 lg:text-xl">
             💬 Agents
           </h2>
@@ -72,7 +72,7 @@ export default function ReachOutView({
         {chatUsers.length === 0 ? (
           <p className="text-sm text-violet-200/60">No agents available.</p>
         ) : (
-          <div className="max-h-[30vh] space-y-2 overflow-y-auto pr-1 lg:max-h-none">
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain pr-1">
             {chatUsers.map((user) => {
               const unreadCount = unreadCounts[user.uid] || 0;
 
@@ -142,9 +142,9 @@ export default function ReachOutView({
         )}
       </div>
 
-      <div className="flex min-h-[48vh] flex-1 flex-col rounded-2xl border border-amber-500/20 bg-black/40 shadow-xl shadow-amber-500/5 backdrop-blur-md lg:min-h-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-amber-500/20 bg-black/40 shadow-xl shadow-amber-500/5 backdrop-blur-md">
         {!selectedChatUser ? (
-          <div className="flex flex-1 items-center justify-center px-4 text-center text-sm text-amber-100/50">
+          <div className="flex min-h-0 flex-1 items-center justify-center px-4 text-center text-sm text-amber-100/50">
             <p>
               <span className="text-2xl">✨</span>
               <br />
@@ -152,7 +152,7 @@ export default function ReachOutView({
             </p>
           </div>
         ) : (
-          <>
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <div className="shrink-0 border-b border-white/10 bg-black/30 p-3 lg:p-4">
               <div className="flex items-center gap-3">
                 <div className="relative">
@@ -173,7 +173,7 @@ export default function ReachOutView({
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 lg:p-4">
+            <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain p-3 lg:p-4">
               {messages.length === 0 ? (
                 <div className="flex h-full items-center justify-center text-sm text-neutral-500">
                   No messages yet. Start the conversation.
@@ -309,7 +309,7 @@ export default function ReachOutView({
                 </button>
               </div>
             </form>
-          </>
+          </div>
         )}
       </div>
     </div>

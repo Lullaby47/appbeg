@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { onAuthStateChanged } from 'firebase/auth';
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
@@ -9,6 +10,7 @@ import {
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   query,
   serverTimestamp,
@@ -49,6 +51,32 @@ export default function LoginPage() {
 
     checkAdminExists();
   }, []);
+
+  // If the user is already signed in, send them to their app — so the browser
+  // "back" key does not look like a confusing pseudo-logout on /login.
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        return;
+      }
+
+      try {
+        const userSnap = await getDoc(doc(db, 'users', user.uid));
+        if (!userSnap.exists()) {
+          return;
+        }
+
+        const role = (userSnap.data() as { role?: string }).role;
+        if (role && isValidRole(role)) {
+          router.replace(DASHBOARD_BY_ROLE[role]);
+        }
+      } catch {
+        // ignore; user can still use the form
+      }
+    });
+
+    return () => unsubscribe();
+  }, [router]);
 
   function makeHiddenEmailFromUsername(value: string) {
     const cleanUsername = value.trim().toLowerCase();
