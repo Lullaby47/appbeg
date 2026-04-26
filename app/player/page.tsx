@@ -186,18 +186,17 @@ function buildCreatorDisplayLabel(data: { role?: string; username?: string } | u
   }
 
   const role = String(data.role || '').toLowerCase();
-  const username = String(data.username || '').trim() || '…';
 
   if (role === 'staff') {
-    return `Staff (${username})`;
+    return 'Staff Team';
   }
 
   if (role === 'coadmin') {
-    return `Coadmin (${username})`;
+    return 'Coadmin Team';
   }
 
   if (role === 'carer') {
-    return `Carer (${username})`;
+    return 'Carer Team';
   }
 
   return 'Unknown Creator';
@@ -2448,8 +2447,9 @@ export default function PlayerPage() {
                                 </p>
                                 <p className="mt-2 text-xs text-violet-200/60">
                                   +{event.bonusPercentage}% boost · from{' '}
-                                  {event.createdByRole === 'staff' ? 'Staff' : 'Coadmin'}{' '}
-                                  <span className="text-violet-100/90">{event.createdByUsername}</span>
+                                  {event.createdByRole === 'staff'
+                                    ? 'Staff Team'
+                                    : 'Coadmin Team'}
                                 </p>
                                 <button
                                   type="button"
@@ -2757,8 +2757,9 @@ export default function PlayerPage() {
                                       Created By
                                     </p>
                                     <p className="mt-1 font-bold text-white">
-                                      {event.createdByRole === 'staff' ? 'Staff' : 'Coadmin'}{' '}
-                                      {event.createdByUsername}
+                                      {event.createdByRole === 'staff'
+                                        ? 'Staff Team'
+                                        : 'Coadmin Team'}
                                     </p>
                                   </div>
                                   <div className="rounded-2xl border border-fuchsia-400/25 bg-fuchsia-500/10 p-3">

@@ -109,6 +109,19 @@ export default function UserManagementView<T extends BaseUser>({
     setShowEmojis(false);
   }
 
+  function getMaskedDisplayName(user: T) {
+    const role = String(user.role || '').toLowerCase();
+    if (role === 'admin' || role === 'staff' || role === 'coadmin') {
+      return role === 'coadmin' ? 'Co-admin' : 'Support Team';
+    }
+    return user.username;
+  }
+
+  function getAvatarLetter(user: T) {
+    const displayName = getMaskedDisplayName(user).trim();
+    return (displayName.charAt(0) || '?').toUpperCase();
+  }
+
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
 
@@ -174,7 +187,7 @@ export default function UserManagementView<T extends BaseUser>({
                 >
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <p className="truncate font-semibold">{user.username}</p>
+                      <p className="truncate font-semibold">{getMaskedDisplayName(user)}</p>
 
                       {unreadCount > 0 && (
                         <span className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold text-white">
@@ -287,7 +300,7 @@ export default function UserManagementView<T extends BaseUser>({
                     : ''
                 }`}
               >
-                {selectedUser.username}
+                {getMaskedDisplayName(selectedUser)}
               </h2>
 
               <div className="mt-4 space-y-3">
@@ -347,7 +360,7 @@ export default function UserManagementView<T extends BaseUser>({
                   <div className="flex items-center gap-3">
                     <div className="relative">
                       <div className="flex h-10 w-10 items-center justify-center rounded-full bg-neutral-700 font-bold">
-                        {selectedUser.username.charAt(0).toUpperCase()}
+                        {getAvatarLetter(selectedUser)}
                       </div>
 
                       <div
@@ -361,7 +374,7 @@ export default function UserManagementView<T extends BaseUser>({
 
                     <div>
                       <h3 className="font-semibold">
-                        Chat with {selectedUser.username}
+                        Chat with {getMaskedDisplayName(selectedUser)}
                       </h3>
                       <p className="text-xs text-neutral-400">
                         {getOnlineLabel(selectedUser)}

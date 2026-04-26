@@ -829,9 +829,7 @@ export default function AdminPage() {
                           >
                             <div className="flex items-center justify-between gap-3">
                               <div>
-                                <p className="text-sm font-semibold text-white">
-                                  {staff.username}
-                                </p>
+                                <p className="text-sm font-semibold text-white">Staff Account</p>
                                 <p className="text-xs text-neutral-400">
                                   Status: {staff.status}
                                 </p>

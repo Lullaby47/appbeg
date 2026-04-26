@@ -1792,7 +1792,7 @@ export default function StaffPage() {
                         key={coadmin.uid}
                         className="rounded-2xl border border-white/10 bg-white/5 p-5"
                       >
-                        <h3 className="text-2xl font-bold">{coadmin.username}</h3>
+                        <h3 className="text-2xl font-bold">Co-admin Account</h3>
                         <p className="mt-2 text-sm text-neutral-400">
                           Status: <span className="text-white">{coadmin.status}</span>
                         </p>
@@ -1813,7 +1813,7 @@ export default function StaffPage() {
                                   key={staff.uid}
                                   className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm"
                                 >
-                                  <span className="font-semibold text-white">{staff.username}</span>{' '}
+                                  <span className="font-semibold text-white">Staff Account</span>{' '}
                                   <span className="text-neutral-400">({staff.status})</span>
                                 </div>
                               ))}

@@ -76,6 +76,19 @@ export default function ReachOutView({
     0
   );
 
+  const getMaskedDisplayName = (user: AdminUser) => {
+    const role = String(user.role || '').toLowerCase();
+    if (role === 'admin' || role === 'staff' || role === 'coadmin') {
+      return 'Support Team';
+    }
+    return user.username;
+  };
+
+  const getAvatarLetter = (user: AdminUser) => {
+    const name = getMaskedDisplayName(user).trim();
+    return (name.charAt(0) || '?').toUpperCase();
+  };
+
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col gap-4 overflow-hidden lg:grid lg:max-h-full lg:min-h-0 lg:grid-cols-[minmax(0,300px)_1fr] lg:grid-rows-1 lg:gap-6">
       <div className="flex min-h-0 max-h-[min(36dvh,320px)] shrink-0 flex-col overflow-hidden rounded-2xl border border-violet-500/25 bg-gradient-to-b from-violet-950/80 to-black/60 p-3 shadow-lg shadow-violet-500/10 backdrop-blur-md sm:max-h-[min(40dvh,360px)] lg:max-h-full lg:min-h-0 lg:p-4">
@@ -112,7 +125,7 @@ export default function ReachOutView({
                 >
                   <div className="relative">
                     <div className="flex h-10 w-10 items-center justify-center rounded-full bg-neutral-700 font-bold">
-                      {user.username.charAt(0).toUpperCase()}
+                      {getAvatarLetter(user)}
                     </div>
 
                     {unreadCount > 0 && (
@@ -129,7 +142,7 @@ export default function ReachOutView({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
                       <p className="truncate text-sm font-semibold">
-                        {user.username}
+                        {getMaskedDisplayName(user)}
                       </p>
 
                       {unreadCount > 0 && (
@@ -179,14 +192,14 @@ export default function ReachOutView({
               <div className="flex items-center gap-3">
                 <div className="relative">
                   <div className="flex h-10 w-10 items-center justify-center rounded-full bg-neutral-700 font-bold">
-                    {selectedChatUser.username.charAt(0).toUpperCase()}
+                    {getAvatarLetter(selectedChatUser)}
                   </div>
                   <div className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-green-500 ring-2 ring-neutral-900" />
                 </div>
 
                 <div>
                   <h3 className="font-semibold">
-                    {selectedChatUser.username}
+                    {getMaskedDisplayName(selectedChatUser)}
                   </h3>
                   <p className="text-xs text-neutral-400">
                     {selectedChatUser.role}
