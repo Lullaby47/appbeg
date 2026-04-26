@@ -15,15 +15,14 @@ import {
   where,
 } from 'firebase/firestore';
 
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
-
-import { auth, db, storage } from '@/lib/firebase/client';
+import { auth, db } from '@/lib/firebase/client';
+import { uploadImageToCloudinary } from '@/lib/cloudinary/uploadImage';
 
 export type FirestoreChatMessage = {
   id: string;
   text?: string;
   imageUrl?: string;
-  imagePath?: string;
+  imagePublicId?: string;
   type?: 'text' | 'image';
   senderUid: string;
   receiverUid: string;
@@ -104,14 +103,7 @@ export async function sendImageMessage(receiverUid: string, file: File) {
   }
 
   const conversationId = getConversationId(currentUser.uid, receiverUid);
-  const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const imagePath = `chat-images/${conversationId}/${Date.now()}-${safeFileName}`;
-
-  const imageRef = ref(storage, imagePath);
-
-  await uploadBytes(imageRef, file);
-
-  const imageUrl = await getDownloadURL(imageRef);
+  const uploaded = await uploadImageToCloudinary(file);
 
   const conversationRef = doc(db, 'conversations', conversationId);
 
@@ -132,8 +124,8 @@ export async function sendImageMessage(receiverUid: string, file: File) {
 
   await addDoc(collection(db, 'conversations', conversationId, 'messages'), {
     type: 'image',
-    imageUrl,
-    imagePath,
+    imageUrl: uploaded.url,
+    imagePublicId: uploaded.publicId,
     senderUid: currentUser.uid,
     receiverUid,
     createdAt: serverTimestamp(),

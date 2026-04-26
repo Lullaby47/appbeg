@@ -91,10 +91,12 @@ import { usePaginatedChatMessages } from '@/features/messages/usePaginatedChatMe
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
 import {
-  getCoadminPaymentDetailPhotoUrls,
-  setCoadminPaymentDetailPhotoUrls,
+  getCoadminPaymentDetailPhotos,
+  setCoadminPaymentDetailPhotos,
+  type PaymentDetailPhoto,
   uploadCoadminPaymentDetailPhoto,
 } from '@/features/coinLoad/coinLoadSession';
+import ImageUploadField from '@/components/common/ImageUploadField';
 
 type CoadminView =
   | 'dashboard'
@@ -223,7 +225,7 @@ export default function CoadminPage() {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [sendingImage, setSendingImage] = useState(false);
 
-  const [paymentDetailPhotoUrls, setPaymentDetailPhotoUrls] = useState<string[]>([]);
+  const [paymentDetailPhotos, setPaymentDetailPhotos] = useState<PaymentDetailPhoto[]>([]);
   const [loadingPaymentDetailPhotos, setLoadingPaymentDetailPhotos] = useState(false);
   const [paymentDetailUploading, setPaymentDetailUploading] = useState(false);
 
@@ -351,9 +353,9 @@ export default function CoadminPage() {
     setMessage('');
     void (async () => {
       try {
-        const urls = await getCoadminPaymentDetailPhotoUrls(uid);
+        const urls = await getCoadminPaymentDetailPhotos(uid);
         if (!cancelled) {
-          setPaymentDetailPhotoUrls(urls);
+          setPaymentDetailPhotos(urls);
         }
       } catch {
         if (!cancelled) {
@@ -1401,18 +1403,18 @@ export default function CoadminPage() {
     setPaymentDetailUploading(true);
     setMessage('');
     try {
-      const next = [...paymentDetailPhotoUrls];
+      const next = [...paymentDetailPhotos];
       for (const file of Array.from(files)) {
         const compressed = await imageCompression(file, {
           maxSizeMB: 0.7,
           maxWidthOrHeight: 1600,
           useWebWorker: true,
         });
-        const url = await uploadCoadminPaymentDetailPhoto(uid, compressed);
-        next.push(url);
+        const uploaded = await uploadCoadminPaymentDetailPhoto(uid, compressed);
+        next.push(uploaded);
       }
-      await setCoadminPaymentDetailPhotoUrls(uid, next);
-      setPaymentDetailPhotoUrls(next);
+      await setCoadminPaymentDetailPhotos(uid, next);
+      setPaymentDetailPhotos(next);
       setMessage('Payment photos saved. Players can use them in Load coin.');
     } catch (err: any) {
       setMessage(err?.message || 'Failed to upload photos.');
@@ -1426,12 +1428,12 @@ export default function CoadminPage() {
     if (!uid) {
       return;
     }
-    const next = paymentDetailPhotoUrls.filter((_, i) => i !== index);
+    const next = paymentDetailPhotos.filter((_, i) => i !== index);
     setPaymentDetailUploading(true);
     setMessage('');
     try {
-      await setCoadminPaymentDetailPhotoUrls(uid, next);
-      setPaymentDetailPhotoUrls(next);
+      await setCoadminPaymentDetailPhotos(uid, next);
+      setPaymentDetailPhotos(next);
     } catch (err: any) {
       setMessage(err?.message || 'Failed to remove photo.');
     } finally {
@@ -2255,6 +2257,38 @@ export default function CoadminPage() {
                     className="mt-2 block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-cyan-500/20 file:px-4 file:py-2 file:font-semibold file:text-cyan-100"
                   />
                 </label>
+                <div className="mt-4">
+                  <ImageUploadField
+                    label="Quick single upload"
+                    autoUpload
+                    onUploaded={(uploaded) => {
+                      const uid = auth.currentUser?.uid;
+                      if (!uid) {
+                        return;
+                      }
+                      const next = [
+                        ...paymentDetailPhotos,
+                        {
+                          imageUrl: uploaded.url,
+                          imagePublicId: uploaded.publicId,
+                        },
+                      ];
+                      void setCoadminPaymentDetailPhotos(uid, next)
+                        .then(() => {
+                          setPaymentDetailPhotos(next);
+                          setMessage('Image uploaded successfully.');
+                        })
+                        .catch((err) =>
+                          setMessage(
+                            err instanceof Error
+                              ? err.message
+                              : 'Image upload failed. Please try again.'
+                          )
+                        );
+                    }}
+                    onError={(err) => setMessage(err)}
+                  />
+                </div>
                 {paymentDetailUploading ? (
                   <p className="mt-3 text-sm text-amber-200/90">Uploading…</p>
                 ) : null}
@@ -2263,18 +2297,18 @@ export default function CoadminPage() {
               <div className="mt-6">
                 {loadingPaymentDetailPhotos ? (
                   <p className="text-sm text-neutral-500">Loading…</p>
-                ) : paymentDetailPhotoUrls.length === 0 ? (
+                ) : paymentDetailPhotos.length === 0 ? (
                   <p className="text-sm text-neutral-500">No reference photos yet.</p>
                 ) : (
                   <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                    {paymentDetailPhotoUrls.map((url, index) => (
+                    {paymentDetailPhotos.map((photo, index) => (
                       <li
-                        key={url}
+                        key={`${photo.imagePublicId || 'photo'}-${index}`}
                         className="overflow-hidden rounded-2xl border border-white/10 bg-black/40"
                       >
                         <div className="relative aspect-[4/3] w-full">
                           <img
-                            src={url}
+                            src={photo.imageUrl}
                             alt={`Payment reference ${index + 1}`}
                             className="h-full w-full object-contain"
                           />

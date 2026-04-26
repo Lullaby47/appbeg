@@ -18,6 +18,10 @@ export type CoadminUser = {
   coadminUid?: string | null;
   /** Reference images for player “Load coin” flow. */
   paymentDetailPhotoUrls?: string[] | null;
+  paymentDetailPhotos?: Array<{
+    imageUrl: string;
+    imagePublicId: string;
+  }> | null;
   createdAt?: any;
 };
 
@@ -43,6 +47,7 @@ export type CarerUser = {
   createdBy: string | null;
   coadminUid?: string | null;
   paymentQrUrl?: string | null;
+  paymentQrPublicId?: string | null;
   paymentDetails?: string | null;
   cashBoxNpr?: number;
   createdAt?: any;

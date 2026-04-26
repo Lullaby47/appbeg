@@ -7,6 +7,7 @@ import { doc, getDoc } from 'firebase/firestore';
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
 import LogoutButton from '../../components/auth/LogoutButton';
 import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
+import ImageUploadField from '@/components/common/ImageUploadField';
 import { auth, db } from '@/lib/firebase/client';
 import { GameLogin } from '@/features/games/gameLogins';
 import {
@@ -60,6 +61,7 @@ type CarerIdentity = {
   uid: string;
   username: string;
   paymentQrUrl?: string;
+  paymentQrPublicId?: string;
   paymentDetails?: string;
 };
 
@@ -285,6 +287,7 @@ export default function CarerPage() {
   const [savingPaymentDetails, setSavingPaymentDetails] = useState(false);
   const [showPaymentDetailsPanel, setShowPaymentDetailsPanel] = useState(false);
   const [paymentQrUrl, setPaymentQrUrl] = useState('');
+  const [paymentQrPublicId, setPaymentQrPublicId] = useState('');
   const [paymentDetails, setPaymentDetails] = useState('');
   const [showInquiryPanel, setShowInquiryPanel] = useState(false);
   const [inquiryMessage, setInquiryMessage] = useState('');
@@ -660,6 +663,7 @@ export default function CarerPage() {
       const userData = userSnap.data() as {
         username?: string;
         paymentQrUrl?: string;
+        paymentQrPublicId?: string;
         paymentDetails?: string;
         cashBoxNpr?: number;
       };
@@ -669,9 +673,11 @@ export default function CarerPage() {
         uid: firebaseUser.uid,
         username: userData.username?.trim() || 'Carer',
         paymentQrUrl: userData.paymentQrUrl?.trim() || '',
+        paymentQrPublicId: userData.paymentQrPublicId?.trim() || '',
         paymentDetails: userData.paymentDetails?.trim() || '',
       });
       setPaymentQrUrl(userData.paymentQrUrl?.trim() || '');
+      setPaymentQrPublicId(userData.paymentQrPublicId?.trim() || '');
       setPaymentDetails(userData.paymentDetails?.trim() || '');
       setCashBoxNpr(Number(userData.cashBoxNpr || 0));
       setCoadminUid(resolvedCoadminUid);
@@ -929,6 +935,7 @@ export default function CarerPage() {
         carerUsername: carerIdentity.username,
         amountNpr: cashBoxNpr,
         paymentQrUrl: paymentQrUrl.trim(),
+        paymentQrPublicId: paymentQrPublicId.trim(),
         paymentDetails: paymentDetails.trim(),
       });
       setNoticeMessage(
@@ -949,6 +956,7 @@ export default function CarerPage() {
     try {
       await saveCarerPaymentDetails({
         paymentQrUrl,
+        paymentQrPublicId,
         paymentDetails,
       });
       setCarerIdentity((previous) =>
@@ -956,6 +964,7 @@ export default function CarerPage() {
           ? {
               ...previous,
               paymentQrUrl: paymentQrUrl.trim(),
+              paymentQrPublicId: paymentQrPublicId.trim(),
               paymentDetails: paymentDetails.trim(),
             }
           : previous
@@ -2309,6 +2318,22 @@ export default function CarerPage() {
                 className="mt-2 w-full rounded-xl border border-white/10 bg-black px-4 py-3 text-white outline-none focus:border-white/30"
               />
             </label>
+            <div className="mt-4">
+              <ImageUploadField
+                label="Upload payment QR image"
+                valueUrl={paymentQrUrl}
+                autoUpload
+                onUploaded={(uploaded) => {
+                  setPaymentQrUrl(uploaded.url);
+                  setPaymentQrPublicId(uploaded.publicId);
+                  setNoticeMessage('Image uploaded successfully.');
+                  setErrorMessage('');
+                }}
+                onError={() => {
+                  setErrorMessage('Image upload failed. Please try again.');
+                }}
+              />
+            </div>
 
             <label className="mt-4 block text-sm text-neutral-300">
               Payment Notes / UPI / Bank Details

@@ -22,6 +22,7 @@ export type CarerCashoutRequest = {
   carerUsername: string;
   amountNpr: number;
   paymentQrUrl?: string | null;
+  paymentQrPublicId?: string | null;
   paymentDetails?: string | null;
   status: 'pending' | 'completed';
   createdAt?: Timestamp | null;
@@ -30,6 +31,7 @@ export type CarerCashoutRequest = {
 
 export async function saveCarerPaymentDetails(values: {
   paymentQrUrl: string;
+  paymentQrPublicId?: string;
   paymentDetails: string;
 }) {
   const currentUser = auth.currentUser;
@@ -40,6 +42,7 @@ export async function saveCarerPaymentDetails(values: {
 
   await updateDoc(doc(db, 'users', currentUser.uid), {
     paymentQrUrl: values.paymentQrUrl.trim(),
+    paymentQrPublicId: values.paymentQrPublicId?.trim() || null,
     paymentDetails: values.paymentDetails.trim(),
   });
 }
@@ -50,6 +53,7 @@ export async function createCarerCashoutRequest(values: {
   carerUsername: string;
   amountNpr: number;
   paymentQrUrl?: string;
+  paymentQrPublicId?: string;
   paymentDetails?: string;
 }) {
   const amountNpr = Math.round(Number(values.amountNpr || 0));
@@ -70,6 +74,7 @@ export async function createCarerCashoutRequest(values: {
     carerUsername: values.carerUsername || 'Carer',
     amountNpr,
     paymentQrUrl: values.paymentQrUrl?.trim() || null,
+    paymentQrPublicId: values.paymentQrPublicId?.trim() || null,
     paymentDetails: values.paymentDetails?.trim() || null,
     status: 'pending',
     createdAt: serverTimestamp(),

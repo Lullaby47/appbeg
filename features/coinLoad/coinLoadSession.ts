@@ -12,9 +12,9 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 
-import { auth, db, storage } from '@/lib/firebase/client';
+import { auth, db } from '@/lib/firebase/client';
+import { uploadImageToCloudinary } from '@/lib/cloudinary/uploadImage';
 
 /**
  * Firestore: collection `coinLoadSessions` (fields: playerUid, coadminUid, hashCode,
@@ -35,6 +35,11 @@ export type CoinLoadSession = {
   paymentPhotoUrl: string;
   createdAt: Timestamp;
   expiresAt: Timestamp;
+};
+
+export type PaymentDetailPhoto = {
+  imageUrl: string;
+  imagePublicId: string;
 };
 
 function generate16DigitCode(): string {
@@ -60,7 +65,7 @@ function randomItem<T>(items: T[]): T {
 export async function uploadCoadminPaymentDetailPhoto(
   coadminUid: string,
   file: File
-): Promise<string> {
+): Promise<PaymentDetailPhoto> {
   const current = auth.currentUser;
   if (!current || current.uid !== coadminUid) {
     throw new Error('Not authorized to upload for this account.');
@@ -72,37 +77,54 @@ export async function uploadCoadminPaymentDetailPhoto(
   if (file.size > maxSizeMb * 1024 * 1024) {
     throw new Error(`Image must be smaller than ${maxSizeMb}MB.`);
   }
-  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const path = `coadmin-payment-details/${coadminUid}/${Date.now()}-${safeName}`;
-  const r = ref(storage, path);
-  await uploadBytes(r, file);
-  return getDownloadURL(r);
+  const uploaded = await uploadImageToCloudinary(file);
+  return {
+    imageUrl: uploaded.url,
+    imagePublicId: uploaded.publicId,
+  };
 }
 
-export async function setCoadminPaymentDetailPhotoUrls(
+export async function setCoadminPaymentDetailPhotos(
   coadminUid: string,
-  urls: string[]
+  photos: PaymentDetailPhoto[]
 ): Promise<void> {
   const current = auth.currentUser;
   if (!current || current.uid !== coadminUid) {
     throw new Error('Not authorized.');
   }
   await updateDoc(doc(db, 'users', coadminUid), {
-    paymentDetailPhotoUrls: urls,
+    paymentDetailPhotos: photos,
+    paymentDetailPhotoUrls: photos.map((p) => p.imageUrl),
     updatedAt: serverTimestamp(),
   });
 }
 
-export async function getCoadminPaymentDetailPhotoUrls(
+export async function getCoadminPaymentDetailPhotos(
   coadminUid: string
-): Promise<string[]> {
+): Promise<PaymentDetailPhoto[]> {
   const snap = await getDoc(doc(db, 'users', coadminUid));
   if (!snap.exists()) {
     return [];
   }
-  const data = snap.data() as { paymentDetailPhotoUrls?: string[] };
+  const data = snap.data() as {
+    paymentDetailPhotos?: Array<{ imageUrl?: string; imagePublicId?: string }>;
+    paymentDetailPhotoUrls?: string[];
+  };
+  if (Array.isArray(data.paymentDetailPhotos)) {
+    const photos = data.paymentDetailPhotos
+      .map((p) => ({
+        imageUrl: String(p?.imageUrl || '').trim(),
+        imagePublicId: String(p?.imagePublicId || '').trim(),
+      }))
+      .filter((p) => p.imageUrl);
+    if (photos.length > 0) {
+      return photos;
+    }
+  }
   return Array.isArray(data.paymentDetailPhotoUrls)
-    ? data.paymentDetailPhotoUrls.filter((u) => typeof u === 'string' && u.length > 0)
+    ? data.paymentDetailPhotoUrls
+        .filter((u) => typeof u === 'string' && u.length > 0)
+        .map((u) => ({ imageUrl: u, imagePublicId: '' }))
     : [];
 }
 
@@ -128,13 +150,13 @@ export async function createCoinLoadSession(coadminUid: string): Promise<CoinLoa
   if (!coadminUid) {
     throw new Error('No co-admin is linked to your account.');
   }
-  const urls = await getCoadminPaymentDetailPhotoUrls(coadminUid);
-  if (urls.length === 0) {
+  const photos = await getCoadminPaymentDetailPhotos(coadminUid);
+  if (photos.length === 0) {
     throw new Error(
       'No payment reference images yet. Your co-admin needs to upload photos in their panel (Payment details).'
     );
   }
-  const paymentPhotoUrl = randomItem(urls);
+  const paymentPhotoUrl = randomItem(photos).imageUrl;
   const hashCode = generate16DigitCode();
   const now = Date.now();
   const expiresAt = Timestamp.fromMillis(now + DURATION_MS);

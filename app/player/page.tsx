@@ -269,6 +269,8 @@ function getPlayerAlertInfo(raw: string): PlayerAlertInfo | null {
   };
 }
 
+// Legacy helper retained only to avoid a broad page rewrite in this pass.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function FloatingCasinoBackdrop() {
   return (
     <div
@@ -1759,8 +1761,7 @@ export default function PlayerPage() {
 
   return (
     <ProtectedRoute allowedRoles={['player']}>
-      <main className="relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-[#06030a] pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white lg:flex-row lg:pb-0">
-        <FloatingCasinoBackdrop />
+      <main className="relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white lg:flex-row lg:pb-0">
 
         <header className="sticky top-0 z-30 shrink-0 border-b border-amber-500/20 bg-black/65 px-3 py-2.5 backdrop-blur-2xl lg:hidden">
           <div className="flex items-center justify-between gap-2">

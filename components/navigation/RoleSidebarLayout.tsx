@@ -74,8 +74,8 @@ export default function RoleSidebarLayout({
   );
 
   return (
-    <main className="flex min-h-[100dvh] flex-col overflow-x-hidden bg-neutral-950 text-white lg:flex-row">
-      <header className="sticky top-0 z-30 border-b border-white/10 bg-neutral-950/95 px-4 py-3 backdrop-blur lg:hidden">
+    <main className="relative flex min-h-[100dvh] flex-col overflow-x-hidden bg-transparent text-white lg:flex-row">
+      <header className="sticky top-0 z-30 border-b border-white/10 bg-slate-950/70 px-4 py-3 backdrop-blur-xl lg:hidden">
         <div className="flex items-center justify-between gap-3">
           <button
             type="button"
@@ -114,9 +114,9 @@ export default function RoleSidebarLayout({
               animate={{ x: 0 }}
               exit={{ x: '-105%' }}
               transition={{ type: 'spring', damping: 26, stiffness: 280 }}
-              className="fixed bottom-0 left-0 top-0 z-50 flex w-[min(22rem,88vw)] flex-col overflow-y-auto border-r border-white/10 bg-neutral-950 p-4 shadow-2xl lg:hidden"
+              className="fixed bottom-0 left-0 top-0 z-50 flex w-[min(22rem,88vw)] flex-col overflow-y-auto border-r border-white/10 bg-slate-950/78 p-4 shadow-2xl backdrop-blur-xl lg:hidden"
             >
-              <div className="mb-6 rounded-2xl border border-white/10 bg-white/5 p-4">
+              <div className="mb-6 rounded-2xl border border-white/10 bg-white/8 p-4 backdrop-blur-md">
                 <h1 className="text-xl font-bold text-white">{title}</h1>
                 {subtitle ? <p className="mt-1 text-sm text-neutral-400">{subtitle}</p> : null}
               </div>
@@ -127,7 +127,7 @@ export default function RoleSidebarLayout({
         ) : null}
       </AnimatePresence>
 
-      <aside className="hidden w-72 shrink-0 border-r border-white/10 bg-neutral-900/60 p-4 lg:block">
+      <aside className="hidden w-72 shrink-0 border-r border-white/10 bg-slate-950/48 p-4 backdrop-blur-xl lg:block">
         <h1 className="mb-2 text-xl font-bold lg:text-2xl">{title}</h1>
         {subtitle ? <p className="mb-4 text-sm text-neutral-400 lg:mb-6">{subtitle}</p> : null}
         {renderNav()}
