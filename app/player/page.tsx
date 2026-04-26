@@ -1627,14 +1627,40 @@ export default function PlayerPage() {
                   <p className="mt-2 text-sm leading-relaxed text-amber-50/90">
                     {playerAlert.body}
                   </p>
-                  <details className="mt-3 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-amber-100/65">
-                    <summary className="cursor-pointer font-bold text-amber-200/90">
-                      Technical details
-                    </summary>
-                    <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] text-amber-100/50">
-                      {playerAlert.raw}
-                    </pre>
-                  </details>
+                  {playerAlert.variant === 'index' ? (
+                    <div className="mt-3 rounded-xl border border-amber-400/25 bg-black/40 px-3 py-3 text-xs text-amber-100/80">
+                      <p className="text-[11px] font-black uppercase tracking-wider text-amber-200/90">
+                        Technical details
+                      </p>
+                      {(() => {
+                        const url = playerAlert.raw.match(
+                          /https:\/\/console\.firebase\.google\.com[^\s]*/i
+                        )?.[0];
+                        return url ? (
+                          <a
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="mt-2 block w-full rounded-lg border border-amber-400/40 bg-amber-500/15 py-2.5 text-center text-[11px] font-black text-amber-100 hover:bg-amber-500/25"
+                          >
+                            Open “Create index” in Firebase Console ↗
+                          </a>
+                        ) : null;
+                      })()}
+                      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] text-amber-100/50">
+                        {playerAlert.raw}
+                      </pre>
+                    </div>
+                  ) : (
+                    <details className="mt-3 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-amber-100/65">
+                      <summary className="cursor-pointer font-bold text-amber-200/90">
+                        Technical details
+                      </summary>
+                      <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] text-amber-100/50">
+                        {playerAlert.raw}
+                      </pre>
+                    </details>
+                  )}
                 </motion.div>
               ) : null}
 
