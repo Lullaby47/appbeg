@@ -60,6 +60,13 @@ export type PlayerChatListItem = {
   muted: boolean;
 };
 
+export type FriendLink = {
+  id: string;
+  participants: string[];
+  status: 'pending' | 'accepted';
+  requestedByUid: string;
+};
+
 type ConversationDoc = {
   participants?: string[];
   lastMessage?: string;
@@ -87,6 +94,10 @@ function tokenizeText(text: string) {
 }
 
 export function getDirectConversationId(uidA: string, uidB: string) {
+  return [uidA, uidB].sort().join('__');
+}
+
+function getFriendLinkId(uidA: string, uidB: string) {
   return [uidA, uidB].sort().join('__');
 }
 
@@ -425,4 +436,82 @@ export function listenGlobalGroupMessages(onNext: (messages: PlayerChatMessage[]
     const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PlayerChatMessage, 'id'>) }));
     onNext(list);
   });
+}
+
+export async function sendFriendRequest(otherUid: string) {
+  const selfUid = assertAuthUid();
+  if (selfUid === otherUid) return;
+  const ref = doc(db, 'playerFriendLinks', getFriendLinkId(selfUid, otherUid));
+  const snap = await getDoc(ref);
+  if (snap.exists()) return;
+  await setDoc(
+    ref,
+    {
+      participants: [selfUid, otherUid],
+      status: 'pending',
+      requestedByUid: selfUid,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+export async function acceptFriendRequest(otherUid: string) {
+  const selfUid = assertAuthUid();
+  const ref = doc(db, 'playerFriendLinks', getFriendLinkId(selfUid, otherUid));
+  await setDoc(
+    ref,
+    {
+      participants: [selfUid, otherUid],
+      status: 'accepted',
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+export function listenFriendLinks(onNext: (links: FriendLink[]) => void) {
+  const selfUid = auth.currentUser?.uid;
+  if (!selfUid) {
+    onNext([]);
+    return () => {};
+  }
+  const q = query(
+    collection(db, 'playerFriendLinks'),
+    where('participants', 'array-contains', selfUid),
+    orderBy('updatedAt', 'desc'),
+    limit(500)
+  );
+  return onSnapshot(q, (snap) => {
+    const links = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<FriendLink, 'id'>) }));
+    onNext(links);
+  });
+}
+
+export async function ensureReferralFriendLinks() {
+  const selfUid = assertAuthUid();
+  const referredSnap = await getDocs(
+    query(collection(db, 'users'), where('role', '==', 'player'), where('referredByUid', '==', selfUid))
+  );
+  if (referredSnap.empty) return;
+
+  const batch = writeBatch(db);
+  referredSnap.docs.forEach((d) => {
+    const otherUid = d.id;
+    if (otherUid === selfUid) return;
+    const ref = doc(db, 'playerFriendLinks', getFriendLinkId(selfUid, otherUid));
+    batch.set(
+      ref,
+      {
+        participants: [selfUid, otherUid],
+        status: 'accepted',
+        requestedByUid: selfUid,
+        source: 'referral',
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  });
+  await batch.commit();
 }

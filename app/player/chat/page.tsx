@@ -2,7 +2,7 @@
 
 import '@/styles/player-fire.css';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
   collection,
@@ -15,15 +15,20 @@ import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import { auth, db } from '@/lib/firebase/client';
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 import {
+  acceptFriendRequest,
   deleteDirectMessageForEveryone,
   deleteDirectMessageForMe,
+  ensureReferralFriendLinks,
+  FriendLink,
   listenDirectChatList,
+  listenFriendLinks,
   listenDirectMessages,
   listenDirectTyping,
   markDirectConversationSeen,
   PlayerChatMessage,
   PlayerPeer,
   searchDirectMessages,
+  sendFriendRequest,
   sendDirectImageMessage,
   sendDirectTextMessage,
   setDirectConversationMuted,
@@ -55,8 +60,12 @@ export default function PlayerChatPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState<PlayerChatMessage[]>([]);
   const [chatList, setChatList] = useState<Record<string, { unread: number; muted: boolean; last: string }>>({});
+  const [friendByUid, setFriendByUid] = useState<
+    Record<string, { status: 'pending' | 'accepted'; requestedByUid: string }>
+  >({});
 
   useEffect(() => {
+    void ensureReferralFriendLinks();
     const q = query(
       collection(db, 'users'),
       where('role', '==', 'player'),
@@ -78,10 +87,6 @@ export default function PlayerChatPage() {
   }, []);
 
   const onlineByUid = usePresenceOnlineMap(allPlayers.map((p) => p.uid));
-  const onlinePlayers = useMemo(
-    () => allPlayers.filter((p) => onlineByUid[p.uid]),
-    [allPlayers, onlineByUid]
-  );
 
   useEffect(() => {
     return listenDirectChatList((rows) => {
@@ -94,6 +99,22 @@ export default function PlayerChatPage() {
         };
       });
       setChatList(next);
+    });
+  }, []);
+
+  useEffect(() => {
+    return listenFriendLinks((links: FriendLink[]) => {
+      const selfUid = auth.currentUser?.uid || '';
+      const next: Record<string, { status: 'pending' | 'accepted'; requestedByUid: string }> = {};
+      links.forEach((link) => {
+        const otherUid = (link.participants || []).find((uid) => uid !== selfUid) || '';
+        if (!otherUid) return;
+        next[otherUid] = {
+          status: link.status,
+          requestedByUid: link.requestedByUid,
+        };
+      });
+      setFriendByUid(next);
     });
   }, []);
 
@@ -114,6 +135,8 @@ export default function PlayerChatPage() {
   }, [selectedPeer]);
 
   const selectedMuted = selectedPeer ? Boolean(chatList[selectedPeer.uid]?.muted) : false;
+  const selectedFriend = selectedPeer ? friendByUid[selectedPeer.uid] : null;
+  const selfUid = auth.currentUser?.uid || '';
 
   async function onSend(e: React.FormEvent) {
     e.preventDefault();
@@ -175,15 +198,15 @@ export default function PlayerChatPage() {
               </Link>
             </div>
             <p className="mb-2 text-xs uppercase tracking-[0.2em] text-emerald-300/80">
-              Online players only
+              All players
             </p>
             <div className="max-h-[32dvh] space-y-2 overflow-y-auto pr-1 lg:max-h-[70dvh]">
-              {onlinePlayers.length === 0 ? (
+              {allPlayers.length === 0 ? (
                 <p className="rounded-xl border border-white/10 bg-black/40 p-3 text-sm text-amber-100/60">
-                  No players online right now.
+                  No players available right now.
                 </p>
               ) : (
-                onlinePlayers.map((p) => {
+                allPlayers.map((p) => {
                   const stat = chatList[p.uid];
                   const selected = selectedPeer?.uid === p.uid;
                   return (
@@ -201,7 +224,14 @@ export default function PlayerChatPage() {
                       }`}
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="truncate font-semibold">{p.username}</span>
+                        <span className="truncate font-semibold">
+                          <span
+                            className={`mr-2 inline-block h-2.5 w-2.5 rounded-full ${
+                              onlineByUid[p.uid] ? 'bg-emerald-400' : 'bg-neutral-600'
+                            }`}
+                          />
+                          {p.username}
+                        </span>
                         {stat?.unread ? (
                           <span className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-black">
                             {stat.unread > 9 ? '9+' : stat.unread}
@@ -229,6 +259,27 @@ export default function PlayerChatPage() {
                 <header className="flex flex-wrap items-center gap-2 border-b border-white/10 p-3">
                   <h2 className="mr-auto text-lg font-bold">{selectedPeer.username}</h2>
                   {typing ? <span className="text-xs text-emerald-300">typing...</span> : null}
+                  {!selectedFriend ? (
+                    <button
+                      type="button"
+                      onClick={() => void sendFriendRequest(selectedPeer.uid)}
+                      className="rounded-lg border border-emerald-300/40 bg-emerald-500/15 px-2.5 py-1 text-xs hover:bg-emerald-500/25"
+                    >
+                      Add Friend
+                    </button>
+                  ) : selectedFriend.status === 'pending' && selectedFriend.requestedByUid !== selfUid ? (
+                    <button
+                      type="button"
+                      onClick={() => void acceptFriendRequest(selectedPeer.uid)}
+                      className="rounded-lg border border-amber-300/40 bg-amber-500/15 px-2.5 py-1 text-xs hover:bg-amber-500/25"
+                    >
+                      Accept Request
+                    </button>
+                  ) : (
+                    <span className="rounded-lg border border-white/15 px-2.5 py-1 text-xs text-emerald-300">
+                      {selectedFriend.status === 'accepted' ? 'Friends' : 'Request Sent'}
+                    </span>
+                  )}
                   <button
                     type="button"
                     onClick={() =>
