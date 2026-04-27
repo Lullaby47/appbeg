@@ -3,6 +3,7 @@
 import '../../styles/player-fire.css';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { AnimatePresence, motion } from 'motion/react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
@@ -3134,7 +3135,7 @@ export default function PlayerPage() {
                             <p className="mt-1 text-sm text-amber-100/70">
                               Claimable:{' '}
                               <span className="font-black text-emerald-300">
-                                {Math.max(0, Number(group.pendingRewardCoins || 0))} coin
+                                {Math.max(0, Number(group.pendingRewardCoins || 0)).toFixed(2)} points
                               </span>
                             </p>
                           </div>
@@ -3235,6 +3236,14 @@ export default function PlayerPage() {
             );
           })}
         </nav>
+        <Link
+          href="/player/chat"
+          className="fixed bottom-24 right-4 z-50 inline-flex h-12 w-12 items-center justify-center rounded-full border border-emerald-300/50 bg-emerald-500/20 text-2xl shadow-lg shadow-emerald-500/30 backdrop-blur-sm transition hover:bg-emerald-500/30"
+          aria-label="Open player chat"
+          title="Chat with online players"
+        >
+          💬
+        </Link>
       </main>
 
       {credentialResetModal ? (

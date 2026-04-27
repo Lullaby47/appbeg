@@ -39,6 +39,10 @@ function buildClaimDocId(referrerUid: string, rechargeId: string) {
   return `${referrerUid}__${rechargeId}`;
 }
 
+function buildCarryDocId(referrerUid: string, referredPlayerUid: string) {
+  return `${referrerUid}__${referredPlayerUid}`;
+}
+
 type RechargeLite = {
   id: string;
   amount: number;
@@ -80,7 +84,7 @@ function computeRewardByRechargeId(recharges: RechargeLite[]) {
       rewardById.set(recharge.id, 5);
       return;
     }
-    rewardById.set(recharge.id, Math.max(0, Math.floor(recharge.amount * 0.01)));
+    rewardById.set(recharge.id, Math.max(0, Number((recharge.amount * 0.01).toFixed(4))));
   });
   return rewardById;
 }
@@ -183,11 +187,21 @@ async function loadRewardGroups(referrerUid: string): Promise<RewardGroup[]> {
       }
     }
 
+    const carryRef = adminDb
+      .collection('referralRewardCarry')
+      .doc(buildCarryDocId(referrerUid, referredUid));
+    const carrySnap = await carryRef.get();
+    const carryData = carrySnap.exists
+      ? (carrySnap.data() as { carryPoints?: number })
+      : null;
+    const carryPoints = Math.max(0, getNumber(carryData?.carryPoints));
+    const totalPendingPoints = pendingRewardCoins + carryPoints;
+
     groups.push({
       referredPlayerUid: referredUid,
       referredPlayerName,
-      pendingRewardCoins,
-      hasClaimableReward: pendingRewardCoins > 0,
+      pendingRewardCoins: Number(totalPendingPoints.toFixed(4)),
+      hasClaimableReward: totalPendingPoints >= 1,
     });
   }
 
@@ -283,13 +297,27 @@ export async function POST(request: Request) {
         return reward > 0 && !claimedRechargeIds.has(recharge.id);
       });
 
-      rewardCoins = pendingRecharges.reduce(
+      const pendingPoints = pendingRecharges.reduce(
         (sum, recharge) => sum + Math.max(0, Number(rewardById.get(recharge.id) || 0)),
         0
       );
+      const carryRef = adminDb
+        .collection('referralRewardCarry')
+        .doc(buildCarryDocId(referrerUid, referredPlayerUid));
+      const carrySnap = await transaction.get(carryRef);
+      const carryData = carrySnap.exists
+        ? (carrySnap.data() as { carryPoints?: number })
+        : null;
+      const carryPoints = Math.max(0, getNumber(carryData?.carryPoints));
+
+      const totalPoints = pendingPoints + carryPoints;
+      rewardCoins = Math.floor(totalPoints);
+      const nextCarryPoints = Number((totalPoints - rewardCoins).toFixed(4));
 
       if (rewardCoins <= 0) {
-        throw new Error('No rewards available.');
+        throw new Error(
+          `You have ${Number(totalPoints.toFixed(4))} points. Need at least 1.0 points to claim 1 coin.`
+        );
       }
 
       const referrerData = referrerSnap.data() as { coin?: number };
@@ -311,6 +339,17 @@ export async function POST(request: Request) {
           claimedAt: FieldValue.serverTimestamp(),
         });
       }
+
+      transaction.set(
+        carryRef,
+        {
+          referrerUid,
+          referredPlayerUid,
+          carryPoints: nextCarryPoints,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
     });
 
     return NextResponse.json({
