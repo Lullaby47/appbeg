@@ -7,7 +7,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { AnimatePresence, motion } from 'motion/react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot, updateDoc } from 'firebase/firestore';
 import imageCompression from 'browser-image-compression';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
@@ -122,6 +122,19 @@ function formatDateTime(value: unknown) {
   }
 
   return new Date(timestampMs).toLocaleString();
+}
+
+function getPlayerBonusEventDescription(description: string | null | undefined) {
+  const normalizedDescription = description?.trim();
+
+  if (
+    normalizedDescription ===
+    'Auto-generated co-admin bonus event to maintain active event capacity.'
+  ) {
+    return null;
+  }
+
+  return normalizedDescription || null;
 }
 
 function getRequestStatusLabel(status: PlayerGameRequest['status']) {
@@ -346,12 +359,14 @@ export default function PlayerPage() {
   const [wallet, setWallet] = useState<PlayerWallet>({ coin: 0, cash: 0 });
   const [referralCode, setReferralCode] = useState('');
   const [referredByPlayerName, setReferredByPlayerName] = useState('');
+  const [referredByPlayerUid, setReferredByPlayerUid] = useState('');
   const [referralRewardGroups, setReferralRewardGroups] = useState<ReferralRewardGroup[]>([]);
   const [referralRewardsLoading, setReferralRewardsLoading] = useState(false);
   const [claimingReferredPlayerUid, setClaimingReferredPlayerUid] = useState<string | null>(null);
   const [earnedRewardSplashCoins, setEarnedRewardSplashCoins] = useState<number | null>(null);
   const [showCashoutModal, setShowCashoutModal] = useState(false);
   const [showCoinConfirmSplash, setShowCoinConfirmSplash] = useState(false);
+  const [transferCoinAmountInput, setTransferCoinAmountInput] = useState('');
   const [showLoadCoinPanel, setShowLoadCoinPanel] = useState(false);
   const [activeCoinLoad, setActiveCoinLoad] = useState<CoinLoadSession | null>(null);
   const [loadCoinTimeLeftSec, setLoadCoinTimeLeftSec] = useState(0);
@@ -428,6 +443,7 @@ export default function PlayerPage() {
   const [showLogoutConfirmSplash, setShowLogoutConfirmSplash] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
   const [bonusVanishedToast, setBonusVanishedToast] = useState(false);
+  const bonusSwipeStartXRef = useRef<number | null>(null);
   const activeTableHistoryOpenRef = useRef(false);
   const showActiveTableSplashRef = useRef(false);
 
@@ -538,6 +554,27 @@ export default function PlayerPage() {
     () => requestHistory.slice(0, MAX_REQUEST_HISTORY_DISPLAY),
     [requestHistory]
   );
+  const requestTotals = useMemo(() => {
+    return requestHistory.reduce(
+      (acc, request) => {
+        const amount = Math.max(0, Number(request.amount || 0));
+        if (request.type === 'recharge') {
+          acc.rechargeAmount += amount;
+          acc.rechargeCount += 1;
+        } else if (request.type === 'redeem') {
+          acc.redeemAmount += amount;
+          acc.redeemCount += 1;
+        }
+        return acc;
+      },
+      {
+        rechargeAmount: 0,
+        redeemAmount: 0,
+        rechargeCount: 0,
+        redeemCount: 0,
+      }
+    );
+  }, [requestHistory]);
 
   const usernamesCreatorFilterKeys = useMemo(() => {
     const uidSet = new Set<string>();
@@ -1058,6 +1095,44 @@ export default function PlayerPage() {
   }, [playerUid]);
 
   useEffect(() => {
+    if (!playerUid) {
+      return;
+    }
+    void updateDoc(doc(db, 'users', playerUid), {
+      totalRechargeAmount: Math.round(requestTotals.rechargeAmount),
+      totalRedeemAmount: Math.round(requestTotals.redeemAmount),
+      totalRechargeCount: requestTotals.rechargeCount,
+      totalRedeemCount: requestTotals.redeemCount,
+      rechargeRedeemTotalsUpdatedAt: new Date(),
+    }).catch(() => {
+      // Non-blocking metrics sync.
+    });
+  }, [playerUid, requestTotals]);
+
+  useEffect(() => {
+    if (!referredByPlayerUid || referredByPlayerName) {
+      return;
+    }
+    let cancelled = false;
+    void getDoc(doc(db, 'users', referredByPlayerUid))
+      .then((snap) => {
+        if (!snap.exists() || cancelled) {
+          return;
+        }
+        const username = String((snap.data() as { username?: string }).username || '').trim();
+        if (username) {
+          setReferredByPlayerName(username);
+        }
+      })
+      .catch(() => {
+        // Best-effort fallback for legacy users.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [referredByPlayerUid, referredByPlayerName]);
+
+  useEffect(() => {
     if (!playerCoadminUid) {
       setBonusEvents([]);
       return;
@@ -1096,6 +1171,7 @@ export default function PlayerPage() {
           coin?: number;
           cash?: number;
           referralCode?: string;
+          referredByUid?: string;
           referredByUsername?: string;
           referralBonusNotice?: string;
           referralBonusNoticeAt?: unknown;
@@ -1113,6 +1189,7 @@ export default function PlayerPage() {
           void ensureCurrentPlayerReferralCode(playerUid);
         }
         setReferredByPlayerName(String(playerData.referredByUsername || '').trim());
+        setReferredByPlayerUid(String(playerData.referredByUid || '').trim());
         setIsBlockedPlayer(playerData.status === 'disabled');
 
         const referralNotice = String(playerData.referralBonusNotice || '').trim();
@@ -1130,6 +1207,7 @@ export default function PlayerPage() {
         setWallet({ coin: 0, cash: 0 });
         setReferralCode('');
         setReferredByPlayerName('');
+        setReferredByPlayerUid('');
       }
     );
 
@@ -1460,11 +1538,21 @@ export default function PlayerPage() {
       return;
     }
 
+    const parsedAmount = Number(transferCoinAmountInput);
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      setMessage('Enter a valid transfer amount.');
+      return;
+    }
+    if (parsedAmount > Number(wallet.cash || 0)) {
+      setMessage('Transfer amount cannot exceed your cash balance.');
+      return;
+    }
+
     setCoinLoading(true);
     setMessage('');
 
     try {
-      const result = await createCashToCoinTransferRequest(playerUid);
+      const result = await createCashToCoinTransferRequest(playerUid, parsedAmount);
       setMessage(result.message);
     } catch (error) {
       setMessage(
@@ -1826,7 +1914,10 @@ export default function PlayerPage() {
             </button>
             <button
               type="button"
-              onClick={() => setShowCoinConfirmSplash(true)}
+              onClick={() => {
+                setTransferCoinAmountInput(String(Math.max(0, Number(wallet.cash || 0))));
+                setShowCoinConfirmSplash(true);
+              }}
               disabled={coinLoading}
               className="fire-button fire-orange min-h-[40px] rounded-xl border border-emerald-400/35 bg-emerald-500/15 px-2 text-sm font-bold text-emerald-100 disabled:opacity-50"
             >
@@ -1962,7 +2053,10 @@ export default function PlayerPage() {
 
                 <button
                   type="button"
-                  onClick={() => setShowCoinConfirmSplash(true)}
+                  onClick={() => {
+                    setTransferCoinAmountInput(String(Math.max(0, Number(wallet.cash || 0))));
+                    setShowCoinConfirmSplash(true);
+                  }}
                   disabled={coinLoading}
                   className="fire-button fire-orange rounded-2xl border border-amber-400/45 bg-amber-500/20 px-5 py-3 text-base font-black text-amber-50 shadow-md transition-all hover:bg-amber-500/35 disabled:cursor-not-allowed disabled:opacity-60"
                 >
@@ -2036,11 +2130,14 @@ export default function PlayerPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => setShowCoinConfirmSplash(true)}
+                  onClick={() => {
+                    setTransferCoinAmountInput(String(Math.max(0, Number(wallet.cash || 0))));
+                    setShowCoinConfirmSplash(true);
+                  }}
                   disabled={coinLoading}
                   className="fire-button fire-orange col-span-2 min-h-[48px] rounded-2xl border border-amber-400/45 bg-amber-500/20 py-3 text-base font-black text-amber-50 active:scale-[0.99] disabled:opacity-60"
                 >
-                  {coinLoading ? '⏳ Transferring…' : '⇄ Transfer all cash to coin'}
+                  {coinLoading ? '⏳ Transferring…' : '⇄ Transfer cash to coin'}
                 </button>
                 <button
                   type="button"
@@ -2459,6 +2556,9 @@ export default function PlayerPage() {
                             if (!event) {
                               return null;
                             }
+                            const eventDescription = getPlayerBonusEventDescription(
+                              event.description
+                            );
                             return (
                               <>
                                 <p className="text-xs font-bold uppercase tracking-[0.2em] text-fuchsia-200/80">
@@ -2473,9 +2573,11 @@ export default function PlayerPage() {
                                     ${Math.round(event.amountNpr || 0).toLocaleString('en-US')} USD
                                   </span>
                                 </p>
-                                <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-violet-100/80">
-                                  {event.description}
-                                </p>
+                                {eventDescription ? (
+                                  <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-violet-100/80">
+                                    {eventDescription}
+                                  </p>
+                                ) : null}
                                 <p className="mt-2 text-xs text-violet-200/60">
                                   +{event.bonusPercentage}% boost · from{' '}
                                   {event.createdByRole === 'staff'
@@ -2583,19 +2685,7 @@ export default function PlayerPage() {
             )}
 
             {activeView === 'bonus-events' && (
-              <div className="space-y-5 sm:space-y-6">
-                <div className="fire-panel fire-purple fire-hero relative overflow-hidden rounded-3xl border border-fuchsia-400/40 bg-gradient-to-br from-fuchsia-700/25 via-amber-500/10 to-black/60 p-5 shadow-[0_0_48px_-12px_rgba(217,70,239,0.45)] sm:p-6">
-                  <div className="pointer-events-none absolute -right-10 top-0 h-36 w-36 rounded-full bg-fuchsia-400/25 blur-3xl" />
-                  <div className="pointer-events-none absolute bottom-0 left-0 h-28 w-28 rounded-full bg-amber-400/20 blur-2xl" />
-                  <p className="text-xs font-black uppercase tracking-[0.35em] text-fuchsia-200/90 sm:text-sm">
-                    🎁 Reward lounge
-                  </p>
-                  <h2 className="mt-2 text-3xl font-black text-white sm:text-4xl">Bonus Events</h2>
-                  <p className="mt-2 max-w-2xl text-sm text-fuchsia-100/80 sm:text-base">
-                    Claim limited rewards from staff and coadmin drops.
-                  </p>
-                </div>
-
+              <div className="-mb-[200px] space-y-5 pb-0 sm:space-y-6">
                 <div className="fire-panel fire-orange rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/20 via-orange-900/20 to-black/60 p-5 shadow-[0_0_42px_-16px_rgba(251,191,36,0.65)] sm:p-6">
                   <p className="text-xs font-black uppercase tracking-[0.3em] text-amber-200/90">
                     Permanent bonus event
@@ -2610,7 +2700,7 @@ export default function PlayerPage() {
                 </div>
 
                 <div
-                  className="fire-panel fire-purple group/bonus relative overflow-hidden rounded-3xl border border-violet-400/35 bg-gradient-to-br from-violet-950/70 via-black/55 to-fuchsia-950/30 p-4 shadow-[0_0_40px_-12px_rgba(139,92,246,0.35)] backdrop-blur-xl sm:p-6"
+                  className="fire-panel fire-purple group/bonus relative flex flex-col justify-start overflow-hidden rounded-3xl border border-violet-400/35 bg-gradient-to-br from-violet-950/70 via-black/55 to-fuchsia-950/30 px-4 pb-4 pt-0 shadow-[0_0_40px_-12px_rgba(139,92,246,0.35)] backdrop-blur-xl sm:px-6 sm:pb-6 sm:pt-0"
                   onPointerEnter={() => setBonusStripPaused(true)}
                   onPointerLeave={() => setBonusStripPaused(false)}
                 >
@@ -2618,61 +2708,6 @@ export default function PlayerPage() {
                     className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-fuchsia-500/20 blur-3xl"
                     aria-hidden
                   />
-                  <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="flex items-center gap-2 text-lg font-black text-violet-100 sm:text-2xl">
-                          <span className="text-2xl" aria-hidden>
-                            🎁
-                          </span>
-                          Bonus Events
-                        </h3>
-                        {playerBonusEvents.length > 0 ? (
-                          <span className="rounded-full border border-violet-400/35 bg-violet-500/20 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-widest text-fuchsia-100">
-                            Queue · {playerBonusEvents.length} active
-                          </span>
-                        ) : null}
-                        {bonusStripPaused && playerBonusEvents.length > 1 ? (
-                          <span className="text-[10px] font-bold uppercase tracking-wider text-amber-200/80">
-                            Paused
-                          </span>
-                        ) : null}
-                      </div>
-                      <p className="mt-1 max-w-xl text-[11px] font-medium text-violet-200/65 sm:text-sm">
-                        New rewards from staff and coadmin appear here, newest first. First tap wins and
-                        the drop vanishes with the existing live queue behavior.
-                      </p>
-                    </div>
-                    {playerBonusEvents.length > 1 ? (
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          aria-label="Previous bonus"
-                          onClick={() =>
-                            setBonusCarouselIndex((i) =>
-                              i <= 0 ? playerBonusEvents.length - 1 : i - 1
-                            )
-                          }
-                          className="rounded-xl border border-violet-400/40 bg-violet-500/20 px-3 py-2 text-sm font-bold text-violet-50 shadow-inner transition hover:bg-violet-500/30"
-                        >
-                          ‹
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Next bonus"
-                          onClick={() =>
-                            setBonusCarouselIndex((i) =>
-                              i >= playerBonusEvents.length - 1 ? 0 : i + 1
-                            )
-                          }
-                          className="rounded-xl border border-violet-400/40 bg-violet-500/20 px-3 py-2 text-sm font-bold text-violet-50 shadow-inner transition hover:bg-violet-500/30"
-                        >
-                          ›
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
-
                   <AnimatePresence>
                     {bonusVanishedToast ? (
                       <motion.div
@@ -2693,44 +2728,6 @@ export default function PlayerPage() {
                     ) : null}
                   </AnimatePresence>
 
-                  {playerBonusEvents.length > 1 ? (
-                    <div className="mb-3 flex flex-wrap items-center gap-1.5">
-                      {playerBonusEvents.map((event, index) => (
-                        <button
-                          key={event.id}
-                          type="button"
-                          onClick={() => setBonusCarouselIndex(index)}
-                          className={`max-w-[140px] truncate rounded-lg border px-2 py-1 text-left text-[10px] font-bold transition ${
-                            index === activeBonusCarouselIndex
-                              ? 'border-fuchsia-400/60 bg-fuchsia-500/25 text-fuchsia-50 shadow-[0_0_12px_rgba(217,70,239,0.35)]'
-                              : 'border-violet-500/25 bg-black/30 text-violet-200/80 hover:border-violet-400/50'
-                          }`}
-                          title={event.bonusName}
-                        >
-                          {event.bonusName}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-
-                  {playerBonusEvents.length > 1 ? (
-                    <div className="mb-4 flex items-center justify-center gap-1.5" aria-hidden>
-                      {playerBonusEvents.map((event, index) => (
-                        <button
-                          key={`bonus-events-dot-${event.id}`}
-                          type="button"
-                          onClick={() => setBonusCarouselIndex(index)}
-                          aria-label={`Show bonus ${index + 1}`}
-                          className={`h-2 rounded-full transition-all ${
-                            index === activeBonusCarouselIndex
-                              ? 'w-6 bg-gradient-to-r from-fuchsia-400 to-violet-400'
-                              : 'w-2 bg-violet-600/50 hover:bg-violet-400/70'
-                          }`}
-                        />
-                      ))}
-                    </div>
-                  ) : null}
-
                   {playerBonusEvents.length === 0 ? (
                     <div className="rounded-3xl border border-dashed border-violet-400/25 bg-black/25 px-5 py-12 text-center">
                       <p className="text-4xl" aria-hidden>
@@ -2741,7 +2738,7 @@ export default function PlayerPage() {
                       </p>
                     </div>
                   ) : (
-                    <div className="relative min-h-[16rem]">
+                    <div className="relative -mt-40 min-h-0 sm:-mt-44">
                       <AnimatePresence initial={false} mode="wait">
                         <motion.div
                           key={playerBonusEvents[activeBonusCarouselIndex]?.id || 'bonus-events-card'}
@@ -2750,12 +2747,43 @@ export default function PlayerPage() {
                           exit={{ opacity: 0, y: -12, filter: 'blur(8px)' }}
                           transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
                           className="rounded-3xl border border-fuchsia-400/25 bg-gradient-to-br from-white/[0.08] via-violet-950/45 to-black/70 p-5 shadow-[0_0_36px_-12px_rgba(244,114,182,0.45)] sm:p-6"
+                          onTouchStart={(event) => {
+                            bonusSwipeStartXRef.current = event.touches[0]?.clientX ?? null;
+                          }}
+                          onTouchEnd={(event) => {
+                            const startX = bonusSwipeStartXRef.current;
+                            const endX = event.changedTouches[0]?.clientX ?? null;
+                            bonusSwipeStartXRef.current = null;
+                            if (
+                              startX == null ||
+                              endX == null ||
+                              playerBonusEvents.length <= 1
+                            ) {
+                              return;
+                            }
+                            const deltaX = endX - startX;
+                            if (Math.abs(deltaX) < 40) {
+                              return;
+                            }
+                            if (deltaX < 0) {
+                              setBonusCarouselIndex((i) =>
+                                i >= playerBonusEvents.length - 1 ? 0 : i + 1
+                              );
+                            } else {
+                              setBonusCarouselIndex((i) =>
+                                i <= 0 ? playerBonusEvents.length - 1 : i - 1
+                              );
+                            }
+                          }}
                         >
                           {(() => {
                             const event = playerBonusEvents[activeBonusCarouselIndex];
                             if (!event) {
                               return null;
                             }
+                            const eventDescription = getPlayerBonusEventDescription(
+                              event.description
+                            );
 
                             return (
                               <>
@@ -2765,9 +2793,11 @@ export default function PlayerPage() {
                                 <h3 className="mt-2 text-2xl font-black text-white sm:text-3xl">
                                   {event.bonusName}
                                 </h3>
-                                <p className="mt-2 text-sm text-violet-100/80 sm:text-base">
-                                  {event.description}
-                                </p>
+                                {eventDescription ? (
+                                  <p className="mt-2 text-sm text-violet-100/80 sm:text-base">
+                                    {eventDescription}
+                                  </p>
+                                ) : null}
 
                                 <div className="mt-5 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
                                   <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
@@ -3606,11 +3636,24 @@ export default function PlayerPage() {
           >
             <h3 className="text-2xl font-black">Transfer to coin?</h3>
             <p className="mt-2 text-sm text-amber-100/85">
-              Are you sure you want to transfer all current cash into coin balance?
+              Enter the cash amount you want to transfer into coin balance.
             </p>
             <p className="mt-3 rounded-xl border border-amber-300/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
               Current cash: ${formatWalletAmount(wallet.cash)}
             </p>
+            <label className="mt-3 block text-sm text-amber-100/90">
+              Transfer amount
+              <input
+                type="number"
+                min={1}
+                step={1}
+                inputMode="numeric"
+                value={transferCoinAmountInput}
+                onChange={(event) => setTransferCoinAmountInput(event.target.value)}
+                className="mt-2 w-full rounded-xl border border-amber-300/30 bg-black/35 px-4 py-3 text-white outline-none focus:border-amber-300/60"
+                placeholder="Enter amount"
+              />
+            </label>
             <div className="mt-5 flex gap-3">
               <button
                 type="button"

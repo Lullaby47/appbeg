@@ -2,7 +2,7 @@
 
 import '@/styles/player-fire.css';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
   collection,
@@ -30,6 +30,7 @@ import {
   searchDirectMessages,
   sendFriendRequest,
   sendFriendRequestByReferralCode,
+  rewardCoinsToPlayer,
   sendDirectImageMessage,
   sendDirectTextMessage,
   setDirectConversationMuted,
@@ -59,7 +60,12 @@ export default function PlayerChatPage() {
   const [messageError, setMessageError] = useState('');
   const [replyTarget, setReplyTarget] = useState<PlayerChatMessage | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [playerSearchTerm, setPlayerSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState<PlayerChatMessage[]>([]);
+  const [showRewardPanel, setShowRewardPanel] = useState(false);
+  const [rewardAmount, setRewardAmount] = useState('10');
+  const [rewardBusy, setRewardBusy] = useState(false);
+  const [rewardNotice, setRewardNotice] = useState('');
   const [chatList, setChatList] = useState<Record<string, { unread: number; muted: boolean; last: string }>>({});
   const [friendByUid, setFriendByUid] = useState<
     Record<string, { status: 'pending' | 'accepted'; requestedByUid: string }>
@@ -140,9 +146,21 @@ export default function PlayerChatPage() {
     };
   }, [selectedPeer]);
 
+  useEffect(() => {
+    setShowRewardPanel(false);
+    setRewardNotice('');
+  }, [selectedPeer?.uid]);
+
   const selectedMuted = selectedPeer ? Boolean(chatList[selectedPeer.uid]?.muted) : false;
   const selectedFriend = selectedPeer ? friendByUid[selectedPeer.uid] : null;
   const selfUid = auth.currentUser?.uid || '';
+  const filteredPlayers = useMemo(() => {
+    const term = playerSearchTerm.trim().toLowerCase();
+    if (!term) {
+      return allPlayers;
+    }
+    return allPlayers.filter((p) => p.username.toLowerCase().includes(term));
+  }, [allPlayers, playerSearchTerm]);
 
   async function onSend(e: React.FormEvent) {
     e.preventDefault();
@@ -211,6 +229,31 @@ export default function PlayerChatPage() {
     }
   }
 
+  async function onRewardCoins() {
+    if (!selectedPeer || rewardBusy) return;
+    const amount = Math.max(0, Math.floor(Number(rewardAmount || 0)));
+    if (amount <= 0) {
+      setMessageError('Reward amount must be at least 1 coin.');
+      return;
+    }
+    setRewardBusy(true);
+    setMessageError('');
+    setRewardNotice('');
+    try {
+      const result = await rewardCoinsToPlayer(selectedPeer.uid, amount);
+      await sendDirectTextMessage(
+        selectedPeer.uid,
+        `🎁 Sent ${result.amountCoins} coin reward to you.`
+      );
+      setRewardNotice(`Reward sent: ${result.amountCoins} coin deducted.`);
+      setShowRewardPanel(false);
+    } catch (error) {
+      setMessageError(error instanceof Error ? error.message : 'Failed to reward coins.');
+    } finally {
+      setRewardBusy(false);
+    }
+  }
+
   return (
     <ProtectedRoute allowedRoles={['player']}>
       <main className="min-h-screen bg-[#050509] text-white">
@@ -239,13 +282,19 @@ export default function PlayerChatPage() {
             <p className="mb-2 text-xs uppercase tracking-[0.2em] text-emerald-300/80">
               All players
             </p>
+            <input
+              value={playerSearchTerm}
+              onChange={(e) => setPlayerSearchTerm(e.target.value)}
+              placeholder="Search players"
+              className="mb-3 w-full rounded-xl border border-white/15 bg-black/45 px-3 py-2 text-sm"
+            />
             <div className="max-h-[32dvh] space-y-2 overflow-y-auto pr-1 lg:max-h-[70dvh]">
-              {allPlayers.length === 0 ? (
+              {filteredPlayers.length === 0 ? (
                 <p className="rounded-xl border border-white/10 bg-black/40 p-3 text-sm text-amber-100/60">
-                  No players available right now.
+                  No matching players found.
                 </p>
               ) : (
-                allPlayers.map((p) => {
+                filteredPlayers.map((p) => {
                   const stat = chatList[p.uid];
                   const selected = selectedPeer?.uid === p.uid;
                   return (
@@ -328,7 +377,40 @@ export default function PlayerChatPage() {
                   >
                     {selectedMuted ? 'Unmute' : 'Mute'}
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowRewardPanel((v) => !v)}
+                    className="rounded-lg border border-amber-300/40 bg-amber-500/15 px-2.5 py-1 text-xs hover:bg-amber-500/25"
+                  >
+                    Reward Coins
+                  </button>
                 </header>
+                {rewardNotice ? (
+                  <p className="border-b border-white/10 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+                    {rewardNotice}
+                  </p>
+                ) : null}
+                {showRewardPanel ? (
+                  <div className="flex items-center gap-2 border-b border-white/10 bg-black/20 p-2">
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={rewardAmount}
+                      onChange={(e) => setRewardAmount(e.target.value)}
+                      className="w-32 rounded-lg border border-white/15 bg-black/45 px-3 py-2 text-sm"
+                      placeholder="Coins"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void onRewardCoins()}
+                      disabled={rewardBusy}
+                      className="rounded-lg border border-amber-300/40 bg-amber-500/15 px-3 py-2 text-xs hover:bg-amber-500/25 disabled:opacity-60"
+                    >
+                      {rewardBusy ? 'Sending…' : 'Send Reward'}
+                    </button>
+                  </div>
+                ) : null}
 
                 <div className="flex items-center gap-2 border-b border-white/10 p-2">
                   <input

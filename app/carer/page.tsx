@@ -30,7 +30,6 @@ import {
   CarerTask,
   completeRechargeRedeemTask,
   completeUsernameTaskForPlayerGame,
-  getCarerTaskCountdown,
   getEffectiveCarerTaskStatus,
   getCurrentUserCoadminUid,
   listenCarerRechargeRedeemTotalsByCoadmin,
@@ -38,7 +37,6 @@ import {
   releaseExpiredCarerTasks,
   sendCarerEscalationAlert,
   sendCarerCashboxInquiryAlert,
-  startCarerTask,
   syncCarerTasksForCoadmin,
 } from '@/features/games/carerTasks';
 import {
@@ -55,6 +53,11 @@ import {
 } from '@/features/shifts/userShifts';
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 import { OnlineIndicator } from '@/components/presence/OnlineIndicator';
+import {
+  listenAutomationUiStatusByTask,
+  startAutomationForTask,
+  type AutomationUiStatus,
+} from '@/features/automation/automationJobs';
 
 type CarerView =
   | 'dashboard'
@@ -78,6 +81,8 @@ type DashboardCard = {
 };
 
 type TaskSection = 'pending' | 'mine' | 'completed';
+
+const AUTOMATION_AGENT_ID = 'car001';
 
 function getTimestampMs(value: unknown) {
   if (!value) {
@@ -133,12 +138,14 @@ function normalizeGameName(gameName: string) {
   return gameName.trim().toLowerCase();
 }
 
-function formatCountdown(task: CarerTask) {
-  const totalSeconds = Math.max(0, Math.floor(getCarerTaskCountdown(task) / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
+function normalizeSiteUrl(siteUrl?: string | null) {
+  const trimmed = String(siteUrl || '').trim();
 
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  if (!trimmed) {
+    return '';
+  }
+
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 }
 
 function getTaskTypeLabel(task: CarerTask) {
@@ -285,7 +292,6 @@ export default function CarerPage() {
   const [noticeMessage, setNoticeMessage] = useState('');
   const [showTaskSplash, setShowTaskSplash] = useState(false);
   const [loginDetailsTask, setLoginDetailsTask] = useState<CarerTask | null>(null);
-  const [countdownTick, setCountdownTick] = useState(0);
   const [cashBoxNpr, setCashBoxNpr] = useState(0);
   const [nepalClock, setNepalClock] = useState(getNepalClockLabel());
   const [cashoutLoading, setCashoutLoading] = useState(false);
@@ -303,6 +309,10 @@ export default function CarerPage() {
     null
   );
   const [riskActionLoading, setRiskActionLoading] = useState<string | null>(null);
+  const [automationLoadingTaskId, setAutomationLoadingTaskId] = useState<string | null>(null);
+  const [automationStatusByTaskId, setAutomationStatusByTaskId] = useState<
+    Record<string, AutomationUiStatus>
+  >({});
 
   const previousPendingCountRef = useRef(0);
   const shiftSessionIdRef = useRef<string | null>(null);
@@ -344,7 +354,7 @@ export default function CarerPage() {
       sortByNewest(
         tasks.filter((task) => getEffectiveCarerTaskStatus(task) === 'pending')
       ),
-    [countdownTick, tasks]
+    [tasks]
   );
 
   const myInProgressTasks = useMemo(
@@ -356,7 +366,7 @@ export default function CarerPage() {
             task.assignedCarerUid === carerIdentity?.uid
         )
       ),
-    [carerIdentity?.uid, countdownTick, tasks]
+    [carerIdentity?.uid, tasks]
   );
 
   const completedTasks = useMemo(
@@ -509,6 +519,23 @@ export default function CarerPage() {
   }, [activePlayerUidSet, carerIdentity?.uid, coadminUid]);
 
   useEffect(() => {
+    if (!carerIdentity?.uid) {
+      setAutomationStatusByTaskId({});
+      return;
+    }
+
+    const unsubscribe = listenAutomationUiStatusByTask(
+      carerIdentity.uid,
+      setAutomationStatusByTaskId,
+      (error) => {
+        setErrorMessage(error.message || 'Failed to listen to automation jobs.');
+      }
+    );
+
+    return () => unsubscribe();
+  }, [carerIdentity?.uid]);
+
+  useEffect(() => {
     if (!coadminUid) {
       setRiskSnapshots([]);
       return;
@@ -613,7 +640,6 @@ export default function CarerPage() {
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
-      setCountdownTick((value) => value + 1);
       setNepalClock(getNepalClockLabel());
     }, 1000);
 
@@ -831,26 +857,41 @@ export default function CarerPage() {
   }
 
   async function handleStartTask(task: CarerTask) {
-    setTaskLoadingId(task.id);
+    setAutomationLoadingTaskId(task.id);
     setErrorMessage('');
     setNoticeMessage('');
 
     try {
-      await startCarerTask(task.id);
+      const loginForTask =
+        allPlayerLogins.find(
+          (login) =>
+            login.playerUid === task.playerUid &&
+            normalizeGameName(login.gameName || '') ===
+              normalizeGameName(task.gameName || '')
+        ) || null;
 
-      if (isUsernameWorkflowTask(task)) {
-        continueUsernameTask(task);
-      } else {
-        setActiveView('tasks');
-      }
+      await startAutomationForTask({
+        agentId: AUTOMATION_AGENT_ID,
+        taskId: task.id,
+        taskLabel: getTaskTypeLabel(task),
+        player: task.playerUsername || 'Player',
+        game: task.gameName || 'Unknown Game',
+        currentUsername: loginForTask?.gameUsername || null,
+        amount: task.amount ?? null,
+        originalTask: task as Record<string, unknown>,
+      });
 
-      await refreshPageData(false);
+      setAutomationStatusByTaskId((previous) => ({
+        ...previous,
+        [task.id]: 'waiting',
+      }));
+      setNoticeMessage('Automation job queued. Waiting for local agent.');
     } catch (error) {
       setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to start the task.'
+        error instanceof Error ? error.message : 'Failed to queue the task.'
       );
     } finally {
-      setTaskLoadingId(null);
+      setAutomationLoadingTaskId(null);
     }
   }
 
@@ -911,6 +952,42 @@ export default function CarerPage() {
       );
     } finally {
       setTaskLoadingId(null);
+    }
+  }
+
+  async function handleStartAutomation(task: CarerTask) {
+    setAutomationLoadingTaskId(task.id);
+    setErrorMessage('');
+    setNoticeMessage('');
+    const loginForTask =
+      allPlayerLogins.find(
+        (login) =>
+          login.playerUid === task.playerUid &&
+          normalizeGameName(login.gameName || '') ===
+            normalizeGameName(task.gameName || '')
+      ) || null;
+    try {
+      await startAutomationForTask({
+        agentId: AUTOMATION_AGENT_ID,
+        taskId: task.id,
+        taskLabel: getTaskTypeLabel(task),
+        player: task.playerUsername || 'Player',
+        game: task.gameName || 'Unknown Game',
+        currentUsername: loginForTask?.gameUsername || null,
+        amount: task.amount ?? null,
+        originalTask: task as Record<string, unknown>,
+      });
+      setAutomationStatusByTaskId((previous) => ({
+        ...previous,
+        [task.id]: 'waiting',
+      }));
+      setNoticeMessage('Automation job queued. Waiting for local agent.');
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Failed to start automation.'
+      );
+    } finally {
+      setAutomationLoadingTaskId(null);
     }
   }
 
@@ -1576,7 +1653,6 @@ export default function CarerPage() {
   }
 
   function renderTaskCard(task: CarerTask, section: TaskSection) {
-    const effectiveStatus = getEffectiveCarerTaskStatus(task);
     const loginForTask =
       allPlayerLogins.find(
         (login) =>
@@ -1586,8 +1662,6 @@ export default function CarerPage() {
       ) || null;
 
     const isRequestTask = task.type === 'recharge' || task.type === 'redeem';
-    const showTimer =
-      effectiveStatus === 'in_progress' && section === 'mine';
 
     const statusLabel =
       section === 'pending'
@@ -1595,6 +1669,10 @@ export default function CarerPage() {
         : section === 'mine'
           ? 'In Progress'
           : 'Completed';
+    const automationStatus =
+      automationStatusByTaskId[task.id] || task.automationStatus || null;
+    const isAutomationQueued =
+      automationStatus === 'waiting' || automationStatus === 'running';
 
     return (
       <div
@@ -1613,10 +1691,9 @@ export default function CarerPage() {
               <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-white">
                 {statusLabel}
               </span>
-
-              {showTimer && (
-                <span className="rounded-full bg-blue-500/20 px-3 py-1 text-xs font-bold text-blue-200">
-                  {formatCountdown(task)}
+              {automationStatus && (
+                <span className="rounded-full bg-violet-500/20 px-3 py-1 text-xs font-bold uppercase text-violet-200">
+                  Automation: {automationStatus}
                 </span>
               )}
             </div>
@@ -1680,10 +1757,16 @@ export default function CarerPage() {
               )}
               <button
                 onClick={() => void handleStartTask(task)}
-                disabled={taskLoadingId === task.id}
+                disabled={automationLoadingTaskId === task.id || isAutomationQueued}
                 className="rounded-xl bg-white px-4 py-2 text-sm font-bold text-black hover:bg-neutral-200 disabled:opacity-60"
               >
-                {taskLoadingId === task.id ? 'Starting...' : 'Start Task'}
+                {automationLoadingTaskId === task.id
+                  ? 'Queueing...'
+                  : automationStatus === 'waiting'
+                    ? 'Queued'
+                    : automationStatus === 'running'
+                      ? 'Running...'
+                      : 'Start Task'}
               </button>
             </div>
           )}
@@ -1695,6 +1778,19 @@ export default function CarerPage() {
                 className="rounded-xl bg-blue-500/20 px-4 py-2 text-sm font-bold text-blue-100 hover:bg-blue-500/30"
               >
                 Login Details
+              </button>
+              <button
+                onClick={() => void handleStartAutomation(task)}
+                disabled={automationLoadingTaskId === task.id || isAutomationQueued}
+                className="rounded-xl border border-violet-400/40 bg-violet-500/15 px-4 py-2 text-sm font-bold text-violet-100 hover:bg-violet-500/25 disabled:opacity-60"
+              >
+                {automationLoadingTaskId === task.id
+                  ? 'Queueing...'
+                  : automationStatus === 'waiting'
+                    ? 'Queued'
+                    : automationStatus === 'running'
+                      ? 'Running...'
+                      : 'Start Automation'}
               </button>
               <button
                 onClick={() => continueUsernameTask(task)}
@@ -1714,13 +1810,24 @@ export default function CarerPage() {
                 Login Details
               </button>
               <button
+                onClick={() => void handleStartAutomation(task)}
+                disabled={automationLoadingTaskId === task.id || isAutomationQueued}
+                className="rounded-xl border border-violet-400/40 bg-violet-500/15 px-4 py-2 text-sm font-bold text-violet-100 hover:bg-violet-500/25 disabled:opacity-60"
+              >
+                {automationLoadingTaskId === task.id
+                  ? 'Queueing...'
+                  : automationStatus === 'waiting'
+                    ? 'Queued'
+                    : automationStatus === 'running'
+                      ? 'Running...'
+                      : 'Start Automation'}
+              </button>
+              <button
                 onClick={() => void handleCompleteRechargeRedeem(task)}
                 disabled={taskLoadingId === task.id}
                 className="rounded-xl bg-white px-4 py-2 text-sm font-bold text-black hover:bg-neutral-200 disabled:opacity-60"
               >
-                {taskLoadingId === task.id
-                  ? 'Saving...'
-                  : `${getTaskActionLabel(task)} (${formatCountdown(task)})`}
+                {taskLoadingId === task.id ? 'Saving...' : getTaskActionLabel(task)}
               </button>
             </div>
           )}
@@ -1921,6 +2028,21 @@ export default function CarerPage() {
                 <p className="mt-1 text-sm text-neutral-400">
                   Password:{' '}
                   <span className="break-all text-white">{game.password || 'Not set'}</span>
+                </p>
+                <p className="mt-1 text-sm text-neutral-400">
+                  Site:{' '}
+                  {game.siteUrl ? (
+                    <a
+                      href={normalizeSiteUrl(game.siteUrl)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="break-all text-cyan-300 underline underline-offset-2 hover:text-cyan-200"
+                    >
+                      {game.siteUrl}
+                    </a>
+                  ) : (
+                    <span className="text-white">Not set</span>
+                  )}
                 </p>
               </div>
             ))}
@@ -2322,6 +2444,21 @@ export default function CarerPage() {
                     <p className="mt-1 text-lg font-semibold text-white break-all">
                       {relatedCoadminGame?.password || relatedPlayerLogin?.gamePassword || 'Not set'}
                     </p>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <p className="text-xs text-neutral-400">Game Site Link</p>
+                    {relatedCoadminGame?.siteUrl ? (
+                      <a
+                        href={normalizeSiteUrl(relatedCoadminGame.siteUrl)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-1 block break-all text-lg font-semibold text-cyan-300 underline underline-offset-2 hover:text-cyan-200"
+                      >
+                        {relatedCoadminGame.siteUrl}
+                      </a>
+                    ) : (
+                      <p className="mt-1 text-lg font-semibold text-white">Not set</p>
+                    )}
                   </div>
                   {relatedPlayerLogin && (
                     <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4">

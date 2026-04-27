@@ -68,6 +68,9 @@ export type CarerTask = {
   pokeMessage?: string | null;
   completedByCarerUid?: string | null;
   completedByCarerUsername?: string | null;
+  automationStatus?: 'waiting' | 'running' | 'completed' | 'failed' | null;
+  automationJobId?: string | null;
+  automationUpdatedAt?: Timestamp | null;
 };
 
 export type CarerRewardSummary = {
@@ -103,8 +106,6 @@ type SyncTaskInput = {
   completedRequests: PlayerGameRequest[];
 };
 
-const TASK_DURATION_MS = 3 * 60 * 1000;
-
 function normalizeGameName(gameName: string) {
   return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
 }
@@ -137,10 +138,6 @@ function recreateUsernameTaskId(
 
 function requestTaskId(requestId: string) {
   return `request__${requestId}`;
-}
-
-function isExpiredTimestamp(expiresAt?: Timestamp | null) {
-  return Boolean(expiresAt && expiresAt.toMillis() <= Date.now());
 }
 
 function isClaimablePendingTask(task: CarerTask) {
@@ -412,10 +409,6 @@ function getVisibleTaskForCarer(task: CarerTask, currentCarerUid: string) {
       return null;
     }
 
-    if (task.status === 'in_progress' && !isExpiredTimestamp(task.expiresAt)) {
-      return task;
-    }
-
     return {
       ...task,
       status: 'urgent',
@@ -446,19 +439,11 @@ export async function getCurrentUserCoadminUid() {
   return getScopedCurrentUserCoadminUid();
 }
 
-export function getCarerTaskCountdown(task: CarerTask) {
-  if (task.status !== 'in_progress' || !task.expiresAt) {
-    return 0;
-  }
-
-  return Math.max(0, task.expiresAt.toMillis() - Date.now());
+export function getCarerTaskCountdown() {
+  return 0;
 }
 
 export function getEffectiveCarerTaskStatus(task: CarerTask): CarerTaskStatus {
-  if (task.status === 'in_progress' && isExpiredTimestamp(task.expiresAt)) {
-    return 'pending';
-  }
-
   return task.status;
 }
 
@@ -627,8 +612,7 @@ export async function syncCarerTasks({
             : existingTask?.startedAt ?? null,
         expiresAt:
           nextStatus === 'in_progress'
-            ? existingTask?.expiresAt ||
-              Timestamp.fromMillis(Date.now() + TASK_DURATION_MS)
+            ? existingTask?.expiresAt ?? null
             :
           nextStatus === 'pending' ||
           nextStatus === 'completed' ||
@@ -842,31 +826,7 @@ export function listenToAvailableCarerTasks(
 }
 
 export async function releaseExpiredCarerTasks(coadminUid: string) {
-  const tasks = await getCurrentCoadminTasks(coadminUid);
-  const expiredTasks = Array.from(tasks.values()).filter(
-    (task) =>
-      task.status === 'in_progress' &&
-      task.assignedCarerUid &&
-      isExpiredTimestamp(task.expiresAt)
-  );
-
-  if (expiredTasks.length === 0) {
-    return;
-  }
-
-  const batch = writeBatch(db);
-
-  for (const task of expiredTasks) {
-    batch.update(doc(db, 'carerTasks', task.id), {
-      status: 'pending',
-      assignedCarerUid: null,
-      assignedCarerUsername: null,
-      startedAt: null,
-      expiresAt: null,
-    });
-  }
-
-  await batch.commit();
+  void coadminUid;
 }
 
 export async function startCarerTask(taskId: string) {
@@ -952,7 +912,7 @@ export async function startCarerTask(taskId: string) {
       assignedCarerUid: carerUid,
       assignedCarerUsername: carerUsername,
       startedAt: now,
-      expiresAt: Timestamp.fromMillis(now.toMillis() + TASK_DURATION_MS),
+      expiresAt: null,
       completedAt:
         effectiveStatus === 'urgent'
           ? task.completedAt || null
@@ -1037,12 +997,8 @@ export async function completeUsernameTaskForPlayerGame(
         continue;
       }
 
-      if (
-        effectiveStatus === 'in_progress' &&
-        task.assignedCarerUid &&
-        task.assignedCarerUid !== carerUid
-      ) {
-        throw new Error('This task is assigned to another carer.');
+      if (effectiveStatus !== 'in_progress' || task.assignedCarerUid !== carerUid) {
+        throw new Error('Start the task first so it moves to In Progress before completion.');
       }
 
       transaction.update(taskSnap.ref, buildCompletedTaskUpdate({

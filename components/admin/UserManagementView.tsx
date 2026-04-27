@@ -269,7 +269,7 @@ export default function UserManagementView<T extends BaseUser>({
           </div>
         ) : (
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-            <div className="min-h-0 shrink-0 overflow-y-auto">
+            <div className="min-h-0 flex-1 overflow-y-auto">
               <div className="mb-6 flex flex-wrap justify-end gap-2 sm:gap-3">
                 {onStartChat && (
                   <button

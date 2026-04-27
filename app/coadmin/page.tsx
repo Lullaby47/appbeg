@@ -69,10 +69,13 @@ import {
 } from '@/features/cashouts/playerCashoutTasks';
 import {
   BonusEvent,
+  COADMIN_AUTO_BONUS_PERCENT_MAX,
+  COADMIN_AUTO_BONUS_PERCENT_MIN,
   createBonusEvent,
-  ensureCoadminActiveBonusEventsFilled,
+  getCoadminAutoBonusPercentRange,
   MAX_ACTIVE_BONUS_EVENTS,
   listenBonusEventsByCoadmin,
+  setCoadminAutoBonusPercentRange,
 } from '../../features/bonusEvents/bonusEvents';
 import {
   approveTransferRequest,
@@ -213,6 +216,7 @@ export default function CoadminPage() {
   const [gameName, setGameName] = useState('');
   const [gameUsername, setGameUsername] = useState('');
   const [gamePassword, setGamePassword] = useState('');
+  const [gameSiteUrl, setGameSiteUrl] = useState('');
   const [gameLogins, setGameLogins] = useState<GameLogin[]>([]);
   const [editingGame, setEditingGame] = useState<GameLogin | null>(null);
   const [bonusName, setBonusName] = useState('');
@@ -221,6 +225,9 @@ export default function CoadminPage() {
   const [bonusDescription, setBonusDescription] = useState('');
   const [bonusPercentage, setBonusPercentage] = useState('');
   const [bonusEvents, setBonusEvents] = useState<BonusEvent[]>([]);
+  const [autoBonusMinPercentInput, setAutoBonusMinPercentInput] = useState('5');
+  const [autoBonusMaxPercentInput, setAutoBonusMaxPercentInput] = useState('10');
+  const [autoBonusRangeBusy, setAutoBonusRangeBusy] = useState(false);
 
   const [chatUsers, setChatUsers] = useState<AdminUser[]>([]);
   const [reachOutChatUser, setReachOutChatUser] = useState<AdminUser | null>(null);
@@ -330,8 +337,41 @@ export default function CoadminPage() {
       status: getEffectivePlayerCashoutTaskStatus(task),
     }))
     .filter((task) => task.status === 'completed');
-  const currentUserUid = auth.currentUser?.uid || '';
-  const myBonusEvents = bonusEvents.filter((event) => event.createdByUid === currentUserUid);
+  const myBonusEvents = bonusEvents;
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function loadAutoBonusPercentRange() {
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        return;
+      }
+
+      try {
+        const range = await getCoadminAutoBonusPercentRange(currentUser.uid);
+        if (isCancelled) {
+          return;
+        }
+        setAutoBonusMinPercentInput(String(range.minPercent));
+        setAutoBonusMaxPercentInput(String(range.maxPercent));
+      } catch (error: unknown) {
+        if (!isCancelled) {
+          setMessage(
+            error instanceof Error
+              ? error.message
+              : 'Failed to load auto-created bonus range.'
+          );
+        }
+      }
+    }
+
+    void loadAutoBonusPercentRange();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (activeView === 'dashboard') {
@@ -396,17 +436,6 @@ export default function CoadminPage() {
     async function startBonusEventsListener() {
       try {
         const coadminUid = await getCurrentUserCoadminUid();
-        const creatorUid = auth.currentUser?.uid || coadminUid;
-        let creatorUsername = 'Coadmin';
-        try {
-          const creatorSnap = await getDoc(doc(db, 'users', creatorUid));
-          if (creatorSnap.exists()) {
-            const creatorData = creatorSnap.data() as { username?: string };
-            creatorUsername = creatorData.username?.trim() || 'Coadmin';
-          }
-        } catch {
-          // keep fallback username; this should not block auto-fill
-        }
 
         if (isCancelled) {
           return;
@@ -421,19 +450,10 @@ export default function CoadminPage() {
           if (!shouldTopUp) {
             return;
           }
-          bonusAutoFillBusyRef.current = true;
           bonusAutoFillLastRunRef.current = nowMs;
           void (async () => {
             try {
-              const result = await ensureCoadminActiveBonusEventsFilled({
-                coadminUid,
-                createdByUid: creatorUid,
-                createdByUsername: creatorUsername,
-                creatorRole: 'system',
-              });
-              if (result.autoCreatedCount > 0 && !isCancelled) {
-                setMessage('Bonus events auto-created successfully.');
-              }
+              await ensureCoadminBonusCapacity();
             } catch (error: unknown) {
               if (!isCancelled) {
                 const msg =
@@ -443,7 +463,7 @@ export default function CoadminPage() {
                 setMessage(msg);
               }
             } finally {
-              bonusAutoFillBusyRef.current = false;
+              // capacity helper manages busy flag lifecycle
             }
           })();
         };
@@ -467,7 +487,15 @@ export default function CoadminPage() {
         );
       } catch (error: any) {
         if (!isCancelled) {
-          setMessage(error.message || 'Failed to start bonus events listener.');
+          const errMsg = error?.message || 'Failed to start bonus events listener.';
+          setMessage(errMsg);
+          if (String(errMsg).toLowerCase().includes('not authenticated')) {
+            window.setTimeout(() => {
+              if (!isCancelled) {
+                void startBonusEventsListener();
+              }
+            }, 1200);
+          }
         }
       }
     }
@@ -948,10 +976,11 @@ export default function CoadminPage() {
     setMessage('');
 
     try {
-      await createGameLogin(gameName, gameUsername, gamePassword);
+      await createGameLogin(gameName, gameUsername, gamePassword, gameSiteUrl);
       setGameName('');
       setGameUsername('');
       setGamePassword('');
+      setGameSiteUrl('');
       setMessage('Game login added successfully.');
       await loadGameLogins();
     } catch (err: any) {
@@ -974,6 +1003,7 @@ export default function CoadminPage() {
         gameName: editingGame.gameName,
         username: editingGame.username,
         password: editingGame.password,
+        siteUrl: editingGame.siteUrl || '',
       });
 
       setEditingGame(null);
@@ -1152,6 +1182,34 @@ export default function CoadminPage() {
       setMessage('Login username updated. It must be unique across the app.');
     } catch (err: any) {
       setMessage(err?.message || 'Failed to change username.');
+    } finally {
+      setWorkerCredentialsLoading(false);
+    }
+  }
+
+  async function handleCoadminSetPlayerPassword(user: PlayerUser) {
+    const pw1 = window.prompt(
+      `Set new password for player "${user.username}" (min 6 chars):`,
+      ''
+    );
+    if (pw1 == null) return;
+    if (pw1.length < 6) {
+      setMessage('Password must be at least 6 characters.');
+      return;
+    }
+    const pw2 = window.prompt('Confirm new password:', '');
+    if (pw2 == null) return;
+    if (pw1 !== pw2) {
+      setMessage('Passwords do not match.');
+      return;
+    }
+    setWorkerCredentialsLoading(true);
+    setMessage('');
+    try {
+      await resetCoadminWorkerCredentials(user, { newPassword: pw1 });
+      setMessage('Player password updated. Share it securely.');
+    } catch (err: any) {
+      setMessage(err?.message || 'Failed to set player password.');
     } finally {
       setWorkerCredentialsLoading(false);
     }
@@ -1382,6 +1440,77 @@ export default function CoadminPage() {
       setMessage(error.message || 'Failed to create bonus event.');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function ensureCoadminBonusCapacity() {
+    if (bonusAutoFillBusyRef.current) {
+      return;
+    }
+    bonusAutoFillBusyRef.current = true;
+    bonusAutoFillLastRunRef.current = Date.now();
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        return;
+      }
+      const idToken = await currentUser.getIdToken();
+      const response = await fetch('/api/coadmin/bonus-events/ensure-capacity', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+        },
+      });
+      const data = (await response.json()) as { autoCreatedCount?: number; error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to auto-create bonus events.');
+      }
+      const result = {
+        autoCreatedCount: Number(data.autoCreatedCount || 0),
+      };
+      if (result.autoCreatedCount > 0) {
+        setMessage('Bonus events auto-created successfully.');
+      }
+    } catch (error: unknown) {
+      const msg =
+        error instanceof Error ? error.message : 'Failed to auto-create bonus events.';
+      setMessage(msg);
+    } finally {
+      bonusAutoFillBusyRef.current = false;
+    }
+  }
+
+  async function handleSaveAutoBonusPercentRange() {
+    setAutoBonusRangeBusy(true);
+    setMessage('');
+
+    try {
+      const minPercent = Number(autoBonusMinPercentInput);
+      const maxPercent = Number(autoBonusMaxPercentInput);
+
+      if (!Number.isFinite(minPercent) || !Number.isFinite(maxPercent)) {
+        throw new Error('Auto-created bonus range must use numbers only.');
+      }
+
+      const savedRange = await setCoadminAutoBonusPercentRange({
+        minPercent,
+        maxPercent,
+      });
+      setAutoBonusMinPercentInput(String(savedRange.minPercent));
+      setAutoBonusMaxPercentInput(String(savedRange.maxPercent));
+      setMessage(
+        savedRange.adjustedEventCount > 0
+          ? `Auto-created bonus event range saved: ${savedRange.minPercent}% to ${savedRange.maxPercent}%. Adjusted ${savedRange.adjustedEventCount} existing auto-created bonus events into range.`
+          : `Auto-created bonus event range saved: ${savedRange.minPercent}% to ${savedRange.maxPercent}%.`
+      );
+    } catch (error: unknown) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : 'Failed to save auto-created bonus range.'
+      );
+    } finally {
+      setAutoBonusRangeBusy(false);
     }
   }
 
@@ -1616,7 +1745,21 @@ export default function CoadminPage() {
   function handleChangeView(view: CoadminView) {
     setActiveView(view);
     resetSelection();
+    if (view === 'view-bonus-events' || view === 'create-bonus-event') {
+      void ensureCoadminBonusCapacity();
+    }
   }
+
+  useEffect(() => {
+    if (activeView !== 'view-bonus-events' && activeView !== 'create-bonus-event') {
+      return;
+    }
+    void ensureCoadminBonusCapacity();
+    const timer = window.setInterval(() => {
+      void ensureCoadminBonusCapacity();
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [activeView]);
 
   async function handleAddPaymentDetailPhotos(files: FileList | null) {
     if (!files?.length) {
@@ -2161,7 +2304,49 @@ export default function CoadminPage() {
 
           {activeView === 'view-bonus-events' && (
             <div>
-              <h2 className="mb-6 text-3xl font-bold">View Bonus Events</h2>
+              <div className="mb-6 flex flex-col gap-4 rounded-2xl border border-violet-400/25 bg-violet-500/10 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="text-3xl font-bold">View Bonus Events</h2>
+                  <p className="mt-1 text-sm text-violet-100/75">
+                    Set the percentage range used when coadmin bonus events are auto-created.
+                    Examples: `10` to `20`, or `5` to `30`.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-end gap-3">
+                  <label className="flex min-w-[110px] flex-col gap-1 text-sm text-violet-100/80">
+                    <span>Min %</span>
+                    <input
+                      type="number"
+                      min={COADMIN_AUTO_BONUS_PERCENT_MIN}
+                      max={COADMIN_AUTO_BONUS_PERCENT_MAX}
+                      value={autoBonusMinPercentInput}
+                      onChange={(event) => setAutoBonusMinPercentInput(event.target.value)}
+                      disabled={autoBonusRangeBusy}
+                      className="rounded-xl border border-violet-400/35 bg-black/30 px-3 py-2 text-white outline-none transition focus:border-violet-300"
+                    />
+                  </label>
+                  <label className="flex min-w-[110px] flex-col gap-1 text-sm text-violet-100/80">
+                    <span>Max %</span>
+                    <input
+                      type="number"
+                      min={COADMIN_AUTO_BONUS_PERCENT_MIN}
+                      max={COADMIN_AUTO_BONUS_PERCENT_MAX}
+                      value={autoBonusMaxPercentInput}
+                      onChange={(event) => setAutoBonusMaxPercentInput(event.target.value)}
+                      disabled={autoBonusRangeBusy}
+                      className="rounded-xl border border-violet-400/35 bg-black/30 px-3 py-2 text-white outline-none transition focus:border-violet-300"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveAutoBonusPercentRange()}
+                    disabled={autoBonusRangeBusy}
+                    className="min-h-[44px] rounded-xl border border-violet-300/35 bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {autoBonusRangeBusy ? 'Saving...' : 'Save Range'}
+                  </button>
+                </div>
+              </div>
               {myBonusEvents.length === 0 ? (
                 <p className="text-sm text-neutral-400">No bonus events created yet.</p>
               ) : (
@@ -2403,6 +2588,8 @@ export default function CoadminPage() {
               onDelete={handleDeletePlayer}
               onToggleBlock={handleTogglePlayerStatus}
               blocking={blocking}
+              onCoadminSetPassword={handleCoadminSetPlayerPassword}
+              coadminCredentialsLoading={workerCredentialsLoading}
               onlineByUid={coadminOnlineByUid}
               nameMode="coadmin"
               renderSelectedExtras={(user) => (
@@ -2421,6 +2608,24 @@ export default function CoadminPage() {
                       </span>
                     </p>
                   )}
+                  <p className="mt-1 text-sm text-neutral-400">
+                    Total recharged:{' '}
+                    <span className="font-semibold text-emerald-200">
+                      {Math.max(
+                        0,
+                        Math.floor(Number(user.totalRechargeAmount || 0))
+                      ).toLocaleString()}
+                    </span>
+                  </p>
+                  <p className="mt-0.5 text-sm text-neutral-400">
+                    Total redeemed:{' '}
+                    <span className="font-semibold text-rose-200">
+                      {Math.max(
+                        0,
+                        Math.floor(Number(user.totalRedeemAmount || 0))
+                      ).toLocaleString()}
+                    </span>
+                  </p>
                   <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
                     <label className="min-w-0 flex-1 text-sm text-neutral-400">
                       Amount
@@ -2496,6 +2701,16 @@ export default function CoadminPage() {
                   required
                 />
 
+                <label className="block text-sm text-neutral-300">
+                  <span className="mb-2 block">Backend Link</span>
+                  <input
+                    value={gameSiteUrl}
+                    onChange={(e) => setGameSiteUrl(e.target.value)}
+                    placeholder="https://example.com"
+                    className="w-full rounded-xl border border-white/10 bg-neutral-900 p-3 outline-none focus:border-white/30"
+                  />
+                </label>
+
                 <button
                   disabled={loading}
                   className="w-full rounded-xl bg-white p-3 font-semibold text-black disabled:opacity-60"
@@ -2556,6 +2771,21 @@ export default function CoadminPage() {
                             className="w-full rounded-xl border border-white/10 bg-neutral-900 p-3 outline-none focus:border-white/30"
                           />
 
+                          <label className="block text-sm text-neutral-300">
+                            <span className="mb-2 block">Backend Link</span>
+                            <input
+                              value={editingGame.siteUrl || ''}
+                              onChange={(e) =>
+                                setEditingGame({
+                                  ...editingGame,
+                                  siteUrl: e.target.value,
+                                })
+                              }
+                              placeholder="https://example.com"
+                              className="w-full rounded-xl border border-white/10 bg-neutral-900 p-3 outline-none focus:border-white/30"
+                            />
+                          </label>
+
                           <div className="flex gap-3">
                             <button
                               disabled={loading}
@@ -2585,6 +2815,23 @@ export default function CoadminPage() {
                               Password:{' '}
                               <span className="text-white">{game.password}</span>
                             </p>
+                            <div className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3">
+                              <p className="text-xs font-semibold uppercase tracking-wide text-cyan-200/80">
+                                Backend Link
+                              </p>
+                              {game.siteUrl ? (
+                                <a
+                                  href={game.siteUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="mt-2 block break-all text-sm text-cyan-300 underline underline-offset-2 hover:text-cyan-200"
+                                >
+                                  {game.siteUrl}
+                                </a>
+                              ) : (
+                                <p className="mt-2 text-sm text-white">Not set</p>
+                              )}
+                            </div>
                           </div>
 
                           <button

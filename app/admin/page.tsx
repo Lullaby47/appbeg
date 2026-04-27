@@ -15,6 +15,7 @@ import { auth } from '@/lib/firebase/client';
 import { belongsToCoadmin } from '@/lib/coadmin/scope';
 
 import {
+  adminResetManagedPassword,
   CoadminUser,
   DeletedPlayerRecord,
   deletePlayerForever,
@@ -32,6 +33,7 @@ import {
   getPlayers,
   getStaff,
   recreateDeletedPlayer,
+  transferPlayerToCoadmin,
   unblockCoadmin,
   unblockStaff,
 } from '@/features/users/adminUsers';
@@ -167,6 +169,7 @@ export default function AdminPage() {
     }
 
     if (activeView === 'players') {
+      loadCoadmins();
       loadPlayers();
       loadDeletedPlayers();
     }
@@ -485,6 +488,110 @@ export default function AdminPage() {
     }
   }
 
+  async function handleAdminResetManagedPassword(user: CoadminUser | StaffUser) {
+    const pw1 = window.prompt(`Set new password for "${user.username}" (min 6 chars):`, '');
+    if (pw1 == null) return;
+    if (pw1.length < 6) {
+      setMessage('Password must be at least 6 characters.');
+      return;
+    }
+    const pw2 = window.prompt('Confirm new password:', '');
+    if (pw2 == null) return;
+    if (pw1 !== pw2) {
+      setMessage('Passwords do not match.');
+      return;
+    }
+    setLoading(true);
+    setMessage('');
+    try {
+      await adminResetManagedPassword(user, pw1);
+      setMessage('Password reset successfully.');
+    } catch (err: any) {
+      setMessage(err.message || 'Failed to reset password.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleTransferPlayer(player: PlayerUser) {
+    const target = window.prompt(
+      `Transfer "${player.username}" to which co-admin? Enter username or UID:`,
+      ''
+    );
+    if (target == null) return;
+    const cleanTarget = target.trim().toLowerCase();
+    if (!cleanTarget) return;
+    const coadmin =
+      coadmins.find((item) => item.uid === cleanTarget) ||
+      coadmins.find((item) => String(item.username || '').toLowerCase() === cleanTarget);
+    if (!coadmin) {
+      setMessage('Target co-admin not found. Open co-admin list and try again.');
+      return;
+    }
+    if (String(player.coadminUid || '') === coadmin.uid) {
+      setMessage('Player is already under that co-admin.');
+      return;
+    }
+    setLoading(true);
+    setMessage('');
+    try {
+      await transferPlayerToCoadmin(player.uid, coadmin.uid);
+      await loadPlayers();
+      setMessage(`Player transferred to ${coadmin.username}.`);
+    } catch (err: any) {
+      setMessage(err.message || 'Failed to transfer player.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleResetAdminPasswordByUid() {
+    const targetUid = window.prompt('Enter admin UID to reset password:', '')?.trim();
+    if (!targetUid) return;
+    const pw1 = window.prompt('Enter new password (min 6 chars):', '');
+    if (pw1 == null) return;
+    if (pw1.length < 6) {
+      setMessage('Password must be at least 6 characters.');
+      return;
+    }
+    const pw2 = window.prompt('Confirm new password:', '');
+    if (pw2 == null) return;
+    if (pw1 !== pw2) {
+      setMessage('Passwords do not match.');
+      return;
+    }
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      setMessage('Not authenticated.');
+      return;
+    }
+    setLoading(true);
+    setMessage('');
+    try {
+      const token = await currentUser.getIdToken();
+      const response = await fetch('/api/admin/reset-user-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          targetUid,
+          newPassword: pw1,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || 'Failed to reset admin password.');
+      }
+      setMessage('Admin password reset successfully.');
+    } catch (err: any) {
+      setMessage(err.message || 'Failed to reset admin password.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleImageSelect(file: File) {
     try {
       const compressed = await imageCompression(file, {
@@ -667,6 +774,16 @@ export default function AdminPage() {
                 staffCount={staffList.length}
                 unreadCount={totalUnreadCount}
               />
+              <div className="mt-4">
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => void handleResetAdminPasswordByUid()}
+                  className="rounded-xl border border-cyan-400/35 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-60"
+                >
+                  Reset Admin Password (UID)
+                </button>
+              </div>
 
               <div className="mt-5 rounded-2xl border border-cyan-400/25 bg-cyan-950/20 p-5">
                 <h3 className="text-lg font-bold text-cyan-100">
@@ -809,6 +926,8 @@ export default function AdminPage() {
               onDelete={handleDeleteCoadmin}
               onToggleBlock={handleToggleCoadminStatus}
               blocking={blocking}
+              onCoadminSetPassword={handleAdminResetManagedPassword}
+              coadminCredentialsLoading={loading}
               onlineByUid={adminOnlineByUid}
               nameMode="admin"
               renderSelectedExtras={(coadmin) => {
@@ -915,6 +1034,8 @@ export default function AdminPage() {
               onDelete={handleDeleteStaff}
               onToggleBlock={handleToggleStaffStatus}
               blocking={blocking}
+              onCoadminSetPassword={handleAdminResetManagedPassword}
+              coadminCredentialsLoading={loading}
               onlineByUid={adminOnlineByUid}
               nameMode="admin"
               onImageSelect={handleImageSelect}
@@ -960,6 +1081,10 @@ export default function AdminPage() {
                               {Number((player as any).cash || 0)}
                             </p>
                             <p className="text-sm text-neutral-400">
+                              Total recharged: {Number((player as any).totalRechargeAmount || 0)} / Total
+                              redeemed: {Number((player as any).totalRedeemAmount || 0)}
+                            </p>
+                            <p className="text-sm text-neutral-400">
                               Status: <span className="text-white">{player.status}</span>
                             </p>
                           </div>
@@ -971,6 +1096,14 @@ export default function AdminPage() {
                             className="rounded-lg bg-red-500/20 px-3 py-2 text-sm font-semibold text-red-300 hover:bg-red-500/30 disabled:opacity-60"
                           >
                             Archive/Delete
+                          </button>
+                          <button
+                            type="button"
+                            disabled={loading}
+                            onClick={() => void handleTransferPlayer(player)}
+                            className="rounded-lg bg-indigo-500/20 px-3 py-2 text-sm font-semibold text-indigo-300 hover:bg-indigo-500/30 disabled:opacity-60"
+                          >
+                            Transfer Coadmin
                           </button>
                         </div>
                       </div>

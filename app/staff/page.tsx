@@ -45,12 +45,6 @@ import {
   PlayerCashoutTask,
   startPlayerCashoutTask,
 } from '@/features/cashouts/playerCashoutTasks';
-import { GameLogin, getGameLoginsByCoadmin } from '@/features/games/gameLogins';
-import {
-  BonusEvent,
-  createBonusEvent,
-  listenBonusEventsByCoadmin,
-} from '../../features/bonusEvents/bonusEvents';
 import {
   approveTransferRequest,
   getPlayerRiskSnapshot,
@@ -76,8 +70,6 @@ import { AdminUser, ChatMessage } from '../../components/admin/types';
 type StaffView =
   | 'dashboard'
   | 'view-tasks'
-  | 'create-bonus-event'
-  | 'view-bonus-events'
   | 'create-player'
   | 'view-players'
   | 'reach-out'
@@ -185,13 +177,6 @@ export default function StaffPage() {
   const [playerCashoutTaskLoadingId, setPlayerCashoutTaskLoadingId] = useState<string | null>(
     null
   );
-  const [bonusName, setBonusName] = useState('');
-  const [bonusGameName, setBonusGameName] = useState('');
-  const [bonusAmount, setBonusAmount] = useState('');
-  const [bonusDescription, setBonusDescription] = useState('');
-  const [bonusPercentage, setBonusPercentage] = useState('');
-  const [bonusEvents, setBonusEvents] = useState<BonusEvent[]>([]);
-  const [bonusGames, setBonusGames] = useState<GameLogin[]>([]);
   const [countdownTick, setCountdownTick] = useState(0);
   const [pendingTransferRequests, setPendingTransferRequests] = useState<TransferRequest[]>([]);
   const [riskSnapshots, setRiskSnapshots] = useState<PlayerRiskSnapshot[]>([]);
@@ -280,7 +265,6 @@ export default function StaffPage() {
     }))
     .filter((task) => task.status === 'completed');
   const currentUserUid = auth.currentUser?.uid || '';
-  const myBonusEvents = bonusEvents.filter((event) => event.createdByUid === currentUserUid);
   const staffCashBoxAedEstimate = Number(staffCashBoxNpr || 0) * NPR_TO_AED;
   const riskyPlayers = useMemo(
     () => riskSnapshots.filter((entry) => entry.riskLevel !== 'low').slice(0, 10),
@@ -539,71 +523,6 @@ export default function StaffPage() {
     const unsubscribe = listenToUnreadCounts(setUnreadCounts);
     return () => unsubscribe();
   }, [creatorRole]);
-
-  useEffect(() => {
-    let isCancelled = false;
-
-    async function loadBonusGames() {
-      try {
-        const coadminUid = await getCurrentUserCoadminUid();
-        const games = await getGameLoginsByCoadmin(coadminUid);
-
-        if (!isCancelled) {
-          setBonusGames(games);
-        }
-      } catch {
-        if (!isCancelled) {
-          setBonusGames([]);
-        }
-      }
-    }
-
-    void loadBonusGames();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let isCancelled = false;
-    let unsubscribe: (() => void) | undefined;
-
-    async function startBonusEventsListener() {
-      try {
-        const coadminUid = await getCurrentUserCoadminUid();
-
-        if (isCancelled) {
-          return;
-        }
-
-        unsubscribe = listenBonusEventsByCoadmin(
-          coadminUid,
-          (events) => {
-            if (!isCancelled) {
-              setBonusEvents(events);
-            }
-          },
-          (error) => {
-            if (!isCancelled) {
-              setMessage(error.message || 'Failed to listen for bonus events.');
-            }
-          }
-        );
-      } catch (error: any) {
-        if (!isCancelled) {
-          setMessage(error.message || 'Failed to start bonus events listener.');
-        }
-      }
-    }
-
-    void startBonusEventsListener();
-
-    return () => {
-      isCancelled = true;
-      unsubscribe?.();
-    };
-  }, []);
 
   useEffect(() => {
     let isCancelled = false;
@@ -1058,32 +977,6 @@ export default function StaffPage() {
     }
   }
 
-  async function handleCreateBonusEvent(event: React.FormEvent) {
-    event.preventDefault();
-    setLoading(true);
-    setMessage('');
-
-    try {
-      await createBonusEvent({
-        bonusName,
-        gameName: bonusGameName,
-        amountNpr: Number(bonusAmount),
-        description: bonusDescription,
-        bonusPercentage: Number(bonusPercentage),
-      });
-      setBonusName('');
-      setBonusGameName('');
-      setBonusAmount('');
-      setBonusDescription('');
-      setBonusPercentage('');
-      setMessage('Bonus event created successfully.');
-    } catch (error: any) {
-      setMessage(error.message || 'Failed to create bonus event.');
-    } finally {
-      setLoading(false);
-    }
-  }
-
   async function handleCreateCoadmin(event: React.FormEvent) {
     event.preventDefault();
     setLoading(true);
@@ -1194,8 +1087,6 @@ export default function StaffPage() {
     ? [
         { label: 'Dashboard', view: 'dashboard' },
         { label: 'View Tasks', view: 'view-tasks' },
-        { label: 'Create Bonus Event', view: 'create-bonus-event' },
-        { label: 'View Bonus Events', view: 'view-bonus-events' },
         { label: 'Create Coadmin', view: 'create-coadmin' },
         { label: 'View Coadmins', view: 'view-coadmins' },
         { label: 'Reach Out', view: 'reach-out', unread: reachOutUnread },
@@ -1203,8 +1094,6 @@ export default function StaffPage() {
     : [
         { label: 'Dashboard', view: 'dashboard' },
         { label: 'View Tasks', view: 'view-tasks' },
-        { label: 'Create Bonus Event', view: 'create-bonus-event' },
-        { label: 'View Bonus Events', view: 'view-bonus-events' },
         { label: 'Create Player', view: 'create-player' },
         { label: 'View Players', view: 'view-players', unread: playerChatUnreadTotal },
         { label: 'Reach Out', view: 'reach-out', unread: reachOutUnread },
@@ -1484,107 +1373,6 @@ export default function StaffPage() {
                       </p>
                       <p className="mt-1 text-xs text-cyan-100/70">
                         Handler: {task.assignedHandlerUsername || 'Unknown'}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeView === 'create-bonus-event' && (
-            <form
-              onSubmit={handleCreateBonusEvent}
-              className="max-w-2xl rounded-2xl border border-white/10 bg-white/5 p-6"
-            >
-              <h2 className="text-3xl font-bold">Create Bonus Event</h2>
-              <div className="mt-5 space-y-4">
-                <label className="block text-sm">
-                  Bonus Name
-                  <input
-                    value={bonusName}
-                    onChange={(event) => setBonusName(event.target.value)}
-                    className="mt-2 w-full rounded-xl border border-white/15 bg-black/30 px-4 py-3 text-white outline-none focus:border-white/40"
-                    placeholder="Bonus name"
-                  />
-                </label>
-                <label className="block text-sm">
-                  Game Name
-                  <select
-                    value={bonusGameName}
-                    onChange={(event) => setBonusGameName(event.target.value)}
-                    className="mt-2 w-full rounded-xl border border-white/15 bg-black/30 px-4 py-3 text-white outline-none focus:border-white/40"
-                  >
-                    <option value="">Select game</option>
-                    {bonusGames.map((game) => (
-                      <option key={game.id} value={game.gameName}>
-                        {game.gameName}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block text-sm">
-                  Amount
-                  <input
-                    type="number"
-                    min={1}
-                    value={bonusAmount}
-                    onChange={(event) => setBonusAmount(event.target.value)}
-                    className="mt-2 w-full rounded-xl border border-white/15 bg-black/30 px-4 py-3 text-white outline-none focus:border-white/40"
-                    placeholder="e.g. 1000"
-                  />
-                </label>
-                <label className="block text-sm">
-                  Description
-                  <textarea
-                    value={bonusDescription}
-                    onChange={(event) => setBonusDescription(event.target.value)}
-                    className="mt-2 min-h-24 w-full rounded-xl border border-white/15 bg-black/30 px-4 py-3 text-white outline-none focus:border-white/40"
-                    placeholder="Describe this bonus"
-                  />
-                </label>
-                <label className="block text-sm">
-                  Bonus Percentage
-                  <input
-                    type="number"
-                    min={1}
-                    value={bonusPercentage}
-                    onChange={(event) => setBonusPercentage(event.target.value)}
-                    className="mt-2 w-full rounded-xl border border-white/15 bg-black/30 px-4 py-3 text-white outline-none focus:border-white/40"
-                    placeholder="e.g. 10"
-                  />
-                </label>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="rounded-xl bg-white px-5 py-3 text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-60"
-                >
-                  {loading ? 'Creating...' : 'Create Bonus Event'}
-                </button>
-              </div>
-            </form>
-          )}
-
-          {activeView === 'view-bonus-events' && (
-            <div>
-              <h2 className="mb-6 text-3xl font-bold">View Bonus Events</h2>
-              {myBonusEvents.length === 0 ? (
-                <p className="text-sm text-neutral-400">No bonus events created yet.</p>
-              ) : (
-                <div className="space-y-3">
-                  {myBonusEvents.map((event) => (
-                    <div
-                      key={event.id}
-                      className="rounded-xl border border-violet-400/25 bg-violet-500/10 p-4"
-                    >
-                      <p className="text-base font-semibold text-white">{event.bonusName}</p>
-                      <p className="mt-1 text-sm text-violet-100/85">
-                        Game: {event.gameName} | Amount: {formatNpr(event.amountNpr || 0)}
-                      </p>
-                      <p className="mt-1 text-sm text-violet-100/85">{event.description}</p>
-                      <p className="mt-1 text-xs text-violet-100/70">
-                        Bonus: {event.bonusPercentage}% | Created:{' '}
-                        {event.createdAt?.toDate?.().toLocaleString?.() || 'Now'}
                       </p>
                     </div>
                   ))}

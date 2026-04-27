@@ -17,10 +17,21 @@ export type GameLogin = {
   gameName: string;
   username: string;
   password: string;
+  siteUrl?: string;
   createdBy: string;
   coadminUid?: string;
-  createdAt?: any;
+  createdAt?: unknown;
 };
+
+function normalizeSiteUrl(value: string) {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return '';
+  }
+
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
 
 async function getGameLoginsByField(
   field: 'createdBy' | 'coadminUid',
@@ -38,7 +49,8 @@ async function getGameLoginsByField(
 export async function createGameLogin(
   gameName: string,
   username: string,
-  password: string
+  password: string,
+  siteUrl = ''
 ) {
   const currentUser = auth.currentUser;
 
@@ -48,6 +60,7 @@ export async function createGameLogin(
 
   const cleanGameName = gameName.trim();
   const cleanUsername = username.trim();
+  const cleanSiteUrl = normalizeSiteUrl(siteUrl);
 
   if (!cleanGameName) {
     throw new Error('Game name is required.');
@@ -67,6 +80,7 @@ export async function createGameLogin(
     gameName: cleanGameName,
     username: cleanUsername,
     password,
+    siteUrl: cleanSiteUrl,
     createdBy: coadminUid,
     coadminUid,
     createdAt: serverTimestamp(),
@@ -99,10 +113,12 @@ export async function updateGameLogin(
     gameName: string;
     username: string;
     password: string;
+    siteUrl?: string;
   }
 ) {
   const cleanGameName = values.gameName.trim();
   const cleanUsername = values.username.trim();
+  const cleanSiteUrl = normalizeSiteUrl(values.siteUrl || '');
 
   if (!cleanGameName) {
     throw new Error('Game name is required.');
@@ -120,5 +136,6 @@ export async function updateGameLogin(
     gameName: cleanGameName,
     username: cleanUsername,
     password: values.password,
+    siteUrl: cleanSiteUrl,
   });
 }

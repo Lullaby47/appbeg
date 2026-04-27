@@ -21,7 +21,7 @@ function workerBelongsToCoadmin(
 }
 
 /**
- * Coadmin-only: set a new password and/or login username for a staff or carer
+ * Coadmin-only: set a new password and/or login username for a staff, carer, or player
  * that belongs to the calling coadmin.
  */
 export async function POST(request: Request) {
@@ -86,9 +86,9 @@ export async function POST(request: Request) {
     const target = targetSnap.data()!;
     const role = String(target.role || '');
 
-    if (role !== 'staff' && role !== 'carer') {
+    if (role !== 'staff' && role !== 'carer' && role !== 'player') {
       return NextResponse.json(
-        { error: 'Can only update staff or carer accounts.' },
+        { error: 'Can only update staff, carer, or player accounts.' },
         { status: 403 }
       );
     }

@@ -67,6 +67,14 @@ export type PlayerUser = {
   coin?: number;
   /** Cash / redeem balance (optional; shown when present). */
   cash?: number;
+  /** Aggregated total recharge amount (from player requests). */
+  totalRechargeAmount?: number;
+  /** Aggregated total redeem amount (from player requests). */
+  totalRedeemAmount?: number;
+  /** Aggregated total recharge count (from player requests). */
+  totalRechargeCount?: number;
+  /** Aggregated total redeem count (from player requests). */
+  totalRedeemCount?: number;
   createdAt?: any;
 };
 
@@ -451,7 +459,7 @@ export async function unblockCoadmin(coadmin: CoadminUser) {
 
 /** Coadmin: change password and/or app login username for a staff or carer you manage. */
 export async function resetCoadminWorkerCredentials(
-  user: StaffUser | CarerUser,
+  user: StaffUser | CarerUser | PlayerUser,
   options: { newPassword?: string; newUsername?: string }
 ) {
   const currentUser = auth.currentUser;
@@ -482,6 +490,60 @@ export async function resetCoadminWorkerCredentials(
   const data = await parseApiResponse(response);
   if (!response.ok) {
     throw new Error(data.error || 'Failed to update sign-in details.');
+  }
+  return data;
+}
+
+export async function adminResetManagedPassword(
+  user: CoadminUser | StaffUser,
+  newPassword: string
+) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  if (!newPassword || newPassword.length < 6) {
+    throw new Error('Password must be at least 6 characters.');
+  }
+  const token = await currentUser.getIdToken();
+  const response = await fetch('/api/admin/reset-user-password', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      targetUid: user.uid,
+      newPassword,
+    }),
+  });
+  const data = await parseApiResponse(response);
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to reset password.');
+  }
+  return data;
+}
+
+export async function transferPlayerToCoadmin(playerUid: string, targetCoadminUid: string) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await currentUser.getIdToken();
+  const response = await fetch('/api/admin/transfer-player-coadmin', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      playerUid,
+      targetCoadminUid,
+    }),
+  });
+  const data = await parseApiResponse(response);
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to transfer player.');
   }
   return data;
 }

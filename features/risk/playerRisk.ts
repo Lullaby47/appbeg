@@ -523,7 +523,7 @@ export async function recordFinancialEventAndRefreshRisk(values: {
   await computeAndStorePlayerRiskSnapshot(values.playerUid);
 }
 
-export async function createCashToCoinTransferRequest(playerUid: string) {
+export async function createCashToCoinTransferRequest(playerUid: string, requestedAmountNpr?: number) {
   const actor = await getCurrentActorIdentity();
 
   if (actor.uid !== playerUid) {
@@ -573,6 +573,14 @@ export async function createCashToCoinTransferRequest(playerUid: string) {
   if (cashAmount <= 0) {
     throw new Error('No cash available to transfer.');
   }
+  const transferAmount =
+    requestedAmountNpr != null ? Math.max(0, Number(requestedAmountNpr || 0)) : cashAmount;
+  if (transferAmount <= 0) {
+    throw new Error('Transfer amount must be greater than zero.');
+  }
+  if (transferAmount > cashAmount) {
+    throw new Error('Transfer amount cannot exceed current cash.');
+  }
 
   const pendingSnapshot = await getDocs(
     query(
@@ -608,7 +616,7 @@ export async function createCashToCoinTransferRequest(playerUid: string) {
     playerUid,
     playerUsername: playerData.username?.trim() || 'Player',
     coadminUid: coadminUidForRequest,
-    amountNpr: cashAmount,
+    amountNpr: transferAmount,
     cashBalanceSnapshot: cashAmount,
     status: 'pending',
     requestedByUid: actor.uid,
@@ -631,7 +639,7 @@ export async function createCashToCoinTransferRequest(playerUid: string) {
     playerUsername: playerData.username?.trim() || 'Player',
     coadminUid: coadminUidForRequest,
     action: 'transfer_request_created',
-    details: `Requested NPR ${cashAmount} cash to coin`,
+    details: `Requested NPR ${transferAmount} cash to coin`,
   });
 
   if (shouldAutoApprove) {

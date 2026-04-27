@@ -73,7 +73,17 @@ type ConversationDoc = {
   lastMessageAt?: Timestamp;
   unreadCounts?: Record<string, number>;
   mutedBy?: string[];
+  updatedAt?: Timestamp;
 };
+
+function toMillis(value: unknown) {
+  if (!value || typeof value !== 'object') return 0;
+  const maybe = value as { toMillis?: () => number; toDate?: () => Date; seconds?: number };
+  if (typeof maybe.toMillis === 'function') return maybe.toMillis();
+  if (typeof maybe.toDate === 'function') return maybe.toDate().getTime();
+  if (typeof maybe.seconds === 'number') return maybe.seconds * 1000;
+  return 0;
+}
 
 function assertAuthUid() {
   const uid = auth.currentUser?.uid;
@@ -325,8 +335,7 @@ export function listenDirectChatList(onNext: (rows: PlayerChatListItem[]) => voi
   const q = query(
     collection(db, DIRECT_CONVERSATIONS),
     where('participants', 'array-contains', selfUid),
-    orderBy('updatedAt', 'desc'),
-    limit(100)
+    limit(150)
   );
   return onSnapshot(q, (snap) => {
     const rows: PlayerChatListItem[] = snap.docs.map((d) => {
@@ -342,7 +351,14 @@ export function listenDirectChatList(onNext: (rows: PlayerChatListItem[]) => voi
         muted: Array.isArray(data.mutedBy) ? data.mutedBy.includes(selfUid) : false,
       };
     });
-    onNext(rows.filter((r) => !!r.otherUid));
+    const sorted = rows
+      .filter((r) => !!r.otherUid)
+      .sort((a, b) => {
+        const aMs = toMillis(a.lastMessageAt);
+        const bMs = toMillis(b.lastMessageAt);
+        return bMs - aMs;
+      });
+    onNext(sorted);
   });
 }
 
@@ -514,11 +530,16 @@ export function listenFriendLinks(onNext: (links: FriendLink[]) => void) {
   const q = query(
     collection(db, 'playerFriendLinks'),
     where('participants', 'array-contains', selfUid),
-    orderBy('updatedAt', 'desc'),
     limit(500)
   );
   return onSnapshot(q, (snap) => {
-    const links = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<FriendLink, 'id'>) }));
+    const links = snap.docs
+      .map((d) => ({ id: d.id, ...(d.data() as Omit<FriendLink, 'id'>) }))
+      .sort((a, b) => {
+        const aMs = toMillis((a as unknown as { updatedAt?: unknown }).updatedAt);
+        const bMs = toMillis((b as unknown as { updatedAt?: unknown }).updatedAt);
+        return bMs - aMs;
+      });
     onNext(links);
   });
 }
@@ -548,4 +569,42 @@ export async function ensureReferralFriendLinks() {
     );
   });
   await batch.commit();
+}
+
+export async function rewardCoinsToPlayer(targetUid: string, amountCoins: number) {
+  const self = auth.currentUser;
+  if (!self) {
+    throw new Error('Not authenticated.');
+  }
+  const cleanTargetUid = String(targetUid || '').trim();
+  const cleanAmount = Math.max(0, Math.floor(Number(amountCoins || 0)));
+  if (!cleanTargetUid) {
+    throw new Error('Target player is required.');
+  }
+  if (cleanAmount <= 0) {
+    throw new Error('Reward amount must be at least 1 coin.');
+  }
+
+  const token = await self.getIdToken();
+  const response = await fetch('/api/player/reward-coins', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      targetUid: cleanTargetUid,
+      amountCoins: cleanAmount,
+    }),
+  });
+
+  const data = (await response.json()) as { error?: string; message?: string; amountCoins?: number };
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to reward coins.');
+  }
+
+  return {
+    amountCoins: Math.max(0, Math.floor(Number(data.amountCoins || cleanAmount))),
+    message: data.message || 'Coin reward sent.',
+  };
 }
