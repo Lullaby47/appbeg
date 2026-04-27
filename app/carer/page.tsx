@@ -84,7 +84,8 @@ type DashboardCard = {
 type TaskSection = 'pending' | 'mine' | 'completed';
 
 const AUTOMATION_AGENT_ID = 'car001';
-const AUTO_AUTOMATION_INTERVAL_MS = 3000;
+const AUTO_AUTOMATION_INTERVAL_MS = 7000;
+const BACKGROUND_REFRESH_INTERVAL_MS = 60000;
 
 function getTimestampMs(value: unknown) {
   if (!value) {
@@ -584,11 +585,31 @@ export default function CarerPage() {
       void releaseExpiredCarerTasks(coadminUid).catch((error: unknown) => {
         const nextMessage =
           error instanceof Error ? error.message : 'Failed to release expired tasks.';
+        const normalized = nextMessage.toLowerCase();
+        if (normalized.includes('resource_exhausted') || normalized.includes('quota exceeded')) {
+          setAutoAutomationEnabled(false);
+          setErrorMessage(
+            'Firestore quota exceeded. Auto automation has been paused.'
+          );
+          return;
+        }
         setErrorMessage(nextMessage);
       });
 
-      void refreshPageData(false);
-    }, 10000);
+      void refreshPageData(false).catch((error: unknown) => {
+        const nextMessage =
+          error instanceof Error ? error.message : 'Failed to refresh carer data.';
+        const normalized = nextMessage.toLowerCase();
+        if (normalized.includes('resource_exhausted') || normalized.includes('quota exceeded')) {
+          setAutoAutomationEnabled(false);
+          setErrorMessage(
+            'Firestore quota exceeded. Auto automation has been paused.'
+          );
+          return;
+        }
+        setErrorMessage(nextMessage);
+      });
+    }, BACKGROUND_REFRESH_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
   }, [coadminUid]);

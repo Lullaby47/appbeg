@@ -259,7 +259,11 @@ export async function claimTaskAndCreateJob(input: {
       currentCarerName: createdByName,
       currentUsername: input.currentUsername ?? null,
     });
-    const jobRef = doc(collection(db, 'automation_jobs'));
+    const jobRef = doc(db, 'automation_jobs', `task_${taskSnap.id}`);
+    const jobSnap = await transaction.get(jobRef);
+    if (jobSnap.exists()) {
+      throw new Error('Automation job already exists for this task');
+    }
 
     transaction.update(taskRef, {
       ...claimedTaskData,
@@ -267,7 +271,7 @@ export async function claimTaskAndCreateJob(input: {
       updatedAt: serverTimestamp(),
     });
 
-    transaction.set(jobRef, {
+    const jobData = {
       agentId: input.agentId.trim(),
       taskId: taskSnap.id,
       type: mappedType,
@@ -281,7 +285,8 @@ export async function claimTaskAndCreateJob(input: {
       completedAt: null,
       error: null,
       attempts: 0,
-    });
+    };
+    transaction.set(jobRef, jobData);
 
     return { jobId: jobRef.id, taskId: taskSnap.id, status: 'queued' as const };
   });
