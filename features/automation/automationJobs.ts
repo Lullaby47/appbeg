@@ -259,11 +259,7 @@ export async function claimTaskAndCreateJob(input: {
       currentCarerName: createdByName,
       currentUsername: input.currentUsername ?? null,
     });
-    const jobRef = doc(db, 'automation_jobs', `task_${taskSnap.id}`);
-    const existingJobSnap = await transaction.get(jobRef);
-    if (existingJobSnap.exists()) {
-      throw new Error('Task already claimed');
-    }
+    const jobRef = doc(collection(db, 'automation_jobs'));
 
     transaction.update(taskRef, {
       ...claimedTaskData,
