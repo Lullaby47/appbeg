@@ -447,6 +447,7 @@ export default function PlayerPage() {
   const bonusSwipeStartXRef = useRef<number | null>(null);
   const activeTableHistoryOpenRef = useRef(false);
   const showActiveTableSplashRef = useRef(false);
+  const activeTableSplashContentRef = useRef<HTMLDivElement | null>(null);
 
   function hasActiveTableSplashHistoryState() {
     const state = window.history.state as Record<string, unknown> | null;
@@ -473,6 +474,15 @@ export default function PlayerPage() {
       activeTableHistoryOpenRef.current = false;
       window.history.back();
     }
+  }
+
+  function nudgeActiveTableForKeyboard() {
+    if (typeof window === 'undefined' || window.innerWidth >= 640) {
+      return;
+    }
+    window.setTimeout(() => {
+      activeTableSplashContentRef.current?.scrollBy({ top: 120, behavior: 'smooth' });
+    }, 140);
   }
 
   useEffect(() => {
@@ -3419,6 +3429,7 @@ export default function PlayerPage() {
         >
           <div
             onClick={(event) => event.stopPropagation()}
+            ref={activeTableSplashContentRef}
             className="relative w-full max-w-lg overflow-hidden rounded-[28px] border border-amber-400/35 bg-gradient-to-b from-black/90 to-zinc-950/98 p-4 shadow-2xl shadow-amber-900/25 backdrop-blur-xl sm:rounded-3xl sm:p-6"
             style={{ maxHeight: '84dvh', overflowY: 'auto' }}
           >
@@ -3447,6 +3458,7 @@ export default function PlayerPage() {
               <input
                 value={playAmount}
                 onChange={(event) => setPlayAmount(event.target.value)}
+                onFocus={nudgeActiveTableForKeyboard}
                 type="number"
                 min="1"
                 inputMode="decimal"
