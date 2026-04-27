@@ -1748,21 +1748,6 @@ export default function CarerPage() {
               >
                 Login Details
               </button>
-              {task.type === 'redeem' && task.requestId && (
-                <button
-                  type="button"
-                  onClick={() => void handleDismissPendingRedeem(task)}
-                  disabled={
-                    dismissRedeemRequestId === task.requestId ||
-                    taskLoadingId === task.id
-                  }
-                  className="rounded-xl border border-amber-500/40 bg-amber-500/15 px-4 py-2 text-sm font-bold text-amber-100 hover:bg-amber-500/25 disabled:opacity-60"
-                >
-                  {dismissRedeemRequestId === task.requestId
-                    ? 'Dismissing...'
-                    : 'Dismiss fake redeem'}
-                </button>
-              )}
               <button
                 onClick={() => void handleStartTask(task)}
                 disabled={automationLoadingTaskId === task.id || isAutomationQueued}
@@ -1817,6 +1802,21 @@ export default function CarerPage() {
               >
                 Login Details
               </button>
+              {task.type === 'redeem' && task.requestId && (
+                <button
+                  type="button"
+                  onClick={() => void handleDismissPendingRedeem(task)}
+                  disabled={
+                    dismissRedeemRequestId === task.requestId ||
+                    taskLoadingId === task.id
+                  }
+                  className="rounded-xl border border-amber-500/40 bg-amber-500/15 px-4 py-2 text-sm font-bold text-amber-100 hover:bg-amber-500/25 disabled:opacity-60"
+                >
+                  {dismissRedeemRequestId === task.requestId
+                    ? 'Dismissing...'
+                    : 'Dismiss fake redeem'}
+                </button>
+              )}
               <button
                 onClick={() => void handleStartAutomation(task)}
                 disabled={automationLoadingTaskId === task.id || isAutomationQueued}
