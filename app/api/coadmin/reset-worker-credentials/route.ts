@@ -99,6 +99,13 @@ export async function POST(request: Request) {
       );
     }
 
+    if (role === 'carer' && newPassword) {
+      return NextResponse.json(
+        { error: 'Carer password must be set by admin approval flow.' },
+        { status: 403 }
+      );
+    }
+
     const currentUsername = String(target.username || '').trim().toLowerCase();
     let newUsername: string | undefined = newUsernameInput;
     if (newUsername && newUsername === currentUsername) {

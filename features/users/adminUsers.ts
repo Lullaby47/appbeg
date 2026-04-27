@@ -81,6 +81,20 @@ export type PlayerUser = {
 export type ManagedUser = StaffUser | CarerUser | PlayerUser;
 let playerReferralBackfillAttempted = false;
 
+export type CarerCreationRequest = {
+  id: string;
+  coadminUid: string;
+  coadminUsername: string;
+  requestedUsername: string;
+  status: 'pending' | 'approved' | 'rejected';
+  requestedAt?: any;
+  reviewedAt?: any;
+  reviewedByUid?: string | null;
+  reviewedByUsername?: string | null;
+  createdCarerUid?: string | null;
+  note?: string | null;
+};
+
 async function parseApiResponse(response: Response) {
   const text = await response.text();
 
@@ -355,6 +369,83 @@ export async function getCarers(): Promise<CarerUser[]> {
 
 export async function createCarer(username: string, password: string) {
   return createManagedUser(username, password, 'carer');
+}
+
+export async function requestCarerCreation(username: string) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const cleanUsername = username.trim().toLowerCase();
+  if (!cleanUsername) {
+    throw new Error('Username is required.');
+  }
+
+  const token = await currentUser.getIdToken();
+  const response = await fetch('/api/coadmin/request-carer', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ username: cleanUsername }),
+  });
+  const data = await parseApiResponse(response);
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to submit carer request.');
+  }
+  return data;
+}
+
+export async function getPendingCarerCreationRequests(): Promise<CarerCreationRequest[]> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await currentUser.getIdToken();
+  const response = await fetch('/api/admin/carer-creation-requests', {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  const data = await parseApiResponse(response);
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to load carer requests.');
+  }
+  return (data.requests || []) as CarerCreationRequest[];
+}
+
+export async function approveCarerCreationRequest(requestId: string, password: string) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  if (!requestId.trim()) {
+    throw new Error('Request id is required.');
+  }
+  if (password.length < 6) {
+    throw new Error('Password must be at least 6 characters.');
+  }
+
+  const token = await currentUser.getIdToken();
+  const response = await fetch('/api/admin/carer-creation-requests', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      requestId: requestId.trim(),
+      password,
+      action: 'approve',
+    }),
+  });
+  const data = await parseApiResponse(response);
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to approve carer request.');
+  }
+  return data;
 }
 
 export async function deleteCarer(carer: CarerUser) {

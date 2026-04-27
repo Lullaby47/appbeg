@@ -14,6 +14,8 @@ interface Props {
   referralCode?: string;
   onReferralCodeChange?: (value: string) => void;
   showReferralCodeInput?: boolean;
+  showPasswordInput?: boolean;
+  passwordRequired?: boolean;
   onSubmit: (e: React.FormEvent) => void;
 }
 
@@ -29,6 +31,8 @@ export default function CreateUserForm({
   referralCode = '',
   onReferralCodeChange,
   showReferralCodeInput = false,
+  showPasswordInput = true,
+  passwordRequired = true,
   onSubmit,
 }: Props) {
   return (
@@ -47,14 +51,16 @@ export default function CreateUserForm({
           required
         />
 
-        <input
-          value={password}
-          onChange={(e) => onPasswordChange(e.target.value)}
-          type="password"
-          placeholder="Password"
-          className="w-full rounded-xl border border-white/10 bg-neutral-900 p-3 outline-none focus:border-white/30"
-          required
-        />
+        {showPasswordInput ? (
+          <input
+            value={password}
+            onChange={(e) => onPasswordChange(e.target.value)}
+            type="password"
+            placeholder="Password"
+            className="w-full rounded-xl border border-white/10 bg-neutral-900 p-3 outline-none focus:border-white/30"
+            required={passwordRequired}
+          />
+        ) : null}
 
         {showReferralCodeInput ? (
           <input

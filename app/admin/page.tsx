@@ -15,7 +15,9 @@ import { auth } from '@/lib/firebase/client';
 import { belongsToCoadmin } from '@/lib/coadmin/scope';
 
 import {
+  approveCarerCreationRequest,
   adminResetManagedPassword,
+  CarerCreationRequest,
   CoadminUser,
   DeletedPlayerRecord,
   deletePlayerForever,
@@ -26,6 +28,7 @@ import {
   blockStaff,
   createCoadmin,
   createStaff,
+  getPendingCarerCreationRequests,
   deleteCoadmin,
   deleteStaff,
   getCoadmins,
@@ -68,6 +71,7 @@ export default function AdminPage() {
   const [players, setPlayers] = useState<PlayerUser[]>([]);
   const [deletedPlayers, setDeletedPlayers] = useState<DeletedPlayerRecord[]>([]);
   const [allStaffForCoadmins, setAllStaffForCoadmins] = useState<StaffUser[]>([]);
+  const [pendingCarerRequests, setPendingCarerRequests] = useState<CarerCreationRequest[]>([]);
   const [selectedStaff, setSelectedStaff] = useState<StaffUser | null>(null);
   const [deleteStaffTarget, setDeleteStaffTarget] = useState<StaffUser | null>(null);
 
@@ -157,6 +161,7 @@ export default function AdminPage() {
       loadCoadmins();
       loadStaffList();
       loadChatUsers();
+      loadPendingCarerRequests();
     }
 
     if (activeView === 'view-coadmins') {
@@ -276,6 +281,15 @@ export default function AdminPage() {
     }
   }
 
+  async function loadPendingCarerRequests() {
+    try {
+      const requests = await getPendingCarerCreationRequests();
+      setPendingCarerRequests(requests);
+    } catch (err: any) {
+      setMessage(err.message || 'Failed to load pending carer requests.');
+    }
+  }
+
   async function loadChatUsers() {
   try {
     const coadminsList = await getCoadmins();
@@ -326,6 +340,36 @@ export default function AdminPage() {
       await loadChatUsers();
     } catch (err: any) {
       setMessage(err.message || 'Failed to create staff.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleApproveCarerRequest(request: CarerCreationRequest) {
+    const password = window.prompt(
+      `Set password for "${request.requestedUsername}" (min 6 chars):`,
+      ''
+    );
+    if (password == null) return;
+    if (password.length < 6) {
+      setMessage('Password must be at least 6 characters.');
+      return;
+    }
+    const confirm = window.prompt('Confirm password:', '');
+    if (confirm == null) return;
+    if (confirm !== password) {
+      setMessage('Passwords do not match.');
+      return;
+    }
+
+    setLoading(true);
+    setMessage('');
+    try {
+      await approveCarerCreationRequest(request.id, password);
+      await Promise.all([loadPendingCarerRequests(), loadCoadmins()]);
+      setMessage(`Carer "${request.requestedUsername}" approved successfully.`);
+    } catch (err: any) {
+      setMessage(err.message || 'Failed to approve carer request.');
     } finally {
       setLoading(false);
     }
@@ -774,6 +818,41 @@ export default function AdminPage() {
                 staffCount={staffList.length}
                 unreadCount={totalUnreadCount}
               />
+              {pendingCarerRequests.length > 0 && (
+                <div className="mt-4 rounded-2xl border border-yellow-500/35 bg-yellow-500/10 p-5">
+                  <h3 className="text-lg font-bold text-yellow-200">
+                    Carer Approval Requests ({pendingCarerRequests.length})
+                  </h3>
+                  <p className="mt-1 text-xs text-yellow-100/70">
+                    Coadmins requested new carers. Approve and set the password here.
+                  </p>
+                  <div className="mt-3 space-y-3">
+                    {pendingCarerRequests.slice(0, 8).map((request) => (
+                      <div
+                        key={request.id}
+                        className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/30 p-3"
+                      >
+                        <div>
+                          <p className="text-sm font-semibold text-white">
+                            {request.requestedUsername}
+                          </p>
+                          <p className="text-xs text-yellow-100/70">
+                            Requested by {request.coadminUsername || 'Coadmin'}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={loading}
+                          onClick={() => void handleApproveCarerRequest(request)}
+                          className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-black hover:bg-neutral-200 disabled:opacity-60"
+                        >
+                          Approve + Set Password
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div className="mt-4">
                 <button
                   type="button"

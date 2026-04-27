@@ -19,6 +19,7 @@ import {
 } from '@/lib/coadmin/scope';
 
 import {
+  CarerCreationRequest,
   StaffUser,
   CarerUser,
   PlayerUser,
@@ -26,7 +27,6 @@ import {
   blockPlayer,
   blockStaff,
   createStaff,
-  createCarer,
   createPlayer,
   deleteStaff,
   deleteCarer,
@@ -34,6 +34,7 @@ import {
   getStaff,
   getCarers,
   getPlayers,
+  requestCarerCreation,
   resetCoadminWorkerCredentials,
   unblockCarer,
   unblockPlayer,
@@ -200,6 +201,7 @@ export default function CoadminPage() {
 
   const [carerUsername, setCarerUsername] = useState('');
   const [carerPassword, setCarerPassword] = useState('');
+  const [pendingCarerRequests, setPendingCarerRequests] = useState<CarerCreationRequest[]>([]);
   const [carerList, setCarerList] = useState<CarerUser[]>([]);
   const [selectedCarer, setSelectedCarer] = useState<CarerUser | null>(null);
   const [deleteCarerTarget, setDeleteCarerTarget] = useState<CarerUser | null>(null);
@@ -380,10 +382,17 @@ export default function CoadminPage() {
       loadPlayerList();
       loadGameLogins();
       loadChatUsers();
+      void loadPendingCarerRequestsForCoadmin();
     }
 
     if (activeView === 'view-staff') loadStaffList();
-    if (activeView === 'view-carers') loadCarerList();
+    if (activeView === 'view-carers') {
+      loadCarerList();
+      void loadPendingCarerRequestsForCoadmin();
+    }
+    if (activeView === 'create-carer') {
+      void loadPendingCarerRequestsForCoadmin();
+    }
     if (activeView === 'shifts') {
       loadStaffList();
       loadCarerList();
@@ -935,16 +944,38 @@ export default function CoadminPage() {
     setMessage('');
 
     try {
-      await createCarer(carerUsername, carerPassword);
+      await requestCarerCreation(carerUsername);
       setCarerUsername('');
       setCarerPassword('');
-      setMessage('Carer created successfully.');
+      setMessage('Carer request sent to admin for approval.');
+      await loadPendingCarerRequestsForCoadmin();
       await loadCarerList();
     } catch (err: any) {
-      setMessage(err.message || 'Failed to create carer.');
+      setMessage(err.message || 'Failed to request carer creation.');
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadPendingCarerRequestsForCoadmin() {
+    const currentUser = auth.currentUser;
+    if (!currentUser) return;
+    const coadminUid = await getCurrentUserCoadminUid();
+    const requestsSnap = await getDocs(
+      query(
+        collection(db, 'carerCreationRequests'),
+        where('coadminUid', '==', coadminUid),
+        where('status', '==', 'pending')
+      )
+    );
+    const requests = requestsSnap.docs
+      .map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() as Omit<CarerCreationRequest, 'id'>) }))
+      .sort((a, b) => {
+        const aMs = a.requestedAt?.toDate?.()?.getTime?.() || 0;
+        const bMs = b.requestedAt?.toDate?.()?.getTime?.() || 0;
+        return bMs - aMs;
+      });
+    setPendingCarerRequests(requests);
   }
 
   async function handleCreatePlayer(e: React.FormEvent) {
@@ -1989,6 +2020,29 @@ export default function CoadminPage() {
                 </div>
               </div>
 
+              {pendingCarerRequests.length > 0 && (
+                <div className="mt-4 rounded-2xl border border-yellow-500/30 bg-yellow-500/10 p-5">
+                  <h3 className="text-lg font-bold text-yellow-200">
+                    Carer Requests Awaiting Admin Approval ({pendingCarerRequests.length})
+                  </h3>
+                  <div className="mt-3 space-y-2">
+                    {pendingCarerRequests.slice(0, 5).map((request) => (
+                      <div
+                        key={request.id}
+                        className="rounded-xl border border-white/10 bg-black/30 p-3"
+                      >
+                        <p className="text-sm text-white">
+                          Username: <span className="font-semibold">{request.requestedUsername}</span>
+                        </p>
+                        <p className="text-xs text-yellow-100/70">
+                          Requested at: {formatDateTime(request.requestedAt)}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {pendingCashouts.length > 0 && (
                 <div className="mt-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-5">
                   <h3 className="text-lg font-bold text-emerald-200">
@@ -2429,14 +2483,16 @@ export default function CoadminPage() {
 
           {activeView === 'create-carer' && (
             <CreateUserForm
-              title="Create Carer"
-              buttonLabel="Create Carer"
-              loadingLabel="Creating..."
+              title="Request Carer (Admin Approval)"
+              buttonLabel="Send Carer Request"
+              loadingLabel="Sending..."
               username={carerUsername}
               password={carerPassword}
               loading={loading}
               onUsernameChange={setCarerUsername}
               onPasswordChange={setCarerPassword}
+              showPasswordInput={false}
+              passwordRequired={false}
               onSubmit={handleCreateCarer}
             />
           )}
@@ -2459,7 +2515,6 @@ export default function CoadminPage() {
               onDelete={handleDeleteCarer}
               onToggleBlock={handleToggleCarerStatus}
               blocking={blocking}
-              onCoadminSetPassword={handleCoadminSetCarerPassword}
               onCoadminSetUsername={handleCoadminSetCarerUsername}
               coadminCredentialsLoading={workerCredentialsLoading}
               onlineByUid={coadminOnlineByUid}
