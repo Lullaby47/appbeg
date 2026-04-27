@@ -3128,12 +3128,15 @@ export default function PlayerPage() {
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div>
-                            <p className="text-xs font-bold uppercase tracking-[0.25em] text-amber-100/55">
-                          Referred player
-                            </p>
                             <h3 className="mt-1 text-xl font-black text-white">
                               {group.referredPlayerName || 'Unnamed Player'}
                             </h3>
+                            <p className="mt-1 text-sm text-amber-100/70">
+                              Claimable:{' '}
+                              <span className="font-black text-emerald-300">
+                                {Math.max(0, Number(group.pendingRewardCoins || 0))} coin
+                              </span>
+                            </p>
                           </div>
                         </div>
 
