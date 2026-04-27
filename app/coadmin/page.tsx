@@ -70,6 +70,8 @@ import {
 import {
   BonusEvent,
   createBonusEvent,
+  ensureCoadminActiveBonusEventsFilled,
+  MAX_ACTIVE_BONUS_EVENTS,
   listenBonusEventsByCoadmin,
 } from '../../features/bonusEvents/bonusEvents';
 import {
@@ -270,6 +272,8 @@ export default function CoadminPage() {
   const [countdownTick, setCountdownTick] = useState(0);
   const [pendingTransferRequests, setPendingTransferRequests] = useState<TransferRequest[]>([]);
   const [transferRequestBusyId, setTransferRequestBusyId] = useState<string | null>(null);
+  const bonusAutoFillBusyRef = useRef(false);
+  const bonusAutoFillLastRunRef = useRef(0);
 
   const activeChatUser =
     activeView === 'reach-out' ? reachOutChatUser : staffChatUser;
@@ -402,6 +406,44 @@ export default function CoadminPage() {
           (events) => {
             if (!isCancelled) {
               setBonusEvents(events);
+              const nowMs = Date.now();
+              const shouldTopUp =
+                events.length < MAX_ACTIVE_BONUS_EVENTS &&
+                !bonusAutoFillBusyRef.current &&
+                nowMs - bonusAutoFillLastRunRef.current > 10_000;
+              if (shouldTopUp) {
+                bonusAutoFillBusyRef.current = true;
+                bonusAutoFillLastRunRef.current = nowMs;
+                void (async () => {
+                  try {
+                    const currentUser = auth.currentUser;
+                    if (!currentUser) return;
+                    const userSnap = await getDoc(doc(db, 'users', currentUser.uid));
+                    const userData = userSnap.exists()
+                      ? (userSnap.data() as { username?: string })
+                      : {};
+                    const result = await ensureCoadminActiveBonusEventsFilled({
+                      coadminUid,
+                      createdByUid: currentUser.uid,
+                      createdByUsername: userData.username?.trim() || 'Coadmin',
+                      creatorRole: 'system',
+                    });
+                    if (result.autoCreatedCount > 0 && !isCancelled) {
+                      setMessage('Bonus events auto-created successfully.');
+                    }
+                  } catch (error: unknown) {
+                    if (!isCancelled) {
+                      const msg =
+                        error instanceof Error
+                          ? error.message
+                          : 'Failed to auto-create bonus events.';
+                      setMessage(msg);
+                    }
+                  } finally {
+                    bonusAutoFillBusyRef.current = false;
+                  }
+                })();
+              }
             }
           },
           (error) => {
