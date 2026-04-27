@@ -697,20 +697,20 @@ export default function CarerPage() {
       return;
     }
 
-    const intervalId = window.setInterval(() => {
-      if (automationLoadingTaskId || !carerIdentity) {
-        return;
-      }
+    if (automationLoadingTaskId || !carerIdentity) {
+      return;
+    }
 
-      const nextPendingTask = claimablePendingTasks[0];
-      if (!nextPendingTask) {
-        return;
-      }
+    const nextPendingTask = claimablePendingTasks[0];
+    if (!nextPendingTask) {
+      return;
+    }
 
+    const timeoutId = window.setTimeout(() => {
       void handleStartTask(nextPendingTask);
-    }, 5000);
+    }, 0);
 
-    return () => window.clearInterval(intervalId);
+    return () => window.clearTimeout(timeoutId);
   }, [
     autoAutomationEnabled,
     automationLoadingTaskId,
@@ -1485,7 +1485,7 @@ export default function CarerPage() {
               setActiveView('tasks');
               setAutoAutomationEnabled(true);
               setNoticeMessage(
-                'Auto automation started. Pending tasks will move every 5 seconds.'
+                'Auto automation started. Pending tasks will move one by one as fast as possible.'
               );
               void refreshPageData();
             }}
@@ -1941,7 +1941,7 @@ export default function CarerPage() {
                   const next = !previous;
                   setNoticeMessage(
                     next
-                      ? 'Auto automation started. Pending tasks will move every 5 seconds.'
+                      ? 'Auto automation started. Pending tasks will move one by one as fast as possible.'
                       : 'Auto automation stopped.'
                   );
                   return next;
