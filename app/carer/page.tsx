@@ -84,6 +84,7 @@ type DashboardCard = {
 type TaskSection = 'pending' | 'mine' | 'completed';
 
 const AUTOMATION_AGENT_ID = 'car001';
+const AUTO_AUTOMATION_INTERVAL_MS = 3000;
 
 function getTimestampMs(value: unknown) {
   if (!value) {
@@ -318,6 +319,7 @@ export default function CarerPage() {
 
   const previousPendingCountRef = useRef(0);
   const shiftSessionIdRef = useRef<string | null>(null);
+  const lastAutoAutomationRunMsRef = useRef(0);
 
   const selectedPlayer = useMemo(
     () => players.find((player) => player.uid === selectedPlayerUid) || null,
@@ -706,9 +708,14 @@ export default function CarerPage() {
       return;
     }
 
+    const nowMs = Date.now();
+    const elapsedMs = nowMs - lastAutoAutomationRunMsRef.current;
+    const delayMs = Math.max(0, AUTO_AUTOMATION_INTERVAL_MS - elapsedMs);
+
     const timeoutId = window.setTimeout(() => {
+      lastAutoAutomationRunMsRef.current = Date.now();
       void handleStartTask(nextPendingTask);
-    }, 0);
+    }, delayMs);
 
     return () => window.clearTimeout(timeoutId);
   }, [
@@ -918,6 +925,14 @@ export default function CarerPage() {
     } catch (error) {
       const fallback =
         error instanceof Error ? error.message : 'Failed to queue the task.';
+      const normalized = fallback.toLowerCase();
+      if (normalized.includes('resource_exhausted') || normalized.includes('quota exceeded')) {
+        setAutoAutomationEnabled(false);
+        setErrorMessage(
+          'Firestore quota exceeded. Auto automation has been paused to prevent repeated errors.'
+        );
+        return;
+      }
       if (fallback === 'Task already claimed') {
         setErrorMessage('This task was already claimed by another carer.');
       } else if (fallback === 'Task not found') {
