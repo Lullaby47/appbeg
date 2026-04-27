@@ -344,6 +344,7 @@ export default function PlayerPage() {
   const [isBlockedPlayer, setIsBlockedPlayer] = useState(false);
   const [wallet, setWallet] = useState<PlayerWallet>({ coin: 0, cash: 0 });
   const [referralCode, setReferralCode] = useState('');
+  const [referredByPlayerName, setReferredByPlayerName] = useState('');
   const [referralRewardGroups, setReferralRewardGroups] = useState<ReferralRewardGroup[]>([]);
   const [referralRewardsLoading, setReferralRewardsLoading] = useState(false);
   const [claimingReferredPlayerUid, setClaimingReferredPlayerUid] = useState<string | null>(null);
@@ -426,6 +427,35 @@ export default function PlayerPage() {
   const [showLogoutConfirmSplash, setShowLogoutConfirmSplash] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
   const [bonusVanishedToast, setBonusVanishedToast] = useState(false);
+  const activeTableHistoryOpenRef = useRef(false);
+
+  function openActiveTableSplash() {
+    if (!activeTableHistoryOpenRef.current) {
+      window.history.pushState({ playerActiveTableSplash: true }, '');
+      activeTableHistoryOpenRef.current = true;
+    }
+    setShowActiveTableSplash(true);
+  }
+
+  function closeActiveTableSplash(options?: { fromPopState?: boolean }) {
+    setShowActiveTableSplash(false);
+    if (!options?.fromPopState && activeTableHistoryOpenRef.current) {
+      activeTableHistoryOpenRef.current = false;
+      window.history.back();
+    }
+  }
+
+  useEffect(() => {
+    const onPopState = () => {
+      if (!activeTableHistoryOpenRef.current) {
+        return;
+      }
+      activeTableHistoryOpenRef.current = false;
+      setShowActiveTableSplash(false);
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
   const selfClaimedBonusIdRef = useRef<string | null>(null);
   const lastBonusIdsRef = useRef<string[]>([]);
   const musicEnabledRef = useRef(false);
@@ -1049,6 +1079,7 @@ export default function PlayerPage() {
           coin?: number;
           cash?: number;
           referralCode?: string;
+          referredByUsername?: string;
           referralBonusNotice?: string;
           referralBonusNoticeAt?: unknown;
         };
@@ -1064,6 +1095,7 @@ export default function PlayerPage() {
           setReferralCode('');
           void ensureCurrentPlayerReferralCode(playerUid);
         }
+        setReferredByPlayerName(String(playerData.referredByUsername || '').trim());
         setIsBlockedPlayer(playerData.status === 'disabled');
 
         const referralNotice = String(playerData.referralBonusNotice || '').trim();
@@ -1080,6 +1112,7 @@ export default function PlayerPage() {
       () => {
         setWallet({ coin: 0, cash: 0 });
         setReferralCode('');
+        setReferredByPlayerName('');
       }
     );
 
@@ -1190,7 +1223,7 @@ export default function PlayerPage() {
 
   useEffect(() => {
     if (activeView !== 'play') {
-      setShowActiveTableSplash(false);
+      closeActiveTableSplash();
     }
     if (activeView !== 'usernames') {
       setCredentialResetModal(null);
@@ -1234,7 +1267,7 @@ export default function PlayerPage() {
       }
     }
 
-    setShowActiveTableSplash(false);
+    closeActiveTableSplash();
     setPlayRequestSplash({
       type,
       gameName: selectedGameName,
@@ -2822,7 +2855,7 @@ export default function PlayerPage() {
                             transition={{ delay: index * 0.05 }}
                             onClick={() => {
                               setSelectedGameName(game.gameName);
-                              setShowActiveTableSplash(true);
+                                openActiveTableSplash();
                             }}
                             className={`fire-panel fire-orange group relative w-full self-start overflow-hidden rounded-3xl border p-3 text-left shadow-xl transition-all active:scale-[0.98] hover:scale-[1.02] hover:shadow-[0_0_32px_-6px_rgba(251,191,36,0.5)] sm:p-3.5 ${
                               isSelected
@@ -3106,6 +3139,12 @@ export default function PlayerPage() {
                   <p className="mt-2 text-sm text-amber-100/60">
                     Players who joined using your referral code are listed below.
                   </p>
+                  {referredByPlayerName ? (
+                    <p className="mt-2 text-xs text-emerald-200/80">
+                      You were referred by:{' '}
+                      <span className="font-bold text-emerald-300">{referredByPlayerName}</span>
+                    </p>
+                  ) : null}
                 </div>
 
                 {referralRewardsLoading ? (
@@ -3304,7 +3343,7 @@ export default function PlayerPage() {
       {showActiveTableSplash && selectedGameName ? (
         <div
           className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[74]`}
-          onClick={() => setShowActiveTableSplash(false)}
+          onClick={() => closeActiveTableSplash()}
           role="dialog"
           aria-modal="true"
           aria-labelledby="active-table-title"
@@ -3316,7 +3355,7 @@ export default function PlayerPage() {
             <button
               type="button"
               aria-label="Close"
-              onClick={() => setShowActiveTableSplash(false)}
+              onClick={() => closeActiveTableSplash()}
               className="absolute right-3 top-3 z-10 flex h-10 w-10 items-center justify-center rounded-xl border border-amber-500/35 bg-black/60 text-xl font-bold leading-none text-amber-100 transition hover:bg-amber-500/15"
             >
               ×
