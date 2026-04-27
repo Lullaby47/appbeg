@@ -1955,7 +1955,7 @@ export default function CoadminPage() {
         handleChangeView('view-staff');
       },
     },
-    { label: 'Create Carer', view: 'create-carer' },
+    { label: 'Hire Carer', view: 'create-carer' },
     { label: 'View Carers', view: 'view-carers' },
     { label: 'Create Player', view: 'create-player' },
     { label: 'View Players', view: 'view-players' },
@@ -2482,19 +2482,24 @@ export default function CoadminPage() {
           )}
 
           {activeView === 'create-carer' && (
-            <CreateUserForm
-              title="Request Carer (Admin Approval)"
-              buttonLabel="Send Carer Request"
-              loadingLabel="Sending..."
-              username={carerUsername}
-              password={carerPassword}
-              loading={loading}
-              onUsernameChange={setCarerUsername}
-              onPasswordChange={setCarerPassword}
-              showPasswordInput={false}
-              passwordRequired={false}
-              onSubmit={handleCreateCarer}
-            />
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-yellow-500/30 bg-yellow-500/10 p-4 text-sm text-yellow-100">
+                Carer handles your tasks for you, but you need to pay them.
+              </div>
+              <CreateUserForm
+                title="Hire Carer (Admin Approval)"
+                buttonLabel="Send Hire Request"
+                loadingLabel="Sending..."
+                username={carerUsername}
+                password={carerPassword}
+                loading={loading}
+                onUsernameChange={setCarerUsername}
+                onPasswordChange={setCarerPassword}
+                showPasswordInput={false}
+                passwordRequired={false}
+                onSubmit={handleCreateCarer}
+              />
+            </div>
           )}
 
           {activeView === 'view-carers' && (
