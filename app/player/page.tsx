@@ -2785,21 +2785,6 @@ export default function PlayerPage() {
                                 🎰
                               </span>
                             </div>
-                            <p
-                              className={`relative mt-3 flex items-center justify-center gap-2 text-sm font-black sm:text-base ${
-                                hasUsername ? 'text-emerald-300' : 'text-rose-300'
-                              }`}
-                            >
-                              {hasUsername ? (
-                                <>
-                                  <span>✅</span> Username ready
-                                </>
-                              ) : (
-                                <>
-                                  <span>⛔</span> Username missing — ask agent
-                                </>
-                              )}
-                            </p>
                             {hasUsername && (
                               <div className="relative mt-2 rounded-2xl border border-white/10 bg-black/35 px-3 py-2.5">
                                 <p className="text-[11px] font-bold uppercase tracking-[0.25em] text-amber-100/55">
