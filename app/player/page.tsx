@@ -2746,6 +2746,8 @@ export default function PlayerPage() {
                     <div className="grid max-w-5xl grid-cols-1 gap-3 sm:grid-cols-2 sm:items-start xl:grid-cols-3">
                       {gameLogins.map((game, index) => {
                         const resolvedUsername = (game.gameUsername || '').trim();
+                        const resolvedPassword = String(game.gamePassword || '');
+                        const isPasswordVisible = Boolean(visiblePasswords[game.id]);
                         const hasUsername = Boolean(resolvedUsername);
                         const isSelected = selectedGameName === game.gameName;
 
@@ -2798,6 +2800,36 @@ export default function PlayerPage() {
                                 </>
                               )}
                             </p>
+                            {hasUsername && (
+                              <div className="relative mt-2 rounded-2xl border border-white/10 bg-black/35 px-3 py-2.5">
+                                <p className="text-[11px] font-bold uppercase tracking-[0.25em] text-amber-100/55">
+                                  Game username
+                                </p>
+                                <p className="mt-1 truncate font-mono text-sm font-bold text-white sm:text-[15px]">
+                                  {resolvedUsername}
+                                </p>
+                                <div className="mt-2 flex items-center justify-between gap-2">
+                                  <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-amber-100/55">
+                                    Game password
+                                  </p>
+                                  <span
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      togglePassword(game.id);
+                                    }}
+                                    className="cursor-pointer rounded-lg border border-amber-400/40 bg-amber-500/20 px-2.5 py-1 text-xs font-black text-amber-100 hover:bg-amber-500/30"
+                                    aria-label={isPasswordVisible ? 'Hide password' : 'Show password'}
+                                    role="button"
+                                  >
+                                    {isPasswordVisible ? '🙈 Hide' : '👁 Show'}
+                                  </span>
+                                </div>
+                                <p className="mt-1.5 truncate font-mono text-sm font-bold tracking-wider text-white">
+                                  {isPasswordVisible ? resolvedPassword || '—' : '••••••••••'}
+                                </p>
+                              </div>
+                            )}
                             <span
                               className={`relative mt-3.5 flex min-h-[44px] w-full items-center justify-center rounded-2xl px-3 text-sm font-black transition-all duration-300 group-hover:tracking-wide sm:min-h-[46px] sm:text-base ${
                                 isSelected
