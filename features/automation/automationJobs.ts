@@ -46,6 +46,14 @@ type AutomationPayload = {
   originalTask: Record<string, unknown>;
 };
 
+type AutomationPayloadInput = {
+  taskId: string;
+  freshTask: Record<string, unknown>;
+  currentUserUid: string;
+  currentCarerName: string;
+  currentUsername?: string | null;
+};
+
 function sanitizeForFirestore(value: unknown): unknown {
   if (value === undefined) {
     return null;
@@ -115,12 +123,21 @@ function resolveTaskTypeLabel(task: Record<string, unknown>) {
   return fromTaskType;
 }
 
-export function buildAutomationPayload(task: Record<string, unknown>): AutomationPayload {
-  const mappedType = mapTaskType(resolveTaskTypeLabel(task));
+export function buildAutomationPayload(input: AutomationPayloadInput): AutomationPayload {
+  const mergedTask = {
+    id: input.taskId,
+    ...input.freshTask,
+    status: 'in_progress',
+    assignedCarerUid: input.currentUserUid,
+    assignedCarer: input.currentCarerName,
+    assignedCarerUsername: input.currentCarerName,
+    currentUsername: input.currentUsername ?? input.freshTask.currentUsername ?? null,
+  } as Record<string, unknown>;
+  const mappedType = mapTaskType(resolveTaskTypeLabel(mergedTask));
   const base = {
-    player: String(task.playerUsername || task.player || 'Player'),
-    game: String(task.gameName || task.game || 'Unknown Game'),
-    currentUsername: (task.currentUsername as string | null | undefined) ?? null,
+    player: String(mergedTask.playerUsername || mergedTask.player || 'Player'),
+    game: String(mergedTask.gameName || mergedTask.game || 'Unknown Game'),
+    currentUsername: (mergedTask.currentUsername as string | null | undefined) ?? null,
   };
 
   if (mappedType === 'CREATE_USERNAME') {
@@ -128,7 +145,12 @@ export function buildAutomationPayload(task: Record<string, unknown>): Automatio
       ...base,
       username: null,
       amount: null,
-      originalTask: sanitizeForFirestore(task) as Record<string, unknown>,
+      originalTask: {
+        id: input.taskId,
+        status: 'in_progress',
+        assignedCarerUid: input.currentUserUid,
+        assignedCarer: input.currentCarerName,
+      },
     };
   }
 
@@ -137,17 +159,27 @@ export function buildAutomationPayload(task: Record<string, unknown>): Automatio
       ...base,
       username: base.currentUsername || null,
       amount: null,
-      originalTask: sanitizeForFirestore(task) as Record<string, unknown>,
+      originalTask: {
+        id: input.taskId,
+        status: 'in_progress',
+        assignedCarerUid: input.currentUserUid,
+        assignedCarer: input.currentCarerName,
+      },
     };
   }
 
   if (mappedType === 'RECHARGE' || mappedType === 'REDEEM') {
-    const amountValue = Number(task.amount);
+    const amountValue = Number(mergedTask.amount);
     return {
       ...base,
       username: base.currentUsername || null,
       amount: Number.isFinite(amountValue) ? amountValue : null,
-      originalTask: sanitizeForFirestore(task) as Record<string, unknown>,
+      originalTask: {
+        id: input.taskId,
+        status: 'in_progress',
+        assignedCarerUid: input.currentUserUid,
+        assignedCarer: input.currentCarerName,
+      },
     };
   }
 
@@ -156,7 +188,12 @@ export function buildAutomationPayload(task: Record<string, unknown>): Automatio
       ...base,
       username: base.currentUsername || null,
       amount: null,
-      originalTask: sanitizeForFirestore(task) as Record<string, unknown>,
+      originalTask: {
+        id: input.taskId,
+        status: 'in_progress',
+        assignedCarerUid: input.currentUserUid,
+        assignedCarer: input.currentCarerName,
+      },
     };
   }
 
@@ -164,7 +201,12 @@ export function buildAutomationPayload(task: Record<string, unknown>): Automatio
     ...base,
     username: base.currentUsername || null,
     amount: null,
-    originalTask: sanitizeForFirestore(task) as Record<string, unknown>,
+    originalTask: {
+      id: input.taskId,
+      status: 'in_progress',
+      assignedCarerUid: input.currentUserUid,
+      assignedCarer: input.currentCarerName,
+    },
   };
 }
 
@@ -201,20 +243,30 @@ export async function claimTaskAndCreateJob(input: {
       throw new Error('Task already claimed');
     }
 
-    const mergedTask = {
-      id: taskSnap.id,
+    const claimedTaskData = {
       ...freshTask,
-      currentUsername: input.currentUsername ?? freshTask.currentUsername ?? null,
-    } as Record<string, unknown>;
-    const mappedType = mapTaskType(resolveTaskTypeLabel(mergedTask));
-    const payload = buildAutomationPayload(mergedTask);
-    const jobRef = doc(collection(db, 'automation_jobs'));
-
-    transaction.update(taskRef, {
       status: 'in_progress',
       assignedCarerUid: currentUser.uid,
       assignedCarerUsername: createdByName,
       assignedCarer: createdByName,
+      currentUsername: input.currentUsername ?? freshTask.currentUsername ?? null,
+    } as Record<string, unknown>;
+    const mappedType = mapTaskType(resolveTaskTypeLabel(claimedTaskData));
+    const payload = buildAutomationPayload({
+      taskId: taskSnap.id,
+      freshTask: claimedTaskData,
+      currentUserUid: currentUser.uid,
+      currentCarerName: createdByName,
+      currentUsername: input.currentUsername ?? null,
+    });
+    const jobRef = doc(db, 'automation_jobs', `task_${taskSnap.id}`);
+    const existingJobSnap = await transaction.get(jobRef);
+    if (existingJobSnap.exists()) {
+      throw new Error('Task already claimed');
+    }
+
+    transaction.update(taskRef, {
+      ...claimedTaskData,
       claimedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
