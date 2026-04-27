@@ -3411,7 +3411,7 @@ export default function PlayerPage() {
 
       {showActiveTableSplash && selectedGameName ? (
         <div
-          className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[74]`}
+          className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[74] items-end px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:items-center sm:px-4 sm:pb-4`}
           onClick={() => closeActiveTableSplash()}
           role="dialog"
           aria-modal="true"
@@ -3419,7 +3419,8 @@ export default function PlayerPage() {
         >
           <div
             onClick={(event) => event.stopPropagation()}
-            className="relative w-full max-w-lg overflow-hidden rounded-3xl border border-amber-400/30 bg-gradient-to-b from-black/85 to-zinc-950/98 p-5 shadow-2xl shadow-amber-900/20 backdrop-blur-xl sm:p-6"
+            className="relative w-full max-w-lg overflow-hidden rounded-[28px] border border-amber-400/35 bg-gradient-to-b from-black/90 to-zinc-950/98 p-4 shadow-2xl shadow-amber-900/25 backdrop-blur-xl sm:rounded-3xl sm:p-6"
+            style={{ maxHeight: '84dvh', overflowY: 'auto' }}
           >
             <button
               type="button"
@@ -3429,7 +3430,7 @@ export default function PlayerPage() {
             >
               ×
             </button>
-            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-200/60">
+            <p className="text-[10px] font-black uppercase tracking-[0.28em] text-amber-200/65">
               Active table
             </p>
             <h3
@@ -3439,8 +3440,8 @@ export default function PlayerPage() {
               {selectedGameName}
             </h3>
 
-            <div className="mt-5">
-              <label className="mb-2 block text-sm font-bold text-amber-100/70">
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-3 sm:p-4">
+              <label className="mb-2 block text-sm font-bold text-amber-100/75">
                 💰 Amount (deducts from your coin)
               </label>
               <input
@@ -3451,9 +3452,9 @@ export default function PlayerPage() {
                 inputMode="decimal"
                 placeholder="Enter amount in USD"
                 autoFocus
-                className="min-h-[52px] w-full rounded-2xl border border-amber-400/35 bg-black/70 px-4 py-3 text-lg text-white outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-400/30"
+                className="min-h-[52px] w-full rounded-2xl border border-amber-400/40 bg-black/70 px-4 py-3 text-lg text-white outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-400/30"
               />
-              <p className="mt-2 text-xs text-amber-100/50">
+              <p className="mt-2 text-xs leading-relaxed text-amber-100/60">
                 Available coin: <span className="font-bold text-amber-200">{formatWalletAmount(wallet.coin)}</span>
                 {' — '}
                 Recharge is only sent if this amount is covered.
@@ -3468,7 +3469,7 @@ export default function PlayerPage() {
               ) : null}
             </div>
 
-            <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <button
                 type="button"
                 disabled={
@@ -3483,7 +3484,7 @@ export default function PlayerPage() {
                 onClick={() => void handleGameRequest('recharge')}
                 className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 py-3 text-base font-black text-white shadow-lg shadow-emerald-500/25 transition-all hover:brightness-110 disabled:opacity-50"
               >
-                <span>⬇️</span> Recharge
+                <span>⬇️</span> Send Recharge
               </button>
 
               <button
@@ -3497,11 +3498,11 @@ export default function PlayerPage() {
                 onClick={() => void handleGameRequest('redeem')}
                 className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-700 to-red-600 px-4 py-3 text-base font-black text-white shadow-lg shadow-rose-500/25 transition-all hover:brightness-110 disabled:opacity-50"
               >
-                <span>⬆️</span> Redeem
+                <span>⬆️</span> Send Redeem
               </button>
             </div>
 
-            <div className="mt-5 flex items-start gap-2 rounded-2xl border border-white/10 bg-white/[0.06] p-4 text-sm text-amber-100/60">
+            <div className="mt-4 flex items-start gap-2 rounded-2xl border border-white/10 bg-white/[0.06] p-3 text-sm text-amber-100/65 sm:p-4">
               <span className="text-lg">🛡️</span>
               <span>Requests go to your team for secure processing.</span>
             </div>
