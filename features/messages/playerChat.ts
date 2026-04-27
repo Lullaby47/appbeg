@@ -457,6 +457,40 @@ export async function sendFriendRequest(otherUid: string) {
   );
 }
 
+export async function sendFriendRequestByReferralCode(referralCode: string) {
+  const selfUid = assertAuthUid();
+  const cleanCode = String(referralCode || '').trim().toUpperCase();
+  if (!cleanCode) {
+    throw new Error('Referral code is required.');
+  }
+
+  const matchSnap = await getDocs(
+    query(
+      collection(db, 'users'),
+      where('role', '==', 'player'),
+      where('status', '==', 'active'),
+      where('referralCode', '==', cleanCode),
+      limit(1)
+    )
+  );
+
+  if (matchSnap.empty) {
+    throw new Error('No player found with this referral code.');
+  }
+
+  const matchedDoc = matchSnap.docs[0];
+  if (matchedDoc.id === selfUid) {
+    throw new Error('You cannot add yourself.');
+  }
+
+  await sendFriendRequest(matchedDoc.id);
+  const data = matchedDoc.data() as { username?: string };
+  return {
+    uid: matchedDoc.id,
+    username: String(data.username || '').trim() || 'Player',
+  };
+}
+
 export async function acceptFriendRequest(otherUid: string) {
   const selfUid = assertAuthUid();
   const ref = doc(db, 'playerFriendLinks', getFriendLinkId(selfUid, otherUid));

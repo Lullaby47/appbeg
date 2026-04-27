@@ -29,6 +29,7 @@ import {
   PlayerPeer,
   searchDirectMessages,
   sendFriendRequest,
+  sendFriendRequestByReferralCode,
   sendDirectImageMessage,
   sendDirectTextMessage,
   setDirectConversationMuted,
@@ -63,6 +64,11 @@ export default function PlayerChatPage() {
   const [friendByUid, setFriendByUid] = useState<
     Record<string, { status: 'pending' | 'accepted'; requestedByUid: string }>
   >({});
+  const [showAddByReferralModal, setShowAddByReferralModal] = useState(false);
+  const [referralInput, setReferralInput] = useState('');
+  const [referralLoading, setReferralLoading] = useState(false);
+  const [referralError, setReferralError] = useState('');
+  const [referralNotice, setReferralNotice] = useState('');
 
   useEffect(() => {
     void ensureReferralFriendLinks();
@@ -183,6 +189,28 @@ export default function PlayerChatPage() {
     setSearchResults(results);
   }
 
+  async function onAddFriendByReferralCode(e: React.FormEvent) {
+    e.preventDefault();
+    const code = referralInput.trim().toUpperCase();
+    if (!code) {
+      setReferralError('Please enter a referral code.');
+      return;
+    }
+
+    setReferralLoading(true);
+    setReferralError('');
+    setReferralNotice('');
+    try {
+      const matched = await sendFriendRequestByReferralCode(code);
+      setReferralNotice(`Friend request sent to ${matched.username}.`);
+      setReferralInput('');
+    } catch (error) {
+      setReferralError(error instanceof Error ? error.message : 'Failed to add friend.');
+    } finally {
+      setReferralLoading(false);
+    }
+  }
+
   return (
     <ProtectedRoute allowedRoles={['player']}>
       <main className="min-h-screen bg-[#050509] text-white">
@@ -197,6 +225,17 @@ export default function PlayerChatPage() {
                 Back
               </Link>
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                setShowAddByReferralModal(true);
+                setReferralError('');
+                setReferralNotice('');
+              }}
+              className="mb-3 w-full rounded-xl border border-emerald-300/40 bg-emerald-500/15 px-3 py-2 text-sm font-semibold text-emerald-100 hover:bg-emerald-500/25"
+            >
+              Add Friend
+            </button>
             <p className="mb-2 text-xs uppercase tracking-[0.2em] text-emerald-300/80">
               All players
             </p>
@@ -441,6 +480,48 @@ export default function PlayerChatPage() {
           </section>
         </div>
       </main>
+      {showAddByReferralModal ? (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          onClick={() => setShowAddByReferralModal(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl border border-emerald-300/30 bg-[#090a12] p-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-bold text-emerald-200">Add Friend by Referral Code</h3>
+            <p className="mt-1 text-xs text-emerald-100/60">
+              Enter a player referral code to send a friend request.
+            </p>
+            <form onSubmit={onAddFriendByReferralCode} className="mt-3 space-y-3">
+              <input
+                value={referralInput}
+                onChange={(e) => setReferralInput(e.target.value.toUpperCase())}
+                placeholder="Referral code"
+                className="w-full rounded-xl border border-white/15 bg-black/50 px-3 py-2 text-sm uppercase tracking-wide text-white"
+              />
+              {referralError ? <p className="text-xs text-red-300">{referralError}</p> : null}
+              {referralNotice ? <p className="text-xs text-emerald-300">{referralNotice}</p> : null}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddByReferralModal(false)}
+                  className="flex-1 rounded-xl border border-white/15 px-3 py-2 text-sm hover:bg-white/10"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={referralLoading}
+                  className="flex-1 rounded-xl bg-emerald-300 px-3 py-2 text-sm font-bold text-black disabled:opacity-60"
+                >
+                  {referralLoading ? 'Adding...' : 'Send Request'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </ProtectedRoute>
   );
 }
