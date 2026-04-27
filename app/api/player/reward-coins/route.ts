@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 
+const MAX_REWARD_COINS_PER_TRANSFER = 50;
+
 function parsePositiveWhole(value: unknown) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
@@ -49,6 +51,12 @@ export async function POST(request: Request) {
     }
     if (amountCoins <= 0) {
       return NextResponse.json({ error: 'Reward amount must be at least 1 coin.' }, { status: 400 });
+    }
+    if (amountCoins > MAX_REWARD_COINS_PER_TRANSFER) {
+      return NextResponse.json(
+        { error: `Maximum reward per transfer is ${MAX_REWARD_COINS_PER_TRANSFER} coins.` },
+        { status: 400 }
+      );
     }
 
     const senderRef = adminDb.collection('users').doc(senderUid);

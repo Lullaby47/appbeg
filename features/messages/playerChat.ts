@@ -572,6 +572,7 @@ export async function ensureReferralFriendLinks() {
 }
 
 export async function rewardCoinsToPlayer(targetUid: string, amountCoins: number) {
+  const MAX_REWARD_COINS_PER_TRANSFER = 50;
   const self = auth.currentUser;
   if (!self) {
     throw new Error('Not authenticated.');
@@ -583,6 +584,9 @@ export async function rewardCoinsToPlayer(targetUid: string, amountCoins: number
   }
   if (cleanAmount <= 0) {
     throw new Error('Reward amount must be at least 1 coin.');
+  }
+  if (cleanAmount > MAX_REWARD_COINS_PER_TRANSFER) {
+    throw new Error(`Maximum reward per transfer is ${MAX_REWARD_COINS_PER_TRANSFER} coins.`);
   }
 
   const token = await self.getIdToken();
