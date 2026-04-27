@@ -172,6 +172,7 @@ const BONUS_ROTATE_MS = 7500;
 const CASINO_BACKGROUND_TRACKS = ['/theme1.mp3', '/theme2.mp3', '/theme3.mp3'] as const;
 const PLAYER_MUSIC_STORAGE_KEY = 'playerBackgroundMusicEnabled';
 const DEFAULT_PLAYER_MUSIC_VOLUME = 0.3;
+const ACTIVE_TABLE_SPLASH_HISTORY_KEY = '__playerActiveTableSplash';
 
 function normalizeGameKey(gameName: string) {
   return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
@@ -428,10 +429,22 @@ export default function PlayerPage() {
   const [logoutLoading, setLogoutLoading] = useState(false);
   const [bonusVanishedToast, setBonusVanishedToast] = useState(false);
   const activeTableHistoryOpenRef = useRef(false);
+  const showActiveTableSplashRef = useRef(false);
+
+  function hasActiveTableSplashHistoryState() {
+    const state = window.history.state as Record<string, unknown> | null;
+    return Boolean(state?.[ACTIVE_TABLE_SPLASH_HISTORY_KEY]);
+  }
 
   function openActiveTableSplash() {
     if (!activeTableHistoryOpenRef.current) {
-      window.history.pushState({ playerActiveTableSplash: true }, '');
+      window.history.pushState(
+        {
+          ...(window.history.state || {}),
+          [ACTIVE_TABLE_SPLASH_HISTORY_KEY]: true,
+        },
+        ''
+      );
       activeTableHistoryOpenRef.current = true;
     }
     setShowActiveTableSplash(true);
@@ -439,19 +452,23 @@ export default function PlayerPage() {
 
   function closeActiveTableSplash(options?: { fromPopState?: boolean }) {
     setShowActiveTableSplash(false);
-    if (!options?.fromPopState && activeTableHistoryOpenRef.current) {
+    if (!options?.fromPopState && hasActiveTableSplashHistoryState()) {
       activeTableHistoryOpenRef.current = false;
       window.history.back();
     }
   }
 
   useEffect(() => {
+    showActiveTableSplashRef.current = showActiveTableSplash;
+  }, [showActiveTableSplash]);
+
+  useEffect(() => {
     const onPopState = () => {
-      if (!activeTableHistoryOpenRef.current) {
+      if (!showActiveTableSplashRef.current && !activeTableHistoryOpenRef.current) {
         return;
       }
       activeTableHistoryOpenRef.current = false;
-      setShowActiveTableSplash(false);
+      closeActiveTableSplash({ fromPopState: true });
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -3277,7 +3294,7 @@ export default function PlayerPage() {
         </nav>
         <Link
           href="/player/chat"
-          className="fixed bottom-24 right-4 z-50 inline-flex h-12 w-12 items-center justify-center rounded-full border border-emerald-300/50 bg-emerald-500/20 text-2xl shadow-lg shadow-emerald-500/30 backdrop-blur-sm transition hover:bg-emerald-500/30"
+          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] right-[4.9rem] z-50 inline-flex h-12 w-12 items-center justify-center rounded-full border border-emerald-300/50 bg-emerald-500/20 text-2xl shadow-lg shadow-emerald-500/30 backdrop-blur-sm transition hover:bg-emerald-500/30 lg:bottom-4 lg:right-[5.5rem]"
           aria-label="Open player chat"
           title="Chat with online players"
         >
