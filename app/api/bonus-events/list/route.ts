@@ -2,6 +2,20 @@ import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 
+type BonusEvent = {
+  id: string;
+  bonusName: string;
+  gameName: string;
+  createdAt?: unknown;
+  created_at?: unknown;
+  status?: unknown;
+  startDate?: unknown;
+  start_date?: unknown;
+  endDate?: unknown;
+  end_date?: unknown;
+  [key: string]: unknown;
+};
+
 const FUNNY_BONUS_NAMES = [
   'Freak Friday',
   'Hello Honee',
@@ -34,7 +48,7 @@ function toMs(value: unknown) {
   return 0;
 }
 
-function isActive(docData: Record<string, unknown>) {
+function isActive(docData: BonusEvent) {
   const status = String(docData.status || 'active').toLowerCase();
   if (status !== 'active') return false;
   const now = Date.now();
@@ -127,8 +141,8 @@ export async function GET(request: Request) {
       .where('coadminUid', '==', coadminUid)
       .get();
 
-    const events = snap.docs
-      .map((d) => {
+    const events: BonusEvent[] = snap.docs
+      .map((d): BonusEvent => {
         const data = d.data() as Record<string, unknown>;
         const id = d.id;
         const currentBonusName = String(data.bonusName || '');
@@ -146,6 +160,8 @@ export async function GET(request: Request) {
           ...data,
           bonusName: isLegacyAutoBonusName(currentBonusName) ? funnyName : currentBonusName,
           gameName: isLegacyAutoGameName(currentGameName) ? randomGameFromList : currentGameName,
+          createdAt: data.createdAt ?? null,
+          created_at: data.created_at ?? null,
         };
       })
       .filter((event) => isActive(event))
