@@ -148,6 +148,10 @@ function toMillis(value?: { toDate?: () => Date; toMillis?: () => number } | nul
   return 0;
 }
 
+function randomInt(min: number, max: number) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
 function calculateWorkedHoursLast24hWithHeartbeat(
   sessions: ShiftSession[],
   nowMs: number,
@@ -1291,19 +1295,34 @@ export default function CoadminPage() {
     setMessage('');
 
     try {
-      await createBonusEvent({
+      const resolvedAmount = bonusAmount.trim() ? Number(bonusAmount) : randomInt(10, 50);
+      const resolvedPercentage = bonusPercentage.trim()
+        ? Number(bonusPercentage)
+        : randomInt(5, 10);
+      if (!bonusAmount.trim()) {
+        setBonusAmount(String(resolvedAmount));
+      }
+      if (!bonusPercentage.trim()) {
+        setBonusPercentage(String(resolvedPercentage));
+      }
+
+      const result = await createBonusEvent({
         bonusName,
         gameName: bonusGameName,
-        amountNpr: Number(bonusAmount),
+        amountNpr: resolvedAmount,
         description: bonusDescription,
-        bonusPercentage: Number(bonusPercentage),
+        bonusPercentage: resolvedPercentage,
       });
       setBonusName('');
       setBonusGameName('');
       setBonusAmount('');
       setBonusDescription('');
       setBonusPercentage('');
-      setMessage('Bonus event created successfully.');
+      if ((result?.autoCreatedCount || 0) > 0) {
+        setMessage('Bonus event created successfully. Bonus events auto-created successfully.');
+      } else {
+        setMessage('Bonus event created successfully.');
+      }
     } catch (error: any) {
       setMessage(error.message || 'Failed to create bonus event.');
     } finally {
@@ -2045,11 +2064,12 @@ export default function CoadminPage() {
                   Amount
                   <input
                     type="number"
-                    min={1}
+                    min={10}
+                    max={50}
                     value={bonusAmount}
                     onChange={(event) => setBonusAmount(event.target.value)}
                     className="mt-2 w-full rounded-xl border border-white/15 bg-black/30 px-4 py-3 text-white outline-none focus:border-white/40"
-                    placeholder="e.g. 1000"
+                    placeholder="10 - 50"
                   />
                 </label>
                 <label className="block text-sm">
@@ -2065,11 +2085,12 @@ export default function CoadminPage() {
                   Bonus Percentage
                   <input
                     type="number"
-                    min={1}
+                    min={5}
+                    max={10}
                     value={bonusPercentage}
                     onChange={(event) => setBonusPercentage(event.target.value)}
                     className="mt-2 w-full rounded-xl border border-white/15 bg-black/30 px-4 py-3 text-white outline-none focus:border-white/40"
-                    placeholder="e.g. 10"
+                    placeholder="5 - 10"
                   />
                 </label>
                 <button

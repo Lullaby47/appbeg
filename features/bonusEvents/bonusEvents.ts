@@ -1,12 +1,13 @@
 import {
-  addDoc,
   collection,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   query,
   runTransaction,
   serverTimestamp,
+  setDoc,
   updateDoc,
   where,
   Timestamp,
@@ -18,16 +19,30 @@ import { recordFinancialEventAndRefreshRisk } from '@/features/risk/playerRisk';
 
 export type BonusEvent = {
   id: string;
+  eventId?: string;
+  event_id?: string;
   coadminUid: string;
   bonusName: string;
   gameName: string;
   amountNpr: number;
+  amount?: number;
   description: string;
   bonusPercentage: number;
+  bonus_percentage?: number;
   createdByUid: string;
+  created_by?: string;
   createdByUsername: string;
-  createdByRole: 'staff' | 'coadmin';
+  createdByRole: 'staff' | 'coadmin' | 'admin' | 'system';
+  creator_role?: 'staff' | 'coadmin' | 'admin' | 'system';
+  status?: 'active' | 'inactive';
+  startDate?: Timestamp | null;
+  endDate?: Timestamp | null;
+  start_date?: Timestamp | null;
+  end_date?: Timestamp | null;
   createdAt?: Timestamp | null;
+  created_at?: Timestamp | null;
+  updatedAt?: Timestamp | null;
+  updated_at?: Timestamp | null;
 };
 
 function toBonusEvent(docId: string, value: Omit<BonusEvent, 'id'>): BonusEvent {
@@ -44,6 +59,12 @@ function sortByNewest(list: BonusEvent[]) {
 
 /** Newest bonus events shown on the player dashboard (up to 10). */
 export const MAX_PLAYER_BONUS_EVENTS_DISPLAY = 10;
+export const MAX_ACTIVE_BONUS_EVENTS = 20;
+
+const COADMIN_MIN_PERCENT = 5;
+const COADMIN_MAX_PERCENT = 10;
+const COADMIN_MIN_AMOUNT = 10;
+const COADMIN_MAX_AMOUNT = 50;
 
 /**
  * All bonus events for the player’s coadmin (staff- or coadmin-created), newest first.
@@ -51,7 +72,7 @@ export const MAX_PLAYER_BONUS_EVENTS_DISPLAY = 10;
  * Each doc is first-come-first-served: the first player to claim removes it (see `initiateBonusEventPlay`).
  */
 export function getBonusEventsForPlayerDisplay(events: BonusEvent[]): BonusEvent[] {
-  return sortByNewest(events).slice(0, MAX_PLAYER_BONUS_EVENTS_DISPLAY);
+  return sortByNewest(events).filter(isBonusEventActive).slice(0, MAX_PLAYER_BONUS_EVENTS_DISPLAY);
 }
 
 /** @deprecated Use {@link getBonusEventsForPlayerDisplay} — staff-only filter removed. */
@@ -71,6 +92,46 @@ function getStaffBonusMultiplier(bonusPercent: number) {
   return 0;
 }
 
+function normalizeDateMs(value: Timestamp | null | undefined): number {
+  return value?.toMillis?.() || 0;
+}
+
+function normalizeStartDate(event: BonusEvent): number {
+  return normalizeDateMs(event.startDate || event.start_date || null);
+}
+
+function normalizeEndDate(event: BonusEvent): number {
+  return normalizeDateMs(event.endDate || event.end_date || null);
+}
+
+function isBonusEventActive(event: BonusEvent, nowMs: number = Date.now()): boolean {
+  const status = String(event.status || 'active').toLowerCase();
+  if (status !== 'active') return false;
+  const startMs = normalizeStartDate(event);
+  const endMs = normalizeEndDate(event);
+  if (startMs > 0 && nowMs < startMs) return false;
+  if (endMs > 0 && nowMs > endMs) return false;
+  return true;
+}
+
+function makeActiveDuplicateKey(values: {
+  bonusName: string;
+  gameName: string;
+  amountNpr: number;
+  bonusPercentage: number;
+}) {
+  return [
+    values.bonusName.trim().toLowerCase(),
+    values.gameName.trim().toLowerCase(),
+    Math.round(values.amountNpr),
+    Math.round(values.bonusPercentage),
+  ].join('__');
+}
+
+function randomInt(min: number, max: number) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
 export async function createBonusEvent(values: {
   bonusName: string;
   gameName: string;
@@ -86,9 +147,11 @@ export async function createBonusEvent(values: {
 
   const bonusName = values.bonusName.trim();
   const gameName = values.gameName.trim();
-  const amountNpr = Math.round(Number(values.amountNpr || 0));
+  const rawAmount = Number(values.amountNpr);
+  const amountNpr = Math.round(rawAmount);
   const description = values.description.trim();
-  const bonusPercentage = Math.round(Number(values.bonusPercentage || 0));
+  const rawBonusPercentage = Number(values.bonusPercentage);
+  const bonusPercentage = Math.round(rawBonusPercentage);
 
   if (!bonusName) {
     throw new Error('Bonus name is required.');
@@ -102,8 +165,16 @@ export async function createBonusEvent(values: {
     throw new Error('Game name is required.');
   }
 
+  if (!Number.isFinite(rawAmount)) {
+    throw new Error('Amount must be numeric.');
+  }
+
   if (amountNpr <= 0) {
     throw new Error('Amount must be greater than zero.');
+  }
+
+  if (!Number.isFinite(rawBonusPercentage)) {
+    throw new Error('Bonus percentage must be numeric.');
   }
 
   if (bonusPercentage <= 0) {
@@ -127,20 +198,151 @@ export async function createBonusEvent(values: {
     throw new Error('Only staff and coadmin can create bonus events.');
   }
 
-  const coadminUid = await getCurrentUserCoadminUid();
+  if (role === 'coadmin') {
+    if (bonusPercentage > COADMIN_MAX_PERCENT) {
+      throw new Error('Co-admin bonus percentage cannot exceed 10%.');
+    }
+    if (bonusPercentage < COADMIN_MIN_PERCENT) {
+      throw new Error('Co-admin bonus percentage must be between 5 and 10.');
+    }
+    if (amountNpr < COADMIN_MIN_AMOUNT || amountNpr > COADMIN_MAX_AMOUNT) {
+      throw new Error('Co-admin bonus amount must be between 10 and 50.');
+    }
+  }
 
-  await addDoc(collection(db, 'bonusEvents'), {
+  const coadminUid = await getCurrentUserCoadminUid();
+  const allSnap = await getDocs(query(collection(db, 'bonusEvents'), where('coadminUid', '==', coadminUid)));
+  const allEvents = allSnap.docs.map((docSnap) =>
+    toBonusEvent(docSnap.id, docSnap.data() as Omit<BonusEvent, 'id'>)
+  );
+  const activeEvents = allEvents.filter((event) => isBonusEventActive(event));
+  if (activeEvents.length >= MAX_ACTIVE_BONUS_EVENTS) {
+    throw new Error('Bonus event limit reached. Maximum 20 active events allowed.');
+  }
+
+  const duplicateKey = makeActiveDuplicateKey({
+    bonusName,
+    gameName,
+    amountNpr,
+    bonusPercentage,
+  });
+  const existingKeys = new Set(
+    activeEvents.map((event) =>
+      makeActiveDuplicateKey({
+        bonusName: event.bonusName,
+        gameName: event.gameName,
+        amountNpr: Number(event.amountNpr || event.amount || 0),
+        bonusPercentage: Number(event.bonusPercentage || event.bonus_percentage || 0),
+      })
+    )
+  );
+  if (existingKeys.has(duplicateKey)) {
+    throw new Error('Duplicate active bonus event already exists.');
+  }
+
+  const now = Timestamp.now();
+  const end = Timestamp.fromMillis(now.toMillis() + 7 * 24 * 60 * 60 * 1000);
+  const baseDoc = {
     coadminUid,
     bonusName,
     gameName,
     amountNpr,
+    amount: amountNpr,
     description,
     bonusPercentage,
+    bonus_percentage: bonusPercentage,
     createdByUid: currentUser.uid,
+    created_by: currentUser.uid,
     createdByUsername: userData.username?.trim() || 'User',
-    createdByRole: role,
+    createdByRole: role as BonusEvent['createdByRole'],
+    creator_role: role as BonusEvent['createdByRole'],
+    status: 'active' as const,
+    startDate: now,
+    endDate: end,
+    start_date: now,
+    end_date: end,
     createdAt: serverTimestamp(),
+    created_at: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    updated_at: serverTimestamp(),
+  };
+  const manualRef = doc(collection(db, 'bonusEvents'));
+  await setDoc(manualRef, {
+    ...baseDoc,
+    eventId: manualRef.id,
+    event_id: manualRef.id,
   });
+  existingKeys.add(duplicateKey);
+
+  let autoCreatedCount = 0;
+  if (role === 'coadmin') {
+    const targetMissing = Math.max(0, MAX_ACTIVE_BONUS_EVENTS - (activeEvents.length + 1));
+    if (targetMissing > 0) {
+      const usedNames = new Set(activeEvents.map((event) => event.bonusName.trim().toLowerCase()));
+      let attempts = 0;
+      while (autoCreatedCount < targetMissing && attempts < targetMissing * 20) {
+        attempts += 1;
+        const autoAmount = randomInt(COADMIN_MIN_AMOUNT, COADMIN_MAX_AMOUNT);
+        const autoPercent = randomInt(COADMIN_MIN_PERCENT, COADMIN_MAX_PERCENT);
+        const autoGame = gameName || 'Bonus Table';
+        const autoName = `Auto Bonus ${new Date().toISOString().slice(0, 10)} #${attempts}`;
+        const key = makeActiveDuplicateKey({
+          bonusName: autoName,
+          gameName: autoGame,
+          amountNpr: autoAmount,
+          bonusPercentage: autoPercent,
+        });
+        if (existingKeys.has(key) || usedNames.has(autoName.toLowerCase())) {
+          continue;
+        }
+        const autoRef = doc(collection(db, 'bonusEvents'));
+        await setDoc(autoRef, {
+          coadminUid,
+          bonusName: autoName,
+          gameName: autoGame,
+          amountNpr: autoAmount,
+          amount: autoAmount,
+          description:
+            'Auto-generated co-admin bonus event to keep reward queue healthy.',
+          bonusPercentage: autoPercent,
+          bonus_percentage: autoPercent,
+          createdByUid: currentUser.uid,
+          created_by: currentUser.uid,
+          createdByUsername: userData.username?.trim() || 'Coadmin',
+          createdByRole: 'system',
+          creator_role: 'system',
+          status: 'active',
+          startDate: now,
+          endDate: end,
+          start_date: now,
+          end_date: end,
+          createdAt: serverTimestamp(),
+          created_at: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          updated_at: serverTimestamp(),
+          eventId: autoRef.id,
+          event_id: autoRef.id,
+          autoGenerated: true,
+        });
+        autoCreatedCount += 1;
+        usedNames.add(autoName.toLowerCase());
+        existingKeys.add(key);
+      }
+    }
+  }
+
+  console.info('[bonusEvents] createBonusEvent', {
+    byUid: currentUser.uid,
+    role,
+    coadminUid,
+    manualEventId: manualRef.id,
+    autoCreatedCount,
+  });
+
+  return {
+    createdEventId: manualRef.id,
+    autoCreatedCount,
+  };
 }
 
 export function listenBonusEventsByCoadmin(
@@ -156,7 +358,7 @@ export function listenBonusEventsByCoadmin(
       const events = snapshot.docs.map((docSnap) =>
         toBonusEvent(docSnap.id, docSnap.data() as Omit<BonusEvent, 'id'>)
       );
-      onChange(sortByNewest(events));
+      onChange(sortByNewest(events).filter(isBonusEventActive));
     },
     (error) => onError?.(error as Error)
   );
