@@ -59,10 +59,20 @@ import {
   listenTransferRequestsByPlayer,
 } from '@/features/risk/playerRisk';
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
+import {
+  listenReferredPlayersByReferrer,
+  type ReferredPlayer,
+} from '@/features/referrals/playerReferrals';
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
 
-type PlayerView = 'dashboard' | 'play' | 'bonus-events' | 'agents' | 'usernames';
+type PlayerView =
+  | 'dashboard'
+  | 'play'
+  | 'bonus-events'
+  | 'agents'
+  | 'usernames'
+  | 'earn-coins';
 
 type PlayerWallet = {
   coin: number;
@@ -296,6 +306,7 @@ const NAV_ITEMS: {
   { label: 'Lobby', view: 'dashboard', icon: 'tachometer-alt', emoji: '🏠' },
   { label: 'Play', view: 'play', icon: 'dice-d6', emoji: '🎰' },
   { label: 'Bonus Events', view: 'bonus-events', icon: 'gift', emoji: '🎁' },
+  { label: 'Earn Coins', view: 'earn-coins', icon: 'coins', emoji: '🪙' },
   { label: 'Agents', view: 'agents', icon: 'headset', emoji: '💬' },
   { label: 'Vault', view: 'usernames', icon: 'user-secret', emoji: '🔐' },
 ];
@@ -331,6 +342,8 @@ export default function PlayerPage() {
   const [isBlockedPlayer, setIsBlockedPlayer] = useState(false);
   const [wallet, setWallet] = useState<PlayerWallet>({ coin: 0, cash: 0 });
   const [referralCode, setReferralCode] = useState('');
+  const [referredPlayers, setReferredPlayers] = useState<ReferredPlayer[]>([]);
+  const [referredPlayersLoading, setReferredPlayersLoading] = useState(false);
   const [showCashoutModal, setShowCashoutModal] = useState(false);
   const [showCoinConfirmSplash, setShowCoinConfirmSplash] = useState(false);
   const [showLoadCoinPanel, setShowLoadCoinPanel] = useState(false);
@@ -1096,6 +1109,29 @@ export default function PlayerPage() {
       },
       () => {
         // Silent fail to avoid interrupting gameplay flow.
+      }
+    );
+
+    return () => unsubscribe();
+  }, [playerUid]);
+
+  useEffect(() => {
+    if (!playerUid) {
+      setReferredPlayers([]);
+      setReferredPlayersLoading(false);
+      return;
+    }
+
+    setReferredPlayersLoading(true);
+    const unsubscribe = listenReferredPlayersByReferrer(
+      playerUid,
+      (players) => {
+        setReferredPlayers(players);
+        setReferredPlayersLoading(false);
+      },
+      (error) => {
+        setMessage(error.message || 'Failed to load referred players.');
+        setReferredPlayersLoading(false);
       }
     );
 
@@ -3027,6 +3063,69 @@ export default function PlayerPage() {
                   </div>
                     )}
                   </>
+                )}
+              </div>
+            )}
+
+            {/* EARN COINS VIEW */}
+            {activeView === 'earn-coins' && (
+              <div className="space-y-5 sm:space-y-6">
+                <div className="fire-panel fire-orange fire-hero rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/15 via-emerald-900/20 to-black/50 p-5 shadow-lg sm:p-6">
+                  <p className="text-xs font-black uppercase tracking-[0.35em] text-amber-200/90 sm:text-sm">
+                    🪙 Earn coins
+                  </p>
+                  <h2 className="mt-2 text-3xl font-black text-white sm:text-4xl">
+                    Referral players
+                  </h2>
+                  <p className="mt-2 text-sm text-amber-100/60">
+                    Players who joined using your referral code are listed below.
+                  </p>
+                </div>
+
+                {referredPlayersLoading ? (
+                  <div className="flex justify-center py-12">
+                    <i className="fas fa-spinner fa-spin text-3xl text-amber-500"></i>
+                  </div>
+                ) : referredPlayers.length === 0 ? (
+                  <div className="rounded-2xl border border-amber-500/20 bg-black/40 p-8 text-center text-amber-100/50">
+                    <i className="fas fa-user-plus text-4xl opacity-50"></i>
+                    <p className="mt-3">No referral players yet.</p>
+                    <p className="mt-1 text-xs text-amber-100/40">
+                      Share your referral code from the Lobby card to invite players.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    {referredPlayers.map((player) => (
+                      <div
+                        key={player.id}
+                        className="fire-panel fire-orange rounded-2xl border border-amber-400/25 bg-gradient-to-br from-black/60 to-emerald-950/20 p-4"
+                      >
+                        <p className="text-xs font-bold uppercase tracking-[0.25em] text-amber-100/55">
+                          Referred player
+                        </p>
+                        <h3 className="mt-1 text-xl font-black text-white">
+                          {player.username || 'Unnamed Player'}
+                        </h3>
+                        <p className="mt-2 text-sm text-amber-100/65">
+                          Status:{' '}
+                          <span className="font-semibold text-white">{player.status || 'active'}</span>
+                        </p>
+                        <p className="mt-1 text-sm text-amber-100/65">
+                          Joined:{' '}
+                          <span className="font-semibold text-white">
+                            {formatDateTime(player.referralCreatedAt || player.createdAt)}
+                          </span>
+                        </p>
+                        <p className="mt-1 text-sm text-amber-100/65">
+                          Referral bonus:{' '}
+                          <span className="font-semibold text-emerald-300">
+                            +{Math.max(0, Number(player.referralBonusCoins || 0))} coin
+                          </span>
+                        </p>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             )}

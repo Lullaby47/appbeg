@@ -2,6 +2,39 @@ import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 
+function isAuthUserNotFound(error: unknown) {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const maybe = error as { code?: string };
+  return maybe.code === 'auth/user-not-found';
+}
+
+async function ensureAuthUserDeleted(uid: string, email?: string | null) {
+  try {
+    await adminAuth.deleteUser(uid);
+    return;
+  } catch (error) {
+    if (!isAuthUserNotFound(error)) {
+      throw error;
+    }
+  }
+
+  const cleanEmail = String(email || '').trim();
+  if (!cleanEmail) {
+    return;
+  }
+
+  try {
+    const userByEmail = await adminAuth.getUserByEmail(cleanEmail);
+    await adminAuth.deleteUser(userByEmail.uid);
+  } catch (error) {
+    if (!isAuthUserNotFound(error)) {
+      throw error;
+    }
+  }
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
@@ -45,8 +78,8 @@ export async function POST(request: Request) {
       });
     }
 
-    await adminAuth.deleteUser(uid).catch(() => undefined);
-    await userRef.delete().catch(() => undefined);
+    await ensureAuthUserDeleted(uid, userData?.email);
+    await userRef.delete();
 
     return NextResponse.json({
       success: true,
