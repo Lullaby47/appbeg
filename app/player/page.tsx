@@ -3294,7 +3294,7 @@ export default function PlayerPage() {
         </nav>
         <Link
           href="/player/chat"
-          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] right-[4.9rem] z-50 inline-flex h-12 w-12 items-center justify-center rounded-full border border-emerald-300/50 bg-emerald-500/20 text-2xl shadow-lg shadow-emerald-500/30 backdrop-blur-sm transition hover:bg-emerald-500/30 lg:bottom-4 lg:right-[5.5rem]"
+          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] left-4 z-50 inline-flex h-12 w-12 items-center justify-center rounded-full border border-emerald-300/50 bg-emerald-500/20 text-2xl shadow-lg shadow-emerald-500/30 backdrop-blur-sm transition hover:bg-emerald-500/30 lg:bottom-4 lg:left-4"
           aria-label="Open player chat"
           title="Chat with online players"
         >
