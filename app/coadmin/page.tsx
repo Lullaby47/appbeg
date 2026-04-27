@@ -396,54 +396,67 @@ export default function CoadminPage() {
     async function startBonusEventsListener() {
       try {
         const coadminUid = await getCurrentUserCoadminUid();
+        const creatorUid = auth.currentUser?.uid || coadminUid;
+        let creatorUsername = 'Coadmin';
+        try {
+          const creatorSnap = await getDoc(doc(db, 'users', creatorUid));
+          if (creatorSnap.exists()) {
+            const creatorData = creatorSnap.data() as { username?: string };
+            creatorUsername = creatorData.username?.trim() || 'Coadmin';
+          }
+        } catch {
+          // keep fallback username; this should not block auto-fill
+        }
 
         if (isCancelled) {
           return;
         }
+
+        const tryAutoFill = (activeCount: number) => {
+          const nowMs = Date.now();
+          const shouldTopUp =
+            activeCount < MAX_ACTIVE_BONUS_EVENTS &&
+            !bonusAutoFillBusyRef.current &&
+            nowMs - bonusAutoFillLastRunRef.current > 10_000;
+          if (!shouldTopUp) {
+            return;
+          }
+          bonusAutoFillBusyRef.current = true;
+          bonusAutoFillLastRunRef.current = nowMs;
+          void (async () => {
+            try {
+              const result = await ensureCoadminActiveBonusEventsFilled({
+                coadminUid,
+                createdByUid: creatorUid,
+                createdByUsername: creatorUsername,
+                creatorRole: 'system',
+              });
+              if (result.autoCreatedCount > 0 && !isCancelled) {
+                setMessage('Bonus events auto-created successfully.');
+              }
+            } catch (error: unknown) {
+              if (!isCancelled) {
+                const msg =
+                  error instanceof Error
+                    ? error.message
+                    : 'Failed to auto-create bonus events.';
+                setMessage(msg);
+              }
+            } finally {
+              bonusAutoFillBusyRef.current = false;
+            }
+          })();
+        };
+
+        // Run once immediately, so empty collections get filled to 20.
+        tryAutoFill(bonusEvents.length);
 
         unsubscribe = listenBonusEventsByCoadmin(
           coadminUid,
           (events) => {
             if (!isCancelled) {
               setBonusEvents(events);
-              const nowMs = Date.now();
-              const shouldTopUp =
-                events.length < MAX_ACTIVE_BONUS_EVENTS &&
-                !bonusAutoFillBusyRef.current &&
-                nowMs - bonusAutoFillLastRunRef.current > 10_000;
-              if (shouldTopUp) {
-                bonusAutoFillBusyRef.current = true;
-                bonusAutoFillLastRunRef.current = nowMs;
-                void (async () => {
-                  try {
-                    const currentUser = auth.currentUser;
-                    if (!currentUser) return;
-                    const userSnap = await getDoc(doc(db, 'users', currentUser.uid));
-                    const userData = userSnap.exists()
-                      ? (userSnap.data() as { username?: string })
-                      : {};
-                    const result = await ensureCoadminActiveBonusEventsFilled({
-                      coadminUid,
-                      createdByUid: currentUser.uid,
-                      createdByUsername: userData.username?.trim() || 'Coadmin',
-                      creatorRole: 'system',
-                    });
-                    if (result.autoCreatedCount > 0 && !isCancelled) {
-                      setMessage('Bonus events auto-created successfully.');
-                    }
-                  } catch (error: unknown) {
-                    if (!isCancelled) {
-                      const msg =
-                        error instanceof Error
-                          ? error.message
-                          : 'Failed to auto-create bonus events.';
-                      setMessage(msg);
-                    }
-                  } finally {
-                    bonusAutoFillBusyRef.current = false;
-                  }
-                })();
-              }
+              tryAutoFill(events.length);
             }
           },
           (error) => {
