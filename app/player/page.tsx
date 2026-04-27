@@ -395,6 +395,7 @@ export default function PlayerPage() {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [sendingImage, setSendingImage] = useState(false);
 
+  const pageScrollRef = useRef<HTMLElement | null>(null);
   const previousUnreadRef = useRef(0);
   const pagedAgentChat = usePaginatedChatMessages(selectedAgent?.uid ?? null, {
     scrollContainerRef: agentsScrollRef,
@@ -1523,6 +1524,11 @@ export default function PlayerPage() {
     setSelectedAgent(null);
     setNewMessage('');
     handleClearImage();
+    // Player page scrolls inside its own container, not only the window.
+    requestAnimationFrame(() => {
+      pageScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
   }
 
   function togglePassword(loginId: string) {
@@ -1867,7 +1873,10 @@ export default function PlayerPage() {
 
   return (
     <ProtectedRoute allowedRoles={['player']}>
-      <main className="player-fire-page relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white lg:flex-row lg:pb-0">
+      <main
+        ref={pageScrollRef}
+        className="player-fire-page relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white lg:flex-row lg:pb-0"
+      >
         <div className="ember-overlay" aria-hidden="true" />
 
         <header className="fire-panel fire-orange sticky top-0 z-30 shrink-0 border-b border-amber-500/20 bg-black/65 px-3 py-2.5 backdrop-blur-2xl lg:hidden">
