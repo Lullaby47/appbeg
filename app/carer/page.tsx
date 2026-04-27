@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, serverTimestamp, updateDoc } from 'firebase/firestore';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
 import LogoutButton from '../../components/auth/LogoutButton';
@@ -311,6 +311,7 @@ export default function CarerPage() {
   );
   const [riskActionLoading, setRiskActionLoading] = useState<string | null>(null);
   const [automationLoadingTaskId, setAutomationLoadingTaskId] = useState<string | null>(null);
+  const [autoAutomationEnabled, setAutoAutomationEnabled] = useState(false);
   const [automationStatusByTaskId, setAutomationStatusByTaskId] = useState<
     Record<string, AutomationUiStatus>
   >({});
@@ -691,6 +692,32 @@ export default function CarerPage() {
     }
   }, [players, selectedPlayerUid]);
 
+  useEffect(() => {
+    if (!autoAutomationEnabled) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      if (automationLoadingTaskId || !carerIdentity) {
+        return;
+      }
+
+      const nextPendingTask = claimablePendingTasks[0];
+      if (!nextPendingTask) {
+        return;
+      }
+
+      void handleStartTask(nextPendingTask);
+    }, 5000);
+
+    return () => window.clearInterval(intervalId);
+  }, [
+    autoAutomationEnabled,
+    automationLoadingTaskId,
+    carerIdentity,
+    claimablePendingTasks,
+  ]);
+
   async function initializePage(firebaseUser: User) {
     setBootstrapping(true);
     setErrorMessage('');
@@ -957,6 +984,36 @@ export default function CarerPage() {
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : 'Failed to complete the task.'
+      );
+    } finally {
+      setTaskLoadingId(null);
+    }
+  }
+
+  async function handleMoveTaskBackToPending(task: CarerTask) {
+    if (!carerIdentity) {
+      setErrorMessage('Carer profile not ready yet. Please try again.');
+      return;
+    }
+
+    setTaskLoadingId(task.id);
+    setErrorMessage('');
+    setNoticeMessage('');
+
+    try {
+      await updateDoc(doc(db, 'carerTasks', task.id), {
+        status: 'pending',
+        assignedCarerUid: null,
+        assignedCarer: null,
+        assignedCarerUsername: null,
+        startedAt: null,
+        claimedAt: null,
+        updatedAt: serverTimestamp(),
+      });
+      setNoticeMessage('Task moved back to pending.');
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Failed to move task back to pending.'
       );
     } finally {
       setTaskLoadingId(null);
@@ -1426,11 +1483,15 @@ export default function CarerPage() {
           <button
             onClick={() => {
               setActiveView('tasks');
+              setAutoAutomationEnabled(true);
+              setNoticeMessage(
+                'Auto automation started. Pending tasks will move every 5 seconds.'
+              );
               void refreshPageData();
             }}
             className="rounded-2xl bg-white px-4 py-3 text-sm font-bold text-black hover:bg-neutral-200"
           >
-            Open Tasks
+            Start Automation
           </button>
 
           <button
@@ -1786,6 +1847,14 @@ export default function CarerPage() {
                       : 'Start Automation'}
               </button>
               <button
+                type="button"
+                onClick={() => void handleMoveTaskBackToPending(task)}
+                disabled={taskLoadingId === task.id}
+                className="rounded-xl border border-orange-500/40 bg-orange-500/15 px-4 py-2 text-sm font-bold text-orange-100 hover:bg-orange-500/25 disabled:opacity-60"
+              >
+                {taskLoadingId === task.id ? 'Saving...' : 'Back to Pending'}
+              </button>
+              <button
                 onClick={() => continueUsernameTask(task)}
                 className="rounded-xl bg-yellow-400 px-4 py-2 text-sm font-bold text-black hover:bg-yellow-300"
               >
@@ -1831,6 +1900,14 @@ export default function CarerPage() {
                       : 'Start Automation'}
               </button>
               <button
+                type="button"
+                onClick={() => void handleMoveTaskBackToPending(task)}
+                disabled={taskLoadingId === task.id}
+                className="rounded-xl border border-orange-500/40 bg-orange-500/15 px-4 py-2 text-sm font-bold text-orange-100 hover:bg-orange-500/25 disabled:opacity-60"
+              >
+                {taskLoadingId === task.id ? 'Saving...' : 'Back to Pending'}
+              </button>
+              <button
                 onClick={() => void handleCompleteRechargeRedeem(task)}
                 disabled={taskLoadingId === task.id}
                 className="rounded-xl bg-white px-4 py-2 text-sm font-bold text-black hover:bg-neutral-200 disabled:opacity-60"
@@ -1857,6 +1934,23 @@ export default function CarerPage() {
           </div>
 
           <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setAutoAutomationEnabled((previous) => {
+                  const next = !previous;
+                  setNoticeMessage(
+                    next
+                      ? 'Auto automation started. Pending tasks will move every 5 seconds.'
+                      : 'Auto automation stopped.'
+                  );
+                  return next;
+                });
+              }}
+              className="rounded-xl border border-violet-500/40 bg-violet-500/15 px-4 py-2 text-sm font-bold text-violet-100 hover:bg-violet-500/25"
+            >
+              {autoAutomationEnabled ? 'Stop Automation' : 'Start Automation'}
+            </button>
             <button
               type="button"
               onClick={() => setShowRevTotals((open) => !open)}
