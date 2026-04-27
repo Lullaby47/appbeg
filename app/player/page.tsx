@@ -60,9 +60,10 @@ import {
 } from '@/features/risk/playerRisk';
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 import {
-  listenReferredPlayersByReferrer,
-  type ReferredPlayer,
-} from '@/features/referrals/playerReferrals';
+  claimMyReferralReward,
+  fetchMyReferralRewards,
+  type ReferralRewardGroup,
+} from '@/features/referrals/playerReferralRewards';
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
 
@@ -342,8 +343,10 @@ export default function PlayerPage() {
   const [isBlockedPlayer, setIsBlockedPlayer] = useState(false);
   const [wallet, setWallet] = useState<PlayerWallet>({ coin: 0, cash: 0 });
   const [referralCode, setReferralCode] = useState('');
-  const [referredPlayers, setReferredPlayers] = useState<ReferredPlayer[]>([]);
-  const [referredPlayersLoading, setReferredPlayersLoading] = useState(false);
+  const [referralRewardGroups, setReferralRewardGroups] = useState<ReferralRewardGroup[]>([]);
+  const [referralRewardsLoading, setReferralRewardsLoading] = useState(false);
+  const [expandedEarnPlayerUid, setExpandedEarnPlayerUid] = useState<string | null>(null);
+  const [claimingRechargeId, setClaimingRechargeId] = useState<string | null>(null);
   const [showCashoutModal, setShowCashoutModal] = useState(false);
   const [showCoinConfirmSplash, setShowCoinConfirmSplash] = useState(false);
   const [showLoadCoinPanel, setShowLoadCoinPanel] = useState(false);
@@ -1115,28 +1118,57 @@ export default function PlayerPage() {
     return () => unsubscribe();
   }, [playerUid]);
 
-  useEffect(() => {
+  const loadReferralRewards = useCallback(async () => {
     if (!playerUid) {
-      setReferredPlayers([]);
-      setReferredPlayersLoading(false);
+      setReferralRewardGroups([]);
+      setReferralRewardsLoading(false);
       return;
     }
-
-    setReferredPlayersLoading(true);
-    const unsubscribe = listenReferredPlayersByReferrer(
-      playerUid,
-      (players) => {
-        setReferredPlayers(players);
-        setReferredPlayersLoading(false);
-      },
-      (error) => {
-        setMessage(error.message || 'Failed to load referred players.');
-        setReferredPlayersLoading(false);
-      }
-    );
-
-    return () => unsubscribe();
+    setReferralRewardsLoading(true);
+    try {
+      const groups = await fetchMyReferralRewards();
+      setReferralRewardGroups(groups);
+      setExpandedEarnPlayerUid((prev) => {
+        if (!prev) {
+          return groups[0]?.referredPlayerUid || null;
+        }
+        return groups.some((group) => group.referredPlayerUid === prev)
+          ? prev
+          : groups[0]?.referredPlayerUid || null;
+      });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to load referral rewards.');
+    } finally {
+      setReferralRewardsLoading(false);
+    }
   }, [playerUid]);
+
+  async function handleClaimReferralReward(rechargeId: string) {
+    if (!rechargeId || claimingRechargeId) {
+      return;
+    }
+    setClaimingRechargeId(rechargeId);
+    setMessage('');
+    try {
+      const result = await claimMyReferralReward(rechargeId);
+      setMessage(
+        result.message ||
+          "Congratulations! You received referral reward coins from this player's recharge."
+      );
+      await loadReferralRewards();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to claim referral reward.');
+    } finally {
+      setClaimingRechargeId(null);
+    }
+  }
+
+  useEffect(() => {
+    if (activeView !== 'earn-coins') {
+      return;
+    }
+    void loadReferralRewards();
+  }, [activeView, loadReferralRewards]);
 
   useEffect(() => {
     if (activeView === 'agents' && playerUid) {
@@ -3082,11 +3114,11 @@ export default function PlayerPage() {
                   </p>
                 </div>
 
-                {referredPlayersLoading ? (
+                {referralRewardsLoading ? (
                   <div className="flex justify-center py-12">
                     <i className="fas fa-spinner fa-spin text-3xl text-amber-500"></i>
                   </div>
-                ) : referredPlayers.length === 0 ? (
+                ) : referralRewardGroups.length === 0 ? (
                   <div className="rounded-2xl border border-amber-500/20 bg-black/40 p-8 text-center text-amber-100/50">
                     <i className="fas fa-user-plus text-4xl opacity-50"></i>
                     <p className="mt-3">No referral players yet.</p>
@@ -3096,33 +3128,135 @@ export default function PlayerPage() {
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                    {referredPlayers.map((player) => (
+                    {referralRewardGroups.map((group) => (
                       <div
-                        key={player.id}
+                        key={group.referredPlayerUid}
                         className="fire-panel fire-orange rounded-2xl border border-amber-400/25 bg-gradient-to-br from-black/60 to-emerald-950/20 p-4"
                       >
-                        <p className="text-xs font-bold uppercase tracking-[0.25em] text-amber-100/55">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-bold uppercase tracking-[0.25em] text-amber-100/55">
                           Referred player
-                        </p>
-                        <h3 className="mt-1 text-xl font-black text-white">
-                          {player.username || 'Unnamed Player'}
-                        </h3>
-                        <p className="mt-2 text-sm text-amber-100/65">
-                          Status:{' '}
-                          <span className="font-semibold text-white">{player.status || 'active'}</span>
-                        </p>
-                        <p className="mt-1 text-sm text-amber-100/65">
-                          Joined:{' '}
-                          <span className="font-semibold text-white">
-                            {formatDateTime(player.referralCreatedAt || player.createdAt)}
-                          </span>
-                        </p>
-                        <p className="mt-1 text-sm text-amber-100/65">
-                          Referral bonus:{' '}
-                          <span className="font-semibold text-emerald-300">
-                            +{Math.max(0, Number(player.referralBonusCoins || 0))} coin
-                          </span>
-                        </p>
+                            </p>
+                            <h3 className="mt-1 text-xl font-black text-white">
+                              {group.referredPlayerName || 'Unnamed Player'}
+                            </h3>
+                            <p className="mt-1 text-sm text-amber-100/65">
+                              Pending reward:{' '}
+                              <span className="font-semibold text-emerald-300">
+                                {Math.max(0, Number(group.pendingRewardCoins || 0))} coin
+                              </span>
+                            </p>
+                          </div>
+                          {group.hasClaimableReward ? (
+                            <span
+                              className="rounded-xl border border-red-400/50 bg-red-500/20 px-2.5 py-1 text-xs font-black text-red-100"
+                              title="Reward available to claim"
+                            >
+                              🎁
+                            </span>
+                          ) : null}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedEarnPlayerUid((prev) =>
+                              prev === group.referredPlayerUid ? null : group.referredPlayerUid
+                            )
+                          }
+                          className="mt-3 rounded-xl border border-amber-400/45 bg-amber-500/15 px-3 py-2 text-xs font-black text-amber-100 hover:bg-amber-500/25"
+                        >
+                          {expandedEarnPlayerUid === group.referredPlayerUid ? 'Hide Earn' : 'Earn'}
+                        </button>
+
+                        {expandedEarnPlayerUid === group.referredPlayerUid && (
+                          <div className="mt-3 overflow-hidden rounded-xl border border-white/10">
+                            <div className="max-h-72 overflow-auto">
+                              <table className="w-full min-w-[700px] text-left text-xs">
+                                <thead className="bg-black/50 text-amber-100/70">
+                                  <tr>
+                                    <th className="px-3 py-2">Player</th>
+                                    <th className="px-3 py-2">Total recharge</th>
+                                    <th className="px-3 py-2">Recharge type</th>
+                                    <th className="px-3 py-2">Bonus %</th>
+                                    <th className="px-3 py-2">Pending reward</th>
+                                    <th className="px-3 py-2">Claim status</th>
+                                    <th className="px-3 py-2">Claim</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {group.rows.map((row) => (
+                                    <tr
+                                      key={row.rechargeId}
+                                      className="border-t border-white/10 bg-black/20"
+                                    >
+                                      <td className="px-3 py-2 text-white">
+                                        {group.referredPlayerName} / {group.referredPlayerUid}
+                                      </td>
+                                      <td className="px-3 py-2 text-white">
+                                        {Math.max(0, Number(row.rechargeAmount || 0)).toLocaleString()}
+                                      </td>
+                                      <td className="px-3 py-2 text-amber-100/85">
+                                        {row.rechargeTypeLabel}
+                                      </td>
+                                      <td className="px-3 py-2 text-amber-100/85">
+                                        {row.bonusPercentage == null
+                                          ? '—'
+                                          : `${Number(row.bonusPercentage).toFixed(2)}%`}
+                                      </td>
+                                      <td className="px-3 py-2 text-emerald-300">
+                                        {row.claimStatus === 'pending'
+                                          ? `${Math.max(0, Number(row.rewardCoins || 0))}`
+                                          : '0'}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        {row.claimStatus === 'claimed' ? (
+                                          <span className="rounded-lg bg-emerald-500/20 px-2 py-1 font-bold text-emerald-200">
+                                            Claimed
+                                          </span>
+                                        ) : row.claimStatus === 'ineligible' ? (
+                                          <span
+                                            className="rounded-lg bg-neutral-700/60 px-2 py-1 font-bold text-neutral-200"
+                                            title={row.ineligibleReason || 'Not eligible'}
+                                          >
+                                            Not eligible
+                                          </span>
+                                        ) : (
+                                          <span className="rounded-lg bg-amber-500/20 px-2 py-1 font-bold text-amber-100">
+                                            Pending
+                                          </span>
+                                        )}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        {row.canClaim ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => void handleClaimReferralReward(row.rechargeId)}
+                                            disabled={claimingRechargeId === row.rechargeId}
+                                            className="rounded-lg border border-red-400/50 bg-red-500/20 px-2.5 py-1 font-black text-red-100 hover:bg-red-500/30 disabled:opacity-50"
+                                            title="Claim reward"
+                                          >
+                                            {claimingRechargeId === row.rechargeId
+                                              ? '...'
+                                              : '🎁 Claim'}
+                                          </button>
+                                        ) : (
+                                          <span className="text-neutral-500">—</span>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                            {group.rows.every((row) => !row.canClaim) && (
+                              <p className="border-t border-white/10 bg-black/40 px-3 py-2 text-xs text-amber-100/60">
+                                No rewards available.
+                              </p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
