@@ -1,15 +1,19 @@
 import {
   addDoc,
   collection,
+  doc,
+  getDoc,
   limit,
   onSnapshot,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
   where,
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
+import type { CarerTaskStatus } from '@/features/games/carerTasks';
 
 export type AutomationJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type AutomationUiStatus = 'waiting' | 'running' | 'completed' | 'failed';
@@ -22,6 +26,24 @@ export type AutomationJob = {
   status: AutomationJobStatus;
   payload: Record<string, unknown>;
   createdByUid: string;
+};
+
+type QueuedAutomationType =
+  | 'CREATE_USERNAME'
+  | 'RECREATE_USERNAME'
+  | 'RECHARGE'
+  | 'REDEEM'
+  | 'RESET_PASSWORD'
+  | 'LOGIN'
+  | 'COMPLETE_TASK';
+
+type AutomationPayload = {
+  player: string;
+  game: string;
+  username: string | null;
+  currentUsername: string | null;
+  amount: number | null;
+  originalTask: Record<string, unknown>;
 };
 
 function sanitizeForFirestore(value: unknown): unknown {
@@ -49,6 +71,172 @@ function mapJobType(taskLabel: string) {
   if (normalized === 'REDEEM') return 'REDEEM';
   if (normalized === 'LOGIN') return 'LOGIN';
   return 'COMPLETE_TASK';
+}
+
+function sanitizeStatus(value: unknown): CarerTaskStatus {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'pending') return 'pending';
+  if (normalized === 'in_progress') return 'in_progress';
+  if (normalized === 'completed') return 'completed';
+  if (normalized === 'urgent') return 'urgent';
+  return 'pending';
+}
+
+export function mapTaskType(taskType: string): QueuedAutomationType {
+  const normalized = taskType.trim().toUpperCase().replace(/\s+/g, ' ');
+  if (
+    normalized === 'CREATE USERNAME' ||
+    normalized === 'CREATE_USERNAME' ||
+    normalized === 'CREATE GAME USERNAME'
+  ) {
+    return 'CREATE_USERNAME';
+  }
+  if (normalized === 'RECREATE USERNAME' || normalized === 'RECREATE_USERNAME') {
+    return 'RECREATE_USERNAME';
+  }
+  if (normalized === 'RECHARGE') return 'RECHARGE';
+  if (normalized === 'REDEEM') return 'REDEEM';
+  if (normalized === 'RESET PASSWORD' || normalized === 'RESET_PASSWORD') {
+    return 'RESET_PASSWORD';
+  }
+  if (normalized === 'LOGIN') return 'LOGIN';
+  return 'COMPLETE_TASK';
+}
+
+function resolveTaskTypeLabel(task: Record<string, unknown>) {
+  const fromTaskType = String(task.type || '').trim();
+  if (!fromTaskType) {
+    return 'COMPLETE_TASK';
+  }
+
+  if (fromTaskType.includes('_')) {
+    return fromTaskType.replace(/_/g, ' ');
+  }
+  return fromTaskType;
+}
+
+export function buildAutomationPayload(task: Record<string, unknown>): AutomationPayload {
+  const mappedType = mapTaskType(resolveTaskTypeLabel(task));
+  const base = {
+    player: String(task.playerUsername || task.player || 'Player'),
+    game: String(task.gameName || task.game || 'Unknown Game'),
+    currentUsername: (task.currentUsername as string | null | undefined) ?? null,
+  };
+
+  if (mappedType === 'CREATE_USERNAME') {
+    return {
+      ...base,
+      username: null,
+      amount: null,
+      originalTask: sanitizeForFirestore(task) as Record<string, unknown>,
+    };
+  }
+
+  if (mappedType === 'RECREATE_USERNAME') {
+    return {
+      ...base,
+      username: base.currentUsername || null,
+      amount: null,
+      originalTask: sanitizeForFirestore(task) as Record<string, unknown>,
+    };
+  }
+
+  if (mappedType === 'RECHARGE' || mappedType === 'REDEEM') {
+    const amountValue = Number(task.amount);
+    return {
+      ...base,
+      username: base.currentUsername || null,
+      amount: Number.isFinite(amountValue) ? amountValue : null,
+      originalTask: sanitizeForFirestore(task) as Record<string, unknown>,
+    };
+  }
+
+  if (mappedType === 'RESET_PASSWORD') {
+    return {
+      ...base,
+      username: base.currentUsername || null,
+      amount: null,
+      originalTask: sanitizeForFirestore(task) as Record<string, unknown>,
+    };
+  }
+
+  return {
+    ...base,
+    username: base.currentUsername || null,
+    amount: null,
+    originalTask: sanitizeForFirestore(task) as Record<string, unknown>,
+  };
+}
+
+export async function claimTaskAndCreateJob(input: {
+  taskId: string;
+  agentId: string;
+  currentUsername?: string | null;
+  carerName?: string | null;
+}) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const taskRef = doc(db, 'carerTasks', input.taskId);
+  const userRef = doc(db, 'users', currentUser.uid);
+
+  const userSnap = await getDoc(userRef);
+  if (!userSnap.exists()) {
+    throw new Error('Current user profile not found.');
+  }
+  const userData = userSnap.data() as { username?: string };
+  const createdByName =
+    input.carerName?.trim() || userData.username?.trim() || 'Carer';
+
+  return runTransaction(db, async (transaction) => {
+    const taskSnap = await transaction.get(taskRef);
+    if (!taskSnap.exists()) {
+      throw new Error('Task not found');
+    }
+
+    const freshTask = taskSnap.data() as Record<string, unknown>;
+    const currentStatus = sanitizeStatus(freshTask.status);
+    if (currentStatus !== 'pending') {
+      throw new Error('Task already claimed');
+    }
+
+    const mergedTask = {
+      id: taskSnap.id,
+      ...freshTask,
+      currentUsername: input.currentUsername ?? freshTask.currentUsername ?? null,
+    } as Record<string, unknown>;
+    const mappedType = mapTaskType(resolveTaskTypeLabel(mergedTask));
+    const payload = buildAutomationPayload(mergedTask);
+    const jobRef = doc(collection(db, 'automation_jobs'));
+
+    transaction.update(taskRef, {
+      status: 'in_progress',
+      assignedCarerUid: currentUser.uid,
+      assignedCarerUsername: createdByName,
+      assignedCarer: createdByName,
+      claimedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+
+    transaction.set(jobRef, {
+      agentId: input.agentId.trim(),
+      taskId: taskSnap.id,
+      type: mappedType,
+      status: 'queued',
+      payload,
+      createdByUid: currentUser.uid,
+      createdByName,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      startedAt: null,
+      completedAt: null,
+      error: null,
+      attempts: 0,
+    });
+
+    return { jobId: jobRef.id, taskId: taskSnap.id, status: 'queued' as const };
+  });
 }
 
 export async function startAutomationForTask(input: {

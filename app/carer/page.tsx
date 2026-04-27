@@ -54,6 +54,7 @@ import {
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 import { OnlineIndicator } from '@/components/presence/OnlineIndicator';
 import {
+  claimTaskAndCreateJob,
   listenAutomationUiStatusByTask,
   startAutomationForTask,
   type AutomationUiStatus,
@@ -857,6 +858,11 @@ export default function CarerPage() {
   }
 
   async function handleStartTask(task: CarerTask) {
+    if (!carerIdentity) {
+      setErrorMessage('Carer profile not ready yet. Please try again.');
+      return;
+    }
+
     setAutomationLoadingTaskId(task.id);
     setErrorMessage('');
     setNoticeMessage('');
@@ -870,26 +876,28 @@ export default function CarerPage() {
               normalizeGameName(task.gameName || '')
         ) || null;
 
-      await startAutomationForTask({
-        agentId: AUTOMATION_AGENT_ID,
+      await claimTaskAndCreateJob({
         taskId: task.id,
-        taskLabel: getTaskTypeLabel(task),
-        player: task.playerUsername || 'Player',
-        game: task.gameName || 'Unknown Game',
+        agentId: AUTOMATION_AGENT_ID,
         currentUsername: loginForTask?.gameUsername || null,
-        amount: task.amount ?? null,
-        originalTask: task as Record<string, unknown>,
+        carerName: carerIdentity.username,
       });
 
       setAutomationStatusByTaskId((previous) => ({
         ...previous,
         [task.id]: 'waiting',
       }));
-      setNoticeMessage('Automation job queued. Waiting for local agent.');
+      setNoticeMessage('Task claimed and automation job queued.');
     } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to queue the task.'
-      );
+      const fallback =
+        error instanceof Error ? error.message : 'Failed to queue the task.';
+      if (fallback === 'Task already claimed') {
+        setErrorMessage('This task was already claimed by another carer.');
+      } else if (fallback === 'Task not found') {
+        setErrorMessage('This task no longer exists.');
+      } else {
+        setErrorMessage(fallback);
+      }
     } finally {
       setAutomationLoadingTaskId(null);
     }
