@@ -2596,6 +2596,19 @@ export default function PlayerPage() {
                   </p>
                 </div>
 
+                <div className="fire-panel fire-orange rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/20 via-orange-900/20 to-black/60 p-5 shadow-[0_0_42px_-16px_rgba(251,191,36,0.65)] sm:p-6">
+                  <p className="text-xs font-black uppercase tracking-[0.3em] text-amber-200/90">
+                    Permanent bonus event
+                  </p>
+                  <h3 className="mt-2 text-2xl font-black text-white sm:text-3xl">
+                    Refer a Friend and Huge Rewards Waits You
+                  </h3>
+                  <p className="mt-3 text-sm text-amber-100/85 sm:text-base">
+                    Give your referral code to your friend and ask them to create an account with
+                    us.
+                  </p>
+                </div>
+
                 <div
                   className="fire-panel fire-purple group/bonus relative overflow-hidden rounded-3xl border border-violet-400/35 bg-gradient-to-br from-violet-950/70 via-black/55 to-fuchsia-950/30 p-4 shadow-[0_0_40px_-12px_rgba(139,92,246,0.35)] backdrop-blur-xl sm:p-6"
                   onPointerEnter={() => setBonusStripPaused(true)}
