@@ -15,7 +15,6 @@ export type ReferralRewardRow = {
 export type ReferralRewardGroup = {
   referredPlayerUid: string;
   referredPlayerName: string;
-  rows: ReferralRewardRow[];
   pendingRewardCoins: number;
   hasClaimableReward: boolean;
 };
@@ -48,12 +47,12 @@ export async function fetchMyReferralRewards() {
   return data.groups || [];
 }
 
-export async function claimMyReferralReward(rechargeId: string) {
+export async function claimMyReferralReward(referredPlayerUid: string) {
   const headers = await getAuthHeader();
   const response = await fetch('/api/player/referral-rewards', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ rechargeId }),
+    body: JSON.stringify({ referredPlayerUid }),
   });
   const data = (await response.json()) as {
     error?: string;

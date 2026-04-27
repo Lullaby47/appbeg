@@ -96,7 +96,6 @@ import {
 } from '@/features/coinLoad/coinLoadSession';
 import ImageUploadField from '@/components/common/ImageUploadField';
 import {
-  calculateWorkedHoursLast24h,
   cutWorkerReward,
   listenShiftSessionsByCoadmin,
   type ShiftSession,
@@ -134,6 +133,51 @@ function formatDateTime(value?: { toDate?: () => Date } | null) {
 
 function formatHours(value: number) {
   return `${value.toFixed(2)} h`;
+}
+
+function toMillis(value?: { toDate?: () => Date; toMillis?: () => number } | null) {
+  if (!value) {
+    return 0;
+  }
+  if (typeof value.toMillis === 'function') {
+    return value.toMillis();
+  }
+  if (typeof value.toDate === 'function') {
+    return value.toDate().getTime();
+  }
+  return 0;
+}
+
+function calculateWorkedHoursLast24hWithHeartbeat(
+  sessions: ShiftSession[],
+  nowMs: number,
+  heartbeatGraceMs: number
+) {
+  const windowStart = nowMs - 24 * 60 * 60 * 1000;
+  let totalMs = 0;
+
+  for (const session of sessions) {
+    const loginMs = toMillis(session.loginAt || null);
+    if (!loginMs) {
+      continue;
+    }
+
+    const logoutMs = toMillis(session.logoutAt || null);
+    const lastSeenMs = toMillis(session.lastSeenAt || null);
+    const inferredAutoLogoutMs =
+      session.isActive && lastSeenMs > 0 && nowMs - lastSeenMs > heartbeatGraceMs
+        ? lastSeenMs
+        : 0;
+    const endMs = logoutMs || inferredAutoLogoutMs || nowMs;
+
+    const start = Math.max(loginMs, windowStart);
+    const end = Math.min(endMs, nowMs);
+    if (end > start) {
+      totalMs += end - start;
+    }
+  }
+
+  return totalMs / (1000 * 60 * 60);
 }
 
 export default function CoadminPage() {
@@ -1581,6 +1625,8 @@ export default function CoadminPage() {
   const coadminOnlineByUid = usePresenceOnlineMap(coadminPresenceUids);
 
   const shiftsRows = useMemo(() => {
+    const nowMs = Date.now();
+    const heartbeatGraceMs = 2 * 60 * 1000;
     const byUser = new Map<string, ShiftSession[]>();
     for (const item of shiftSessions) {
       const list = byUser.get(item.userUid) || [];
@@ -1595,21 +1641,49 @@ export default function CoadminPage() {
 
     return workers.map((worker) => {
       const sessions = byUser.get(worker.uid) || [];
-      const latest = [...sessions].sort((a, b) => {
-        const aMs = a.loginAt?.toMillis?.() || 0;
-        const bMs = b.loginAt?.toMillis?.() || 0;
-        return bMs - aMs;
-      })[0];
-      const workedHoursLast24h = calculateWorkedHoursLast24h(sessions);
+      const latestLoginAt =
+        [...sessions]
+          .map((session) => ({ value: session.loginAt || null, ms: toMillis(session.loginAt || null) }))
+          .sort((a, b) => b.ms - a.ms)[0]?.value || null;
+      const latestLogoutAtRaw =
+        [...sessions]
+          .map((session) => ({ value: session.logoutAt || null, ms: toMillis(session.logoutAt || null) }))
+          .sort((a, b) => b.ms - a.ms)[0]?.value || null;
+      const latestLastSeenAt =
+        [...sessions]
+          .map((session) => ({ value: session.lastSeenAt || null, ms: toMillis(session.lastSeenAt || null) }))
+          .sort((a, b) => b.ms - a.ms)[0]?.value || null;
+
+      const activeSession = [...sessions]
+        .filter((session) => Boolean(session.isActive))
+        .sort((a, b) => {
+          const aMs = toMillis(a.lastSeenAt || null) || toMillis(a.loginAt || null);
+          const bMs = toMillis(b.lastSeenAt || null) || toMillis(b.loginAt || null);
+          return bMs - aMs;
+        })[0];
+      const activeSeenMs = toMillis(activeSession?.lastSeenAt || null);
+      const isActive =
+        Boolean(activeSession) &&
+        activeSeenMs > 0 &&
+        nowMs - activeSeenMs <= heartbeatGraceMs;
+
+      const workedHoursLast24h = calculateWorkedHoursLast24hWithHeartbeat(
+        sessions,
+        nowMs,
+        heartbeatGraceMs
+      );
+      const inferredLogoutAt =
+        !isActive && latestLogoutAtRaw == null && latestLastSeenAt ? latestLastSeenAt : null;
+
       return {
         uid: worker.uid,
         username: worker.username,
         role: worker.workerRole,
         cashBoxNpr: Number(worker.cashBoxNpr || 0),
-        latestLoginAt: latest?.loginAt || null,
-        latestLogoutAt: latest?.logoutAt || null,
-        isActive: Boolean(latest?.isActive),
-        lastSeenAt: latest?.lastSeenAt || null,
+        latestLoginAt,
+        latestLogoutAt: latestLogoutAtRaw || inferredLogoutAt,
+        isActive,
+        lastSeenAt: latestLastSeenAt,
         workedHoursLast24h,
       };
     });
