@@ -3137,13 +3137,7 @@ export default function PlayerPage() {
                           </div>
                         </div>
 
-                        <div className="mt-3 flex items-center justify-between gap-3">
-                          <button
-                            type="button"
-                            className="rounded-xl border border-amber-400/45 bg-amber-500/15 px-3 py-2 text-xs font-black text-amber-100"
-                          >
-                            Earn
-                          </button>
+                        <div className="mt-3 flex items-center justify-end gap-3">
                           {group.hasClaimableReward ? (
                             <button
                               type="button"
