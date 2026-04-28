@@ -102,7 +102,8 @@ const FUNNY_BONUS_NAMES = [
  * Each doc is first-come-first-served: the first player to claim removes it (see `initiateBonusEventPlay`).
  */
 export function getBonusEventsForPlayerDisplay(events: BonusEvent[]): BonusEvent[] {
-  return sortByNewest(events).filter(isBonusEventActive).slice(0, MAX_PLAYER_BONUS_EVENTS_DISPLAY);
+  // Query already scopes to status=active; avoid local clock skew hiding valid server-active events.
+  return sortByNewest(events).slice(0, MAX_PLAYER_BONUS_EVENTS_DISPLAY);
 }
 
 /** @deprecated Use {@link getBonusEventsForPlayerDisplay} — staff-only filter removed. */
@@ -565,7 +566,13 @@ export function listenBonusEventsByCoadmin(
   coadminUid: string,
   onChange: (events: BonusEvent[]) => void,
   onError?: (error: Error) => void,
-  options?: { skipTimeWindowFilter?: boolean }
+  options?: {
+    skipTimeWindowFilter?: boolean;
+    onSnapshotDebug?: (values: {
+      snapshotSize: number;
+      firstDocData: Record<string, unknown> | null;
+    }) => void;
+  }
 ) {
   if (!coadminUid.trim()) {
     onChange([]);
@@ -592,6 +599,10 @@ export function listenBonusEventsByCoadmin(
         status?: string;
         coadminUid?: string;
       } | undefined;
+      options?.onSnapshotDebug?.({
+        snapshotSize: snapshot.size,
+        firstDocData: firstDoc ? (firstDoc.data() as Record<string, unknown>) : null,
+      });
       console.info('[bonusEvents] listener:snapshot', {
         coadminUid,
         snapshotSize: snapshot.size,

@@ -1223,17 +1223,23 @@ export default function PlayerPage() {
       return;
     }
 
-    console.info('[player] bonus-events-listener:start', {
-      playerCoadminUid,
-      activeView,
-    });
+    console.log('[player bonusEvents] coadminUid', playerCoadminUid);
+    console.log('[player bonusEvents] listener:start');
     const unsubscribe = listenBonusEventsByCoadmin(
       playerCoadminUid,
       (events) => {
         setBonusEvents(events);
       },
       (error) => {
+        console.error('[player bonusEvents] error', error);
         setMessage(error.message || 'Failed to load bonus events.');
+      },
+      {
+        skipTimeWindowFilter: true,
+        onSnapshotDebug: ({ snapshotSize, firstDocData }) => {
+          console.log('[player bonusEvents] snapshot size', snapshotSize);
+          console.log('[player bonusEvents] first doc', firstDocData);
+        },
       }
     );
 
