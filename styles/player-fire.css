@@ -799,8 +799,8 @@
   max-height: none;
   height: auto;
   /* Negative top offset: padding can’t be negative, so we pull the panel up with margin */
-  margin-top: -200px !important;
-  padding: 0 1.25rem 100px !important;
+  margin-top: -120px !important;
+  padding: 0 1.25rem 70px !important;
 }
 
 /* Small screens: panel height + content vertically centered in the card */
@@ -810,11 +810,11 @@
     flex-direction: column !important;
     align-items: stretch !important;
     justify-content: center !important;
-    margin-top: -200px !important;
+    margin-top: -120px !important;
     padding-top: 0 !important;
-    padding-bottom: 100px !important;
-    min-height: min(32rem, calc(100svh - 9rem)) !important;
-    min-height: min(32rem, calc(100dvh - 9rem)) !important;
+    padding-bottom: 70px !important;
+    min-height: min(24rem, calc(100svh - 11rem)) !important;
+    min-height: min(24rem, calc(100dvh - 11rem)) !important;
   }
 }
 
@@ -913,7 +913,7 @@
     display: grid !important;
     min-height: auto !important;
     margin-top: 0 !important;
-    padding: 100px 1.25rem 100px !important;
+    padding: 72px 1.25rem 72px !important;
   }
 
   .player-fire-page .player-dashboard-hero .player-dashboard-hero__content {
