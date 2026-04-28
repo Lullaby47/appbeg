@@ -60,8 +60,10 @@ import {
   validateAutomationAgentId,
 } from '@/features/automation/carerAutomationAgent';
 import {
+  buildAutomationPayload,
   claimTaskAndCreateJob,
   listenAutomationUiStatusByTask,
+  mapTaskType,
   returnTaskToPendingAndCancelAutomation,
   startAutomationForTask,
   type AutomationUiStatus,
@@ -205,6 +207,15 @@ function getTaskActionLabel(task: CarerTask) {
   return 'Done';
 }
 
+function mapCarerTaskToAutomationType(task: CarerTask) {
+  if (task.type === 'create_game_username') return mapTaskType('CREATE USERNAME');
+  if (task.type === 'recreate_username') return mapTaskType('RECREATE USERNAME');
+  if (task.type === 'reset_password') return mapTaskType('RESET PASSWORD');
+  if (task.type === 'recharge') return mapTaskType('RECHARGE');
+  if (task.type === 'redeem') return mapTaskType('REDEEM');
+  return mapTaskType('COMPLETE TASK');
+}
+
 function isUsernameWorkflowTask(task: CarerTask) {
   return (
     task.type === 'create_game_username' ||
@@ -301,6 +312,7 @@ export default function CarerPage() {
   const [noticeMessage, setNoticeMessage] = useState('');
   const [showTaskSplash, setShowTaskSplash] = useState(false);
   const [loginDetailsTask, setLoginDetailsTask] = useState<CarerTask | null>(null);
+  const [pendingTaskPayloadPreview, setPendingTaskPayloadPreview] = useState<CarerTask | null>(null);
   const [cashBoxNpr, setCashBoxNpr] = useState(0);
   const [nepalClock, setNepalClock] = useState(getNepalClockLabel());
   const [cashoutLoading, setCashoutLoading] = useState(false);
@@ -2008,11 +2020,15 @@ export default function CarerPage() {
         : liveAutomationStatus || task.automationStatus || null;
     const isAutomationQueued =
       automationStatus === 'waiting' || automationStatus === 'running';
+    const isPendingCard = section === 'pending';
 
     return (
       <div
         key={task.id}
-        className="rounded-2xl border border-white/10 bg-neutral-950/70 p-4"
+        onClick={isPendingCard ? () => setPendingTaskPayloadPreview(task) : undefined}
+        className={`rounded-2xl border border-white/10 bg-neutral-950/70 p-4 ${
+          isPendingCard ? 'cursor-pointer hover:border-violet-400/40' : ''
+        }`}
       >
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
@@ -2071,13 +2087,19 @@ export default function CarerPage() {
           {section === 'pending' && (
             <div className="flex flex-col gap-2">
               <button
-                onClick={() => setLoginDetailsTask(task)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setLoginDetailsTask(task);
+                }}
                 className="rounded-xl bg-blue-500/20 px-4 py-2 text-sm font-bold text-blue-100 hover:bg-blue-500/30"
               >
                 Login Details
               </button>
               <button
-                onClick={() => void handleStartTask(task)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void handleStartTask(task);
+                }}
                 disabled={automationLoadingTaskId === task.id || isAutomationQueued}
                 className="rounded-xl bg-white px-4 py-2 text-sm font-bold text-black hover:bg-neutral-200 disabled:opacity-60"
               >
@@ -2092,7 +2114,10 @@ export default function CarerPage() {
               {isAutomationQueued && (
                 <button
                   type="button"
-                  onClick={() => void handleForceResetAutomation(task)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleForceResetAutomation(task);
+                  }}
                   disabled={taskLoadingId === task.id}
                   className="rounded-xl border border-orange-500/40 bg-orange-500/15 px-4 py-2 text-sm font-bold text-orange-100 hover:bg-orange-500/25 disabled:opacity-60"
                 >
@@ -2858,6 +2883,79 @@ export default function CarerPage() {
             <button
               type="button"
               onClick={() => setLoginDetailsTask(null)}
+              className="mt-5 w-full rounded-2xl bg-white px-4 py-3 font-bold text-black hover:bg-neutral-200"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {pendingTaskPayloadPreview && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 px-4"
+          onClick={() => setPendingTaskPayloadPreview(null)}
+        >
+          <div
+            className="w-full max-w-3xl rounded-3xl border border-violet-500/30 bg-neutral-950 p-6 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="text-2xl font-bold text-white">Pending Task Payload Preview</h3>
+            <p className="mt-2 text-sm text-violet-100/80">
+              This is the data prepared before creating the automation job.
+            </p>
+
+            <div className="mt-4 overflow-auto rounded-2xl border border-white/10 bg-black/40 p-4">
+              <pre className="text-xs leading-relaxed text-neutral-100">
+                {JSON.stringify(
+                  (() => {
+                    const loginForTask =
+                      allPlayerLogins.find(
+                        (login) =>
+                          login.playerUid === pendingTaskPayloadPreview.playerUid &&
+                          normalizeGameName(login.gameName || '') ===
+                            normalizeGameName(pendingTaskPayloadPreview.gameName || '')
+                      ) || null;
+                    const currentUsername = loginForTask?.gameUsername || null;
+                    const carerUid = carerIdentity?.uid || '';
+                    const carerName = carerIdentity?.username?.trim() || 'Carer';
+                    const mappedType = mapCarerTaskToAutomationType(pendingTaskPayloadPreview);
+                    const freshTask = {
+                      ...pendingTaskPayloadPreview,
+                      status: 'in_progress',
+                      assignedCarerUid: carerUid,
+                      assignedCarer: carerName,
+                      assignedCarerUsername: carerName,
+                      currentUsername,
+                    } as Record<string, unknown>;
+
+                    return {
+                      taskId: pendingTaskPayloadPreview.id,
+                      type: mappedType,
+                      carerUid: carerUid || null,
+                      coadminUid: String(
+                        pendingTaskPayloadPreview.coadminUid || coadminUid || ''
+                      ).trim(),
+                      currentUsername,
+                      amount: pendingTaskPayloadPreview.amount ?? null,
+                      payload: buildAutomationPayload({
+                        taskId: pendingTaskPayloadPreview.id,
+                        freshTask,
+                        currentUserUid: carerUid,
+                        currentCarerName: carerName,
+                        currentUsername,
+                      }),
+                    };
+                  })(),
+                  null,
+                  2
+                )}
+              </pre>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setPendingTaskPayloadPreview(null)}
               className="mt-5 w-full rounded-2xl bg-white px-4 py-3 font-bold text-black hover:bg-neutral-200"
             >
               Close
