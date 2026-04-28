@@ -52,6 +52,16 @@ function randomInt(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+function randomPercentInRange(min: number, max: number) {
+  const safeMin = Number.isFinite(min) ? min : COADMIN_MIN_PERCENT;
+  const safeMax = Number.isFinite(max) ? max : COADMIN_MAX_PERCENT;
+  const low = Math.min(safeMin, safeMax);
+  const high = Math.max(safeMin, safeMax);
+  if (low === high) return Number(low.toFixed(2));
+  const raw = Math.random() * (high - low) + low;
+  return Number(raw.toFixed(2));
+}
+
 function normalizeAutoBonusPercentRange(values: {
   minPercent?: number | null;
   maxPercent?: number | null;
@@ -558,7 +568,7 @@ export async function POST(request: Request) {
     while (autoCreatedCount < missing && attempts < missing * 25) {
       attempts += 1;
       const amount = randomInt(COADMIN_MIN_AMOUNT, COADMIN_MAX_AMOUNT);
-      const percent = randomInt(
+      const percent = randomPercentInRange(
         autoBonusPercentRange.minPercent,
         autoBonusPercentRange.maxPercent
       );

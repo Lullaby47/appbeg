@@ -17,8 +17,41 @@ type Row = {
   codeRaw: string;
 };
 
+const BACKFILL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const BACKFILL_META_DOC = adminDb.collection('system_meta').doc('backfill_player_referrals');
+
+function toMillis(value: unknown): number {
+  if (!value || typeof value !== 'object') return 0;
+  const maybe = value as { toMillis?: () => number; toDate?: () => Date; seconds?: number };
+  if (typeof maybe.toMillis === 'function') return maybe.toMillis();
+  if (typeof maybe.toDate === 'function') return maybe.toDate().getTime();
+  if (typeof maybe.seconds === 'number') return maybe.seconds * 1000;
+  return 0;
+}
+
 export async function POST() {
   try {
+    const nowMs = Date.now();
+    const metaSnap = await BACKFILL_META_DOC.get();
+    if (metaSnap.exists) {
+      const meta = metaSnap.data() as { lastRunAt?: unknown; lastResultCount?: number };
+      const lastRunAtMs = toMillis(meta.lastRunAt);
+      if (lastRunAtMs > 0 && nowMs - lastRunAtMs < BACKFILL_COOLDOWN_MS) {
+        console.info('[player-referral-backfill] backfill skipped server cooldown', {
+          retryAfterMs: BACKFILL_COOLDOWN_MS - (nowMs - lastRunAtMs),
+          lastResultCount: Number(meta.lastResultCount || 0),
+        });
+        return NextResponse.json({
+          success: true,
+          skipped: 'server-cooldown',
+          retryAfterMs: Math.max(1_000, BACKFILL_COOLDOWN_MS - (nowMs - lastRunAtMs)),
+          totalPlayers: null,
+          finalAssignments: Number(meta.lastResultCount || 0),
+        });
+      }
+    }
+    console.info('[player-referral-backfill] backfill started');
+
     const snapshot = await adminDb.collection('users').where('role', '==', 'player').get();
     const rows: Row[] = snapshot.docs.map((docSnap) => ({
       ref: docSnap.ref,
@@ -117,6 +150,20 @@ export async function POST() {
     if (ops > 0) {
       await batch.commit();
     }
+
+    await BACKFILL_META_DOC.set(
+      {
+        lastRunAt: FieldValue.serverTimestamp(),
+        lastResultCount: assigned.size,
+        totalPlayers: rows.length,
+      },
+      { merge: true }
+    );
+    console.info('[player-referral-backfill] backfill completed count', {
+      totalPlayers: rows.length,
+      finalAssignments: assigned.size,
+      writesCommitted: ops > 0,
+    });
 
     return NextResponse.json({
       success: true,

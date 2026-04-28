@@ -51,7 +51,29 @@ export type BonusEvent = {
 };
 
 function toBonusEvent(docId: string, value: Omit<BonusEvent, 'id'>): BonusEvent {
-  return { id: docId, ...value };
+  const bonusPercentage = Number(
+    (value as { bonusPercentage?: number; bonus_percentage?: number }).bonusPercentage ??
+      (value as { bonusPercentage?: number; bonus_percentage?: number }).bonus_percentage ??
+      0
+  );
+  const amountNpr = Number(
+    (value as { amountNpr?: number; amount?: number }).amountNpr ??
+      (value as { amountNpr?: number; amount?: number }).amount ??
+      0
+  );
+  return {
+    id: docId,
+    ...value,
+    bonusPercentage,
+    bonus_percentage:
+      (value as { bonus_percentage?: number }).bonus_percentage ?? bonusPercentage,
+    amountNpr,
+    amount: (value as { amount?: number }).amount ?? amountNpr,
+    createdAt:
+      (value as { createdAt?: Timestamp | null; created_at?: Timestamp | null }).createdAt ??
+      (value as { createdAt?: Timestamp | null; created_at?: Timestamp | null }).created_at ??
+      null,
+  };
 }
 
 function sortByNewest(list: BonusEvent[]) {
@@ -161,6 +183,16 @@ function makeActiveDuplicateKey(values: {
 
 function randomInt(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function randomPercentInRange(min: number, max: number) {
+  const safeMin = Number.isFinite(min) ? min : COADMIN_MIN_PERCENT;
+  const safeMax = Number.isFinite(max) ? max : COADMIN_MAX_PERCENT;
+  const low = Math.min(safeMin, safeMax);
+  const high = Math.max(safeMin, safeMax);
+  if (low === high) return Number(low.toFixed(2));
+  const raw = Math.random() * (high - low) + low;
+  return Number(raw.toFixed(2));
 }
 
 function buildActiveBonusEventsQuery(coadminUid: string, maxResults: number = MAX_ACTIVE_BONUS_EVENTS) {
@@ -468,7 +500,7 @@ export async function ensureCoadminActiveBonusEventsFilled(options?: {
   while (autoCreatedCount < missing && attempts < missing * 25) {
     attempts += 1;
     const autoAmount = randomInt(COADMIN_MIN_AMOUNT, COADMIN_MAX_AMOUNT);
-    const autoPercent = randomInt(
+    const autoPercent = randomPercentInRange(
       autoBonusPercentRange.minPercent,
       autoBonusPercentRange.maxPercent
     );
@@ -548,17 +580,33 @@ export async function setCoadminAutoBonusPercentRange(values: {
   }
 
   const normalizedRange = normalizeAutoBonusPercentRange(values);
-
-  await updateDoc(doc(db, 'users', currentUser.uid), {
-    autoBonusEventMinPercent: normalizedRange.minPercent,
-    autoBonusEventMaxPercent: normalizedRange.maxPercent,
-    updatedAt: serverTimestamp(),
-    updated_at: serverTimestamp(),
+  const idToken = await currentUser.getIdToken();
+  const response = await fetch('/api/coadmin/bonus-events/update-range', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${idToken}`,
+    },
+    body: JSON.stringify({
+      minPercent: normalizedRange.minPercent,
+      maxPercent: normalizedRange.maxPercent,
+    }),
   });
-
+  const data = (await response.json()) as {
+    minPercent?: number;
+    maxPercent?: number;
+    adjustedEventCount?: number;
+    error?: string;
+    skipped?: string;
+  };
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to save auto-created bonus range.');
+  }
   return {
-    ...normalizedRange,
-    adjustedEventCount: 0,
+    minPercent: Number(data.minPercent ?? normalizedRange.minPercent),
+    maxPercent: Number(data.maxPercent ?? normalizedRange.maxPercent),
+    adjustedEventCount: Number(data.adjustedEventCount || 0),
+    skipped: data.skipped || null,
   };
 }
 
@@ -611,6 +659,11 @@ export function listenBonusEventsByCoadmin(
         firstDocId: firstDoc?.id || null,
         firstDocStatus: String(firstData?.status || ''),
         firstDocCoadminUid: String(firstData?.coadminUid || ''),
+        firstRenderedBonusPercentage:
+          activeEvents.length > 0 ? Number(activeEvents[0].bonusPercentage || 0) : null,
+        renderedBonusPercentages: activeEvents.slice(0, 8).map((event) =>
+          Number(event.bonusPercentage || event.bonus_percentage || 0)
+        ),
       });
       onChange(activeEvents);
     },

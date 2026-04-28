@@ -62,6 +62,7 @@ import {
 import {
   claimTaskAndCreateJob,
   listenAutomationUiStatusByTask,
+  returnTaskToPendingAndCancelAutomation,
   startAutomationForTask,
   type AutomationUiStatus,
 } from '@/features/automation/automationJobs';
@@ -321,6 +322,9 @@ export default function CarerPage() {
   const [autoAutomationEnabled, setAutoAutomationEnabled] = useState(false);
   const [automationStatusByTaskId, setAutomationStatusByTaskId] = useState<
     Record<string, AutomationUiStatus>
+  >({});
+  const [pendingAutomationResetTaskIds, setPendingAutomationResetTaskIds] = useState<
+    Record<string, true>
   >({});
   const [agentInputDraft, setAgentInputDraft] = useState('');
   const [agentPanelNotice, setAgentPanelNotice] = useState('');
@@ -976,7 +980,17 @@ export default function CarerPage() {
   }
 
   async function handleStartTask(task: CarerTask) {
+    console.info('[carer-ui] start-task:clicked', {
+      taskId: task.id,
+      taskType: task.type,
+      sectionStatus: task.status,
+      automationJobId: task.automationJobId || null,
+      automationStatus: task.automationStatus || null,
+    });
     if (!carerIdentity) {
+      console.warn('[carer-ui] start-task:blocked-no-carer-identity', {
+        taskId: task.id,
+      });
       setErrorMessage('Carer profile not ready yet. Please try again.');
       return;
     }
@@ -986,6 +1000,9 @@ export default function CarerPage() {
     setNoticeMessage('');
 
     try {
+      console.info('[carer-ui] start-task:start', {
+        taskId: task.id,
+      });
       const loginForTask =
         allPlayerLogins.find(
           (login) =>
@@ -999,15 +1016,29 @@ export default function CarerPage() {
         currentUsername: loginForTask?.gameUsername || null,
         carerName: carerIdentity.username,
       });
+      setPendingAutomationResetTaskIds((previous) => {
+        if (!previous[task.id]) return previous;
+        const next = { ...previous };
+        delete next[task.id];
+        return next;
+      });
 
       setAutomationStatusByTaskId((previous) => ({
         ...previous,
         [task.id]: 'waiting',
       }));
+      console.info('[carer-ui] start-task:success', {
+        taskId: task.id,
+        queuedStatus: 'waiting',
+      });
       setNoticeMessage('Task claimed and automation job queued.');
     } catch (error) {
       const fallback =
         error instanceof Error ? error.message : 'Failed to queue the task.';
+      console.error('[carer-ui] start-task:error', {
+        taskId: task.id,
+        message: fallback,
+      });
       const normalized = fallback.toLowerCase();
       if (normalized.includes('resource_exhausted') || normalized.includes('quota exceeded')) {
         setAutoAutomationEnabled(false);
@@ -1094,28 +1125,59 @@ export default function CarerPage() {
       return;
     }
 
+    console.info('[carer-ui] reset-automation:start', {
+      taskId: task.id,
+      taskType: task.type,
+      automationJobId: task.automationJobId || null,
+      automationStatus: task.automationStatus || null,
+      sectionStatus: task.status,
+    });
+
     setTaskLoadingId(task.id);
     setErrorMessage('');
     setNoticeMessage('');
 
     try {
-      await updateDoc(doc(db, 'carerTasks', task.id), {
-        status: 'pending',
-        assignedCarerUid: null,
-        assignedCarer: null,
-        assignedCarerUsername: null,
-        startedAt: null,
-        claimedAt: null,
-        updatedAt: serverTimestamp(),
+      await returnTaskToPendingAndCancelAutomation(task.id);
+      setAutomationStatusByTaskId((previous) => {
+        const next = { ...previous };
+        delete next[task.id];
+        return next;
+      });
+      setPendingAutomationResetTaskIds((previous) => ({
+        ...previous,
+        [task.id]: true,
+      }));
+      await refreshPageData(false);
+      console.info('[carer-ui] reset-automation:success', {
+        taskId: task.id,
+        pendingOverrideSet: true,
       });
       setNoticeMessage('Task moved back to pending.');
     } catch (error) {
+      console.error('[carer-ui] reset-automation:error', {
+        taskId: task.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
       setErrorMessage(
         error instanceof Error ? error.message : 'Failed to move task back to pending.'
       );
     } finally {
       setTaskLoadingId(null);
     }
+  }
+
+  async function handleForceResetAutomation(task: CarerTask) {
+    console.info('[carer-ui] reset-automation:clicked', {
+      taskId: task.id,
+      taskType: task.type,
+      automationJobId: task.automationJobId || null,
+      automationStatus: task.automationStatus || null,
+    });
+    console.info('[carer-ui] reset-automation:auto-confirmed', {
+      taskId: task.id,
+    });
+    await handleMoveTaskBackToPending(task);
   }
 
   async function handleStartAutomation(task: CarerTask) {
@@ -1139,6 +1201,12 @@ export default function CarerPage() {
         currentUsername: loginForTask?.gameUsername || null,
         amount: task.amount ?? null,
         originalTask: task as Record<string, unknown>,
+      });
+      setPendingAutomationResetTaskIds((previous) => {
+        if (!previous[task.id]) return previous;
+        const next = { ...previous };
+        delete next[task.id];
+        return next;
       });
       setAutomationStatusByTaskId((previous) => ({
         ...previous,
@@ -1927,8 +1995,17 @@ export default function CarerPage() {
         : section === 'mine'
           ? 'In Progress'
           : 'Completed';
+    const wasResetToPending = Boolean(pendingAutomationResetTaskIds[task.id]);
+    const hasLinkedAutomationJob = Boolean(String(task.automationJobId || '').trim());
+    const liveAutomationStatus = automationStatusByTaskId[task.id] || null;
     const automationStatus =
-      automationStatusByTaskId[task.id] || task.automationStatus || null;
+      section === 'pending'
+        ? wasResetToPending
+          ? null
+          : hasLinkedAutomationJob
+            ? liveAutomationStatus
+            : null
+        : liveAutomationStatus || task.automationStatus || null;
     const isAutomationQueued =
       automationStatus === 'waiting' || automationStatus === 'running';
 
@@ -2012,6 +2089,16 @@ export default function CarerPage() {
                       ? 'Running...'
                       : 'Start Task'}
               </button>
+              {isAutomationQueued && (
+                <button
+                  type="button"
+                  onClick={() => void handleForceResetAutomation(task)}
+                  disabled={taskLoadingId === task.id}
+                  className="rounded-xl border border-orange-500/40 bg-orange-500/15 px-4 py-2 text-sm font-bold text-orange-100 hover:bg-orange-500/25 disabled:opacity-60"
+                >
+                  {taskLoadingId === task.id ? 'Resetting...' : 'Reset Automation'}
+                </button>
+              )}
             </div>
           )}
 

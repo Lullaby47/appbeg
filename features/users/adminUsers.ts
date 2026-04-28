@@ -181,11 +181,23 @@ async function getUsersByRole<T extends ManagedUser | CoadminUser>(
 
 async function backfillPlayerReferralCodesIfNeeded() {
   if (playerReferralBackfillAttempted) {
+    console.info('[player-referral-backfill] backfill skipped client already-run');
     return;
+  }
+
+  if (typeof window !== 'undefined') {
+    const key = 'playerReferralBackfillAttempted';
+    if (window.sessionStorage.getItem(key) === '1') {
+      playerReferralBackfillAttempted = true;
+      console.info('[player-referral-backfill] backfill skipped client already-run');
+      return;
+    }
+    window.sessionStorage.setItem(key, '1');
   }
 
   playerReferralBackfillAttempted = true;
   try {
+    console.info('[player-referral-backfill] backfill started');
     await fetch('/api/admin/backfill-player-referrals', { method: 'POST' });
   } catch {
     // Non-blocking best-effort backfill.
@@ -461,13 +473,10 @@ export async function unblockCarer(carer: CarerUser) {
 }
 
 export async function getPlayers(): Promise<PlayerUser[]> {
-  await backfillPlayerReferralCodesIfNeeded();
   return getUsersByRole<PlayerUser>('player');
 }
 
 export async function getPlayersByCoadmin(coadminUid: string): Promise<PlayerUser[]> {
-  await backfillPlayerReferralCodesIfNeeded();
-
   if (!coadminUid.trim()) {
     return [];
   }

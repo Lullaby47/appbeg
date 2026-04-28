@@ -1,6 +1,7 @@
 import {
   collection,
   doc,
+  getDocs,
   limit,
   onSnapshot,
   orderBy,
@@ -60,6 +61,15 @@ type AutomationPayloadInput = {
   currentCarerName: string;
   currentUsername?: string | null;
 };
+
+function isActiveAutomationJobStatus(value: unknown) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'queued' || normalized === 'running' || normalized === 'cancelled_requested';
+}
+
+function isAgentSupportedAutomationType(value: QueuedAutomationType) {
+  return value === 'RECHARGE' || value === 'REDEEM';
+}
 
 function sanitizeForFirestore(value: unknown): unknown {
   if (value === undefined) {
@@ -273,6 +283,15 @@ export async function claimTaskAndCreateJob(input: {
       currentUsername: input.currentUsername ?? freshTask.currentUsername ?? null,
     } as Record<string, unknown>;
     const mappedType = mapTaskType(resolveTaskTypeLabel(claimedTaskData));
+    if (!isAgentSupportedAutomationType(mappedType)) {
+      console.info('[automation] unsupported-job-type-blocked', {
+        taskId: taskSnap.id,
+        mappedType,
+      });
+      throw new Error(
+        `Automation is currently supported only for RECHARGE and REDEEM. ${mappedType} must be handled manually.`
+      );
+    }
     const payload = buildAutomationPayload({
       taskId: taskSnap.id,
       freshTask: claimedTaskData,
@@ -288,7 +307,12 @@ export async function claimTaskAndCreateJob(input: {
     );
     const jobSnap = await transaction.get(jobRef);
     if (jobSnap.exists()) {
-      throw new Error('Automation job already exists for this task');
+      const existingJobData = jobSnap.data() as { status?: string };
+      if (isActiveAutomationJobStatus(existingJobData.status)) {
+        throw new Error(
+          'Automation job already exists for this task. The manual part is also available.'
+        );
+      }
     }
 
     transaction.update(taskRef, {
@@ -369,7 +393,12 @@ export async function startAutomationForTask(input: {
       );
     }
     if (jobSnap.exists()) {
-      throw new Error('Automation job already exists for this task');
+      const existingJobData = jobSnap.data() as { status?: string };
+      if (isActiveAutomationJobStatus(existingJobData.status)) {
+        throw new Error(
+          'Automation job already exists for this task. The manual part is also available.'
+        );
+      }
     }
 
     const taskRef = doc(db, 'carerTasks', input.taskId);
@@ -385,6 +414,17 @@ export async function startAutomationForTask(input: {
     if (String(taskData.assignedCarerUid || '') !== currentUser.uid) {
       throw new Error('Only the assigned carer can queue automation for this task.');
     }
+    const mappedType = mapJobType(input.taskLabel);
+    if (mappedType !== 'RECHARGE' && mappedType !== 'REDEEM') {
+      console.info('[automation] unsupported-job-type-blocked', {
+        taskId: input.taskId,
+        taskLabel: input.taskLabel,
+        mappedType,
+      });
+      throw new Error(
+        `Automation is currently supported only for RECHARGE and REDEEM. ${mappedType} must be handled manually.`
+      );
+    }
 
     const profile = userSnap.data() as { username?: string };
     const createdByName = profile.username?.trim() || 'Carer';
@@ -394,7 +434,7 @@ export async function startAutomationForTask(input: {
       coadminUid: String(input.coadminUid || '').trim(),
       agentId: agentCheck.normalized,
       taskId: input.taskId,
-      type: mapJobType(input.taskLabel),
+      type: mappedType,
       status: 'queued',
       payload: {
         player: input.player,
@@ -438,11 +478,107 @@ export async function startAutomationForTask(input: {
   });
 }
 
-function mapJobStatusToUiStatus(status: AutomationJobStatus): AutomationUiStatus {
+function mapJobStatusToUiStatus(status: AutomationJobStatus | 'cancelled_requested'): AutomationUiStatus | null {
   if (status === 'queued') return 'waiting';
   if (status === 'running') return 'running';
   if (status === 'completed') return 'completed';
+  if (status === 'cancelled' || status === 'cancelled_requested') return null;
   return 'failed';
+}
+
+export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+
+  const taskRef = doc(db, 'carerTasks', taskId);
+  const deterministicJobRef = doc(db, 'automation_jobs', automationJobDocId(currentUser.uid, taskId));
+  const jobQuerySnap = await getDocs(
+    query(
+      collection(db, 'automation_jobs'),
+      where('taskId', '==', taskId),
+      limit(50)
+    )
+  );
+  const candidateJobRefs = [
+    deterministicJobRef,
+    ...jobQuerySnap.docs
+      .filter((d) => String((d.data() as { createdByUid?: string }).createdByUid || '').trim() === currentUser.uid)
+      .map((d) => doc(db, 'automation_jobs', d.id)),
+  ];
+  const seenJobIds = new Set<string>();
+  const uniqueJobRefs = candidateJobRefs.filter((ref) => {
+    if (seenJobIds.has(ref.id)) return false;
+    seenJobIds.add(ref.id);
+    return true;
+  });
+
+  return runTransaction(db, async (transaction) => {
+    const taskSnap = await transaction.get(taskRef);
+    if (!taskSnap.exists()) {
+      throw new Error('Task not found.');
+    }
+    const taskData = taskSnap.data() as Record<string, unknown>;
+    const linkedJobId = String(taskData.automationJobId || '').trim();
+    const linkedJobRef = linkedJobId
+      ? doc(db, 'automation_jobs', linkedJobId)
+      : deterministicJobRef;
+    const allJobRefs = [
+      linkedJobRef,
+      ...uniqueJobRefs,
+    ].filter((ref, index, arr) => arr.findIndex((x) => x.id === ref.id) === index);
+
+    console.info('[carer] back-to-pending clicked', {
+      taskId,
+      linkedJobId: linkedJobRef.id,
+      candidateJobCount: allJobRefs.length,
+    });
+
+    const jobSnaps = await Promise.all(allJobRefs.map((jobRef) => transaction.get(jobRef)));
+    const cancellableJobs = allJobRefs
+      .map((jobRef, index) => ({ jobRef, jobSnap: jobSnaps[index] }))
+      .filter(({ jobSnap }) => jobSnap.exists())
+      .map(({ jobRef, jobSnap }) => {
+        const linkedJobData = jobSnap.data() as { status?: string };
+        const status = String(linkedJobData.status || '').trim().toLowerCase();
+        return { jobRef, status };
+      })
+      .filter(({ status }) => status === 'queued' || status === 'running' || status === 'cancelled_requested');
+
+    for (const { jobRef, status } of cancellableJobs) {
+      transaction.update(jobRef, {
+        status: 'cancelled',
+        cancelledAt: serverTimestamp(),
+        cancelledReason: 'returned_to_pending',
+        updatedAt: serverTimestamp(),
+        lastHeartbeatAt: serverTimestamp(),
+        completedAt: serverTimestamp(),
+      });
+      console.info('[carer] linked job cancelled', {
+        taskId,
+        linkedJobId: jobRef.id,
+        previousStatus: status,
+        nextStatus: 'cancelled',
+      });
+    }
+
+    transaction.update(taskRef, {
+      status: 'pending',
+      assignedCarerUid: null,
+      assignedCarer: null,
+      assignedCarerUsername: null,
+      startedAt: null,
+      claimedAt: null,
+      queuedAt: null,
+      automationStatus: null,
+      automationJobId: null,
+      automationError: null,
+      automationUpdatedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    console.info('[carer] task reset complete', { taskId });
+  });
 }
 
 export function listenAutomationUiStatusByTask(
@@ -470,7 +606,10 @@ export function listenAutomationUiStatusByTask(
           continue;
         }
         seenTaskIds.add(taskId);
-        statusByTaskId[taskId] = mapJobStatusToUiStatus(data.status);
+        const mapped = mapJobStatusToUiStatus(data.status as AutomationJobStatus | 'cancelled_requested');
+        if (mapped) {
+          statusByTaskId[taskId] = mapped;
+        }
       }
 
       onChange(statusByTaskId);

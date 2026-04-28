@@ -1107,7 +1107,10 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
     const requestRef = task.requestId ? doc(db, 'playerGameRequests', task.requestId) : null;
 
     await runTransaction(db, async (transaction) => {
-      const currentTaskSnap = await transaction.get(taskRef);
+      const [currentTaskSnap, requestSnap] = await Promise.all([
+        transaction.get(taskRef),
+        requestRef ? transaction.get(requestRef) : Promise.resolve(null),
+      ]);
       if (!currentTaskSnap.exists()) {
         return;
       }
@@ -1116,6 +1119,12 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
       if (currentTask.status !== 'in_progress') {
         return;
       }
+
+      console.info('[carerTasks] transaction-recovery-fixed', {
+        taskId: task.id,
+        hasRequestRef: Boolean(requestRef),
+        requestReadBeforeWrite: true,
+      });
 
       transaction.update(taskRef, {
         status: 'pending',
@@ -1130,18 +1139,15 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
         automationUpdatedAt: serverTimestamp(),
       });
 
-      if (requestRef) {
-        const requestSnap = await transaction.get(requestRef);
-        if (requestSnap.exists()) {
-          const requestData = requestSnap.data() as Omit<PlayerGameRequest, 'id'>;
-          if (requestData.status !== 'completed') {
-            transaction.update(requestRef, {
-              status: 'pending',
-              completedAt: null,
-              pokedAt: null,
-              pokeMessage: null,
-            });
-          }
+      if (requestRef && requestSnap?.exists()) {
+        const requestData = requestSnap.data() as Omit<PlayerGameRequest, 'id'>;
+        if (requestData.status !== 'completed') {
+          transaction.update(requestRef, {
+            status: 'pending',
+            completedAt: null,
+            pokedAt: null,
+            pokeMessage: null,
+          });
         }
       }
     });

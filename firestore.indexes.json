@@ -71,11 +71,56 @@
       ]
     },
     {
+      "collectionGroup": "automation_jobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "createdByUid", "order": "ASCENDING" },
+        { "fieldPath": "taskId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "bonusEvents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "coadminUid", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "automation_jobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "carerUid", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "completedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "automation_jobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "carerUid", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "transferRequests",
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "coadminUid", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "transferRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "playerUid", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "requestedAt", "order": "ASCENDING" }
       ]
     }
   ],

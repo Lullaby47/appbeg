@@ -1228,6 +1228,17 @@ export default function PlayerPage() {
     const unsubscribe = listenBonusEventsByCoadmin(
       playerCoadminUid,
       (events) => {
+        console.log('[player bonusEvents] render-values', {
+          snapshotSize: events.length,
+          firstEventId: events[0]?.id || null,
+          firstEventPercent:
+            events.length > 0
+              ? Number(events[0].bonusPercentage || events[0].bonus_percentage || 0)
+              : null,
+          percents: events.slice(0, 10).map((event) =>
+            Number(event.bonusPercentage || event.bonus_percentage || 0)
+          ),
+        });
         setBonusEvents(events);
       },
       (error) => {
