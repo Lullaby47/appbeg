@@ -1466,6 +1466,12 @@ export default function CarerPage() {
                 same <span className="font-mono text-violet-100">CARER_UID</span> and{' '}
                 <span className="font-mono text-violet-100">AGENT_ID</span> as in your .env file.
               </p>
+              <p className="mt-2 text-xs text-violet-200/80">
+                CARER_UID:{' '}
+                <span className="font-mono text-violet-100">
+                  {carerIdentity?.uid || 'Loading...'}
+                </span>
+              </p>
               <p className="mt-2 text-sm font-semibold text-violet-50">
                 {carerIdentity?.automationAgentId
                   ? `Agent connected: ${carerIdentity.automationAgentId}`
