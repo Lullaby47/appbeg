@@ -1851,6 +1851,8 @@ export default function PlayerPage() {
     return `${m}:${String(s).padStart(2, '0')}`;
   }
 
+  // Kept for possible reuse outside the Play view while the Play panel no longer renders it.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   function renderRequestHistory() {
     return (
       <motion.div
@@ -3105,8 +3107,6 @@ export default function PlayerPage() {
                     </div>
                   </>
                 )}
-
-                {renderRequestHistory()}
               </div>
             )}
 
