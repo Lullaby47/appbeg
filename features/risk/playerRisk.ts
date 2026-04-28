@@ -511,6 +511,11 @@ export async function recordFinancialEvent(values: {
     type: values.type,
     createdAt: serverTimestamp(),
   });
+  const { recordDevUsageEstimate } = await import('@/features/dev/devUsageEstimates');
+  recordDevUsageEstimate({
+    financialEventsCreated: 1,
+    estWrites: 1,
+  });
 }
 
 export async function recordFinancialEventAndRefreshRisk(values: {

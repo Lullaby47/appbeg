@@ -14,6 +14,7 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
+import { recordBonusEventsListenerFirstSnapshot } from '@/features/dev/devUsageEstimates';
 import { getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
 import { upsertCarerTaskForPlayerGameRequest } from '@/features/games/carerTasks';
 import type { PlayerGameRequest } from '@/features/games/playerGameRequests';
@@ -681,9 +682,14 @@ export function listenBonusEventsByCoadmin(
     return () => {};
   }
 
+  let recordedFirstSnapshot = false;
   return onSnapshot(
     query(collection(db, 'bonusEvents'), where('coadminUid', '==', coadminUid)),
     (snapshot) => {
+      if (!recordedFirstSnapshot) {
+        recordedFirstSnapshot = true;
+        recordBonusEventsListenerFirstSnapshot(snapshot.size);
+      }
       const events = snapshot.docs.map((docSnap) =>
         toBonusEvent(docSnap.id, docSnap.data() as Omit<BonusEvent, 'id'>)
       );

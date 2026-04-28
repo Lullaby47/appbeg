@@ -7,6 +7,7 @@ import { doc, getDoc } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
 import { UserRole } from '@/lib/auth/roles';
+import { recordDevActiveSession } from '@/features/dev/devUsageEstimates';
 import UserPresenceSync from '@/components/presence/UserPresenceSync';
 import IdleLogoutSync from '@/components/auth/IdleLogoutSync';
 
@@ -43,6 +44,10 @@ export default function ProtectedRoute({
       if (!allowedRoles.includes(role)) {
         router.replace('/login');
         return;
+      }
+
+      if (role === 'player' || role === 'carer') {
+        recordDevActiveSession(role, firebaseUser.uid);
       }
 
       setChecking(false);

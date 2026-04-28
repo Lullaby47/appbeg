@@ -503,6 +503,13 @@ export async function upsertCarerTaskForPlayerGameRequest(
     existingTask
   );
   await setDoc(taskRef, payload, { merge: true });
+
+  const { recordDevUsageEstimate } = await import('@/features/dev/devUsageEstimates');
+  recordDevUsageEstimate({
+    tasksCreated: existingSnap.exists() ? 0 : 1,
+    estReads: 2,
+    estWrites: 1,
+  });
 }
 
 async function getCurrentCoadminTasks(coadminUid: string) {

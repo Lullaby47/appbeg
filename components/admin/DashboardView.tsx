@@ -1,5 +1,7 @@
 'use client';
 
+import DevFirebaseUsageCard from '@/components/admin/DevFirebaseUsageCard';
+
 interface Props {
   coadminCount: number;
   staffCount: number;
@@ -45,6 +47,10 @@ export default function DashboardView({
             )}
           </div>
         </div>
+      </div>
+
+      <div className="mt-8">
+        <DevFirebaseUsageCard />
       </div>
     </div>
   );

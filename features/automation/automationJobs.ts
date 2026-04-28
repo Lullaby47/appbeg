@@ -17,6 +17,7 @@ import {
   automationJobDocId,
   validateAutomationAgentId,
 } from '@/features/automation/carerAutomationAgent';
+import { recordDevUsageEstimate } from '@/features/dev/devUsageEstimates';
 
 export type AutomationJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type AutomationUiStatus = 'waiting' | 'running' | 'completed' | 'failed';
@@ -316,6 +317,13 @@ export async function claimTaskAndCreateJob(input: {
     transaction.set(jobRef, jobData);
 
     return { jobId: jobRef.id, taskId: taskSnap.id, status: 'queued' as const };
+  }).then((result) => {
+    recordDevUsageEstimate({
+      automationJobsCreated: 1,
+      estReads: 7,
+      estWrites: 3,
+    });
+    return result;
   });
 }
 
@@ -408,6 +416,13 @@ export async function startAutomationForTask(input: {
         status: 'queued' as AutomationJobStatus,
       },
     };
+  }).then((result) => {
+    recordDevUsageEstimate({
+      automationJobsCreated: 1,
+      estReads: 6,
+      estWrites: 2,
+    });
+    return result;
   });
 }
 
