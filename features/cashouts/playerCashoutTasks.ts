@@ -12,7 +12,7 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
-import { recordFinancialEventAndRefreshRisk } from '@/features/risk/playerRisk';
+import { recordFinancialEvent } from '@/features/risk/playerRisk';
 
 export type PlayerCashoutTaskStatus = 'pending' | 'in_progress' | 'completed';
 
@@ -272,7 +272,7 @@ export async function completePlayerCashoutTask(taskId: string) {
   });
 
   if (completedPlayerUid && completedAmountNpr > 0) {
-    await recordFinancialEventAndRefreshRisk({
+    await recordFinancialEvent({
       playerUid: completedPlayerUid,
       coadminUid: completedCoadminUid,
       amountNpr: completedAmountNpr,

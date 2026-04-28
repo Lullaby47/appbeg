@@ -1,5 +1,4 @@
 import {
-  addDoc,
   collection,
   doc,
   getDoc,
@@ -14,13 +13,21 @@ import {
 
 import { auth, db } from '@/lib/firebase/client';
 import type { CarerTaskStatus } from '@/features/games/carerTasks';
+import {
+  automationJobDocId,
+  validateAutomationAgentId,
+} from '@/features/automation/carerAutomationAgent';
 
 export type AutomationJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type AutomationUiStatus = 'waiting' | 'running' | 'completed' | 'failed';
 
 export type AutomationJob = {
   id: string;
-  agentId: string;
+  /** Carer who owns this job; agent must match (omitted on legacy documents). */
+  carerUid?: string;
+  coadminUid?: string;
+  /** Linked automation agent string from `users/{carerUid}.automationAgentId`. */
+  agentId?: string | null;
   taskId: string;
   type: string;
   status: AutomationJobStatus;
@@ -212,7 +219,6 @@ export function buildAutomationPayload(input: AutomationPayloadInput): Automatio
 
 export async function claimTaskAndCreateJob(input: {
   taskId: string;
-  agentId: string;
   currentUsername?: string | null;
   carerName?: string | null;
 }) {
@@ -223,16 +229,27 @@ export async function claimTaskAndCreateJob(input: {
   const taskRef = doc(db, 'carerTasks', input.taskId);
   const userRef = doc(db, 'users', currentUser.uid);
 
-  const userSnap = await getDoc(userRef);
-  if (!userSnap.exists()) {
-    throw new Error('Current user profile not found.');
-  }
-  const userData = userSnap.data() as { username?: string };
-  const createdByName =
-    input.carerName?.trim() || userData.username?.trim() || 'Carer';
-
   return runTransaction(db, async (transaction) => {
-    const taskSnap = await transaction.get(taskRef);
+    const [userSnap, taskSnap] = await Promise.all([
+      transaction.get(userRef),
+      transaction.get(taskRef),
+    ]);
+    if (!userSnap.exists()) {
+      throw new Error('Current user profile not found.');
+    }
+    const userData = userSnap.data() as {
+      username?: string;
+      automationAgentId?: string | null;
+    };
+    const linkedAgentRaw = String(userData.automationAgentId || '').trim();
+    const agentCheck = validateAutomationAgentId(linkedAgentRaw);
+    if (!agentCheck.valid || !agentCheck.normalized) {
+      throw new Error(
+        'No automation agent connected. Use “Connect Automation Agent” on the carer panel, set the same ID as in your agent .env, then try again.'
+      );
+    }
+    const resolvedAgentId = agentCheck.normalized;
+
     if (!taskSnap.exists()) {
       throw new Error('Task not found');
     }
@@ -242,6 +259,9 @@ export async function claimTaskAndCreateJob(input: {
     if (currentStatus !== 'pending') {
       throw new Error('Task already claimed');
     }
+
+    const createdByName =
+      input.carerName?.trim() || userData.username?.trim() || 'Carer';
 
     const claimedTaskData = {
       ...freshTask,
@@ -259,7 +279,12 @@ export async function claimTaskAndCreateJob(input: {
       currentCarerName: createdByName,
       currentUsername: input.currentUsername ?? null,
     });
-    const jobRef = doc(db, 'automation_jobs', `task_${taskSnap.id}`);
+    const coadminUid = String(freshTask.coadminUid || '').trim();
+    const jobRef = doc(
+      db,
+      'automation_jobs',
+      automationJobDocId(currentUser.uid, taskSnap.id)
+    );
     const jobSnap = await transaction.get(jobRef);
     if (jobSnap.exists()) {
       throw new Error('Automation job already exists for this task');
@@ -272,7 +297,9 @@ export async function claimTaskAndCreateJob(input: {
     });
 
     const jobData = {
-      agentId: input.agentId.trim(),
+      carerUid: currentUser.uid,
+      coadminUid,
+      agentId: resolvedAgentId,
       taskId: taskSnap.id,
       type: mappedType,
       status: 'queued',
@@ -293,9 +320,9 @@ export async function claimTaskAndCreateJob(input: {
 }
 
 export async function startAutomationForTask(input: {
-  agentId: string;
   taskId: string;
   taskLabel: string;
+  coadminUid: string;
   player: string;
   game: string;
   currentUsername?: string | null;
@@ -306,37 +333,82 @@ export async function startAutomationForTask(input: {
   if (!currentUser) {
     throw new Error('Not authenticated.');
   }
-  if (!input.agentId.trim()) {
-    throw new Error('Agent ID is missing for this task.');
-  }
+  const userRef = doc(db, 'users', currentUser.uid);
+  const jobRef = doc(
+    db,
+    'automation_jobs',
+    automationJobDocId(currentUser.uid, input.taskId)
+  );
 
-  const jobRef = await addDoc(collection(db, 'automation_jobs'), {
-    agentId: input.agentId.trim(),
-    taskId: input.taskId,
-    type: mapJobType(input.taskLabel),
-    status: 'queued',
-    payload: {
-      player: input.player,
-      game: input.game,
-      currentUsername: input.currentUsername ?? null,
-      amount: input.amount ?? null,
-      originalTask: sanitizeForFirestore(input.originalTask) as Record<string, unknown>,
-    },
-    createdByUid: currentUser.uid,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-    startedAt: null,
-    completedAt: null,
-    error: null,
+  return runTransaction(db, async (transaction) => {
+    const [userSnap, jobSnap] = await Promise.all([
+      transaction.get(userRef),
+      transaction.get(jobRef),
+    ]);
+    if (!userSnap.exists()) {
+      throw new Error('Current user profile not found.');
+    }
+    const userData = userSnap.data() as { automationAgentId?: string | null };
+    const linkedAgentRaw = String(userData.automationAgentId || '').trim();
+    const agentCheck = validateAutomationAgentId(linkedAgentRaw);
+    if (!agentCheck.valid || !agentCheck.normalized) {
+      throw new Error(
+        'No automation agent connected. Use “Connect Automation Agent” on the carer panel first.'
+      );
+    }
+    if (jobSnap.exists()) {
+      throw new Error('Automation job already exists for this task');
+    }
+
+    const taskRef = doc(db, 'carerTasks', input.taskId);
+    const taskSnap = await transaction.get(taskRef);
+    if (!taskSnap.exists()) {
+      throw new Error('Task not found');
+    }
+    const taskData = taskSnap.data() as Record<string, unknown>;
+    const status = sanitizeStatus(taskData.status);
+    if (status !== 'in_progress') {
+      throw new Error('Task must be in progress before queueing automation this way.');
+    }
+    if (String(taskData.assignedCarerUid || '') !== currentUser.uid) {
+      throw new Error('Only the assigned carer can queue automation for this task.');
+    }
+
+    const profile = userSnap.data() as { username?: string };
+    const createdByName = profile.username?.trim() || 'Carer';
+
+    transaction.set(jobRef, {
+      carerUid: currentUser.uid,
+      coadminUid: String(input.coadminUid || '').trim(),
+      agentId: agentCheck.normalized,
+      taskId: input.taskId,
+      type: mapJobType(input.taskLabel),
+      status: 'queued',
+      payload: {
+        player: input.player,
+        game: input.game,
+        currentUsername: input.currentUsername ?? null,
+        amount: input.amount ?? null,
+        originalTask: sanitizeForFirestore(input.originalTask) as Record<string, unknown>,
+      },
+      createdByUid: currentUser.uid,
+      createdByName,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      startedAt: null,
+      completedAt: null,
+      error: null,
+      attempts: 0,
+    });
+
+    return {
+      success: true,
+      job: {
+        id: jobRef.id,
+        status: 'queued' as AutomationJobStatus,
+      },
+    };
   });
-
-  return {
-    success: true,
-    job: {
-      id: jobRef.id,
-      status: 'queued' as AutomationJobStatus,
-    },
-  };
 }
 
 function mapJobStatusToUiStatus(status: AutomationJobStatus): AutomationUiStatus {

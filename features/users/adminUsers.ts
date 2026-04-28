@@ -465,6 +465,46 @@ export async function getPlayers(): Promise<PlayerUser[]> {
   return getUsersByRole<PlayerUser>('player');
 }
 
+export async function getPlayersByCoadmin(coadminUid: string): Promise<PlayerUser[]> {
+  await backfillPlayerReferralCodesIfNeeded();
+
+  if (!coadminUid.trim()) {
+    return [];
+  }
+
+  const [scopedSnapshot, legacySnapshot] = await Promise.all([
+    getDocs(
+      query(
+        collection(db, 'users'),
+        where('role', '==', 'player'),
+        where('coadminUid', '==', coadminUid)
+      )
+    ),
+    getDocs(
+      query(
+        collection(db, 'users'),
+        where('role', '==', 'player'),
+        where('createdBy', '==', coadminUid)
+      )
+    ),
+  ]);
+
+  const merged = [
+    ...scopedSnapshot.docs.map((docSnap) => ({
+      id: docSnap.id,
+      ...(docSnap.data() as Omit<PlayerUser, 'id'>),
+    })),
+    ...legacySnapshot.docs.map((docSnap) => ({
+      id: docSnap.id,
+      ...(docSnap.data() as Omit<PlayerUser, 'id'>),
+    })),
+  ];
+
+  return normalizeUsersWithCoadminUid(
+    Array.from(new Map(merged.map((user) => [user.id, user])).values())
+  );
+}
+
 export async function createPlayer(
   username: string,
   password: string,

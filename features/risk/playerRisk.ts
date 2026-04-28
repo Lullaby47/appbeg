@@ -719,7 +719,6 @@ export async function approveTransferRequest(requestId: string) {
     });
   });
 
-  await computeAndStorePlayerRiskSnapshot(playerUid);
   await createRiskAction({
     playerUid,
     coadminUid,

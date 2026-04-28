@@ -2,7 +2,7 @@ import { runTransaction, doc } from 'firebase/firestore';
 
 import { db } from '@/lib/firebase/client';
 import { belongsToCoadmin, getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
-import { recordFinancialEventAndRefreshRisk } from '@/features/risk/playerRisk';
+import { recordFinancialEvent } from '@/features/risk/playerRisk';
 
 /**
  * Add or remove whole-number coin for a player in the current user’s coadmin scope.
@@ -61,7 +61,7 @@ export async function adjustPlayerCoin({
 
   const absAmount = Math.abs(delta);
   try {
-    await recordFinancialEventAndRefreshRisk({
+    await recordFinancialEvent({
       playerUid,
       coadminUid,
       amountNpr: absAmount,

@@ -3,6 +3,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  onSnapshot,
   query,
   runTransaction,
   serverTimestamp,
@@ -14,7 +15,9 @@ import {
 
 import { auth, db } from '@/lib/firebase/client';
 import { getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
-import { recordFinancialEventAndRefreshRisk } from '@/features/risk/playerRisk';
+import { upsertCarerTaskForPlayerGameRequest } from '@/features/games/carerTasks';
+import type { PlayerGameRequest } from '@/features/games/playerGameRequests';
+import { recordFinancialEvent } from '@/features/risk/playerRisk';
 
 export type BonusEvent = {
   id: string;
@@ -673,58 +676,23 @@ export function listenBonusEventsByCoadmin(
   onChange: (events: BonusEvent[]) => void,
   onError?: (error: Error) => void
 ) {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
+  if (!coadminUid.trim()) {
     onChange([]);
     return () => {};
   }
 
-  let cancelled = false;
-  let pollTimer: ReturnType<typeof setInterval> | null = null;
-
-  const pull = async () => {
-    try {
-      const idToken = await currentUser.getIdToken();
-      const params = new URLSearchParams();
-      if (coadminUid) {
-        params.set('coadminUid', coadminUid);
-      }
-      const response = await fetch(`/api/bonus-events/list?${params.toString()}`, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${idToken}`,
-        },
-      });
-      const data = (await response.json()) as {
-        error?: string;
-        events?: Array<Record<string, unknown>>;
-      };
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to load bonus events.');
-      }
-      if (cancelled) return;
-      const events = (data.events || []).map((item) =>
-        toBonusEvent(String(item.id || ''), item as Omit<BonusEvent, 'id'>)
+  return onSnapshot(
+    query(collection(db, 'bonusEvents'), where('coadminUid', '==', coadminUid)),
+    (snapshot) => {
+      const events = snapshot.docs.map((docSnap) =>
+        toBonusEvent(docSnap.id, docSnap.data() as Omit<BonusEvent, 'id'>)
       );
       onChange(sortByNewest(events).filter(isBonusEventActive));
-    } catch (error) {
-      if (!cancelled) {
-        onError?.(error as Error);
-      }
+    },
+    (error) => {
+      onError?.(error as Error);
     }
-  };
-
-  void pull();
-  pollTimer = setInterval(() => {
-    void pull();
-  }, 5000);
-
-  return () => {
-    cancelled = true;
-    if (pollTimer) {
-      clearInterval(pollTimer);
-    }
-  };
+  );
 }
 
 export async function activateBonusEventForPlayer(values: {
@@ -885,11 +853,19 @@ export async function initiateBonusEventPlay(values: {
   });
 
   if (trackedBonusAmount > 0) {
-    await recordFinancialEventAndRefreshRisk({
+    await recordFinancialEvent({
       playerUid: values.playerUid,
       coadminUid: trackedCoadminUid,
       amountNpr: trackedBonusAmount,
       type: 'bonus',
+    });
+  }
+
+  const bonusRequestSnap = await getDoc(doc(db, 'playerGameRequests', requestRef.id));
+  if (bonusRequestSnap.exists()) {
+    await upsertCarerTaskForPlayerGameRequest({
+      id: bonusRequestSnap.id,
+      ...(bonusRequestSnap.data() as Omit<PlayerGameRequest, 'id'>),
     });
   }
 }

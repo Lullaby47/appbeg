@@ -18,7 +18,6 @@ import {
 
 import { auth, db } from '@/lib/firebase/client';
 import {
-  belongsToCoadmin,
   getCurrentUserCoadminUid as getScopedCurrentUserCoadminUid,
 } from '@/lib/coadmin/scope';
 import { GameLogin, getGameLoginsByCoadmin } from '@/features/games/gameLogins';
@@ -27,14 +26,14 @@ import {
   PlayerGameLogin,
 } from '@/features/games/playerGameLogins';
 import {
-  getCompletedPlayerGameRequests,
-  getPendingPlayerGameRequests,
+  getCompletedPlayerGameRequestsByCoadmin,
+  getPendingPlayerGameRequestsByCoadmin,
   PlayerGameRequest,
   PlayerGameRequestStatus,
   PlayerGameRequestType,
 } from '@/features/games/playerGameRequests';
-import { getPlayers, PlayerUser } from '@/features/users/adminUsers';
-import { recordFinancialEventAndRefreshRisk } from '@/features/risk/playerRisk';
+import { getPlayersByCoadmin, PlayerUser } from '@/features/users/adminUsers';
+import { recordFinancialEvent } from '@/features/risk/playerRisk';
 
 export type CarerTaskType =
   | 'create_game_username'
@@ -136,8 +135,13 @@ function recreateUsernameTaskId(
   return `recreate_username__${coadminUid}__${playerUid}__${normalizeGameName(gameName)}`;
 }
 
-function requestTaskId(requestId: string) {
+/** Deterministic `carerTasks` document id for a `playerGameRequests` doc. */
+export function carerTaskDocIdForPlayerGameRequest(requestId: string) {
   return `request__${requestId}`;
+}
+
+function requestTaskId(requestId: string) {
+  return carerTaskDocIdForPlayerGameRequest(requestId);
 }
 
 function isClaimablePendingTask(task: CarerTask) {
@@ -376,6 +380,131 @@ function buildRequestTask(
   });
 }
 
+/**
+ * Same merge rules as {@link syncCarerTasks} for a single request-linked task.
+ * Used by sync and by immediate upserts after player request mutations.
+ */
+export function computeRequestLinkedCarerTaskWrite(
+  coadminUid: string,
+  request: PlayerGameRequest,
+  playerUsername: string,
+  existingTask: CarerTask | undefined
+): Record<string, unknown> {
+  const task = buildRequestTask(coadminUid, request, playerUsername);
+  const desiredStatus = task.status;
+  const existingCompletedAt = existingTask?.completedAt || null;
+  const existingCompletedByUid =
+    existingTask?.completedByCarerUid || existingTask?.assignedCarerUid || null;
+  const existingCompletedByUsername =
+    existingTask?.completedByCarerUsername ||
+    existingTask?.assignedCarerUsername ||
+    null;
+  const existingEffectiveStatus = existingTask
+    ? getEffectiveCarerTaskStatus(existingTask)
+    : null;
+  const shouldPreserveExistingStatus =
+    desiredStatus === 'pending' &&
+    (existingEffectiveStatus === 'in_progress' ||
+      existingEffectiveStatus === 'completed');
+  const nextStatus = shouldPreserveExistingStatus
+    ? existingEffectiveStatus
+    : desiredStatus;
+
+  return {
+    ...task,
+    status: nextStatus,
+    assignedCarerUid:
+      nextStatus === 'in_progress'
+        ? existingTask?.assignedCarerUid ?? null
+        : nextStatus === 'urgent'
+          ? existingTask?.assignedCarerUid ||
+            existingCompletedByUid ||
+            null
+          : nextStatus === 'completed'
+            ? existingTask?.assignedCarerUid ||
+              existingCompletedByUid ||
+              null
+            : existingTask?.assignedCarerUid ?? null,
+    assignedCarerUsername:
+      nextStatus === 'in_progress'
+        ? existingTask?.assignedCarerUsername ?? null
+        : nextStatus === 'urgent'
+          ? existingTask?.assignedCarerUsername ||
+            existingCompletedByUsername ||
+            null
+          : nextStatus === 'completed'
+            ? existingTask?.assignedCarerUsername ||
+              existingCompletedByUsername ||
+              null
+            : existingTask?.assignedCarerUsername ?? null,
+    startedAt:
+      nextStatus === 'in_progress'
+        ? existingTask?.startedAt || serverTimestamp()
+        : nextStatus === 'pending' || nextStatus === 'completed'
+          ? null
+          : existingTask?.startedAt ?? null,
+    expiresAt:
+      nextStatus === 'in_progress'
+        ? existingTask?.expiresAt ?? null
+        : nextStatus === 'pending' ||
+            nextStatus === 'completed' ||
+            nextStatus === 'urgent'
+          ? null
+          : existingTask?.expiresAt ?? null,
+    completedAt:
+      nextStatus === 'completed'
+        ? request.completedAt || existingCompletedAt || serverTimestamp()
+        : nextStatus === 'urgent'
+          ? request.completedAt || existingCompletedAt || null
+          : null,
+    createdAt: request.createdAt || existingTask?.createdAt || serverTimestamp(),
+    isPoked: false,
+    pokedAt: null,
+    pokeMessage: null,
+    completedByCarerUid:
+      nextStatus === 'completed' || nextStatus === 'urgent'
+        ? existingCompletedByUid
+        : null,
+    completedByCarerUsername:
+      nextStatus === 'completed' || nextStatus === 'urgent'
+        ? existingCompletedByUsername
+        : null,
+  };
+}
+
+/**
+ * Upserts `carerTasks/{request__requestId}` from the current request document shape.
+ * Call after every player-side create/update to the linked `playerGameRequests` doc.
+ */
+export async function upsertCarerTaskForPlayerGameRequest(
+  request: PlayerGameRequest
+): Promise<void> {
+  const coadminUid = String(request.coadminUid || request.createdBy || '').trim();
+  if (!request.id.trim() || !coadminUid) {
+    return;
+  }
+
+  const playerSnap = await getDoc(doc(db, 'users', request.playerUid));
+  const playerUsername = playerSnap.exists()
+    ? String((playerSnap.data() as { username?: string }).username || '').trim() ||
+      'Player'
+    : 'Player';
+
+  const taskRef = doc(db, 'carerTasks', requestTaskId(request.id));
+  const existingSnap = await getDoc(taskRef);
+  const existingTask = existingSnap.exists()
+    ? toCarerTask(existingSnap.id, existingSnap.data() as Omit<CarerTask, 'id'>)
+    : undefined;
+
+  const payload = computeRequestLinkedCarerTaskWrite(
+    coadminUid,
+    request,
+    playerUsername,
+    existingTask
+  );
+  await setDoc(taskRef, payload, { merge: true });
+}
+
 async function getCurrentCoadminTasks(coadminUid: string) {
   const tasksQuery = query(
     collection(db, 'carerTasks'),
@@ -556,90 +685,14 @@ export async function syncCarerTasks({
     const taskRef = doc(db, 'carerTasks', taskId);
     const existingTask = existingTasks.get(taskId);
     const playerUsername = playerNameMap.get(request.playerUid) || 'Player';
-    const task = buildRequestTask(coadminUid, request, playerUsername);
-    const desiredStatus = task.status;
-    const existingCompletedAt = existingTask?.completedAt || null;
-    const existingCompletedByUid =
-      existingTask?.completedByCarerUid || existingTask?.assignedCarerUid || null;
-    const existingCompletedByUsername =
-      existingTask?.completedByCarerUsername ||
-      existingTask?.assignedCarerUsername ||
-      null;
-    const existingEffectiveStatus =
-      existingTask ? getEffectiveCarerTaskStatus(existingTask) : null;
-    const shouldPreserveExistingStatus =
-      desiredStatus === 'pending' &&
-      (existingEffectiveStatus === 'in_progress' ||
-        existingEffectiveStatus === 'completed');
-    const nextStatus = shouldPreserveExistingStatus
-      ? existingEffectiveStatus
-      : desiredStatus;
-
-    batch.set(
-      taskRef,
-      {
-        ...task,
-        status: nextStatus,
-        assignedCarerUid:
-          nextStatus === 'in_progress'
-            ? existingTask?.assignedCarerUid ?? null
-            : nextStatus === 'urgent'
-            ? existingTask?.assignedCarerUid ||
-              existingCompletedByUid ||
-              null
-            : nextStatus === 'completed'
-              ? existingTask?.assignedCarerUid ||
-                existingCompletedByUid ||
-                null
-              : existingTask?.assignedCarerUid ?? null,
-        assignedCarerUsername:
-          nextStatus === 'in_progress'
-            ? existingTask?.assignedCarerUsername ?? null
-            : nextStatus === 'urgent'
-            ? existingTask?.assignedCarerUsername ||
-              existingCompletedByUsername ||
-              null
-            : nextStatus === 'completed'
-              ? existingTask?.assignedCarerUsername ||
-                existingCompletedByUsername ||
-                null
-              : existingTask?.assignedCarerUsername ?? null,
-        startedAt:
-          nextStatus === 'in_progress'
-            ? existingTask?.startedAt || serverTimestamp()
-            : nextStatus === 'pending' || nextStatus === 'completed'
-            ? null
-            : existingTask?.startedAt ?? null,
-        expiresAt:
-          nextStatus === 'in_progress'
-            ? existingTask?.expiresAt ?? null
-            :
-          nextStatus === 'pending' ||
-          nextStatus === 'completed' ||
-          nextStatus === 'urgent'
-            ? null
-            : existingTask?.expiresAt ?? null,
-        completedAt:
-          nextStatus === 'completed'
-            ? request.completedAt || existingCompletedAt || serverTimestamp()
-            : nextStatus === 'urgent'
-              ? request.completedAt || existingCompletedAt || null
-              : null,
-        createdAt: request.createdAt || existingTask?.createdAt || serverTimestamp(),
-        isPoked: false,
-        pokedAt: null,
-        pokeMessage: null,
-        completedByCarerUid:
-          nextStatus === 'completed' || nextStatus === 'urgent'
-            ? existingCompletedByUid
-            : null,
-        completedByCarerUsername:
-          nextStatus === 'completed' || nextStatus === 'urgent'
-            ? existingCompletedByUsername
-            : null,
-      },
-      { merge: true }
+    const payload = computeRequestLinkedCarerTaskWrite(
+      coadminUid,
+      request,
+      playerUsername,
+      existingTask
     );
+
+    batch.set(taskRef, payload, { merge: true });
     changed = true;
   }
 
@@ -708,7 +761,8 @@ export async function syncCarerTasks({
 }
 
 async function dropPendingRechargeRequestsWithoutEnoughCoin(
-  pendingRequests: PlayerGameRequest[]
+  pendingRequests: PlayerGameRequest[],
+  players: PlayerUser[]
 ) {
   const rechargeRequests = pendingRequests.filter((request) => request.type === 'recharge');
 
@@ -716,20 +770,9 @@ async function dropPendingRechargeRequestsWithoutEnoughCoin(
     return pendingRequests;
   }
 
-  const playerUids = Array.from(new Set(rechargeRequests.map((request) => request.playerUid)));
-  const playerEntries = await Promise.all(
-    playerUids.map(async (playerUid) => {
-      const playerSnap = await getDoc(doc(db, 'users', playerUid));
-
-      if (!playerSnap.exists()) {
-        return [playerUid, 0] as const;
-      }
-
-      const playerData = playerSnap.data() as { coin?: number };
-      return [playerUid, Number(playerData.coin || 0)] as const;
-    })
+  const coinByPlayerUid = new Map(
+    players.map((player) => [player.uid, Number(player.coin || 0)] as const)
   );
-  const coinByPlayerUid = new Map(playerEntries);
 
   const invalidRechargeIds = rechargeRequests
     .filter((request) => {
@@ -758,21 +801,19 @@ async function dropPendingRechargeRequestsWithoutEnoughCoin(
 }
 
 export async function syncCarerTasksForCoadmin(coadminUid: string) {
-  const allPlayers = await getPlayers();
   const players = dedupeById(
-    allPlayers.filter(
-      (player) =>
-        belongsToCoadmin(player, coadminUid) && player.status !== 'disabled'
-    )
+    (await getPlayersByCoadmin(coadminUid)).filter((player) => player.status !== 'disabled')
   );
   const games = dedupeById(await getGameLoginsByCoadmin(coadminUid));
   const logins = dedupeById(await getPlayerGameLoginsByCoadmin(coadminUid));
-  const playerUids = players.map((player) => player.uid);
-  const pendingRequestsRaw = await getPendingPlayerGameRequests(playerUids);
+  const pendingRequestsRaw = await getPendingPlayerGameRequestsByCoadmin(coadminUid);
   const pendingRequests = await dropPendingRechargeRequestsWithoutEnoughCoin(
-    pendingRequestsRaw
+    pendingRequestsRaw.filter((request) => players.some((player) => player.uid === request.playerUid)),
+    players
   );
-  const completedRequests = await getCompletedPlayerGameRequests(playerUids);
+  const completedRequests = (await getCompletedPlayerGameRequestsByCoadmin(coadminUid)).filter(
+    (request) => players.some((player) => player.uid === request.playerUid)
+  );
 
   await syncCarerTasks({
     coadminUid,
@@ -800,7 +841,8 @@ export function listenToAvailableCarerTasks(
 ) {
   const tasksQuery = query(
     collection(db, 'carerTasks'),
-    where('coadminUid', '==', coadminUid)
+    where('coadminUid', '==', coadminUid),
+    where('status', 'in', ['pending', 'in_progress', 'urgent'])
   );
 
   return onSnapshot(
@@ -1364,7 +1406,7 @@ export async function completeRechargeRedeemTask(task: CarerTask) {
   });
 
   if (completedEventAmount > 0) {
-    await recordFinancialEventAndRefreshRisk({
+    await recordFinancialEvent({
       playerUid: task.playerUid,
       coadminUid: completedEventCoadminUid,
       amountNpr: completedEventAmount,
@@ -1494,54 +1536,72 @@ export function listenCarerRechargeRedeemTotalsByCoadmin(
   onChange: (totalsByCarerUid: Record<string, CarerRechargeRedeemTotals>) => void,
   onError?: (error: Error) => void
 ) {
-  const tasksQuery = query(collection(db, 'carerTasks'), where('coadminUid', '==', coadminUid));
-
-  return onSnapshot(
-    tasksQuery,
-    (snapshot) => {
-      const totals: Record<string, CarerRechargeRedeemTotals> = {};
-
-      snapshot.docs.forEach((docSnap) => {
-        const task = {
-          id: docSnap.id,
-          ...(docSnap.data() as Omit<CarerTask, 'id'>),
-        } as CarerTask;
-
-        if (getEffectiveCarerTaskStatus(task) !== 'completed') {
-          return;
-        }
-
-        if (task.type !== 'recharge' && task.type !== 'redeem') {
-          return;
-        }
-
-        const carerUid = String(task.completedByCarerUid || task.assignedCarerUid || '').trim();
-
-        if (!carerUid) {
-          return;
-        }
-
-        if (!totals[carerUid]) {
-          totals[carerUid] = {
-            totalRechargeAmount: 0,
-            totalRedeemAmount: 0,
-          };
-        }
-
-        const taskAmount = Number(task.amount || 0);
-
-        if (task.type === 'recharge') {
-          totals[carerUid].totalRechargeAmount += taskAmount;
-          return;
-        }
-
-        totals[carerUid].totalRedeemAmount += taskAmount;
-      });
-
-      onChange(totals);
-    },
-    (error) => {
-      onError?.(error as Error);
-    }
+  const rechargeQuery = query(
+    collection(db, 'carerTasks'),
+    where('coadminUid', '==', coadminUid),
+    where('status', '==', 'completed'),
+    where('type', '==', 'recharge')
   );
+  const redeemQuery = query(
+    collection(db, 'carerTasks'),
+    where('coadminUid', '==', coadminUid),
+    where('status', '==', 'completed'),
+    where('type', '==', 'redeem')
+  );
+
+  let rechargeTasks: CarerTask[] = [];
+  let redeemTasks: CarerTask[] = [];
+
+  const emit = () => {
+    const totals: Record<string, CarerRechargeRedeemTotals> = {};
+
+    for (const task of [...rechargeTasks, ...redeemTasks]) {
+      const carerUid = String(task.completedByCarerUid || task.assignedCarerUid || '').trim();
+      if (!carerUid) {
+        continue;
+      }
+      if (!totals[carerUid]) {
+        totals[carerUid] = {
+          totalRechargeAmount: 0,
+          totalRedeemAmount: 0,
+        };
+      }
+      const amount = Number(task.amount || 0);
+      if (task.type === 'recharge') {
+        totals[carerUid].totalRechargeAmount += amount;
+      } else {
+        totals[carerUid].totalRedeemAmount += amount;
+      }
+    }
+
+    onChange(totals);
+  };
+
+  const unsubRecharge = onSnapshot(
+    rechargeQuery,
+    (snapshot) => {
+      rechargeTasks = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...(docSnap.data() as Omit<CarerTask, 'id'>),
+      }));
+      emit();
+    },
+    (error) => onError?.(error as Error)
+  );
+  const unsubRedeem = onSnapshot(
+    redeemQuery,
+    (snapshot) => {
+      redeemTasks = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...(docSnap.data() as Omit<CarerTask, 'id'>),
+      }));
+      emit();
+    },
+    (error) => onError?.(error as Error)
+  );
+
+  return () => {
+    unsubRecharge();
+    unsubRedeem();
+  };
 }

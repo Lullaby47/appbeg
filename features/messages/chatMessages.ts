@@ -286,7 +286,7 @@ export function listenToUnreadCounts(
 
   const conversationsQuery = query(
     collection(db, 'conversations'),
-    where('participants', 'array-contains', currentUser.uid)
+    where(`unreadCounts.${currentUser.uid}`, '>', 0)
   );
 
   return onSnapshot(conversationsQuery, (snapshot) => {
@@ -322,7 +322,7 @@ export function listenToUnreadNotices(
 
   const conversationsQuery = query(
     collection(db, 'conversations'),
-    where('participants', 'array-contains', currentUser.uid)
+    where(`unreadCounts.${currentUser.uid}`, '>', 0)
   );
 
   return onSnapshot(conversationsQuery, (snapshot) => {

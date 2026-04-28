@@ -54,6 +54,12 @@ import {
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 import { OnlineIndicator } from '@/components/presence/OnlineIndicator';
 import {
+  disconnectCarerAutomationAgent,
+  getCarerAutomationAgent,
+  setCarerAutomationAgent,
+  validateAutomationAgentId,
+} from '@/features/automation/carerAutomationAgent';
+import {
   claimTaskAndCreateJob,
   listenAutomationUiStatusByTask,
   startAutomationForTask,
@@ -73,6 +79,8 @@ type CarerIdentity = {
   paymentQrUrl?: string;
   paymentQrPublicId?: string;
   paymentDetails?: string;
+  /** Linked local automation agent string (same as agent .env AGENT_ID). */
+  automationAgentId?: string | null;
 };
 
 type DashboardCard = {
@@ -83,10 +91,7 @@ type DashboardCard = {
 
 type TaskSection = 'pending' | 'mine' | 'completed';
 
-const AUTOMATION_AGENT_ID = 'car001';
 const AUTO_AUTOMATION_INTERVAL_MS = 7000;
-const BACKGROUND_REFRESH_INTERVAL_MS = 60000;
-
 function getTimestampMs(value: unknown) {
   if (!value) {
     return 0;
@@ -317,15 +322,34 @@ export default function CarerPage() {
   const [automationStatusByTaskId, setAutomationStatusByTaskId] = useState<
     Record<string, AutomationUiStatus>
   >({});
+  const [agentInputDraft, setAgentInputDraft] = useState('');
+  const [agentPanelNotice, setAgentPanelNotice] = useState('');
+  const [agentPanelError, setAgentPanelError] = useState('');
+  const [agentSaving, setAgentSaving] = useState(false);
 
   const previousPendingCountRef = useRef(0);
   const shiftSessionIdRef = useRef<string | null>(null);
   const lastAutoAutomationRunMsRef = useRef(0);
 
-  const selectedPlayer = useMemo(
-    () => players.find((player) => player.uid === selectedPlayerUid) || null,
-    [players, selectedPlayerUid]
-  );
+  const selectedPlayer = useMemo((): PlayerUser | null => {
+    if (!selectedPlayerUid.trim()) {
+      return null;
+    }
+    const fromList = players.find((player) => player.uid === selectedPlayerUid);
+    if (fromList) {
+      return fromList;
+    }
+    return {
+      id: selectedPlayerUid,
+      uid: selectedPlayerUid,
+      username: 'Unknown player',
+      email: '',
+      role: 'player',
+      status: 'active',
+      createdBy: null,
+      coadminUid: coadminUid || null,
+    };
+  }, [players, selectedPlayerUid, coadminUid]);
 
   const selectedPlayerLogins = useMemo(
     () =>
@@ -333,11 +357,6 @@ export default function CarerPage() {
         allPlayerLogins.filter((login) => login.playerUid === selectedPlayerUid)
       ),
     [allPlayerLogins, selectedPlayerUid]
-  );
-
-  const activePlayerUidSet = useMemo(
-    () => new Set(players.map((player) => player.uid)),
-    [players]
   );
 
   const existingLoginForSelectedGame = useMemo(() => {
@@ -482,7 +501,19 @@ export default function CarerPage() {
     [riskSnapshots]
   );
 
-  const carerPlayerPresenceUids = useMemo(() => players.map((p) => p.uid), [players]);
+  const carerPlayerPresenceUids = useMemo(() => {
+    const uids = new Set<string>();
+    for (const p of players) {
+      uids.add(p.uid);
+    }
+    for (const t of tasks) {
+      const uid = String(t.playerUid || '').trim();
+      if (uid) {
+        uids.add(uid);
+      }
+    }
+    return [...uids];
+  }, [players, tasks]);
   const carerPlayerOnlineByUid = usePresenceOnlineMap(carerPlayerPresenceUids);
 
   useEffect(() => {
@@ -491,6 +522,9 @@ export default function CarerPage() {
         setBootstrapping(false);
         setCarerIdentity(null);
         setCoadminUid('');
+        setAgentInputDraft('');
+        setAgentPanelNotice('');
+        setAgentPanelError('');
         return;
       }
 
@@ -509,11 +543,7 @@ export default function CarerPage() {
       coadminUid,
       carerIdentity.uid,
       (incomingTasks) => {
-        setTasks(
-          sortByNewest(
-            incomingTasks.filter((task) => activePlayerUidSet.has(task.playerUid))
-          )
-        );
+        setTasks(sortByNewest(incomingTasks));
       },
       (error) => {
         setErrorMessage(error.message || 'Failed to listen for tasks.');
@@ -521,7 +551,7 @@ export default function CarerPage() {
     );
 
     return () => unsubscribe();
-  }, [activePlayerUidSet, carerIdentity?.uid, coadminUid]);
+  }, [carerIdentity?.uid, coadminUid]);
 
   useEffect(() => {
     if (!carerIdentity?.uid) {
@@ -574,44 +604,6 @@ export default function CarerPage() {
     );
 
     return () => unsubscribe();
-  }, [coadminUid]);
-
-  useEffect(() => {
-    if (!coadminUid) {
-      return;
-    }
-
-    const intervalId = window.setInterval(() => {
-      void releaseExpiredCarerTasks(coadminUid).catch((error: unknown) => {
-        const nextMessage =
-          error instanceof Error ? error.message : 'Failed to release expired tasks.';
-        const normalized = nextMessage.toLowerCase();
-        if (normalized.includes('resource_exhausted') || normalized.includes('quota exceeded')) {
-          setAutoAutomationEnabled(false);
-          setErrorMessage(
-            'Firestore quota exceeded. Auto automation has been paused.'
-          );
-          return;
-        }
-        setErrorMessage(nextMessage);
-      });
-
-      void refreshPageData(false).catch((error: unknown) => {
-        const nextMessage =
-          error instanceof Error ? error.message : 'Failed to refresh carer data.';
-        const normalized = nextMessage.toLowerCase();
-        if (normalized.includes('resource_exhausted') || normalized.includes('quota exceeded')) {
-          setAutoAutomationEnabled(false);
-          setErrorMessage(
-            'Firestore quota exceeded. Auto automation has been paused.'
-          );
-          return;
-        }
-        setErrorMessage(nextMessage);
-      });
-    }, BACKGROUND_REFRESH_INTERVAL_MS);
-
-    return () => window.clearInterval(intervalId);
   }, [coadminUid]);
 
   useEffect(() => {
@@ -702,18 +694,8 @@ export default function CarerPage() {
   useEffect(() => {
     if (!selectedPlayerUid) {
       setEditingLogin(null);
-      return;
     }
-
-    if (!players.some((player) => player.uid === selectedPlayerUid)) {
-      setSelectedPlayerUid('');
-      setEditingLogin(null);
-      setActiveUsernameTask(null);
-      setGameName('');
-      setGameUsername('');
-      setGamePassword('');
-    }
-  }, [players, selectedPlayerUid]);
+  }, [selectedPlayerUid]);
 
   useEffect(() => {
     if (!autoAutomationEnabled) {
@@ -763,8 +745,10 @@ export default function CarerPage() {
         paymentQrPublicId?: string;
         paymentDetails?: string;
         cashBoxNpr?: number;
+        automationAgentId?: string | null;
       };
       const resolvedCoadminUid = await getCurrentUserCoadminUid();
+      const linkedAgent = String(userData.automationAgentId || '').trim() || null;
 
       setCarerIdentity({
         uid: firebaseUser.uid,
@@ -772,7 +756,9 @@ export default function CarerPage() {
         paymentQrUrl: userData.paymentQrUrl?.trim() || '',
         paymentQrPublicId: userData.paymentQrPublicId?.trim() || '',
         paymentDetails: userData.paymentDetails?.trim() || '',
+        automationAgentId: linkedAgent,
       });
+      setAgentInputDraft(linkedAgent || '');
       setPaymentQrUrl(userData.paymentQrUrl?.trim() || '');
       setPaymentQrPublicId(userData.paymentQrPublicId?.trim() || '');
       setPaymentDetails(userData.paymentDetails?.trim() || '');
@@ -810,13 +796,6 @@ export default function CarerPage() {
       setGameOptions(sortByNewest(synced.games));
       setAllPlayerLogins(latestLogins);
       setPendingRequests(sortByNewest(synced.pendingRequests));
-      setTasks((currentTasks) =>
-        sortByNewest(
-          currentTasks.filter((task) =>
-            synced.players.some((player) => player.uid === task.playerUid)
-          )
-        )
-      );
       setErrorMessage('');
     } catch (error) {
       setErrorMessage(
@@ -826,6 +805,90 @@ export default function CarerPage() {
       if (showLoader) {
         setRefreshing(false);
       }
+    }
+  }
+
+  function buildAutomationAgentEnvFileSnippet() {
+    if (!carerIdentity) {
+      return '';
+    }
+    const agentForEnv =
+      String(carerIdentity.automationAgentId || '').trim() || String(agentInputDraft || '').trim();
+    return [
+      '# carer-agent/.env — use the same AGENT_ID you saved in the carer panel.',
+      `CARER_UID=${carerIdentity.uid}`,
+      `AGENT_ID=${agentForEnv || 'your_agent_id_here'}`,
+      'FIREBASE_SERVICE_ACCOUNT_PATH=./serviceAccount.json',
+    ].join('\n');
+  }
+
+  async function handleSaveAutomationAgentConnection() {
+    if (!carerIdentity) {
+      return;
+    }
+    setAgentSaving(true);
+    setAgentPanelError('');
+    setAgentPanelNotice('');
+    const check = validateAutomationAgentId(agentInputDraft);
+    if (!check.valid) {
+      setAgentPanelError(check.error || 'Invalid agent ID');
+      setAgentSaving(false);
+      return;
+    }
+    try {
+      await setCarerAutomationAgent(carerIdentity.uid, agentInputDraft);
+      const fresh = await getCarerAutomationAgent(carerIdentity.uid);
+      setCarerIdentity((prev) =>
+        prev ? { ...prev, automationAgentId: fresh.automationAgentId } : prev
+      );
+      setAgentInputDraft(fresh.automationAgentId || '');
+      setAgentPanelNotice('Saved successfully');
+    } catch (error) {
+      setAgentPanelError(
+        error instanceof Error ? error.message : 'Failed to save agent connection.'
+      );
+    } finally {
+      setAgentSaving(false);
+    }
+  }
+
+  async function handleDisconnectAutomationAgent() {
+    if (!carerIdentity) {
+      return;
+    }
+    const ok = window.confirm(
+      'Disconnect this automation agent? New tasks will stay manual until you connect again.'
+    );
+    if (!ok) {
+      return;
+    }
+    setAgentSaving(true);
+    setAgentPanelError('');
+    setAgentPanelNotice('');
+    try {
+      await disconnectCarerAutomationAgent(carerIdentity.uid);
+      setCarerIdentity((prev) => (prev ? { ...prev, automationAgentId: null } : prev));
+      setAgentInputDraft('');
+      setAgentPanelNotice('Agent disconnected.');
+    } catch (error) {
+      setAgentPanelError(
+        error instanceof Error ? error.message : 'Failed to disconnect agent.'
+      );
+    } finally {
+      setAgentSaving(false);
+    }
+  }
+
+  async function handleCopyAutomationAgentEnvSnippet() {
+    const text = buildAutomationAgentEnvFileSnippet();
+    if (!text) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setAgentPanelNotice('Copied .env snippet to clipboard');
+    } catch {
+      setAgentPanelError('Could not copy to clipboard.');
     }
   }
 
@@ -878,7 +941,7 @@ export default function CarerPage() {
       } else {
         await createPlayerGameLogin({
           playerUid: selectedPlayer.uid,
-          playerUsername: selectedPlayer.username || 'Player',
+          playerUsername: selectedPlayer.username || 'Unknown player',
           gameName: gameName.trim(),
           gameUsername: gameUsername.trim(),
           gamePassword,
@@ -933,7 +996,6 @@ export default function CarerPage() {
 
       await claimTaskAndCreateJob({
         taskId: task.id,
-        agentId: AUTOMATION_AGENT_ID,
         currentUsername: loginForTask?.gameUsername || null,
         carerName: carerIdentity.username,
       });
@@ -1069,10 +1131,10 @@ export default function CarerPage() {
       ) || null;
     try {
       await startAutomationForTask({
-        agentId: AUTOMATION_AGENT_ID,
         taskId: task.id,
         taskLabel: getTaskTypeLabel(task),
-        player: task.playerUsername || 'Player',
+        coadminUid: String(task.coadminUid || coadminUid || '').trim(),
+        player: task.playerUsername || 'Unknown player',
         game: task.gameName || 'Unknown Game',
         currentUsername: loginForTask?.gameUsername || null,
         amount: task.amount ?? null,
@@ -1238,14 +1300,13 @@ export default function CarerPage() {
   }
 
   function continueUsernameTask(task: CarerTask) {
-    const matchingPlayer = players.find((player) => player.uid === task.playerUid);
-
-    if (!matchingPlayer) {
-      setErrorMessage('The player for this task could not be found.');
+    const uid = String(task.playerUid || '').trim();
+    if (!uid) {
+      setErrorMessage('This task has no player id.');
       return;
     }
 
-    setSelectedPlayerUid(matchingPlayer.uid);
+    setSelectedPlayerUid(uid);
     setActiveUsernameTask(task);
     setEditingLogin(null);
     setGameName(task.gameName || '');
@@ -1394,6 +1455,92 @@ export default function CarerPage() {
             <p className="mt-2 text-3xl font-bold text-blue-200">{nepalClock}</p>
             <p className="mt-2 text-xs text-blue-100/80">Timezone: Asia/Kathmandu</p>
           </div>
+        </div>
+
+        <div className="rounded-2xl border border-violet-500/35 bg-violet-950/30 p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h3 className="text-lg font-bold text-violet-100">Connect Automation Agent</h3>
+              <p className="mt-1 text-xs text-violet-200/70">
+                Link exactly one agent ID to this account. Your local carer-agent must use the
+                same <span className="font-mono text-violet-100">CARER_UID</span> and{' '}
+                <span className="font-mono text-violet-100">AGENT_ID</span> as in your .env file.
+              </p>
+              <p className="mt-2 text-sm font-semibold text-violet-50">
+                {carerIdentity?.automationAgentId
+                  ? `Agent connected: ${carerIdentity.automationAgentId}`
+                  : 'No agent connected'}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+            <div className="min-w-0 flex-1">
+              <label className="block text-xs font-bold uppercase tracking-wide text-violet-200/80">
+                Agent ID
+              </label>
+              <input
+                type="text"
+                value={agentInputDraft}
+                onChange={(e) => {
+                  setAgentInputDraft(e.target.value);
+                  setAgentPanelError('');
+                  setAgentPanelNotice('');
+                }}
+                placeholder="e.g. car001"
+                autoComplete="off"
+                className="mt-1 w-full rounded-xl border border-violet-400/40 bg-black/50 px-3 py-2.5 font-mono text-sm text-white outline-none focus:border-violet-300 focus:ring-2 focus:ring-violet-400/30"
+              />
+              {(() => {
+                const check = validateAutomationAgentId(agentInputDraft);
+                if (agentInputDraft.trim() && !check.valid) {
+                  return (
+                    <p className="mt-1 text-xs font-semibold text-rose-300">Invalid agent ID</p>
+                  );
+                }
+                return null;
+              })()}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={agentSaving || !carerIdentity}
+                onClick={() => void handleSaveAutomationAgentConnection()}
+                className="rounded-xl bg-violet-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-violet-400 disabled:opacity-50"
+              >
+                {agentSaving ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                disabled={agentSaving || !carerIdentity?.automationAgentId}
+                onClick={() => void handleDisconnectAutomationAgent()}
+                className="rounded-xl border border-violet-400/50 bg-transparent px-4 py-2.5 text-sm font-bold text-violet-100 hover:bg-violet-500/15 disabled:opacity-50"
+              >
+                Disconnect
+              </button>
+              <button
+                type="button"
+                disabled={!carerIdentity}
+                onClick={() => void handleCopyAutomationAgentEnvSnippet()}
+                className="rounded-xl border border-white/20 bg-white/5 px-4 py-2.5 text-sm font-bold text-white hover:bg-white/10"
+              >
+                Copy .env snippet
+              </button>
+            </div>
+          </div>
+
+          {agentPanelError ? (
+            <p className="mt-3 text-sm font-semibold text-rose-300">{agentPanelError}</p>
+          ) : null}
+          {agentPanelNotice ? (
+            <p className="mt-2 text-sm font-semibold text-emerald-300">{agentPanelNotice}</p>
+          ) : null}
+
+          <p className="mt-3 text-[11px] text-violet-200/55">
+            Firestore job document id format:{' '}
+            <span className="font-mono text-violet-100/90">carerUid--taskId</span> (one document per
+            carer + task).
+          </p>
         </div>
 
         <div className="rounded-2xl border border-amber-500/30 bg-amber-950/25 p-6">
@@ -1561,7 +1708,7 @@ export default function CarerPage() {
 
           {activeUsernameTask && (
             <div className="rounded-2xl border border-yellow-500/20 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-100">
-              Active task: {(activeUsernameTask.playerUsername || 'Player').trim()} /{' '}
+              Active task: {(activeUsernameTask.playerUsername || 'Unknown player').trim()} /{' '}
               {(activeUsernameTask.gameName || 'Unknown Game').trim()}
             </div>
           )}
@@ -1804,12 +1951,13 @@ export default function CarerPage() {
             </div>
 
             <h4 className="text-lg font-bold">
-              {(task.playerUsername || 'Player').trim()} /{' '}
+              {(task.playerUsername || 'Unknown player').trim()} /{' '}
               {(task.gameName || 'Unknown Game').trim()}
             </h4>
 
             <p className="mt-2 text-sm text-neutral-400">
-              Player: <span className="text-white">{task.playerUsername || 'Player'}</span>
+              Player:{' '}
+              <span className="text-white">{task.playerUsername || 'Unknown player'}</span>
             </p>
 
             <p className="mt-1 text-sm text-neutral-400">
@@ -2530,7 +2678,7 @@ export default function CarerPage() {
           >
             <h3 className="text-2xl font-bold text-white">Login Details</h3>
             <p className="mt-2 text-sm text-neutral-400">
-              {(loginDetailsTask.playerUsername || 'Player').trim()} /{' '}
+              {(loginDetailsTask.playerUsername || 'Unknown player').trim()} /{' '}
               {(loginDetailsTask.gameName || 'Unknown Game').trim()}
             </p>
 

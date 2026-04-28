@@ -57,6 +57,12 @@ function mapRequestDoc(docId: string, value: Omit<PlayerGameRequest, 'id'>) {
   } satisfies PlayerGameRequest;
 }
 
+/** Dynamic import avoids a static circular dependency with `carerTasks`. */
+async function upsertLinkedCarerTaskForRequest(request: PlayerGameRequest) {
+  const { upsertCarerTaskForPlayerGameRequest } = await import('./carerTasks');
+  await upsertCarerTaskForPlayerGameRequest(request);
+}
+
 function sortByNewest(requests: PlayerGameRequest[]) {
   return [...requests].sort((left, right) => {
     const leftTime =
@@ -99,6 +105,43 @@ async function getRequestsByStatuses(
   }
 
   return sortByNewest(results);
+}
+
+async function getRequestsByCoadminAndStatuses(
+  coadminUid: string,
+  statuses: PlayerGameRequestStatus[]
+) {
+  if (!coadminUid.trim() || statuses.length === 0) {
+    return [];
+  }
+
+  const scopedQuery = query(
+    collection(db, 'playerGameRequests'),
+    where('coadminUid', '==', coadminUid),
+    where('status', 'in', statuses)
+  );
+  const scopedSnapshot = await getDocs(scopedQuery);
+
+  const requests = scopedSnapshot.docs.map((docSnap) =>
+    mapRequestDoc(docSnap.id, docSnap.data() as Omit<PlayerGameRequest, 'id'>)
+  );
+
+  if (requests.length > 0) {
+    return sortByNewest(requests);
+  }
+
+  const legacyQuery = query(
+    collection(db, 'playerGameRequests'),
+    where('createdBy', '==', coadminUid),
+    where('status', 'in', statuses)
+  );
+  const legacySnapshot = await getDocs(legacyQuery);
+
+  return sortByNewest(
+    legacySnapshot.docs.map((docSnap) =>
+      mapRequestDoc(docSnap.id, docSnap.data() as Omit<PlayerGameRequest, 'id'>)
+    )
+  );
 }
 
 async function assertCurrentPlayerIsActive(playerUid: string) {
@@ -193,10 +236,20 @@ export async function createPlayerGameRequest(values: {
         coin: currentCoin - requestAmount,
       });
     });
+
+    const createdSnap = await getDoc(newRequestRef);
+    if (createdSnap.exists()) {
+      await upsertLinkedCarerTaskForRequest(
+        mapRequestDoc(
+          createdSnap.id,
+          createdSnap.data() as Omit<PlayerGameRequest, 'id'>
+        )
+      );
+    }
     return;
   }
 
-  await addDoc(collection(db, 'playerGameRequests'), {
+  const redeemRef = await addDoc(collection(db, 'playerGameRequests'), {
     playerUid: currentUser.uid,
     gameName: values.gameName.trim(),
     amount: requestAmount,
@@ -218,6 +271,13 @@ export async function createPlayerGameRequest(values: {
     pokedAt: null,
     pokeMessage: null,
   });
+
+  const redeemSnap = await getDoc(redeemRef);
+  if (redeemSnap.exists()) {
+    await upsertLinkedCarerTaskForRequest(
+      mapRequestDoc(redeemSnap.id, redeemSnap.data() as Omit<PlayerGameRequest, 'id'>)
+    );
+  }
 }
 
 export async function getPendingPlayerGameRequests(
@@ -249,6 +309,22 @@ export async function getCompletedPlayerGameRequests(
   );
 
   return sortByNewest(allRequests.flat());
+}
+
+export async function getPendingPlayerGameRequestsByCoadmin(
+  coadminUid: string
+): Promise<PlayerGameRequest[]> {
+  return getRequestsByCoadminAndStatuses(coadminUid, [
+    'pending',
+    'poked',
+    'pending_review',
+  ]);
+}
+
+export async function getCompletedPlayerGameRequestsByCoadmin(
+  coadminUid: string
+): Promise<PlayerGameRequest[]> {
+  return getRequestsByCoadminAndStatuses(coadminUid, ['completed']);
 }
 
 export function listenToPlayerGameRequestsByPlayer(
@@ -286,6 +362,12 @@ export async function markPlayerGameRequestDone(requestId: string) {
     pokedAt: null,
     pokeMessage: null,
   });
+  const snap = await getDoc(doc(db, 'playerGameRequests', requestId));
+  if (snap.exists()) {
+    await upsertLinkedCarerTaskForRequest(
+      mapRequestDoc(snap.id, snap.data() as Omit<PlayerGameRequest, 'id'>)
+    );
+  }
 }
 
 export async function dismissPlayerRedeemRequest(requestId: string) {
