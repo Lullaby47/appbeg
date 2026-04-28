@@ -24,6 +24,7 @@ export type PlayerGameRequestType = 'recharge' | 'redeem';
 export type PlayerGameRequestStatus =
   | 'pending'
   | 'completed'
+  | 'failed'
   | 'poked'
   | 'pending_review';
 
@@ -289,7 +290,7 @@ export async function getPendingPlayerGameRequests(
 
   const allRequests = await Promise.all(
     playerUids.map((playerUid) =>
-      // Include legacy poked / pending_review so carer task sync can normalize them to pending.
+      // Include legacy poked plus review-needed requests so task sync can recover them.
       getRequestsByStatuses(playerUid, ['pending', 'poked', 'pending_review'])
     )
   );

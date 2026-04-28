@@ -10,6 +10,10 @@ const COADMIN_AUTO_BONUS_PERCENT_MIN = 5;
 const COADMIN_AUTO_BONUS_PERCENT_MAX = 30;
 const COADMIN_MIN_AMOUNT = 10;
 const COADMIN_MAX_AMOUNT = 50;
+const BONUS_ENSURE_LEASE_MS = 15_000;
+const BONUS_ENSURE_COOLDOWN_MS = 20_000;
+const BONUS_ENSURE_STATE_CACHE_MS = 45_000;
+const MAX_GAME_LOGINS_READ = 100;
 const FUNNY_BONUS_NAMES = [
   'Freak Friday',
   'Hello Honee',
@@ -32,6 +36,17 @@ const FUNNY_BONUS_NAMES = [
   'Fatafat Fortune',
   'Boss Baby Bonus',
 ];
+
+type EnsureLeaseResult =
+  | {
+      status: 'acquired';
+      leaseId: string;
+      now: Timestamp;
+      lastEnsuredAtMs: number;
+      lastEnsuredStateHash: string;
+      lastActiveCount: number;
+    }
+  | { status: 'locked' | 'cooldown' | 'server-cooldown'; retryAfterMs: number };
 
 function randomInt(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -98,9 +113,28 @@ function duplicateKey(values: {
   ].join('__');
 }
 
-function isLegacyAutoBonusName(name: string) {
-  const clean = String(name || '').trim().toLowerCase();
-  return clean.startsWith('auto bonus') || clean.includes('2026-') || clean.includes('#');
+function buildActiveStateHash(
+  docs: FirebaseFirestore.QueryDocumentSnapshot<FirebaseFirestore.DocumentData>[]
+) {
+  return docs
+    .map((docSnap) => {
+      const data = docSnap.data() as {
+        bonusName?: string;
+        gameName?: string;
+        amountNpr?: number;
+        amount?: number;
+        bonusPercentage?: number;
+        bonus_percentage?: number;
+      };
+      return [
+        docSnap.id,
+        String(data.bonusName || '').trim().toLowerCase(),
+        String(data.gameName || '').trim().toLowerCase(),
+        Math.round(Number(data.amountNpr || data.amount || 0)),
+        Math.round(Number(data.bonusPercentage || data.bonus_percentage || 0)),
+      ].join('__');
+    })
+    .join('|');
 }
 
 function pickFunnyBonusName(usedNames: Set<string>, fallbackIndex: number) {
@@ -119,8 +153,8 @@ function pickFunnyBonusName(usedNames: Set<string>, fallbackIndex: number) {
 
 async function getCoadminGameNames(coadminUid: string): Promise<string[]> {
   const [coadminOwned, legacyOwned] = await Promise.all([
-    adminDb.collection('gameLogins').where('coadminUid', '==', coadminUid).get(),
-    adminDb.collection('gameLogins').where('createdBy', '==', coadminUid).get(),
+    adminDb.collection('gameLogins').where('coadminUid', '==', coadminUid).limit(MAX_GAME_LOGINS_READ).get(),
+    adminDb.collection('gameLogins').where('createdBy', '==', coadminUid).limit(MAX_GAME_LOGINS_READ).get(),
   ]);
   const names = new Set<string>();
   [...coadminOwned.docs, ...legacyOwned.docs].forEach((d) => {
@@ -148,6 +182,130 @@ async function getCoadminAutoBonusPercentRange(coadminUid: string) {
   });
 }
 
+function buildActiveBonusEventsQuery(coadminUid: string) {
+  return adminDb
+    .collection('bonusEvents')
+    .where('coadminUid', '==', coadminUid)
+    .where('status', '==', 'active')
+    .orderBy('createdAt', 'desc')
+    .limit(MAX_ACTIVE_BONUS_EVENTS);
+}
+
+async function acquireEnsureCapacityLease(caller: {
+  uid: string;
+  coadminUid: string;
+}) : Promise<EnsureLeaseResult> {
+  const userRef = adminDb.collection('users').doc(caller.coadminUid);
+  const leaseId = crypto.randomUUID();
+  const now = Timestamp.now();
+  const nowMs = now.toMillis();
+
+  return adminDb.runTransaction(async (transaction) => {
+    const userSnap = await transaction.get(userRef);
+    if (!userSnap.exists) {
+      throw new Error('Current user profile not found.');
+    }
+
+    const userData = userSnap.data() as {
+      bonusEnsureCapacityLeaseId?: string;
+      bonusEnsureCapacityLeaseExpiresAt?: unknown;
+      bonusEnsureCapacityLastEnsuredAt?: unknown;
+      bonusEnsureCapacityLastStateHash?: string;
+      bonusEnsureCapacityLastActiveCount?: number;
+    };
+
+    const leaseExpiresAtMs = toMs(userData.bonusEnsureCapacityLeaseExpiresAt);
+    const lastEnsuredAtMs = toMs(userData.bonusEnsureCapacityLastEnsuredAt);
+
+    if (leaseExpiresAtMs > nowMs) {
+      return {
+        status: 'locked' as const,
+        retryAfterMs: Math.max(1_000, leaseExpiresAtMs - nowMs),
+      };
+    }
+
+    if (lastEnsuredAtMs > 0 && nowMs - lastEnsuredAtMs < BONUS_ENSURE_COOLDOWN_MS) {
+      return {
+        status: 'cooldown' as const,
+        retryAfterMs: Math.max(1_000, BONUS_ENSURE_COOLDOWN_MS - (nowMs - lastEnsuredAtMs)),
+      };
+    }
+    const lastActiveCount = Number(userData.bonusEnsureCapacityLastActiveCount || 0);
+    if (
+      lastActiveCount >= MAX_ACTIVE_BONUS_EVENTS &&
+      lastEnsuredAtMs > 0 &&
+      nowMs - lastEnsuredAtMs < BONUS_ENSURE_STATE_CACHE_MS
+    ) {
+      return {
+        status: 'server-cooldown' as const,
+        retryAfterMs: Math.max(1_000, BONUS_ENSURE_STATE_CACHE_MS - (nowMs - lastEnsuredAtMs)),
+      };
+    }
+
+    transaction.update(userRef, {
+      bonusEnsureCapacityLeaseId: leaseId,
+      bonusEnsureCapacityLeaseExpiresAt: Timestamp.fromMillis(nowMs + BONUS_ENSURE_LEASE_MS),
+      bonusEnsureCapacityLeaseStartedAt: now,
+    });
+
+    return {
+      status: 'acquired' as const,
+      leaseId,
+      now,
+      lastEnsuredAtMs,
+      lastEnsuredStateHash: String(userData.bonusEnsureCapacityLastStateHash || ''),
+      lastActiveCount,
+    };
+  });
+}
+
+async function releaseEnsureCapacityLease(values: {
+  coadminUid: string;
+  leaseId: string;
+  markEnsured: boolean;
+  ensuredActiveCount?: number;
+  ensuredStateHash?: string;
+}) {
+  const userRef = adminDb.collection('users').doc(values.coadminUid);
+  const releaseTime = Timestamp.now();
+
+  await adminDb.runTransaction(async (transaction) => {
+    const userSnap = await transaction.get(userRef);
+    if (!userSnap.exists) {
+      return;
+    }
+
+    const userData = userSnap.data() as {
+      bonusEnsureCapacityLeaseId?: string;
+    };
+
+    if (String(userData.bonusEnsureCapacityLeaseId || '') !== values.leaseId) {
+      return;
+    }
+
+    transaction.update(userRef, {
+      bonusEnsureCapacityLeaseId: FieldValue.delete(),
+      bonusEnsureCapacityLeaseExpiresAt: FieldValue.delete(),
+      bonusEnsureCapacityLeaseStartedAt: FieldValue.delete(),
+      ...(values.markEnsured
+        ? {
+            bonusEnsureCapacityLastEnsuredAt: releaseTime,
+            ...(typeof values.ensuredActiveCount === 'number'
+              ? {
+                  bonusEnsureCapacityLastActiveCount: values.ensuredActiveCount,
+                }
+              : {}),
+            ...(values.ensuredStateHash
+              ? {
+                  bonusEnsureCapacityLastStateHash: values.ensuredStateHash,
+                }
+              : {}),
+          }
+        : {}),
+    });
+  });
+}
+
 async function verifyCoadmin(request: Request) {
   const header = request.headers.get('Authorization') || '';
   const match = header.match(/^Bearer\s+(\S+)$/i);
@@ -167,6 +325,8 @@ async function verifyCoadmin(request: Request) {
     username?: string;
     createdBy?: string;
     coadminUid?: string;
+    bonusEnsureCapacityLastEnsuredAt?: unknown;
+    bonusEnsureCapacityLastActiveCount?: number;
   };
   const role = String(userData.role || '').toLowerCase();
   if (role !== 'coadmin') {
@@ -178,87 +338,190 @@ async function verifyCoadmin(request: Request) {
     uid,
     coadminUid,
     username: String(userData.username || '').trim() || 'Coadmin',
+    lastEnsuredAtMs: toMs(userData.bonusEnsureCapacityLastEnsuredAt),
+    lastActiveCount: Number(userData.bonusEnsureCapacityLastActiveCount || 0),
   };
 }
 
 export async function POST(request: Request) {
-  try {
-    const caller = await verifyCoadmin(request);
+  const reqStartedAt = Date.now();
+  let leaseId: string | null = null;
+  let leaseOwnerCoadminUid = '';
+  let shouldMarkEnsured = false;
+  let ensuredActiveCount: number | undefined;
+  let ensuredStateHash: string | undefined;
 
-    // Repair previously auto-created docs that may have been written with mismatched coadminUid.
-    const byCreatorSnap = await adminDb
-      .collection('bonusEvents')
-      .where('createdByUid', '==', caller.uid)
-      .get();
-    if (!byCreatorSnap.empty) {
-      const repairBatch = adminDb.batch();
-      let repairCount = 0;
-      byCreatorSnap.docs.forEach((d) => {
-        const data = d.data() as { coadminUid?: string; autoGenerated?: boolean };
-        const existingCoadminUid = String(data.coadminUid || '').trim();
-        if (data.autoGenerated && existingCoadminUid !== caller.coadminUid) {
-          repairBatch.update(d.ref, {
-            coadminUid: caller.coadminUid,
-            updatedAt: FieldValue.serverTimestamp(),
-            updated_at: FieldValue.serverTimestamp(),
-          });
-          repairCount += 1;
-        }
-      });
-      if (repairCount > 0) {
-        await repairBatch.commit();
+  try {
+    let activeCountHint: number | null = null;
+    try {
+      const body = (await request.json()) as { activeCountHint?: number } | null;
+      const parsed = Number(body?.activeCountHint);
+      if (Number.isFinite(parsed)) {
+        activeCountHint = Math.max(0, Math.round(parsed));
       }
+    } catch {
+      // Keep compatibility with empty-body callers.
     }
 
-    const snap = await adminDb
-      .collection('bonusEvents')
-      .where('coadminUid', '==', caller.coadminUid)
-      .get();
-    const autoBonusPercentRange = await getCoadminAutoBonusPercentRange(caller.coadminUid);
-
-    const activeDocs = snap.docs.filter((d) => isActiveEvent(d.data() as Record<string, unknown>));
-    const gameNames = await getCoadminGameNames(caller.coadminUid);
-    const validGameNames = new Set(gameNames.map((name) => name.toLowerCase()));
-    const pickGameName = () =>
-      gameNames.length > 0 ? gameNames[randomInt(0, gameNames.length - 1)] : 'Bonus Table';
-    const allDocsForNames = snap.docs;
-    const usedNames = new Set(
-      allDocsForNames.map((d) =>
-        String((d.data() as { bonusName?: string }).bonusName || '')
-          .trim()
-          .toLowerCase()
-      )
-    );
-
-    // Rename legacy auto names for ALL existing docs (active + inactive),
-    // so old events visibly get fixed immediately.
-    const renameBatch = adminDb.batch();
-    let renameCount = 0;
-    allDocsForNames.forEach((d, i) => {
-      const data = d.data() as { bonusName?: string; gameName?: string };
-      const currentName = String(data.bonusName || '').trim();
-      const currentGameName = String(data.gameName || '').trim();
-      const needsFunnyName = isLegacyAutoBonusName(currentName);
-      const needsGameNameRepair =
-        validGameNames.size > 0 && !validGameNames.has(currentGameName.toLowerCase());
-      if (!needsFunnyName && !needsGameNameRepair) return;
-      const nextName = pickFunnyBonusName(usedNames, i + 1);
-      renameBatch.update(d.ref, {
-        bonusName: needsFunnyName ? nextName : currentName,
-        gameName: needsGameNameRepair ? pickGameName() : currentGameName,
-        updatedAt: FieldValue.serverTimestamp(),
-        updated_at: FieldValue.serverTimestamp(),
-      });
-      renameCount += 1;
+    const authStartedAt = Date.now();
+    const caller = await verifyCoadmin(request);
+    const authElapsedMs = Date.now() - authStartedAt;
+    console.info('[bonusEvents] ensure-capacity:auth-done', {
+      coadminUid: caller.coadminUid,
+      authElapsedMs,
     });
-    if (renameCount > 0) {
-      await renameBatch.commit();
+
+    const cooldownCheckedAt = Date.now();
+    if (activeCountHint !== null && activeCountHint >= MAX_ACTIVE_BONUS_EVENTS) {
+      const totalElapsedMs = Date.now() - reqStartedAt;
+      console.info('[bonusEvents] ensure-capacity:cooldown-checked', {
+        coadminUid: caller.coadminUid,
+        decision: 'skip-client-full-hint',
+        activeCountHint,
+        checkElapsedMs: Date.now() - cooldownCheckedAt,
+      });
+      console.info('[bonusEvents] ensure-capacity:skip', {
+        coadminUid: caller.coadminUid,
+        reason: 'client-full-hint',
+        elapsedMs: totalElapsedMs,
+      });
+      return NextResponse.json({
+        autoCreatedCount: 0,
+        totalActive: activeCountHint,
+        skipped: 'client-full-hint',
+      });
+    }
+    if (
+      caller.lastActiveCount >= MAX_ACTIVE_BONUS_EVENTS &&
+      caller.lastEnsuredAtMs > 0 &&
+      Date.now() - caller.lastEnsuredAtMs < BONUS_ENSURE_STATE_CACHE_MS
+    ) {
+      const retryAfterMs = Math.max(
+        1_000,
+        BONUS_ENSURE_STATE_CACHE_MS - (Date.now() - caller.lastEnsuredAtMs)
+      );
+      const totalElapsedMs = Date.now() - reqStartedAt;
+      console.info('[bonusEvents] ensure-capacity:cooldown-checked', {
+        coadminUid: caller.coadminUid,
+        decision: 'skip-server-cooldown-fast',
+        checkElapsedMs: Date.now() - cooldownCheckedAt,
+      });
+      console.info('[bonusEvents] skipped-server-cooldown', {
+        coadminUid: caller.coadminUid,
+        retryAfterMs,
+      });
+      console.info('[bonusEvents] ensure-capacity:skip', {
+        coadminUid: caller.coadminUid,
+        reason: 'server-cooldown',
+        retryAfterMs,
+        elapsedMs: totalElapsedMs,
+      });
+      return NextResponse.json({
+        autoCreatedCount: 0,
+        totalActive: caller.lastActiveCount,
+        skipped: 'server-cooldown',
+        retryAfterMs,
+      });
+    }
+    console.info('[bonusEvents] ensure-capacity:cooldown-checked', {
+      coadminUid: caller.coadminUid,
+      decision: 'continue',
+      checkElapsedMs: Date.now() - cooldownCheckedAt,
+    });
+
+    const lease = await acquireEnsureCapacityLease(caller);
+    if (lease.status !== 'acquired') {
+      if (lease.status === 'server-cooldown') {
+        console.info('[bonusEvents] skipped-server-cooldown', {
+          coadminUid: caller.coadminUid,
+          retryAfterMs: lease.retryAfterMs,
+        });
+      }
+      console.info('[bonusEvents] ensure-capacity:skip', {
+        coadminUid: caller.coadminUid,
+        reason: lease.status,
+        retryAfterMs: lease.retryAfterMs,
+      });
+      return NextResponse.json({
+        autoCreatedCount: 0,
+        totalActive: null,
+        skipped: lease.status,
+        retryAfterMs: lease.retryAfterMs,
+      });
+    }
+
+    leaseId = lease.leaseId;
+    leaseOwnerCoadminUid = caller.coadminUid;
+
+    console.info('[bonusEvents] ensure-capacity:start', {
+      coadminUid: caller.coadminUid,
+      leaseId,
+    });
+    console.info('[bonusEvents] ensure-capacity:expensive-reads-start', {
+      coadminUid: caller.coadminUid,
+      elapsedMs: Date.now() - reqStartedAt,
+    });
+
+    const activeReadStartedAt = Date.now();
+    const activeSnap = await buildActiveBonusEventsQuery(caller.coadminUid).get();
+    const activeReadElapsedMs = Date.now() - activeReadStartedAt;
+    console.info('[bonusEvents] ensure-capacity:read-active-done', {
+      coadminUid: caller.coadminUid,
+      readMs: activeReadElapsedMs,
+      docsRead: activeSnap.size,
+    });
+    const activeDocs = activeSnap.docs.filter((d) =>
+      isActiveEvent(d.data() as Record<string, unknown>)
+    );
+    const activeStateHash = buildActiveStateHash(activeDocs);
+
+    if (
+      lease.lastEnsuredStateHash &&
+      lease.lastEnsuredStateHash === activeStateHash &&
+      lease.lastEnsuredAtMs > 0 &&
+      lease.now.toMillis() - lease.lastEnsuredAtMs < BONUS_ENSURE_STATE_CACHE_MS
+    ) {
+      shouldMarkEnsured = true;
+      ensuredActiveCount = activeDocs.length;
+      ensuredStateHash = activeStateHash;
+      console.info('[bonusEvents] ensure-capacity:skip', {
+        coadminUid: caller.coadminUid,
+        reason: 'unchanged-active-state',
+        activeCount: activeDocs.length,
+      });
+      return NextResponse.json({
+        autoCreatedCount: 0,
+        totalActive: activeDocs.length,
+        skipped: 'unchanged-active-state',
+      });
     }
 
     if (activeDocs.length >= MAX_ACTIVE_BONUS_EVENTS) {
+      shouldMarkEnsured = true;
+      ensuredActiveCount = activeDocs.length;
+      ensuredStateHash = activeStateHash;
+      console.info('[bonusEvents] ensure-capacity:full', {
+        coadminUid: caller.coadminUid,
+        activeCount: activeDocs.length,
+      });
       return NextResponse.json({ autoCreatedCount: 0, totalActive: activeDocs.length });
     }
 
+    const rangeReadStartedAt = Date.now();
+    const autoBonusPercentRange = await getCoadminAutoBonusPercentRange(caller.coadminUid);
+    console.info('[bonusEvents] ensure-capacity:read-range-done', {
+      coadminUid: caller.coadminUid,
+      readMs: Date.now() - rangeReadStartedAt,
+    });
+    const gameReadStartedAt = Date.now();
+    const gameNames = await getCoadminGameNames(caller.coadminUid);
+    console.info('[bonusEvents] ensure-capacity:read-gamelogins-done', {
+      coadminUid: caller.coadminUid,
+      readMs: Date.now() - gameReadStartedAt,
+      gameCount: gameNames.length,
+    });
+    const pickGameName = () =>
+      gameNames.length > 0 ? gameNames[randomInt(0, gameNames.length - 1)] : 'Bonus Table';
     const existing = new Set(
       activeDocs.map((d) => {
         const data = d.data() as {
@@ -276,6 +539,13 @@ export async function POST(request: Request) {
           bonusPercentage: Number(data.bonusPercentage || data.bonus_percentage || 0),
         });
       })
+    );
+    const usedNames = new Set(
+      activeDocs.map((d) =>
+        String((d.data() as { bonusName?: string }).bonusName || '')
+          .trim()
+          .toLowerCase()
+      )
     );
 
     const now = Timestamp.now();
@@ -336,8 +606,25 @@ export async function POST(request: Request) {
     }
 
     if (autoCreatedCount > 0) {
+      const commitStartedAt = Date.now();
       await batch.commit();
+      console.info('[bonusEvents] ensure-capacity:batch-commit-done', {
+        coadminUid: caller.coadminUid,
+        commitMs: Date.now() - commitStartedAt,
+        createdCount: autoCreatedCount,
+      });
     }
+
+    shouldMarkEnsured = true;
+    ensuredActiveCount = activeDocs.length + autoCreatedCount;
+    ensuredStateHash =
+      autoCreatedCount > 0 ? undefined : activeStateHash;
+    console.info('[bonusEvents] ensure-capacity:done', {
+      coadminUid: caller.coadminUid,
+      activeReadCount: activeDocs.length,
+      createdCount: autoCreatedCount,
+      totalActive: activeDocs.length + autoCreatedCount,
+    });
 
     return NextResponse.json({
       autoCreatedCount,
@@ -346,5 +633,22 @@ export async function POST(request: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to ensure bonus capacity.';
     return NextResponse.json({ error: message }, { status: 400 });
+  } finally {
+    if (leaseId && leaseOwnerCoadminUid) {
+      await releaseEnsureCapacityLease({
+        coadminUid: leaseOwnerCoadminUid,
+        leaseId,
+        markEnsured: shouldMarkEnsured,
+        ensuredActiveCount,
+        ensuredStateHash,
+      }).catch((releaseError) => {
+        console.error('[bonusEvents] ensure-capacity:release-failed', {
+          coadminUid: leaseOwnerCoadminUid,
+          leaseId,
+          error:
+            releaseError instanceof Error ? releaseError.message : 'Unknown release failure',
+        });
+      });
+    }
   }
 }

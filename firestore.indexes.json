@@ -20,8 +20,54 @@
       "collectionGroup": "playerGameRequests",
       "queryScope": "COLLECTION",
       "fields": [
+        { "fieldPath": "coadminUid", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "playerGameRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
         { "fieldPath": "playerUid", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "carerTasks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "coadminUid", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "carerTasks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "coadminUid", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "type", "order": "ASCENDING" },
+        { "fieldPath": "completedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "automation_jobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "carerUid", "order": "ASCENDING" },
+        { "fieldPath": "agentId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "automation_jobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "createdByUid", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     },
     {

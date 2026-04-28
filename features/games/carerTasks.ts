@@ -44,6 +44,7 @@ export type CarerTaskStatus =
   | 'pending'
   | 'in_progress'
   | 'completed'
+  | 'failed'
   | 'urgent';
 
 export type CarerTask = {
@@ -96,6 +97,10 @@ export type CarerRechargeRedeemTotals = {
   totalRedeemAmount: number;
 };
 
+const STUCK_TASK_TIMEOUT_MS = 10 * 60 * 1000;
+const STUCK_AUTOMATION_JOB_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_AUTOMATION_RECOVERY_ATTEMPTS = 3;
+
 type SyncTaskInput = {
   coadminUid: string;
   players: PlayerUser[];
@@ -107,6 +112,28 @@ type SyncTaskInput = {
 
 function normalizeGameName(gameName: string) {
   return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+}
+
+function getTimestampMs(value: unknown) {
+  if (!value) {
+    return 0;
+  }
+  if (value instanceof Timestamp) {
+    return value.toMillis();
+  }
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'toMillis' in value &&
+    typeof (value as { toMillis?: unknown }).toMillis === 'function'
+  ) {
+    try {
+      return Number((value as { toMillis: () => number }).toMillis()) || 0;
+    } catch {
+      return 0;
+    }
+  }
+  return 0;
 }
 
 function usernameTaskId(
@@ -165,7 +192,10 @@ function getTaskStatusFromRequestStatus(
   if (requestStatus === 'completed') {
     return 'completed';
   }
-  // Includes pending, plus legacy poked / pending_review from the removed poke flow.
+  if (requestStatus === 'failed' || requestStatus === 'pending_review') {
+    return 'failed';
+  }
+  // Includes pending plus legacy poked from the removed poke flow.
   return 'pending';
 }
 
@@ -405,7 +435,8 @@ export function computeRequestLinkedCarerTaskWrite(
   const shouldPreserveExistingStatus =
     desiredStatus === 'pending' &&
     (existingEffectiveStatus === 'in_progress' ||
-      existingEffectiveStatus === 'completed');
+      existingEffectiveStatus === 'completed' ||
+      existingEffectiveStatus === 'failed');
   const nextStatus = shouldPreserveExistingStatus
     ? existingEffectiveStatus
     : desiredStatus;
@@ -562,6 +593,10 @@ function getVisibleTaskForCarer(task: CarerTask, currentCarerUid: string) {
       startedAt: null,
       expiresAt: null,
     } satisfies CarerTask;
+  }
+
+  if (effectiveStatus === 'failed') {
+    return null;
   }
 
   if (task.assignedCarerUid === currentCarerUid) {
@@ -875,7 +910,242 @@ export function listenToAvailableCarerTasks(
 }
 
 export async function releaseExpiredCarerTasks(coadminUid: string) {
-  void coadminUid;
+  const scopedCoadminUid = String(coadminUid || '').trim();
+  if (!scopedCoadminUid) {
+    return;
+  }
+
+  const [stuckTaskSnap, activeJobSnap] = await Promise.all([
+    getDocs(
+      query(
+        collection(db, 'carerTasks'),
+        where('coadminUid', '==', scopedCoadminUid),
+        where('status', '==', 'in_progress')
+      )
+    ),
+    getDocs(
+      query(
+        collection(db, 'automation_jobs'),
+        where('coadminUid', '==', scopedCoadminUid),
+        where('status', 'in', ['queued', 'running'])
+      )
+    ),
+  ]);
+
+  const nowMs = Date.now();
+  const activeJobByTaskId = new Map<
+    string,
+    {
+      id: string;
+      status: string;
+      attempts: number;
+      startedAtMs: number;
+      updatedAtMs: number;
+      createdAtMs: number;
+    }
+  >();
+
+  activeJobSnap.docs.forEach((docSnap) => {
+    const data = docSnap.data() as {
+      taskId?: string;
+      status?: string;
+      attempts?: number;
+      startedAt?: Timestamp | null;
+      updatedAt?: Timestamp | null;
+      createdAt?: Timestamp | null;
+    };
+    const taskId = String(data.taskId || '').trim();
+    if (!taskId) {
+      return;
+    }
+    activeJobByTaskId.set(taskId, {
+      id: docSnap.id,
+      status: String(data.status || '').trim(),
+      attempts: Math.max(0, Number(data.attempts || 0)),
+      startedAtMs: getTimestampMs(data.startedAt),
+      updatedAtMs: getTimestampMs(data.updatedAt),
+      createdAtMs: getTimestampMs(data.createdAt),
+    });
+  });
+
+  for (const [taskId, job] of activeJobByTaskId.entries()) {
+    if (job.status !== 'running') {
+      continue;
+    }
+
+    const activityMs = Math.max(job.startedAtMs, job.updatedAtMs, job.createdAtMs);
+    if (!activityMs || nowMs - activityMs < STUCK_AUTOMATION_JOB_TIMEOUT_MS) {
+      continue;
+    }
+
+    const retryable = job.attempts < MAX_AUTOMATION_RECOVERY_ATTEMPTS;
+    const jobRef = doc(db, 'automation_jobs', job.id);
+    const taskRef = doc(db, 'carerTasks', taskId);
+
+    await runTransaction(db, async (transaction) => {
+      const [jobSnap, taskSnap] = await Promise.all([
+        transaction.get(jobRef),
+        transaction.get(taskRef),
+      ]);
+
+      if (!jobSnap.exists()) {
+        return;
+      }
+
+      const currentJob = jobSnap.data() as {
+        status?: string;
+        taskId?: string;
+        attempts?: number;
+        error?: string | null;
+      };
+      if (String(currentJob.status || '').trim() !== 'running') {
+        return;
+      }
+
+      const taskData = taskSnap.exists()
+        ? (taskSnap.data() as Omit<CarerTask, 'id'>)
+        : null;
+      const requestId = String(taskData?.requestId || '').trim();
+      const requestRef = requestId ? doc(db, 'playerGameRequests', requestId) : null;
+      const requestSnap = requestRef ? await transaction.get(requestRef) : null;
+      const timeoutMessage = retryable
+        ? 'Automation timed out and was returned to the queue.'
+        : 'Automation timed out repeatedly and now needs manual review.';
+
+      if (retryable) {
+        transaction.update(jobRef, {
+          status: 'queued',
+          startedAt: null,
+          completedAt: null,
+          updatedAt: serverTimestamp(),
+          error: timeoutMessage,
+          result: null,
+        });
+
+        if (taskSnap.exists()) {
+          transaction.update(taskRef, {
+            status: 'pending',
+            assignedCarerUid: null,
+            assignedCarerUsername: null,
+            startedAt: null,
+            expiresAt: null,
+            completedAt: null,
+            completedByCarerUid: null,
+            completedByCarerUsername: null,
+            automationStatus: 'waiting',
+            automationJobId: job.id,
+            automationUpdatedAt: serverTimestamp(),
+          });
+        }
+
+        if (requestRef && requestSnap?.exists()) {
+          const requestData = requestSnap.data() as Omit<PlayerGameRequest, 'id'>;
+          if (requestData.status !== 'completed') {
+            transaction.update(requestRef, {
+              status: 'pending',
+              completedAt: null,
+              pokedAt: null,
+              pokeMessage: null,
+            });
+          }
+        }
+
+        return;
+      }
+
+      transaction.update(jobRef, {
+        status: 'failed',
+        completedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        error: timeoutMessage,
+      });
+
+      if (taskSnap.exists()) {
+        transaction.update(taskRef, {
+          status: 'failed',
+          expiresAt: null,
+          automationStatus: 'failed',
+          automationJobId: job.id,
+          automationUpdatedAt: serverTimestamp(),
+        });
+      }
+
+      if (requestRef && requestSnap?.exists()) {
+        const requestData = requestSnap.data() as Omit<PlayerGameRequest, 'id'>;
+        if (requestData.status !== 'completed') {
+          transaction.update(requestRef, {
+            status: 'pending_review',
+            completedAt: null,
+            pokedAt: serverTimestamp(),
+            pokeMessage: timeoutMessage,
+          });
+        }
+      }
+    });
+  }
+
+  for (const docSnap of stuckTaskSnap.docs) {
+    const task = {
+      id: docSnap.id,
+      ...(docSnap.data() as Omit<CarerTask, 'id'>),
+    } satisfies CarerTask;
+    const activeJob = activeJobByTaskId.get(task.id);
+    if (activeJob) {
+      continue;
+    }
+
+    const activityMs = Math.max(
+      getTimestampMs(task.startedAt),
+      getTimestampMs(task.expiresAt),
+      getTimestampMs(task.createdAt)
+    );
+    if (!activityMs || nowMs - activityMs < STUCK_TASK_TIMEOUT_MS) {
+      continue;
+    }
+
+    const taskRef = doc(db, 'carerTasks', task.id);
+    const requestRef = task.requestId ? doc(db, 'playerGameRequests', task.requestId) : null;
+
+    await runTransaction(db, async (transaction) => {
+      const currentTaskSnap = await transaction.get(taskRef);
+      if (!currentTaskSnap.exists()) {
+        return;
+      }
+
+      const currentTask = currentTaskSnap.data() as Omit<CarerTask, 'id'>;
+      if (currentTask.status !== 'in_progress') {
+        return;
+      }
+
+      transaction.update(taskRef, {
+        status: 'pending',
+        assignedCarerUid: null,
+        assignedCarerUsername: null,
+        startedAt: null,
+        expiresAt: null,
+        completedAt: null,
+        completedByCarerUid: null,
+        completedByCarerUsername: null,
+        automationStatus: null,
+        automationUpdatedAt: serverTimestamp(),
+      });
+
+      if (requestRef) {
+        const requestSnap = await transaction.get(requestRef);
+        if (requestSnap.exists()) {
+          const requestData = requestSnap.data() as Omit<PlayerGameRequest, 'id'>;
+          if (requestData.status !== 'completed') {
+            transaction.update(requestRef, {
+              status: 'pending',
+              completedAt: null,
+              pokedAt: null,
+              pokeMessage: null,
+            });
+          }
+        }
+      }
+    });
+  }
 }
 
 export async function startCarerTask(taskId: string) {

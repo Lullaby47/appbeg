@@ -1,7 +1,6 @@
 import {
   collection,
   doc,
-  getDoc,
   limit,
   onSnapshot,
   orderBy,
@@ -94,6 +93,7 @@ function sanitizeStatus(value: unknown): CarerTaskStatus {
   if (normalized === 'pending') return 'pending';
   if (normalized === 'in_progress') return 'in_progress';
   if (normalized === 'completed') return 'completed';
+  if (normalized === 'failed') return 'failed';
   if (normalized === 'urgent') return 'urgent';
   return 'pending';
 }
@@ -294,6 +294,9 @@ export async function claimTaskAndCreateJob(input: {
     transaction.update(taskRef, {
       ...claimedTaskData,
       claimedAt: serverTimestamp(),
+      automationStatus: 'waiting',
+      automationJobId: jobRef.id,
+      automationUpdatedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
 
@@ -313,6 +316,7 @@ export async function claimTaskAndCreateJob(input: {
       completedAt: null,
       error: null,
       attempts: 0,
+      lastHeartbeatAt: null,
     };
     transaction.set(jobRef, jobData);
 
@@ -407,6 +411,14 @@ export async function startAutomationForTask(input: {
       completedAt: null,
       error: null,
       attempts: 0,
+      lastHeartbeatAt: null,
+    });
+
+    transaction.update(taskRef, {
+      automationStatus: 'waiting',
+      automationJobId: jobRef.id,
+      automationUpdatedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
     });
 
     return {

@@ -6,6 +6,7 @@ import imageCompression from 'browser-image-compression';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import LogoutButton from '@/components/auth/LogoutButton';
 import DashboardView from '@/components/admin/DashboardView';
+import DevFirebaseUsageCard from '@/components/admin/DevFirebaseUsageCard';
 import CreateUserForm from '@/components/admin/CreateUserForm';
 import UserManagementView from '../../components/admin/UserManagementView';
 import ReachOutView from '@/components/admin/ReachOutView';
@@ -818,6 +819,9 @@ export default function AdminPage() {
                 staffCount={staffList.length}
                 unreadCount={totalUnreadCount}
               />
+              <div className="mt-8">
+                <DevFirebaseUsageCard />
+              </div>
               {pendingCarerRequests.length > 0 && (
                 <div className="mt-4 rounded-2xl border border-yellow-500/35 bg-yellow-500/10 p-5">
                   <h3 className="text-lg font-bold text-yellow-200">

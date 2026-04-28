@@ -141,12 +141,24 @@ function getRequestStatusLabel(status: PlayerGameRequest['status']) {
   if (status === 'completed') {
     return 'Completed';
   }
+  if (status === 'failed') {
+    return 'Failed';
+  }
+  if (status === 'pending_review') {
+    return 'Pending review';
+  }
   return 'Pending';
 }
 
 function getRequestStatusClass(status: PlayerGameRequest['status']) {
   if (status === 'completed') {
     return 'bg-emerald-500/20 text-emerald-200';
+  }
+  if (status === 'failed') {
+    return 'bg-rose-500/20 text-rose-200';
+  }
+  if (status === 'pending_review') {
+    return 'bg-sky-500/20 text-sky-200';
   }
 
   return 'bg-amber-500/20 text-amber-200';
@@ -424,6 +436,7 @@ export default function PlayerPage() {
   const knownCashoutStatusByIdRef = useRef<Record<string, string>>({});
   const transferResponseSeenRef = useRef<Set<string>>(new Set());
   const referralCodeEnsureInFlightRef = useRef(false);
+  const lastSyncedRequestTotalsRef = useRef<string | null>(null);
 
   const [message, setMessage] = useState('');
   const [loadingList, setLoadingList] = useState(false);
@@ -448,6 +461,9 @@ export default function PlayerPage() {
   const activeTableHistoryOpenRef = useRef(false);
   const showActiveTableSplashRef = useRef(false);
   const activeTableSplashContentRef = useRef<HTMLDivElement | null>(null);
+  const activeTableAmountInputRef = useRef<HTMLInputElement | null>(null);
+  const [activeTableKeyboardInset, setActiveTableKeyboardInset] = useState(0);
+  const [activeTableViewportHeight, setActiveTableViewportHeight] = useState<number | null>(null);
 
   function hasActiveTableSplashHistoryState() {
     const state = window.history.state as Record<string, unknown> | null;
@@ -477,12 +493,15 @@ export default function PlayerPage() {
   }
 
   function nudgeActiveTableForKeyboard() {
-    if (typeof window === 'undefined' || window.innerWidth >= 640) {
+    if (typeof window === 'undefined') {
       return;
     }
     window.setTimeout(() => {
-      activeTableSplashContentRef.current?.scrollBy({ top: 120, behavior: 'smooth' });
-    }, 140);
+      activeTableAmountInputRef.current?.scrollIntoView({
+        block: 'center',
+        behavior: 'smooth',
+      });
+    }, 120);
   }
 
   useEffect(() => {
@@ -500,6 +519,43 @@ export default function PlayerPage() {
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
+
+  useEffect(() => {
+    if (!showActiveTableSplash) {
+      setActiveTableKeyboardInset(0);
+      setActiveTableViewportHeight(null);
+      return;
+    }
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const vv = window.visualViewport;
+    if (!vv) {
+      return;
+    }
+
+    const updateViewportMetrics = () => {
+      const viewportHeight = Math.round(vv.height);
+      const keyboardInset = Math.max(
+        0,
+        Math.round(window.innerHeight - (vv.height + vv.offsetTop))
+      );
+      setActiveTableViewportHeight(viewportHeight);
+      setActiveTableKeyboardInset(keyboardInset);
+    };
+
+    updateViewportMetrics();
+    vv.addEventListener('resize', updateViewportMetrics);
+    vv.addEventListener('scroll', updateViewportMetrics);
+    window.addEventListener('orientationchange', updateViewportMetrics);
+
+    return () => {
+      vv.removeEventListener('resize', updateViewportMetrics);
+      vv.removeEventListener('scroll', updateViewportMetrics);
+      window.removeEventListener('orientationchange', updateViewportMetrics);
+    };
+  }, [showActiveTableSplash]);
   const selfClaimedBonusIdRef = useRef<string | null>(null);
   const lastBonusIdsRef = useRef<string[]>([]);
   const musicEnabledRef = useRef(false);
@@ -522,6 +578,8 @@ export default function PlayerPage() {
     () => getBonusEventsForPlayerDisplay(bonusEvents),
     [bonusEvents]
   );
+  const shouldListenToBonusEvents =
+    Boolean(playerCoadminUid) && activeView === 'bonus-events';
 
   const activeBonusCarouselIndex = useMemo(() => {
     if (playerBonusEvents.length === 0) {
@@ -1109,6 +1167,21 @@ export default function PlayerPage() {
     if (!playerUid) {
       return;
     }
+
+    const totalsSignature = JSON.stringify({
+      playerUid,
+      rechargeAmount: Math.round(requestTotals.rechargeAmount),
+      redeemAmount: Math.round(requestTotals.redeemAmount),
+      rechargeCount: requestTotals.rechargeCount,
+      redeemCount: requestTotals.redeemCount,
+    });
+
+    if (lastSyncedRequestTotalsRef.current === totalsSignature) {
+      return;
+    }
+
+    lastSyncedRequestTotalsRef.current = totalsSignature;
+
     void updateDoc(doc(db, 'users', playerUid), {
       totalRechargeAmount: Math.round(requestTotals.rechargeAmount),
       totalRedeemAmount: Math.round(requestTotals.redeemAmount),
@@ -1116,6 +1189,7 @@ export default function PlayerPage() {
       totalRedeemCount: requestTotals.redeemCount,
       rechargeRedeemTotalsUpdatedAt: new Date(),
     }).catch(() => {
+      lastSyncedRequestTotalsRef.current = null;
       // Non-blocking metrics sync.
     });
   }, [playerUid, requestTotals]);
@@ -1144,11 +1218,15 @@ export default function PlayerPage() {
   }, [referredByPlayerUid, referredByPlayerName]);
 
   useEffect(() => {
-    if (!playerCoadminUid) {
+    if (!playerCoadminUid || !shouldListenToBonusEvents) {
       setBonusEvents([]);
       return;
     }
 
+    console.info('[player] bonus-events-listener:start', {
+      playerCoadminUid,
+      activeView,
+    });
     const unsubscribe = listenBonusEventsByCoadmin(
       playerCoadminUid,
       (events) => {
@@ -1159,8 +1237,14 @@ export default function PlayerPage() {
       }
     );
 
-    return () => unsubscribe();
-  }, [playerCoadminUid]);
+    return () => {
+      console.info('[player] bonus-events-listener:stop', {
+        playerCoadminUid,
+        activeView,
+      });
+      unsubscribe();
+    };
+  }, [activeView, playerCoadminUid, shouldListenToBonusEvents]);
 
   useEffect(() => {
     if (!playerUid) {
@@ -3421,7 +3505,10 @@ export default function PlayerPage() {
 
       {showActiveTableSplash && selectedGameName ? (
         <div
-          className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[74] items-end px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:items-center sm:px-4 sm:pb-4`}
+          className="fixed inset-0 z-[74] flex items-end justify-center bg-black/82 px-3 pt-4 backdrop-blur-xl sm:px-4"
+          style={{
+            paddingBottom: `max(0.75rem, calc(env(safe-area-inset-bottom) + ${activeTableKeyboardInset}px))`,
+          }}
           onClick={() => closeActiveTableSplash()}
           role="dialog"
           aria-modal="true"
@@ -3430,93 +3517,105 @@ export default function PlayerPage() {
           <div
             onClick={(event) => event.stopPropagation()}
             ref={activeTableSplashContentRef}
-            className="relative w-full max-w-lg overflow-hidden rounded-[28px] border border-amber-400/35 bg-gradient-to-b from-black/90 to-zinc-950/98 p-4 shadow-2xl shadow-amber-900/25 backdrop-blur-xl sm:rounded-3xl sm:p-6"
-            style={{ maxHeight: '84dvh', overflowY: 'auto' }}
+            className="relative flex min-h-0 w-full max-w-lg flex-col overflow-hidden rounded-[28px] border border-amber-400/35 bg-gradient-to-b from-black/90 to-zinc-950/98 shadow-2xl shadow-amber-900/25 backdrop-blur-xl sm:rounded-3xl"
+            style={{
+              maxHeight: activeTableViewportHeight
+                ? `${Math.max(320, activeTableViewportHeight - 16)}px`
+                : 'calc(100dvh - 1rem)',
+            }}
           >
-            <button
-              type="button"
-              aria-label="Close"
-              onClick={() => closeActiveTableSplash()}
-              className="absolute right-3 top-3 z-10 flex h-10 w-10 items-center justify-center rounded-xl border border-amber-500/35 bg-black/60 text-xl font-bold leading-none text-amber-100 transition hover:bg-amber-500/15"
-            >
-              ×
-            </button>
-            <p className="text-[10px] font-black uppercase tracking-[0.28em] text-amber-200/65">
-              Active table
-            </p>
-            <h3
-              id="active-table-title"
-              className="mt-1 pr-12 text-2xl font-black text-amber-300 sm:text-3xl"
-            >
-              {selectedGameName}
-            </h3>
-
-            <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-3 sm:p-4">
-              <label className="mb-2 block text-sm font-bold text-amber-100/75">
-                💰 Amount (deducts from your coin)
-              </label>
-              <input
-                value={playAmount}
-                onChange={(event) => setPlayAmount(event.target.value)}
-                onFocus={nudgeActiveTableForKeyboard}
-                type="number"
-                min="1"
-                inputMode="decimal"
-                placeholder="Enter amount in USD"
-                autoFocus
-                className="min-h-[52px] w-full rounded-2xl border border-amber-400/40 bg-black/70 px-4 py-3 text-lg text-white outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-400/30"
-              />
-              <p className="mt-2 text-xs leading-relaxed text-amber-100/60">
-                Available coin: <span className="font-bold text-amber-200">{formatWalletAmount(wallet.coin)}</span>
-                {' — '}
-                Recharge is only sent if this amount is covered.
+            <div className="relative shrink-0 border-b border-white/10 px-4 pb-3 pt-4 sm:px-6 sm:pt-5">
+              <button
+                type="button"
+                aria-label="Close"
+                onClick={() => closeActiveTableSplash()}
+                className="absolute right-3 top-3 z-10 flex h-10 w-10 items-center justify-center rounded-xl border border-amber-500/35 bg-black/60 text-xl font-bold leading-none text-amber-100 transition hover:bg-amber-500/15 sm:right-4 sm:top-4"
+              >
+                ×
+              </button>
+              <p className="text-[10px] font-black uppercase tracking-[0.28em] text-amber-200/65">
+                Active table
               </p>
-              {playAmount &&
-              Number.isFinite(Number(playAmount)) &&
-              Number(playAmount) > 0 &&
-              Number(playAmount) > wallet.coin ? (
-                <p className="mt-2 text-sm font-bold text-rose-300">
-                  Not enough coin. Lower the amount or add coin first.
+              <h3
+                id="active-table-title"
+                className="mt-1 pr-12 text-2xl font-black text-amber-300 sm:text-3xl"
+              >
+                {selectedGameName}
+              </h3>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 sm:p-4">
+                <label className="mb-2 block text-sm font-bold text-amber-100/75">
+                  💰 Amount (deducts from your coin)
+                </label>
+                <input
+                  ref={activeTableAmountInputRef}
+                  value={playAmount}
+                  onChange={(event) => setPlayAmount(event.target.value)}
+                  onFocus={nudgeActiveTableForKeyboard}
+                  type="number"
+                  min="1"
+                  inputMode="decimal"
+                  placeholder="Enter amount in USD"
+                  autoFocus
+                  className="min-h-[52px] w-full rounded-2xl border border-amber-400/40 bg-black/70 px-4 py-3 text-lg text-white outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-400/30"
+                />
+                <p className="mt-2 text-xs leading-relaxed text-amber-100/60">
+                  Available coin:{' '}
+                  <span className="font-bold text-amber-200">{formatWalletAmount(wallet.coin)}</span>
+                  {' — '}
+                  Recharge is only sent if this amount is covered.
                 </p>
-              ) : null}
+                {playAmount &&
+                Number.isFinite(Number(playAmount)) &&
+                Number(playAmount) > 0 &&
+                Number(playAmount) > wallet.coin ? (
+                  <p className="mt-2 text-sm font-bold text-rose-300">
+                    Not enough coin. Lower the amount or add coin first.
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="mt-4 flex items-start gap-2 rounded-2xl border border-white/10 bg-white/[0.06] p-3 text-sm text-amber-100/65 sm:p-4">
+                <span className="text-lg">🛡️</span>
+                <span>Requests go to your team for secure processing.</span>
+              </div>
             </div>
 
-            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <button
-                type="button"
-                disabled={
-                  requestLoading ||
-                  !selectedGameName ||
-                  !playAmount ||
-                  isBlockedPlayer ||
-                  (Number.isFinite(Number(playAmount)) &&
-                    Number(playAmount) > 0 &&
-                    Number(playAmount) > wallet.coin)
-                }
-                onClick={() => void handleGameRequest('recharge')}
-                className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 py-3 text-base font-black text-white shadow-lg shadow-emerald-500/25 transition-all hover:brightness-110 disabled:opacity-50"
-              >
-                <span>⬇️</span> Send Recharge
-              </button>
+            <div className="sticky bottom-0 shrink-0 border-t border-white/10 bg-gradient-to-t from-black/95 to-black/85 px-4 py-3 backdrop-blur sm:px-6 sm:py-4">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <button
+                  type="button"
+                  disabled={
+                    requestLoading ||
+                    !selectedGameName ||
+                    !playAmount ||
+                    isBlockedPlayer ||
+                    (Number.isFinite(Number(playAmount)) &&
+                      Number(playAmount) > 0 &&
+                      Number(playAmount) > wallet.coin)
+                  }
+                  onClick={() => void handleGameRequest('recharge')}
+                  className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 py-3 text-base font-black text-white shadow-lg shadow-emerald-500/25 transition-all hover:brightness-110 disabled:opacity-50"
+                >
+                  <span>⬇️</span> Send Recharge
+                </button>
 
-              <button
-                type="button"
-                disabled={
-                  requestLoading ||
-                  !selectedGameName ||
-                  !playAmount ||
-                  isBlockedPlayer
-                }
-                onClick={() => void handleGameRequest('redeem')}
-                className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-700 to-red-600 px-4 py-3 text-base font-black text-white shadow-lg shadow-rose-500/25 transition-all hover:brightness-110 disabled:opacity-50"
-              >
-                <span>⬆️</span> Send Redeem
-              </button>
-            </div>
-
-            <div className="mt-4 flex items-start gap-2 rounded-2xl border border-white/10 bg-white/[0.06] p-3 text-sm text-amber-100/65 sm:p-4">
-              <span className="text-lg">🛡️</span>
-              <span>Requests go to your team for secure processing.</span>
+                <button
+                  type="button"
+                  disabled={
+                    requestLoading ||
+                    !selectedGameName ||
+                    !playAmount ||
+                    isBlockedPlayer
+                  }
+                  onClick={() => void handleGameRequest('redeem')}
+                  className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-700 to-red-600 px-4 py-3 text-base font-black text-white shadow-lg shadow-rose-500/25 transition-all hover:brightness-110 disabled:opacity-50"
+                >
+                  <span>⬆️</span> Send Redeem
+                </button>
+              </div>
             </div>
           </div>
         </div>

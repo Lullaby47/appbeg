@@ -158,6 +158,15 @@ function randomInt(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+function isQuotaExceededMessage(value: unknown) {
+  const lower = String(value || '').toLowerCase();
+  return (
+    lower.includes('resource_exhausted') ||
+    lower.includes('quota exceeded') ||
+    (lower.includes('quota') && lower.includes('exceeded'))
+  );
+}
+
 function calculateWorkedHoursLast24hWithHeartbeat(
   sessions: ShiftSession[],
   nowMs: number,
@@ -282,10 +291,19 @@ export default function CoadminPage() {
   const [pendingTransferRequests, setPendingTransferRequests] = useState<TransferRequest[]>([]);
   const [transferRequestBusyId, setTransferRequestBusyId] = useState<string | null>(null);
   const bonusAutoFillBusyRef = useRef(false);
-  const bonusAutoFillLastRunRef = useRef(0);
+  const bonusEventsRetryTimerRef = useRef<number | null>(null);
+  const bonusEventsRetryCountRef = useRef(0);
+  const bonusEventsLastEnsureAttemptedCountRef = useRef<number | null>(null);
+  const bonusEventsEnsureCooldownUntilMsRef = useRef(0);
+  const bonusEventsLastEnsureAttemptAtMsRef = useRef(0);
+  const bonusEventsLatestActiveCountRef = useRef(0);
+  const bonusEventsLastMissingCountRef = useRef<number | null>(null);
+  const BONUS_ENSURE_CLIENT_COOLDOWN_MS = 45_000;
 
   const activeChatUser =
     activeView === 'reach-out' ? reachOutChatUser : staffChatUser;
+  const isBonusEventsView =
+    activeView === 'view-bonus-events' || activeView === 'create-bonus-event';
 
   const pagedCoadminChat = usePaginatedChatMessages(activeChatUser?.uid ?? null, {
     scrollContainerRef: coadminChatScrollRef,
@@ -340,6 +358,36 @@ export default function CoadminPage() {
     }))
     .filter((task) => task.status === 'completed');
   const myBonusEvents = bonusEvents;
+
+  useEffect(() => {
+    if (!message) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setMessage((current) => (current === message ? '' : current));
+    }, isQuotaExceededMessage(message) ? 15000 : 7000);
+
+    return () => window.clearTimeout(timer);
+  }, [message]);
+
+  function clearBonusEventsMessage() {
+    setMessage((current) => (isQuotaExceededMessage(current) ? '' : current));
+  }
+
+  function scheduleBonusEventsRetry(restart: () => void) {
+    if (bonusEventsRetryTimerRef.current != null) {
+      window.clearTimeout(bonusEventsRetryTimerRef.current);
+    }
+
+    const retryAttempt = bonusEventsRetryCountRef.current;
+    const retryDelayMs = Math.min(60_000, 2_000 * 2 ** retryAttempt);
+    bonusEventsRetryTimerRef.current = window.setTimeout(() => {
+      bonusEventsRetryTimerRef.current = null;
+      restart();
+    }, retryDelayMs);
+    bonusEventsRetryCountRef.current += 1;
+  }
 
   useEffect(() => {
     let isCancelled = false;
@@ -439,36 +487,91 @@ export default function CoadminPage() {
   }, [activeView]);
 
   useEffect(() => {
+    if (!isBonusEventsView) {
+      bonusEventsLastEnsureAttemptedCountRef.current = null;
+      return;
+    }
+
     let isCancelled = false;
     let unsubscribe: (() => void) | undefined;
 
     async function startBonusEventsListener() {
       try {
         const coadminUid = await getCurrentUserCoadminUid();
+        const currentUid = auth.currentUser?.uid || null;
+        console.info('[bonusEvents] listener-started', {
+          coadminUid,
+          currentUid,
+        });
 
         if (isCancelled) {
           return;
         }
 
         const tryAutoFill = (activeCount: number) => {
-          const nowMs = Date.now();
-          const shouldTopUp =
-            activeCount < MAX_ACTIVE_BONUS_EVENTS &&
-            !bonusAutoFillBusyRef.current &&
-            nowMs - bonusAutoFillLastRunRef.current > 10_000;
-          if (!shouldTopUp) {
+          bonusEventsLatestActiveCountRef.current = activeCount;
+          console.info('[bonusEvents] snapshot-count', {
+            activeCount,
+            cap: MAX_ACTIVE_BONUS_EVENTS,
+          });
+          if (activeCount >= MAX_ACTIVE_BONUS_EVENTS) {
+            bonusEventsLastEnsureAttemptedCountRef.current = null;
+            bonusEventsEnsureCooldownUntilMsRef.current = Date.now() + 60_000;
+            bonusEventsLastMissingCountRef.current = null;
+            console.info('[bonusEvents] skipped-client-full', {
+              activeCount,
+              cap: MAX_ACTIVE_BONUS_EVENTS,
+            });
             return;
           }
-          bonusAutoFillLastRunRef.current = nowMs;
+          const missingCount = Math.max(0, MAX_ACTIVE_BONUS_EVENTS - activeCount);
+          const isFirstEmptyAttempt =
+            activeCount === 0 && bonusEventsLastEnsureAttemptAtMsRef.current === 0;
+          const nowMs = Date.now();
+          if (!isFirstEmptyAttempt && bonusEventsEnsureCooldownUntilMsRef.current > nowMs) {
+            console.info('[bonusEvents] skipped-client-cooldown', {
+              activeCount,
+              missingCount,
+              retryAfterMs: bonusEventsEnsureCooldownUntilMsRef.current - nowMs,
+            });
+            return;
+          }
+          if (!isFirstEmptyAttempt && bonusEventsLastMissingCountRef.current === missingCount) {
+            bonusEventsEnsureCooldownUntilMsRef.current = nowMs + BONUS_ENSURE_CLIENT_COOLDOWN_MS;
+            console.info('[bonusEvents] skipped-client-cooldown', {
+              activeCount,
+              missingCount,
+              retryAfterMs: BONUS_ENSURE_CLIENT_COOLDOWN_MS,
+            });
+            return;
+          }
+          if (
+            bonusAutoFillBusyRef.current ||
+            bonusEventsLastEnsureAttemptedCountRef.current === activeCount
+          ) {
+            return;
+          }
+
+          bonusEventsLastEnsureAttemptedCountRef.current = activeCount;
+          bonusEventsLastMissingCountRef.current = missingCount;
+          console.info('[bonusEvents] ensure-trigger', {
+            activeCount,
+            missingCount,
+            view: activeView,
+          });
           void (async () => {
             try {
-              await ensureCoadminBonusCapacity();
+              await ensureCoadminBonusCapacity(activeCount, {
+                ignoreCooldown: isFirstEmptyAttempt,
+              });
             } catch (error: unknown) {
+              bonusEventsLastEnsureAttemptedCountRef.current = null;
               if (!isCancelled) {
                 const msg =
                   error instanceof Error
                     ? error.message
                     : 'Failed to auto-create bonus events.';
+                console.info('[bonusEvents] ensure-error', { message: msg });
                 setMessage(msg);
               }
             } finally {
@@ -477,34 +580,47 @@ export default function CoadminPage() {
           })();
         };
 
-        // Run once immediately, so empty collections get filled to 20.
-        tryAutoFill(bonusEvents.length);
-
         unsubscribe = listenBonusEventsByCoadmin(
           coadminUid,
           (events) => {
             if (!isCancelled) {
+              bonusEventsRetryCountRef.current = 0;
               setBonusEvents(events);
+              clearBonusEventsMessage();
               tryAutoFill(events.length);
             }
           },
           (error) => {
             if (!isCancelled) {
               setMessage(error.message || 'Failed to listen for bonus events.');
+              scheduleBonusEventsRetry(() => {
+                if (!isCancelled) {
+                  void startBonusEventsListener();
+                }
+              });
             }
-          }
+          },
+          { skipTimeWindowFilter: true }
         );
       } catch (error: any) {
         if (!isCancelled) {
           const errMsg = error?.message || 'Failed to start bonus events listener.';
           setMessage(errMsg);
           if (String(errMsg).toLowerCase().includes('not authenticated')) {
-            window.setTimeout(() => {
+            bonusEventsRetryCountRef.current = 0;
+            bonusEventsRetryTimerRef.current = window.setTimeout(() => {
+              bonusEventsRetryTimerRef.current = null;
               if (!isCancelled) {
                 void startBonusEventsListener();
               }
             }, 1200);
+            return;
           }
+          scheduleBonusEventsRetry(() => {
+            if (!isCancelled) {
+              void startBonusEventsListener();
+            }
+          });
         }
       }
     }
@@ -514,8 +630,12 @@ export default function CoadminPage() {
     return () => {
       isCancelled = true;
       unsubscribe?.();
+      if (bonusEventsRetryTimerRef.current != null) {
+        window.clearTimeout(bonusEventsRetryTimerRef.current);
+        bonusEventsRetryTimerRef.current = null;
+      }
     };
-  }, []);
+  }, [isBonusEventsView]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -1462,11 +1582,7 @@ export default function CoadminPage() {
       setBonusAmount('');
       setBonusDescription('');
       setBonusPercentage('');
-      if ((result?.autoCreatedCount || 0) > 0) {
-        setMessage('Bonus event created successfully. Bonus events auto-created successfully.');
-      } else {
-        setMessage('Bonus event created successfully.');
-      }
+      setMessage('Bonus event created successfully.');
     } catch (error: any) {
       setMessage(error.message || 'Failed to create bonus event.');
     } finally {
@@ -1474,37 +1590,128 @@ export default function CoadminPage() {
     }
   }
 
-  async function ensureCoadminBonusCapacity() {
+  async function ensureCoadminBonusCapacity(
+    activeCountHint?: number,
+    options?: { ignoreCooldown?: boolean }
+  ) {
     if (bonusAutoFillBusyRef.current) {
+      console.info('[coadmin] bonus-events:ensure-skip', {
+        reason: 'busy',
+      });
+      return;
+    }
+    const resolvedActiveCount =
+      typeof activeCountHint === 'number'
+        ? activeCountHint
+        : bonusEventsLatestActiveCountRef.current;
+    // Strict full-capacity guard: never call ensure API when active is full.
+    if (resolvedActiveCount >= MAX_ACTIVE_BONUS_EVENTS) {
+      bonusEventsEnsureCooldownUntilMsRef.current = Date.now() + 60_000;
+      bonusEventsLastMissingCountRef.current = null;
+      console.info('[bonusEvents] skipped-client-full', {
+        activeCount: resolvedActiveCount,
+        cap: MAX_ACTIVE_BONUS_EVENTS,
+      });
+      return;
+    }
+    const stateActiveCount = bonusEvents.length;
+    if (stateActiveCount >= MAX_ACTIVE_BONUS_EVENTS) {
+      bonusEventsEnsureCooldownUntilMsRef.current = Date.now() + 60_000;
+      bonusEventsLastMissingCountRef.current = null;
+      console.info('[bonusEvents] skipped-client-full', {
+        activeCount: stateActiveCount,
+        cap: MAX_ACTIVE_BONUS_EVENTS,
+      });
+      return;
+    }
+    const nowMs = Date.now();
+    const retryAfterByAttempt = bonusEventsLastEnsureAttemptAtMsRef.current
+      ? BONUS_ENSURE_CLIENT_COOLDOWN_MS - (nowMs - bonusEventsLastEnsureAttemptAtMsRef.current)
+      : 0;
+    if (!options?.ignoreCooldown && retryAfterByAttempt > 0) {
+      console.info('[bonusEvents] skipped-client-cooldown', {
+        retryAfterMs: retryAfterByAttempt,
+      });
+      return;
+    }
+    if (!options?.ignoreCooldown && bonusEventsEnsureCooldownUntilMsRef.current > nowMs) {
+      console.info('[bonusEvents] skipped-client-cooldown', {
+        retryAfterMs: bonusEventsEnsureCooldownUntilMsRef.current - nowMs,
+      });
+      return;
+    }
+    const missingCount = Math.max(0, MAX_ACTIVE_BONUS_EVENTS - stateActiveCount);
+    if (!options?.ignoreCooldown && bonusEventsLastMissingCountRef.current === missingCount) {
+      bonusEventsEnsureCooldownUntilMsRef.current = nowMs + BONUS_ENSURE_CLIENT_COOLDOWN_MS;
+      console.info('[bonusEvents] skipped-client-cooldown', {
+        missingCount,
+        retryAfterMs: BONUS_ENSURE_CLIENT_COOLDOWN_MS,
+      });
       return;
     }
     bonusAutoFillBusyRef.current = true;
-    bonusAutoFillLastRunRef.current = Date.now();
+    bonusEventsLastEnsureAttemptAtMsRef.current = nowMs;
+    bonusEventsLastMissingCountRef.current = missingCount;
     try {
       const currentUser = auth.currentUser;
       if (!currentUser) {
+        console.info('[coadmin] bonus-events:ensure-skip', {
+          reason: 'missing-current-user',
+        });
         return;
       }
       const idToken = await currentUser.getIdToken();
       const response = await fetch('/api/coadmin/bonus-events/ensure-capacity', {
         method: 'POST',
         headers: {
+          'Content-Type': 'application/json',
           Authorization: `Bearer ${idToken}`,
         },
+        body: JSON.stringify({ activeCountHint: resolvedActiveCount }),
       });
-      const data = (await response.json()) as { autoCreatedCount?: number; error?: string };
+      const data = (await response.json()) as {
+        autoCreatedCount?: number;
+        totalActive?: number | null;
+        skipped?: string;
+        retryAfterMs?: number;
+        error?: string;
+      };
       if (!response.ok) {
         throw new Error(data.error || 'Failed to auto-create bonus events.');
+      }
+      if (
+        data.skipped === 'cooldown' ||
+        data.skipped === 'locked' ||
+        data.skipped === 'server-cooldown'
+      ) {
+        bonusEventsEnsureCooldownUntilMsRef.current = Date.now() + Math.max(5_000, Number(data.retryAfterMs || 10_000));
+      }
+      if (typeof data.totalActive === 'number' && data.totalActive >= MAX_ACTIVE_BONUS_EVENTS) {
+        bonusEventsEnsureCooldownUntilMsRef.current = Date.now() + 60_000;
+      }
+      if (data.skipped === 'server-cooldown') {
+        console.info('[coadmin] bonus-events:skipped-server-cooldown', {
+          retryAfterMs: Number(data.retryAfterMs || 0),
+        });
       }
       const result = {
         autoCreatedCount: Number(data.autoCreatedCount || 0),
       };
+      console.info('[bonusEvents] ensure-created', {
+        activeCount: stateActiveCount,
+        missingCount,
+        createdCount: result.autoCreatedCount,
+        totalActive: data.totalActive ?? null,
+        skipped: data.skipped || null,
+      });
+      clearBonusEventsMessage();
       if (result.autoCreatedCount > 0) {
         setMessage('Bonus events auto-created successfully.');
       }
     } catch (error: unknown) {
       const msg =
         error instanceof Error ? error.message : 'Failed to auto-create bonus events.';
+      console.info('[bonusEvents] ensure-error', { message: msg });
       setMessage(msg);
     } finally {
       bonusAutoFillBusyRef.current = false;
@@ -1532,7 +1739,7 @@ export default function CoadminPage() {
       setMessage(
         savedRange.adjustedEventCount > 0
           ? `Auto-created bonus event range saved: ${savedRange.minPercent}% to ${savedRange.maxPercent}%. Adjusted ${savedRange.adjustedEventCount} existing auto-created bonus events into range.`
-          : `Auto-created bonus event range saved: ${savedRange.minPercent}% to ${savedRange.maxPercent}%.`
+          : `Auto-created bonus event range saved: ${savedRange.minPercent}% to ${savedRange.maxPercent}%. New auto-created events will use this range.`
       );
     } catch (error: unknown) {
       setMessage(
@@ -1775,22 +1982,9 @@ export default function CoadminPage() {
 
   function handleChangeView(view: CoadminView) {
     setActiveView(view);
+    setMessage('');
     resetSelection();
-    if (view === 'view-bonus-events' || view === 'create-bonus-event') {
-      void ensureCoadminBonusCapacity();
-    }
   }
-
-  useEffect(() => {
-    if (activeView !== 'view-bonus-events' && activeView !== 'create-bonus-event') {
-      return;
-    }
-    void ensureCoadminBonusCapacity();
-    const timer = window.setInterval(() => {
-      void ensureCoadminBonusCapacity();
-    }, 15000);
-    return () => window.clearInterval(timer);
-  }, [activeView]);
 
   async function handleAddPaymentDetailPhotos(files: FileList | null) {
     if (!files?.length) {
@@ -2367,6 +2561,19 @@ export default function CoadminPage() {
                   </p>
                 </div>
                 <div className="flex flex-wrap items-end gap-3">
+                  {isQuotaExceededMessage(message) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMessage('');
+                        void ensureCoadminBonusCapacity();
+                      }}
+                      disabled={bonusAutoFillBusyRef.current}
+                      className="min-h-[44px] rounded-xl border border-amber-300/40 bg-amber-200/90 px-4 py-2 text-sm font-semibold text-black transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {bonusAutoFillBusyRef.current ? 'Retrying...' : 'Retry now'}
+                    </button>
+                  )}
                   <label className="flex min-w-[110px] flex-col gap-1 text-sm text-violet-100/80">
                     <span>Min %</span>
                     <input

@@ -3,7 +3,9 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
+  orderBy,
   query,
   runTransaction,
   serverTimestamp,
@@ -70,6 +72,7 @@ const COADMIN_MIN_PERCENT = 5;
 const COADMIN_MAX_PERCENT = 10;
 const COADMIN_MIN_AMOUNT = 10;
 const COADMIN_MAX_AMOUNT = 50;
+const MAX_GAME_LOGINS_READ = 100;
 const FUNNY_BONUS_NAMES = [
   'Freak Friday',
   'Hello Honee',
@@ -159,6 +162,16 @@ function randomInt(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+function buildActiveBonusEventsQuery(coadminUid: string, maxResults: number = MAX_ACTIVE_BONUS_EVENTS) {
+  return query(
+    collection(db, 'bonusEvents'),
+    where('coadminUid', '==', coadminUid),
+    where('status', '==', 'active'),
+    orderBy('createdAt', 'desc'),
+    limit(maxResults)
+  );
+}
+
 function normalizeAutoBonusPercentRange(values: {
   minPercent?: number | null;
   maxPercent?: number | null;
@@ -190,13 +203,6 @@ function normalizeAutoBonusPercentRange(values: {
   };
 }
 
-function clampBonusPercentToRange(
-  bonusPercentage: number,
-  range: { minPercent: number; maxPercent: number }
-) {
-  return Math.min(range.maxPercent, Math.max(range.minPercent, Math.round(bonusPercentage)));
-}
-
 export async function getCoadminAutoBonusPercentRange(coadminUid: string) {
   const userSnap = await getDoc(doc(db, 'users', coadminUid));
   if (!userSnap.exists()) {
@@ -212,11 +218,6 @@ export async function getCoadminAutoBonusPercentRange(coadminUid: string) {
     minPercent: userData.autoBonusEventMinPercent,
     maxPercent: userData.autoBonusEventMaxPercent,
   });
-}
-
-function isLegacyAutoBonusName(name: string) {
-  const clean = String(name || '').trim().toLowerCase();
-  return clean.startsWith('auto bonus') || clean.includes('2026-') || clean.includes('#');
 }
 
 function pickFunnyBonusName(usedNames: Set<string>, fallbackIndex: number) {
@@ -235,8 +236,20 @@ function pickFunnyBonusName(usedNames: Set<string>, fallbackIndex: number) {
 
 async function getCoadminGameNames(coadminUid: string): Promise<string[]> {
   const [coadminOwned, legacyOwned] = await Promise.all([
-    getDocs(query(collection(db, 'gameLogins'), where('coadminUid', '==', coadminUid))),
-    getDocs(query(collection(db, 'gameLogins'), where('createdBy', '==', coadminUid))),
+    getDocs(
+      query(
+        collection(db, 'gameLogins'),
+        where('coadminUid', '==', coadminUid),
+        limit(MAX_GAME_LOGINS_READ)
+      )
+    ),
+    getDocs(
+      query(
+        collection(db, 'gameLogins'),
+        where('createdBy', '==', coadminUid),
+        limit(MAX_GAME_LOGINS_READ)
+      )
+    ),
   ]);
 
   const names = new Set<string>();
@@ -327,8 +340,7 @@ export async function createBonusEvent(values: {
   }
 
   const coadminUid = await getCurrentUserCoadminUid();
-  const autoBonusPercentRange = await getCoadminAutoBonusPercentRange(coadminUid);
-  const allSnap = await getDocs(query(collection(db, 'bonusEvents'), where('coadminUid', '==', coadminUid)));
+  const allSnap = await getDocs(buildActiveBonusEventsQuery(coadminUid));
   const allEvents = allSnap.docs.map((docSnap) =>
     toBonusEvent(docSnap.id, docSnap.data() as Omit<BonusEvent, 'id'>)
   );
@@ -353,12 +365,6 @@ export async function createBonusEvent(values: {
       })
     )
   );
-  const usedNames = new Set(activeEvents.map((event) => String(event.bonusName || '').trim().toLowerCase()));
-  const coadminGameNames = await getCoadminGameNames(coadminUid);
-  const pickGameName = () =>
-    coadminGameNames.length > 0
-      ? coadminGameNames[randomInt(0, coadminGameNames.length - 1)]
-      : gameName || 'Bonus Table';
   if (existingKeys.has(duplicateKey)) {
     throw new Error('Duplicate active bonus event already exists.');
   }
@@ -395,77 +401,17 @@ export async function createBonusEvent(values: {
     eventId: manualRef.id,
     event_id: manualRef.id,
   });
-  existingKeys.add(duplicateKey);
-
-  let autoCreatedCount = 0;
-  if (role === 'coadmin') {
-    const targetMissing = Math.max(0, MAX_ACTIVE_BONUS_EVENTS - (activeEvents.length + 1));
-    if (targetMissing > 0) {
-      let attempts = 0;
-      while (autoCreatedCount < targetMissing && attempts < targetMissing * 20) {
-        attempts += 1;
-        const autoAmount = randomInt(COADMIN_MIN_AMOUNT, COADMIN_MAX_AMOUNT);
-        const autoPercent = randomInt(
-          autoBonusPercentRange.minPercent,
-          autoBonusPercentRange.maxPercent
-        );
-        const autoGame = pickGameName();
-        const autoName = pickFunnyBonusName(usedNames, attempts);
-        const key = makeActiveDuplicateKey({
-          bonusName: autoName,
-          gameName: autoGame,
-          amountNpr: autoAmount,
-          bonusPercentage: autoPercent,
-        });
-        if (existingKeys.has(key) || usedNames.has(autoName.toLowerCase())) {
-          continue;
-        }
-        const autoRef = doc(collection(db, 'bonusEvents'));
-        await setDoc(autoRef, {
-          coadminUid,
-          bonusName: autoName,
-          gameName: autoGame,
-          amountNpr: autoAmount,
-          amount: autoAmount,
-          description:
-            'Auto-generated co-admin bonus event to keep reward queue healthy.',
-          bonusPercentage: autoPercent,
-          bonus_percentage: autoPercent,
-          createdByUid: currentUser.uid,
-          created_by: currentUser.uid,
-          createdByUsername: userData.username?.trim() || 'Coadmin',
-          createdByRole: 'coadmin',
-          creator_role: 'system',
-          status: 'active',
-          startDate: now,
-          endDate: end,
-          start_date: now,
-          end_date: end,
-          createdAt: serverTimestamp(),
-          created_at: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-          updated_at: serverTimestamp(),
-          eventId: autoRef.id,
-          event_id: autoRef.id,
-          autoGenerated: true,
-        });
-        autoCreatedCount += 1;
-        existingKeys.add(key);
-      }
-    }
-  }
 
   console.info('[bonusEvents] createBonusEvent', {
     byUid: currentUser.uid,
     role,
     coadminUid,
     manualEventId: manualRef.id,
-    autoCreatedCount,
   });
 
   return {
     createdEventId: manualRef.id,
-    autoCreatedCount,
+    autoCreatedCount: 0,
   };
 }
 
@@ -486,9 +432,7 @@ export async function ensureCoadminActiveBonusEventsFilled(options?: {
   const creatorRole = options?.creatorRole || 'coadmin';
   const autoBonusPercentRange = await getCoadminAutoBonusPercentRange(coadminUid);
 
-  const allSnap = await getDocs(
-    query(collection(db, 'bonusEvents'), where('coadminUid', '==', coadminUid))
-  );
+  const allSnap = await getDocs(buildActiveBonusEventsQuery(coadminUid));
   const allEvents = allSnap.docs.map((docSnap) =>
     toBonusEvent(docSnap.id, docSnap.data() as Omit<BonusEvent, 'id'>)
   );
@@ -513,29 +457,6 @@ export async function ensureCoadminActiveBonusEventsFilled(options?: {
     coadminGameNames.length > 0
       ? coadminGameNames[randomInt(0, coadminGameNames.length - 1)]
       : 'Bonus Table';
-  const validGameNames = new Set(coadminGameNames.map((name) => name.toLowerCase()));
-
-  // Rename old "Auto Bonus 2026..." style names to funny names.
-  for (const legacyEvent of activeEvents) {
-    const currentName = String(legacyEvent.bonusName || '').trim();
-    const currentGameName = String(legacyEvent.gameName || '').trim();
-    const needsFunnyName = isLegacyAutoBonusName(currentName);
-    const needsGameNameRepair =
-      validGameNames.size > 0 && !validGameNames.has(currentGameName.toLowerCase());
-    if (!needsFunnyName && !needsGameNameRepair) continue;
-    const nextName = pickFunnyBonusName(usedNames, randomInt(1, 999));
-    const nextGameName = needsGameNameRepair ? pickGameName() : currentGameName;
-    await setDoc(
-      doc(db, 'bonusEvents', legacyEvent.id),
-      {
-        bonusName: needsFunnyName ? nextName : currentName,
-        gameName: nextGameName,
-        updatedAt: serverTimestamp(),
-        updated_at: serverTimestamp(),
-      },
-      { merge: true }
-    );
-  }
 
   const now = Timestamp.now();
   const end = Timestamp.fromMillis(now.toMillis() + 7 * 24 * 60 * 60 * 1000);
@@ -626,10 +547,6 @@ export async function setCoadminAutoBonusPercentRange(values: {
   }
 
   const normalizedRange = normalizeAutoBonusPercentRange(values);
-  const coadminUid = await getCurrentUserCoadminUid();
-  const bonusSnap = await getDocs(
-    query(collection(db, 'bonusEvents'), where('coadminUid', '==', coadminUid))
-  );
 
   await updateDoc(doc(db, 'users', currentUser.uid), {
     autoBonusEventMinPercent: normalizedRange.minPercent,
@@ -638,44 +555,17 @@ export async function setCoadminAutoBonusPercentRange(values: {
     updated_at: serverTimestamp(),
   });
 
-  let adjustedEventCount = 0;
-
-  for (const docSnap of bonusSnap.docs) {
-    const event = toBonusEvent(docSnap.id, docSnap.data() as Omit<BonusEvent, 'id'>);
-    const isAutoGenerated = Boolean((docSnap.data() as { autoGenerated?: boolean }).autoGenerated);
-    if (!isAutoGenerated) {
-      continue;
-    }
-
-    const currentBonusPercentage = Number(event.bonusPercentage || event.bonus_percentage || 0);
-    const clampedBonusPercentage = clampBonusPercentToRange(
-      currentBonusPercentage,
-      normalizedRange
-    );
-
-    if (clampedBonusPercentage === currentBonusPercentage) {
-      continue;
-    }
-
-    adjustedEventCount += 1;
-    await updateDoc(doc(db, 'bonusEvents', event.id), {
-      bonusPercentage: clampedBonusPercentage,
-      bonus_percentage: clampedBonusPercentage,
-      updatedAt: serverTimestamp(),
-      updated_at: serverTimestamp(),
-    });
-  }
-
   return {
     ...normalizedRange,
-    adjustedEventCount,
+    adjustedEventCount: 0,
   };
 }
 
 export function listenBonusEventsByCoadmin(
   coadminUid: string,
   onChange: (events: BonusEvent[]) => void,
-  onError?: (error: Error) => void
+  onError?: (error: Error) => void,
+  options?: { skipTimeWindowFilter?: boolean }
 ) {
   if (!coadminUid.trim()) {
     onChange([]);
@@ -683,8 +573,9 @@ export function listenBonusEventsByCoadmin(
   }
 
   let recordedFirstSnapshot = false;
-  return onSnapshot(
-    query(collection(db, 'bonusEvents'), where('coadminUid', '==', coadminUid)),
+  console.info('[bonusEvents] listener:start', { coadminUid, limit: MAX_ACTIVE_BONUS_EVENTS });
+  const unsubscribe = onSnapshot(
+    buildActiveBonusEventsQuery(coadminUid),
     (snapshot) => {
       if (!recordedFirstSnapshot) {
         recordedFirstSnapshot = true;
@@ -693,12 +584,37 @@ export function listenBonusEventsByCoadmin(
       const events = snapshot.docs.map((docSnap) =>
         toBonusEvent(docSnap.id, docSnap.data() as Omit<BonusEvent, 'id'>)
       );
-      onChange(sortByNewest(events).filter(isBonusEventActive));
+      const activeEvents = options?.skipTimeWindowFilter
+        ? sortByNewest(events)
+        : sortByNewest(events).filter(isBonusEventActive);
+      const firstDoc = snapshot.docs[0];
+      const firstData = firstDoc?.data() as {
+        status?: string;
+        coadminUid?: string;
+      } | undefined;
+      console.info('[bonusEvents] listener:snapshot', {
+        coadminUid,
+        snapshotSize: snapshot.size,
+        activeFilteredSize: activeEvents.length,
+        skipTimeWindowFilter: Boolean(options?.skipTimeWindowFilter),
+        firstDocId: firstDoc?.id || null,
+        firstDocStatus: String(firstData?.status || ''),
+        firstDocCoadminUid: String(firstData?.coadminUid || ''),
+      });
+      onChange(activeEvents);
     },
     (error) => {
+      console.error('[bonusEvents] listener:error', {
+        coadminUid,
+        message: error instanceof Error ? error.message : String(error),
+      });
       onError?.(error as Error);
     }
   );
+  return () => {
+    console.info('[bonusEvents] listener:stop', { coadminUid });
+    unsubscribe();
+  };
 }
 
 export async function activateBonusEventForPlayer(values: {
