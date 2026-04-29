@@ -509,6 +509,38 @@ export default function PlayerPage() {
   }, [showActiveTableSplash]);
 
   useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+
+    const pageNode = pageScrollRef.current;
+    const bodyStyle = document.body.style;
+    const docStyle = document.documentElement.style;
+    const previousBodyOverflow = bodyStyle.overflow;
+    const previousDocOverflow = docStyle.overflow;
+    const previousPageOverflowY = pageNode?.style.overflowY ?? '';
+    const previousPageTouchAction = pageNode?.style.touchAction ?? '';
+
+    if (mobileMenuOpen) {
+      bodyStyle.overflow = 'hidden';
+      docStyle.overflow = 'hidden';
+      if (pageNode) {
+        pageNode.style.overflowY = 'hidden';
+        pageNode.style.touchAction = 'none';
+      }
+    }
+
+    return () => {
+      bodyStyle.overflow = previousBodyOverflow;
+      docStyle.overflow = previousDocOverflow;
+      if (pageNode) {
+        pageNode.style.overflowY = previousPageOverflowY;
+        pageNode.style.touchAction = previousPageTouchAction;
+      }
+    };
+  }, [mobileMenuOpen]);
+
+  useEffect(() => {
     const onPopState = () => {
       if (!showActiveTableSplashRef.current && !activeTableHistoryOpenRef.current) {
         return;
@@ -2910,6 +2942,30 @@ export default function PlayerPage() {
                     </div>
                   )}
                 </div>
+
+                <div className="fire-panel fire-purple rounded-3xl border border-violet-400/25 bg-gradient-to-br from-[#21102f]/90 via-[#14091f]/92 to-black/85 p-5 shadow-[0_0_34px_-16px_rgba(168,85,247,0.55)] sm:p-6">
+                  <p className="text-xs font-black uppercase tracking-[0.28em] text-fuchsia-200/80">
+                    Bonus Event Guide
+                  </p>
+                  <h3 className="mt-2 text-2xl font-black text-white sm:text-[1.8rem]">
+                    How bonus events work
+                  </h3>
+                  <div className="mt-4 space-y-3 text-sm leading-relaxed text-violet-100/82 sm:text-base">
+                    <p>
+                      Bonus events are limited drops. When a bonus appears, you can open it and
+                      try to claim it before another player does.
+                    </p>
+                    <p>
+                      Each event shows the game, bonus amount, and bonus percentage, so you can
+                      quickly see what you are getting before you claim.
+                    </p>
+                    <p>
+                      When you claim a bonus event, that drop is locked in and removed from the
+                      live list. If someone else claims it first, it disappears and you need to
+                      wait for the next bonus event.
+                    </p>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -3031,7 +3087,7 @@ export default function PlayerPage() {
                   </p>
                   <h2 className="mt-2 text-3xl font-black text-white sm:text-4xl">Credentials</h2>
                   <p className="mt-2 text-sm text-amber-100/60">
-                    Premium cards with copy — tap 👁 to reveal passwords.
+                    Usernames
                   </p>
                 </div>
 
