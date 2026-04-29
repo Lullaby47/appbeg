@@ -71,6 +71,8 @@ export default function AdminPage() {
   const [staffList, setStaffList] = useState<StaffUser[]>([]);
   const [players, setPlayers] = useState<PlayerUser[]>([]);
   const [deletedPlayers, setDeletedPlayers] = useState<DeletedPlayerRecord[]>([]);
+  const [transferPlayerTarget, setTransferPlayerTarget] = useState<PlayerUser | null>(null);
+  const [transferTargetCoadminUid, setTransferTargetCoadminUid] = useState('');
   const [allStaffForCoadmins, setAllStaffForCoadmins] = useState<StaffUser[]>([]);
   const [pendingCarerRequests, setPendingCarerRequests] = useState<CarerCreationRequest[]>([]);
   const [selectedStaff, setSelectedStaff] = useState<StaffUser | null>(null);
@@ -558,19 +560,15 @@ export default function AdminPage() {
     }
   }
 
-  async function handleTransferPlayer(player: PlayerUser) {
-    const target = window.prompt(
-      `Transfer "${player.username}" to which co-admin? Enter username or UID:`,
-      ''
-    );
-    if (target == null) return;
-    const cleanTarget = target.trim().toLowerCase();
-    if (!cleanTarget) return;
-    const coadmin =
-      coadmins.find((item) => item.uid === cleanTarget) ||
-      coadmins.find((item) => String(item.username || '').toLowerCase() === cleanTarget);
+  async function handleTransferPlayer(player: PlayerUser, targetCoadminUid: string) {
+    const cleanTarget = targetCoadminUid.trim();
+    if (!cleanTarget) {
+      setMessage('Select a co-admin first.');
+      return;
+    }
+    const coadmin = coadmins.find((item) => item.uid === cleanTarget);
     if (!coadmin) {
-      setMessage('Target co-admin not found. Open co-admin list and try again.');
+      setMessage('Target co-admin not found.');
       return;
     }
     if (String(player.coadminUid || '') === coadmin.uid) {
@@ -583,6 +581,8 @@ export default function AdminPage() {
       await transferPlayerToCoadmin(player.uid, coadmin.uid);
       await loadPlayers();
       setMessage(`Player transferred to ${coadmin.username}.`);
+      setTransferPlayerTarget(null);
+      setTransferTargetCoadminUid('');
     } catch (err: any) {
       setMessage(err.message || 'Failed to transfer player.');
     } finally {
@@ -1182,9 +1182,12 @@ export default function AdminPage() {
                           </button>
                           <button
                             type="button"
-                            disabled={loading}
-                            onClick={() => void handleTransferPlayer(player)}
-                            className="rounded-lg bg-indigo-500/20 px-3 py-2 text-sm font-semibold text-indigo-300 hover:bg-indigo-500/30 disabled:opacity-60"
+                            disabled={loadingList}
+                            onClick={() => {
+                              setTransferPlayerTarget(player);
+                              setTransferTargetCoadminUid('');
+                            }}
+                            className="rounded-lg bg-indigo-500/20 px-3 py-2 text-sm font-semibold text-indigo-300 hover:bg-indigo-500/30 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             Transfer Coadmin
                           </button>
@@ -1247,6 +1250,69 @@ export default function AdminPage() {
               </div>
             </div>
           )}
+
+          {activeView === 'players' && transferPlayerTarget ? (
+            <div
+              className="fixed inset-0 z-[130] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+              onClick={() => {
+                if (!loading) {
+                  setTransferPlayerTarget(null);
+                  setTransferTargetCoadminUid('');
+                }
+              }}
+            >
+              <div
+                className="w-full max-w-lg rounded-2xl border border-indigo-500/30 bg-gradient-to-b from-[#121733] to-[#0a1026] p-5 shadow-2xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <h3 className="text-lg font-bold text-indigo-100">Transfer Player to Coadmin</h3>
+                <p className="mt-1 text-sm text-indigo-100/80">
+                  Player: <span className="font-semibold text-white">{transferPlayerTarget.username}</span>
+                </p>
+                <label className="mt-3 block text-sm text-indigo-100/85">
+                  Select coadmin
+                  <select
+                    value={transferTargetCoadminUid}
+                    onChange={(event) => setTransferTargetCoadminUid(event.target.value)}
+                    disabled={loading}
+                    className="mt-1 w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-white outline-none focus:border-indigo-400"
+                  >
+                    <option value="">Choose coadmin...</option>
+                    {sortedCoadmins
+                      .filter((coadmin) => coadmin.uid !== String(transferPlayerTarget.coadminUid || ''))
+                      .map((coadmin) => (
+                        <option key={coadmin.uid} value={coadmin.uid}>
+                          {coadmin.username} ({coadmin.uid})
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={loading || !transferTargetCoadminUid}
+                    onClick={() =>
+                      void handleTransferPlayer(transferPlayerTarget, transferTargetCoadminUid)
+                    }
+                    className="rounded-lg bg-indigo-500 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-400 disabled:opacity-60"
+                  >
+                    {loading ? 'Transferring...' : 'Confirm transfer'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() => {
+                      setTransferPlayerTarget(null);
+                      setTransferTargetCoadminUid('');
+                    }}
+                    className="rounded-lg border border-white/15 px-3 py-2 text-sm font-semibold text-neutral-200 hover:bg-white/5 disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           {activeView === 'reach-out' && (
             <ReachOutView

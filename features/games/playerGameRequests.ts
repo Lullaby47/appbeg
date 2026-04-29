@@ -26,7 +26,8 @@ export type PlayerGameRequestStatus =
   | 'completed'
   | 'failed'
   | 'poked'
-  | 'pending_review';
+  | 'pending_review'
+  | 'dismissed';
 
 export type PlayerGameRequest = {
   id: string;
@@ -405,7 +406,12 @@ export async function dismissPlayerRedeemRequest(requestId: string) {
       throw new Error('Only pending redeem requests can be dismissed.');
     }
 
-    transaction.delete(requestRef);
+    transaction.update(requestRef, {
+      status: 'dismissed',
+      completedAt: serverTimestamp(),
+      pokedAt: null,
+      pokeMessage: null,
+    });
 
     if (taskSnap.exists()) {
       transaction.delete(taskRef);
@@ -415,7 +421,7 @@ export async function dismissPlayerRedeemRequest(requestId: string) {
 
 /**
  * Carers may dismiss a pending redeem when it appears fraudulent or mistaken.
- * Deletes the request and linked carer task; same data rules as player dismiss.
+ * Marks the request dismissed and removes the linked carer task.
  */
 export async function dismissPendingRedeemAsCarer(requestId: string) {
   const currentUser = auth.currentUser;
@@ -476,7 +482,12 @@ export async function dismissPendingRedeemAsCarer(requestId: string) {
       throw new Error('This request is outside your coadmin scope.');
     }
 
-    transaction.delete(requestRef);
+    transaction.update(requestRef, {
+      status: 'dismissed',
+      completedAt: serverTimestamp(),
+      pokedAt: null,
+      pokeMessage: null,
+    });
 
     if (taskSnap.exists()) {
       transaction.delete(taskRef);

@@ -196,7 +196,11 @@ function getTaskStatusFromRequestStatus(
   if (requestStatus === 'completed') {
     return 'completed';
   }
-  if (requestStatus === 'failed' || requestStatus === 'pending_review') {
+  if (
+    requestStatus === 'failed' ||
+    requestStatus === 'pending_review' ||
+    requestStatus === 'dismissed'
+  ) {
     return 'failed';
   }
   // Includes pending plus legacy poked from the removed poke flow.

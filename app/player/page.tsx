@@ -147,6 +147,9 @@ function getRequestStatusLabel(status: PlayerGameRequest['status']) {
   if (status === 'completed') {
     return 'Completed';
   }
+  if (status === 'dismissed') {
+    return 'Dismissed';
+  }
   if (status === 'failed') {
     return 'Failed';
   }
@@ -159,6 +162,9 @@ function getRequestStatusLabel(status: PlayerGameRequest['status']) {
 function getRequestStatusClass(status: PlayerGameRequest['status']) {
   if (status === 'completed') {
     return 'bg-emerald-500/20 text-emerald-200';
+  }
+  if (status === 'dismissed') {
+    return 'bg-red-500/20 text-red-200';
   }
   if (status === 'failed') {
     return 'bg-rose-500/20 text-rose-200';
@@ -516,6 +522,8 @@ export default function PlayerPage() {
   const [showLogoutConfirmSplash, setShowLogoutConfirmSplash] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
   const [bonusVanishedToast, setBonusVanishedToast] = useState(false);
+  const knownRedeemRequestStatusByIdRef = useRef<Record<string, PlayerGameRequest['status']>>({});
+  const seenDismissedRedeemSplashIdsRef = useRef<Set<string>>(new Set());
   const bonusSwipeStartXRef = useRef<number | null>(null);
   const activeTableHistoryOpenRef = useRef(false);
   const showActiveTableSplashRef = useRef(false);
@@ -812,6 +820,35 @@ export default function PlayerPage() {
     () => requestHistory.slice(0, MAX_REQUEST_HISTORY_DISPLAY),
     [requestHistory]
   );
+  useEffect(() => {
+    if (!playerUid) {
+      knownRedeemRequestStatusByIdRef.current = {};
+      seenDismissedRedeemSplashIdsRef.current = new Set();
+      return;
+    }
+
+    const nextStatusById: Record<string, PlayerGameRequest['status']> = {};
+
+    for (const request of requestHistory) {
+      if (request.type !== 'redeem') {
+        continue;
+      }
+
+      nextStatusById[request.id] = request.status;
+      const previousStatus = knownRedeemRequestStatusByIdRef.current[request.id];
+      const justDismissed = previousStatus && previousStatus !== 'dismissed' && request.status === 'dismissed';
+      const shouldShowDismissSplash =
+        justDismissed && !seenDismissedRedeemSplashIdsRef.current.has(request.id);
+
+      if (shouldShowDismissSplash) {
+        setRedeemDismissSplashRequest(request);
+        seenDismissedRedeemSplashIdsRef.current.add(request.id);
+      }
+    }
+
+    knownRedeemRequestStatusByIdRef.current = nextStatusById;
+  }, [playerUid, requestHistory]);
+
   const requestTotals = useMemo(() => {
     return requestHistory.reduce(
       (acc, request) => {
@@ -3167,7 +3204,7 @@ export default function PlayerPage() {
                                   </div>
                                   <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
                                     <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
-                                      Amount
+                                      You Pay
                                     </p>
                                     <p className="mt-1 font-bold text-white">
                                       ${Math.round(event.amountNpr || 0).toLocaleString('en-US')}
@@ -3175,18 +3212,21 @@ export default function PlayerPage() {
                                   </div>
                                   <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
                                     <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
-                                      Percentage
-                                    </p>
-                                    <p className="mt-1 font-bold text-white">+{event.bonusPercentage}%</p>
-                                  </div>
-                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
-                                    <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
-                                      Created By
+                                      You Get
                                     </p>
                                     <p className="mt-1 font-bold text-white">
-                                      {event.createdByRole === 'staff'
-                                        ? 'Staff Team'
-                                        : 'Coadmin Team'}
+                                      $
+                                      {(
+                                        Number(event.amountNpr || 0) +
+                                        Math.max(
+                                          1,
+                                          Math.round(
+                                            (Number(event.amountNpr || 0) *
+                                              Number(event.bonusPercentage || 0)) /
+                                              100
+                                          )
+                                        )
+                                      ).toLocaleString('en-US')}
                                     </p>
                                   </div>
                                   <div className="rounded-2xl border border-fuchsia-400/25 bg-fuchsia-500/10 p-3">
@@ -3234,7 +3274,7 @@ export default function PlayerPage() {
                       try to claim it before another player does.
                     </p>
                     <p>
-                      Each event shows the game, bonus amount, and bonus percentage, so you can
+                      Each event shows the game, bonus amount, and what you get from the bonus, so you can
                       quickly see what you are getting before you claim.
                     </p>
                     <p>
@@ -4482,6 +4522,34 @@ export default function PlayerPage() {
             onClick={(event) => event.stopPropagation()}
             className="w-full max-w-lg rounded-3xl border border-red-300/50 bg-gradient-to-b from-red-950 to-red-900 p-8 shadow-2xl shadow-black/40"
           >
+            {redeemDismissSplashRequest.status === 'dismissed' ? (
+              <>
+                <p className="text-center text-4xl font-black text-red-100">!</p>
+                <h3
+                  id="redeem-dismiss-splash-title"
+                  className="mt-2 text-center text-2xl font-black text-white"
+                >
+                  Redeem request dismissed
+                </h3>
+                <p className="mt-5 text-center text-base leading-relaxed text-red-50/95">
+                  A staff member marked this redeem request as fake or mistaken and removed it from
+                  the pending queue.
+                </p>
+                <p className="mt-4 text-center text-sm leading-relaxed text-red-100/85">
+                  If this was an error, contact support with your request amount and game details.
+                </p>
+                <div className="mt-8 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => setRedeemDismissSplashRequest(null)}
+                    className="w-full rounded-xl bg-white px-4 py-3 text-sm font-black uppercase tracking-wide text-red-900 hover:bg-red-50 sm:w-auto sm:min-w-48"
+                  >
+                    Okay
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
             <p className="text-center text-4xl font-black text-red-100">!</p>
             <h3
               id="redeem-dismiss-splash-title"
@@ -4526,6 +4594,8 @@ export default function PlayerPage() {
                   : 'I understand — dismiss'}
               </button>
             </div>
+              </>
+            )}
           </div>
         </div>
       ) : null}

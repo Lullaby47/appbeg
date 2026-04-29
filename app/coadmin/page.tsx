@@ -254,6 +254,9 @@ export default function CoadminPage() {
   const [playerCashAmountInput, setPlayerCashAmountInput] = useState('');
   const [playerCoinAdjustBusy, setPlayerCoinAdjustBusy] = useState(false);
   const [playerCashAdjustBusy, setPlayerCashAdjustBusy] = useState(false);
+  const [selectedPlayerCoadminAddedCoinTotal, setSelectedPlayerCoadminAddedCoinTotal] = useState(0);
+  const [selectedPlayerCashoutTotalAmount, setSelectedPlayerCashoutTotalAmount] = useState(0);
+  const [selectedPlayerTotalsLoading, setSelectedPlayerTotalsLoading] = useState(false);
 
   const [gameName, setGameName] = useState('');
   const [gameUsername, setGameUsername] = useState('');
@@ -532,6 +535,77 @@ export default function CoadminPage() {
 
   useEffect(() => {
     setPlayerCoinAmountInput('');
+  }, [selectedPlayer?.uid]);
+
+  useEffect(() => {
+    const playerUid = selectedPlayer?.uid;
+    if (!playerUid) {
+      setSelectedPlayerCoadminAddedCoinTotal(0);
+      setSelectedPlayerCashoutTotalAmount(0);
+      setSelectedPlayerTotalsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSelectedPlayerTotalsLoading(true);
+
+    void (async () => {
+      try {
+        const coadminUid = auth.currentUser?.uid || '';
+        const [financialEventsSnap, completedCashoutSnap] = await Promise.all([
+          getDocs(query(collection(db, 'financialEvents'), where('playerUid', '==', playerUid))),
+          getDocs(
+            query(
+              collection(db, 'playerCashoutTasks'),
+              where('playerUid', '==', playerUid),
+              where('status', '==', 'completed')
+            )
+          ),
+        ]);
+
+        const addedCoinTotal = financialEventsSnap.docs.reduce((total, docSnap) => {
+          const event = docSnap.data() as {
+            coadminUid?: string;
+            type?: string;
+            amountNpr?: number;
+          };
+          const eventType = String(event.type || '').trim();
+          const eventCoadminUid = String(event.coadminUid || '').trim();
+
+          if (eventType !== 'coadmin_coin_add') {
+            return total;
+          }
+          if (coadminUid && eventCoadminUid && eventCoadminUid !== coadminUid) {
+            return total;
+          }
+          return total + Math.max(0, Number(event.amountNpr || 0));
+        }, 0);
+
+        const cashoutTotal = completedCashoutSnap.docs.reduce((total, docSnap) => {
+          const task = docSnap.data() as { amountNpr?: number };
+          return total + Math.max(0, Number(task.amountNpr || 0));
+        }, 0);
+
+        if (!cancelled) {
+          setSelectedPlayerCoadminAddedCoinTotal(Math.round(addedCoinTotal));
+          setSelectedPlayerCashoutTotalAmount(Math.round(cashoutTotal));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setSelectedPlayerCoadminAddedCoinTotal(0);
+          setSelectedPlayerCashoutTotalAmount(0);
+          setMessage(error instanceof Error ? error.message : 'Failed to load player totals.');
+        }
+      } finally {
+        if (!cancelled) {
+          setSelectedPlayerTotalsLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedPlayer?.uid]);
 
   useEffect(() => {
@@ -3459,6 +3533,25 @@ export default function CoadminPage() {
                           0,
                           Math.floor(Number(user.totalRedeemAmount || 0))
                         ).toLocaleString()}
+                      </span>
+                    </p>
+                    <p className="mt-0.5 text-sm text-neutral-400">
+                      Total recharged by coadmin/load coin:{' '}
+                      <span className="font-semibold text-emerald-200">
+                        {selectedPlayerTotalsLoading
+                          ? 'Loading...'
+                          : Math.max(
+                              0,
+                              Math.floor(Number(selectedPlayerCoadminAddedCoinTotal || 0))
+                            ).toLocaleString()}
+                      </span>
+                    </p>
+                    <p className="mt-0.5 text-sm text-neutral-400">
+                      Total amount cashed out:{' '}
+                      <span className="font-semibold text-sky-200">
+                        {selectedPlayerTotalsLoading
+                          ? 'Loading...'
+                          : Math.max(0, Math.floor(Number(selectedPlayerCashoutTotalAmount || 0))).toLocaleString()}
                       </span>
                     </p>
                     <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
