@@ -99,6 +99,17 @@ export default function ReachOutView({
   const getMaskedDisplayName = (user: AdminUser) =>
     getPanelDisplayName(user, nameMode);
 
+  /** Staff Reach Out: show coadmin as “Admin” in the subtitle line too (UI only). */
+  const reachOutAgentRoleLabel = (user: AdminUser) => {
+    if (nameMode !== 'staff') {
+      return user.role;
+    }
+    if (String(user.role || '').toLowerCase() === 'coadmin') {
+      return 'Admin';
+    }
+    return user.role;
+  };
+
   const getAvatarLetter = (user: AdminUser) => {
     const name = getMaskedDisplayName(user).trim();
     return (name.charAt(0) || '?').toUpperCase();
@@ -187,7 +198,8 @@ export default function ReachOutView({
                             : 'text-neutral-500'
                       }`}
                     >
-                      {getOnlineStatusLabel(onlineByUid, user)} · {user.role}
+                      {getOnlineStatusLabel(onlineByUid, user)} ·{' '}
+                      {reachOutAgentRoleLabel(user)}
                     </p>
                   </div>
                 </button>
@@ -229,7 +241,7 @@ export default function ReachOutView({
                   </h3>
                   <p className="text-xs text-neutral-400">
                     {getOnlineStatusLabel(onlineByUid, selectedChatUser)} ·{' '}
-                    {selectedChatUser.role}
+                    {reachOutAgentRoleLabel(selectedChatUser)}
                   </p>
                 </div>
               </div>

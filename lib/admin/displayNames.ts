@@ -1,7 +1,7 @@
 /**
  * Who is viewing admin-style lists / chat. Controls whether internal usernames are shown.
  * - `player` — co-admins: “Co-admin”; staff: first 3 letters of login only; other roles as below.
- * - `staff` — see real usernames for admins, other staff, players, etc.; only co-accounts are hidden (“Co-admin”).
+ * - `staff` — real usernames for admins, other staff, players, etc.; **coadmin** is labeled **Admin** (not the login name).
  * - `carer` — like staff for hiding co-admins; peer staff in some UIs can stay generic (see below).
  * - `coadmin` — see real names for staff, carers, players, and global admins in reach-out.
  * - `admin` — full real usernames everywhere.
@@ -32,7 +32,7 @@ export function getPanelDisplayName(
 
   if (mode === 'staff') {
     if (role === 'coadmin') {
-      return 'Co-admin';
+      return 'Admin';
     }
     return u;
   }
