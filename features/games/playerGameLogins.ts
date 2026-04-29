@@ -18,6 +18,8 @@ export type PlayerGameLogin = {
   gameName: string;
   gameUsername: string;
   gamePassword: string;
+  frontendUrl?: string;
+  siteUrl?: string;
   coadminUid: string;
   createdBy: string;
   createdAt?: any;
@@ -42,6 +44,8 @@ export async function createPlayerGameLogin(values: {
   gameName: string;
   gameUsername: string;
   gamePassword: string;
+  frontendUrl?: string;
+  siteUrl?: string;
   coadminUid: string;
 }) {
   const currentUser = auth.currentUser;
@@ -61,6 +65,8 @@ export async function createPlayerGameLogin(values: {
     gameName: values.gameName.trim(),
     gameUsername: values.gameUsername.trim(),
     gamePassword: values.gamePassword,
+    frontendUrl: String(values.frontendUrl || '').trim(),
+    siteUrl: String(values.siteUrl || '').trim(),
     coadminUid: values.coadminUid,
     createdBy: values.coadminUid,
     createdAt: serverTimestamp(),
@@ -73,6 +79,8 @@ export async function updatePlayerGameLogin(
     gameName: string;
     gameUsername: string;
     gamePassword: string;
+    frontendUrl?: string;
+    siteUrl?: string;
   }
 ) {
   if (!values.gameName.trim()) throw new Error('Game name is required.');
@@ -83,6 +91,8 @@ export async function updatePlayerGameLogin(
     gameName: values.gameName.trim(),
     gameUsername: values.gameUsername.trim(),
     gamePassword: values.gamePassword,
+    frontendUrl: String(values.frontendUrl || '').trim(),
+    siteUrl: String(values.siteUrl || '').trim(),
   });
 }
 

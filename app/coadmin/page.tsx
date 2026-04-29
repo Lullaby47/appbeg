@@ -261,7 +261,8 @@ export default function CoadminPage() {
   const [gameName, setGameName] = useState('');
   const [gameUsername, setGameUsername] = useState('');
   const [gamePassword, setGamePassword] = useState('');
-  const [gameSiteUrl, setGameSiteUrl] = useState('');
+  const [gameBackendUrl, setGameBackendUrl] = useState('');
+  const [gameFrontendUrl, setGameFrontendUrl] = useState('');
   const [gameLogins, setGameLogins] = useState<GameLogin[]>([]);
   const [editingGame, setEditingGame] = useState<GameLogin | null>(null);
   const [bonusName, setBonusName] = useState('');
@@ -1360,11 +1361,18 @@ export default function CoadminPage() {
     setMessage('');
 
     try {
-      await createGameLogin(gameName, gameUsername, gamePassword, gameSiteUrl);
+      await createGameLogin(
+        gameName,
+        gameUsername,
+        gamePassword,
+        gameBackendUrl,
+        gameFrontendUrl
+      );
       setGameName('');
       setGameUsername('');
       setGamePassword('');
-      setGameSiteUrl('');
+      setGameBackendUrl('');
+      setGameFrontendUrl('');
       setMessage('Game login added successfully.');
       await loadGameLogins();
     } catch (err: any) {
@@ -1387,7 +1395,8 @@ export default function CoadminPage() {
         gameName: editingGame.gameName,
         username: editingGame.username,
         password: editingGame.password,
-        siteUrl: editingGame.siteUrl || '',
+        backendUrl: editingGame.backendUrl || editingGame.siteUrl || '',
+        frontendUrl: editingGame.frontendUrl || '',
       });
 
       setEditingGame(null);
@@ -3679,9 +3688,19 @@ export default function CoadminPage() {
                 <label className="block text-sm text-neutral-300">
                   <span className="mb-2 block">Backend Link</span>
                   <input
-                    value={gameSiteUrl}
-                    onChange={(e) => setGameSiteUrl(e.target.value)}
-                    placeholder="https://example.com"
+                    value={gameBackendUrl}
+                    onChange={(e) => setGameBackendUrl(e.target.value)}
+                    placeholder="https://backend.example.com"
+                    className="w-full rounded-xl border border-white/10 bg-neutral-900 p-3 outline-none focus:border-white/30"
+                  />
+                </label>
+
+                <label className="block text-sm text-neutral-300">
+                  <span className="mb-2 block">Frontend Download Link</span>
+                  <input
+                    value={gameFrontendUrl}
+                    onChange={(e) => setGameFrontendUrl(e.target.value)}
+                    placeholder="https://download.example.com"
                     className="w-full rounded-xl border border-white/10 bg-neutral-900 p-3 outline-none focus:border-white/30"
                   />
                 </label>
@@ -3749,14 +3768,29 @@ export default function CoadminPage() {
                           <label className="block text-sm text-neutral-300">
                             <span className="mb-2 block">Backend Link</span>
                             <input
-                              value={editingGame.siteUrl || ''}
+                              value={editingGame.backendUrl || editingGame.siteUrl || ''}
                               onChange={(e) =>
                                 setEditingGame({
                                   ...editingGame,
-                                  siteUrl: e.target.value,
+                                  backendUrl: e.target.value,
                                 })
                               }
-                              placeholder="https://example.com"
+                              placeholder="https://backend.example.com"
+                              className="w-full rounded-xl border border-white/10 bg-neutral-900 p-3 outline-none focus:border-white/30"
+                            />
+                          </label>
+
+                          <label className="block text-sm text-neutral-300">
+                            <span className="mb-2 block">Frontend Download Link</span>
+                            <input
+                              value={editingGame.frontendUrl || ''}
+                              onChange={(e) =>
+                                setEditingGame({
+                                  ...editingGame,
+                                  frontendUrl: e.target.value,
+                                })
+                              }
+                              placeholder="https://download.example.com"
                               className="w-full rounded-xl border border-white/10 bg-neutral-900 p-3 outline-none focus:border-white/30"
                             />
                           </label>
@@ -3794,14 +3828,31 @@ export default function CoadminPage() {
                               <p className="text-xs font-semibold uppercase tracking-wide text-cyan-200/80">
                                 Backend Link
                               </p>
-                              {game.siteUrl ? (
+                              {game.backendUrl || game.siteUrl ? (
                                 <a
-                                  href={game.siteUrl}
+                                  href={game.backendUrl || game.siteUrl}
                                   target="_blank"
                                   rel="noreferrer"
                                   className="mt-2 block break-all text-sm text-cyan-300 underline underline-offset-2 hover:text-cyan-200"
                                 >
-                                  {game.siteUrl}
+                                  {game.backendUrl || game.siteUrl}
+                                </a>
+                              ) : (
+                                <p className="mt-2 text-sm text-white">Not set</p>
+                              )}
+                            </div>
+                            <div className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3">
+                              <p className="text-xs font-semibold uppercase tracking-wide text-cyan-200/80">
+                                Frontend Download Link
+                              </p>
+                              {game.frontendUrl ? (
+                                <a
+                                  href={game.frontendUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="mt-2 block break-all text-sm text-cyan-300 underline underline-offset-2 hover:text-cyan-200"
+                                >
+                                  {game.frontendUrl}
                                 </a>
                               ) : (
                                 <p className="mt-2 text-sm text-white">Not set</p>

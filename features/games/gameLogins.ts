@@ -17,6 +17,8 @@ export type GameLogin = {
   gameName: string;
   username: string;
   password: string;
+  backendUrl?: string;
+  frontendUrl?: string;
   siteUrl?: string;
   createdBy: string;
   coadminUid?: string;
@@ -50,7 +52,8 @@ export async function createGameLogin(
   gameName: string,
   username: string,
   password: string,
-  siteUrl = ''
+  backendUrl = '',
+  frontendUrl = ''
 ) {
   const currentUser = auth.currentUser;
 
@@ -60,7 +63,8 @@ export async function createGameLogin(
 
   const cleanGameName = gameName.trim();
   const cleanUsername = username.trim();
-  const cleanSiteUrl = normalizeSiteUrl(siteUrl);
+  const cleanBackendUrl = normalizeSiteUrl(backendUrl);
+  const cleanFrontendUrl = normalizeSiteUrl(frontendUrl);
 
   if (!cleanGameName) {
     throw new Error('Game name is required.');
@@ -80,7 +84,10 @@ export async function createGameLogin(
     gameName: cleanGameName,
     username: cleanUsername,
     password,
-    siteUrl: cleanSiteUrl,
+    backendUrl: cleanBackendUrl,
+    frontendUrl: cleanFrontendUrl,
+    // Keep legacy field synced for older consumers.
+    siteUrl: cleanBackendUrl,
     createdBy: coadminUid,
     coadminUid,
     createdAt: serverTimestamp(),
@@ -113,12 +120,14 @@ export async function updateGameLogin(
     gameName: string;
     username: string;
     password: string;
-    siteUrl?: string;
+    backendUrl?: string;
+    frontendUrl?: string;
   }
 ) {
   const cleanGameName = values.gameName.trim();
   const cleanUsername = values.username.trim();
-  const cleanSiteUrl = normalizeSiteUrl(values.siteUrl || '');
+  const cleanBackendUrl = normalizeSiteUrl(values.backendUrl || '');
+  const cleanFrontendUrl = normalizeSiteUrl(values.frontendUrl || '');
 
   if (!cleanGameName) {
     throw new Error('Game name is required.');
@@ -136,6 +145,8 @@ export async function updateGameLogin(
     gameName: cleanGameName,
     username: cleanUsername,
     password: values.password,
-    siteUrl: cleanSiteUrl,
+    backendUrl: cleanBackendUrl,
+    frontendUrl: cleanFrontendUrl,
+    siteUrl: cleanBackendUrl,
   });
 }

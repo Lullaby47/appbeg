@@ -18,6 +18,7 @@ import ImageUploadField from '@/components/common/ImageUploadField';
 import { auth, db } from '@/lib/firebase/client';
 import { belongsToCoadmin, resolveCoadminUid } from '@/lib/coadmin/scope';
 import { getStaff } from '@/features/users/adminUsers';
+import { getGameLoginsByCoadmin } from '@/features/games/gameLogins';
 import {
   getPlayerGameLoginsByPlayer,
   PlayerGameLogin,
@@ -224,6 +225,14 @@ function normalizeGameKey(gameName: string) {
 
 function normalizeBackgroundKey(gameName: string) {
   return gameName.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function normalizeExternalUrl(siteUrl?: string | null) {
+  const trimmed = String(siteUrl || '').trim();
+  if (!trimmed) {
+    return '';
+  }
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 }
 
 function buildGameBackgroundCandidates(gameName: string) {
@@ -438,6 +447,9 @@ export default function PlayerPage() {
   const [selectedAgent, setSelectedAgent] = useState<AdminUser | null>(null);
 
   const [gameLogins, setGameLogins] = useState<PlayerGameLogin[]>([]);
+  const [coadminFrontendLinkByGameKey, setCoadminFrontendLinkByGameKey] = useState<
+    Record<string, string>
+  >({});
   const [bonusEvents, setBonusEvents] = useState<BonusEvent[]>([]);
   const [usernameCarersByGame, setUsernameCarersByGame] = useState<Record<string, string[]>>({});
   const [creatorNames, setCreatorNames] = useState<Record<string, string>>({});
@@ -788,6 +800,42 @@ export default function PlayerPage() {
   );
   const shouldListenToBonusEvents =
     Boolean(playerCoadminUid) && activeView === 'bonus-events';
+  useEffect(() => {
+    if (!playerCoadminUid) {
+      setCoadminFrontendLinkByGameKey({});
+      return;
+    }
+
+    let isCancelled = false;
+
+    async function loadCoadminFrontendLinks() {
+      try {
+        const coadminGames = await getGameLoginsByCoadmin(playerCoadminUid);
+        const nextMap: Record<string, string> = {};
+        for (const game of coadminGames) {
+          const key = normalizeBackgroundKey(String(game.gameName || ''));
+          const frontendLink = normalizeExternalUrl(game.frontendUrl || '');
+          if (!key || !frontendLink) {
+            continue;
+          }
+          nextMap[key] = frontendLink;
+        }
+        if (!isCancelled) {
+          setCoadminFrontendLinkByGameKey(nextMap);
+        }
+      } catch {
+        if (!isCancelled) {
+          setCoadminFrontendLinkByGameKey({});
+        }
+      }
+    }
+
+    void loadCoadminFrontendLinks();
+    return () => {
+      isCancelled = true;
+    };
+  }, [playerCoadminUid]);
+
   const selectedGameBackgroundImage = useMemo(() => {
     const key = normalizeBackgroundKey(selectedGameName);
     if (!key) {
@@ -3652,6 +3700,13 @@ export default function PlayerPage() {
                       const visible = visiblePasswords[login.id];
                       const displayUsername = login.gameUsername;
                       const displayPassword = login.gamePassword;
+                      const fallbackFrontendUrl =
+                        coadminFrontendLinkByGameKey[
+                          normalizeBackgroundKey(String(login.gameName || ''))
+                        ] || '';
+                      const downloadGameUrl = normalizeExternalUrl(
+                        login.frontendUrl || login.siteUrl || fallbackFrontendUrl
+                      );
                       const gameCardBackgroundImage =
                         gameBackgroundImageByKey[normalizeBackgroundKey(login.gameName || '')] || '';
                       return (
@@ -3679,6 +3734,16 @@ export default function PlayerPage() {
                               <h3 className="mt-1 break-words bg-gradient-to-r from-amber-50 via-yellow-100 to-orange-200 bg-clip-text text-[1.25rem] font-black leading-tight text-transparent">
                                 {login.gameName}
                               </h3>
+                              {downloadGameUrl ? (
+                                <a
+                                  href={downloadGameUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="mt-1 inline-block text-xs font-black uppercase tracking-[0.12em] text-cyan-200 underline decoration-cyan-300/60 underline-offset-2 hover:text-cyan-100"
+                                >
+                                  Download Game
+                                </a>
+                              ) : null}
                             </div>
                             <span className="shrink-0 rounded-full border border-emerald-300/35 bg-emerald-400/12 px-3 py-1 text-[0.72rem] font-black tracking-wide text-emerald-100 shadow-[0_0_18px_-10px_rgba(52,211,153,0.9)]">
                               ✨ Active

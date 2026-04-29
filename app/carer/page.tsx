@@ -946,12 +946,20 @@ export default function CarerPage() {
 
     try {
       const loginToUpdate = editingLogin || existingLoginForSelectedGame;
+      const matchingCoadminGame =
+        gameOptions.find(
+          (game) =>
+            normalizeGameName(game.gameName || '') === normalizeGameName(gameName.trim())
+        ) || null;
+      const resolvedFrontendUrl = String(matchingCoadminGame?.frontendUrl || '').trim();
 
       if (loginToUpdate) {
         await updatePlayerGameLogin(loginToUpdate.id, {
           gameName: gameName.trim(),
           gameUsername: gameUsername.trim(),
           gamePassword,
+          siteUrl: resolvedFrontendUrl,
+          frontendUrl: resolvedFrontendUrl,
         });
         setNoticeMessage('Game username updated successfully.');
       } else {
@@ -961,6 +969,8 @@ export default function CarerPage() {
           gameName: gameName.trim(),
           gameUsername: gameUsername.trim(),
           gamePassword,
+          siteUrl: resolvedFrontendUrl,
+          frontendUrl: resolvedFrontendUrl,
           coadminUid,
         });
         setNoticeMessage('Game username created successfully.');
@@ -2435,14 +2445,14 @@ export default function CarerPage() {
                 </p>
                 <p className="mt-1 text-sm text-neutral-400">
                   Site:{' '}
-                  {game.siteUrl ? (
+                  {game.backendUrl || game.siteUrl ? (
                     <a
-                      href={normalizeSiteUrl(game.siteUrl)}
+                      href={normalizeSiteUrl(game.backendUrl || game.siteUrl)}
                       target="_blank"
                       rel="noreferrer"
                       className="break-all text-cyan-300 underline underline-offset-2 hover:text-cyan-200"
                     >
-                      {game.siteUrl}
+                      {game.backendUrl || game.siteUrl}
                     </a>
                   ) : (
                     <span className="text-white">Not set</span>
@@ -2851,14 +2861,16 @@ export default function CarerPage() {
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
                     <p className="text-xs text-neutral-400">Game Site Link</p>
-                    {relatedCoadminGame?.siteUrl ? (
+                    {relatedCoadminGame?.backendUrl || relatedCoadminGame?.siteUrl ? (
                       <a
-                        href={normalizeSiteUrl(relatedCoadminGame.siteUrl)}
+                        href={normalizeSiteUrl(
+                          relatedCoadminGame.backendUrl || relatedCoadminGame.siteUrl
+                        )}
                         target="_blank"
                         rel="noreferrer"
                         className="mt-1 block break-all text-lg font-semibold text-cyan-300 underline underline-offset-2 hover:text-cyan-200"
                       >
-                        {relatedCoadminGame.siteUrl}
+                        {relatedCoadminGame.backendUrl || relatedCoadminGame.siteUrl}
                       </a>
                     ) : (
                       <p className="mt-1 text-lg font-semibold text-white">Not set</p>
