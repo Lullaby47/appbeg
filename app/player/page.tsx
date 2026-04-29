@@ -465,6 +465,7 @@ export default function PlayerPage() {
   });
   const [bonusCarouselIndex, setBonusCarouselIndex] = useState(0);
   const [bonusStripPaused, setBonusStripPaused] = useState(false);
+  const [showBonusPanelHint, setShowBonusPanelHint] = useState(false);
   const [showLogoutConfirmSplash, setShowLogoutConfirmSplash] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
   const [bonusVanishedToast, setBonusVanishedToast] = useState(false);
@@ -1563,6 +1564,20 @@ export default function PlayerPage() {
     if (activeView !== 'usernames') {
       setCredentialResetModal(null);
     }
+  }, [activeView]);
+
+  useEffect(() => {
+    if (activeView !== 'bonus-events') {
+      setShowBonusPanelHint(false);
+      return;
+    }
+
+    setShowBonusPanelHint(true);
+    const timeoutId = window.setTimeout(() => {
+      setShowBonusPanelHint(false);
+    }, 5000);
+
+    return () => window.clearTimeout(timeoutId);
   }, [activeView]);
 
   async function handleGameRequest(type: 'recharge' | 'redeem') {
@@ -2922,6 +2937,20 @@ export default function PlayerPage() {
 
             {activeView === 'bonus-events' && (
               <div className="-mb-[200px] space-y-5 pb-0 sm:space-y-6">
+                <AnimatePresence>
+                  {showBonusPanelHint ? (
+                    <motion.div
+                      key="bonus-panel-open-hint"
+                      initial={{ opacity: 0, y: -6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: 0.3 }}
+                      className="rounded-2xl border border-violet-400/35 bg-violet-500/15 px-3 py-2 text-xs font-semibold text-violet-100 shadow-lg shadow-violet-900/20"
+                    >
+                      Scroll to learn about bonus events.
+                    </motion.div>
+                  ) : null}
+                </AnimatePresence>
                 <AnimatePresence>
                   {bonusVanishedToast ? (
                     <motion.div
