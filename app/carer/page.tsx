@@ -303,6 +303,8 @@ export default function CarerPage() {
   const [dismissRedeemRequestId, setDismissRedeemRequestId] = useState<
     string | null
   >(null);
+  const [redeemInProgressDismissSplash, setRedeemInProgressDismissSplash] =
+    useState<CarerTask | null>(null);
   const [showRevTotals, setShowRevTotals] = useState(false);
   const [carerRechargeRedeemTotals, setCarerRechargeRedeemTotals] = useState<
     Record<string, CarerRechargeRedeemTotals>
@@ -1071,23 +1073,18 @@ export default function CarerPage() {
     }
   }
 
-  async function handleDismissPendingRedeem(task: CarerTask) {
+  function redeemDismissNeedsInProgressSplash(task: CarerTask) {
+    return (
+      task.type === 'redeem' &&
+      (task.status === 'in_progress' || task.status === 'urgent')
+    );
+  }
+
+  async function performDismissPendingRedeem(task: CarerTask) {
     const requestId = task.requestId?.trim();
 
     if (!requestId) {
       setErrorMessage('This task has no linked request to dismiss.');
-      return;
-    }
-
-    if (task.type !== 'redeem') {
-      return;
-    }
-
-    const ok = window.confirm(
-      'Dismiss this redeem request as fake or mistaken? It will be removed from the queue.'
-    );
-
-    if (!ok) {
       return;
     }
 
@@ -1105,6 +1102,46 @@ export default function CarerPage() {
       );
     } finally {
       setDismissRedeemRequestId(null);
+    }
+  }
+
+  async function handleDismissPendingRedeem(task: CarerTask) {
+    const requestId = task.requestId?.trim();
+
+    if (!requestId) {
+      setErrorMessage('This task has no linked request to dismiss.');
+      return;
+    }
+
+    if (task.type !== 'redeem') {
+      return;
+    }
+
+    if (redeemDismissNeedsInProgressSplash(task)) {
+      setRedeemInProgressDismissSplash(task);
+      return;
+    }
+
+    const ok = window.confirm(
+      'Dismiss this redeem request as fake or mistaken? It will be removed from the queue.'
+    );
+
+    if (!ok) {
+      return;
+    }
+
+    await performDismissPendingRedeem(task);
+  }
+
+  async function confirmRedeemDismissAfterSplash() {
+    const task = redeemInProgressDismissSplash;
+    if (!task) {
+      return;
+    }
+    try {
+      await performDismissPendingRedeem(task);
+    } finally {
+      setRedeemInProgressDismissSplash(null);
     }
   }
 
@@ -2784,6 +2821,75 @@ export default function CarerPage() {
           </div>
         </div>
       )}
+
+      {redeemInProgressDismissSplash ? (
+        <div
+          onClick={() => {
+            const rid = redeemInProgressDismissSplash.requestId?.trim();
+            if (rid && dismissRedeemRequestId === rid) {
+              return;
+            }
+            setRedeemInProgressDismissSplash(null);
+          }}
+          className="fixed inset-0 z-[65] flex items-center justify-center bg-red-800/95 px-4 backdrop-blur-sm"
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            className="w-full max-w-lg rounded-3xl border border-red-300/50 bg-gradient-to-b from-red-950 to-red-900 p-8 shadow-2xl shadow-black/40"
+          >
+            <p className="text-center text-4xl font-black text-red-100">!</p>
+            <h3 className="mt-2 text-center text-2xl font-black text-white">
+              Before you dismiss this redeem
+            </h3>
+            <p className="mt-5 text-center text-base leading-relaxed text-red-50/95">
+              Please give the player the <strong className="text-white">current redeem amount</strong>
+              {typeof redeemInProgressDismissSplash.amount === 'number' ? (
+                <>
+                  :{' '}
+                  <strong className="text-xl text-white tabular-nums">
+                    {redeemInProgressDismissSplash.amount}
+                  </strong>
+                </>
+              ) : null}{' '}
+              . Do not dismiss unless the correct payout has been handled.
+            </p>
+            <p className="mt-5 rounded-xl border border-red-400/40 bg-black/30 p-4 text-sm leading-relaxed text-red-100/95">
+              <span className="font-black text-red-200">Warning: </span>
+              If this is done incorrectly, too much is redeemed, or payment is skipped, your account may
+              be reviewed and <strong className="text-white">could be banned or restricted.</strong>
+            </p>
+            <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:justify-center">
+              <button
+                type="button"
+                disabled={
+                  Boolean(redeemInProgressDismissSplash.requestId) &&
+                  dismissRedeemRequestId === redeemInProgressDismissSplash.requestId
+                }
+                onClick={() => setRedeemInProgressDismissSplash(null)}
+                className="flex-1 rounded-xl border border-white/20 bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Go back
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmRedeemDismissAfterSplash()}
+                disabled={
+                  Boolean(redeemInProgressDismissSplash.requestId) &&
+                  dismissRedeemRequestId === redeemInProgressDismissSplash.requestId
+                }
+                className="flex-1 rounded-xl bg-white px-4 py-3 text-sm font-black uppercase tracking-wide text-red-900 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {Boolean(redeemInProgressDismissSplash.requestId) &&
+                dismissRedeemRequestId === redeemInProgressDismissSplash.requestId ? (
+                  'Dismissing...'
+                ) : (
+                  'I understand — dismiss'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {loginDetailsTask && (
         <div
