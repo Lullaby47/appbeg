@@ -801,12 +801,12 @@
   max-height: none;
   height: auto;
   /* Negative top offset: padding can’t be negative, so we pull the panel up with margin */
-  margin-top: -120px !important;
-  padding: 0 1.25rem 70px !important;
+  margin-top: 0 !important;
+  padding: 1.25rem 1.25rem 70px !important;
 }
 
 /* Small screens: panel height + content vertically centered in the card */
-@media (max-width: 1023px) {
+@media (max-width: 767px) {
   .player-fire-page .player-dashboard-hero {
     display: flex !important;
     flex-direction: column !important;
@@ -899,7 +899,7 @@
   margin-top: 0;
 }
 
-@media (max-width: 1023px) {
+@media (max-width: 767px) {
   .player-fire-page .player-dashboard-hero .player-dashboard-hero__content {
     flex: 0 1 auto !important;
     min-height: 0 !important;

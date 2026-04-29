@@ -2557,11 +2557,19 @@ export default function PlayerPage() {
         <button
           type="button"
           onClick={() => setMusicEnabled((previous) => !previous)}
-          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] right-3 z-40 min-h-[44px] rounded-full border border-amber-400/35 bg-black/70 px-4 py-2 text-sm font-black uppercase tracking-wide text-amber-100 shadow-[0_0_24px_-10px_rgba(234,179,8,0.7)] backdrop-blur-xl transition hover:border-amber-300/60 hover:bg-black/80 md:bottom-4 md:right-4"
+          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] right-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-full border border-amber-400/35 bg-black/70 text-lg text-amber-100 shadow-[0_0_24px_-10px_rgba(234,179,8,0.7)] backdrop-blur-xl transition hover:border-amber-300/60 hover:bg-black/80 md:bottom-4 md:right-4"
           aria-pressed={musicEnabled}
           aria-label={musicEnabled ? 'Turn music off' : 'Turn music on'}
+          title={musicEnabled ? 'Turn music off' : 'Turn music on'}
         >
-          {musicEnabled ? 'Music On' : 'Music Off'}
+          <span className="relative inline-flex h-5 w-5 items-center justify-center" aria-hidden>
+            <span className={musicEnabled ? 'text-amber-100' : 'text-amber-100/80'}>♪</span>
+            {!musicEnabled ? (
+              <span className="pointer-events-none absolute inset-[-8px] flex items-center justify-center">
+                <span className="block h-[3px] w-[150%] rotate-[-42deg] rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.75)]" />
+              </span>
+            ) : null}
+          </span>
         </button>
 
         <AnimatePresence>
@@ -3010,7 +3018,6 @@ export default function PlayerPage() {
                   {[
                     { icon: '🎮', label: 'Games', value: gameLogins.length, tone: 'amber' },
                     { icon: '🎧', label: 'Agents', value: agents.length, tone: 'purple' },
-                    { icon: '📋', label: 'Requests', value: requestHistory.length, tone: 'gold' },
                     {
                       icon: '✉️',
                       label: 'Unread',
@@ -3041,8 +3048,6 @@ export default function PlayerPage() {
                     </motion.div>
                   ))}
                 </div>
-
-                {renderRequestHistory()}
 
                 {false ? (
                 <div
@@ -3504,16 +3509,25 @@ export default function PlayerPage() {
                           gameBackgroundImageByKey[normalizeBackgroundKey(game.gameName)] || '';
 
                         return (
-                          <motion.button
+                          <motion.div
                             key={game.id}
-                            type="button"
                             initial={{ opacity: 0, y: 16 }}
                             animate={{ opacity: 1, y: 0 }}
                             transition={{ delay: index * 0.05 }}
                             onClick={() => {
                               setSelectedGameName(game.gameName);
-                                openActiveTableSplash();
+                              openActiveTableSplash();
                             }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                setSelectedGameName(game.gameName);
+                                openActiveTableSplash();
+                              }
+                            }}
+                            role="button"
+                            tabIndex={0}
+                            aria-pressed={isSelected}
                             className={`fire-panel fire-orange group relative w-full self-start overflow-hidden rounded-2xl border p-2 text-left shadow-xl transition-all active:scale-[0.98] hover:scale-[1.01] hover:shadow-[0_0_26px_-8px_rgba(251,191,36,0.5)] ${
                               isSelected
                                 ? 'border-amber-400/60 bg-gradient-to-br from-amber-500/25 to-purple-900/40 shadow-[0_0_32px_-8px_rgba(234,179,8,0.55)]'
@@ -3622,7 +3636,7 @@ export default function PlayerPage() {
                             >
                               {isSelected ? '🔥 Selected' : 'Tap to open'}
                             </span>
-                          </motion.button>
+                          </motion.div>
                         );
                       })}
                     </div>
@@ -3823,26 +3837,12 @@ export default function PlayerPage() {
                               </p>
                             </div>
 
-                            <div className="grid grid-cols-2 gap-2 border-t border-amber-200/10 pt-1">
-                              <button
-                                type="button"
-                                onClick={() => openCredentialResetModal(login, 'recreate_username')}
-                                disabled={
-                                  credentialTaskLoadingKey === `recreate_username:${login.id}`
-                                }
-                                className="min-h-[44px] rounded-2xl border border-amber-200/20 bg-gradient-to-r from-amber-400 to-orange-400 px-3 py-2 text-sm font-black leading-tight text-black shadow-[0_10px_22px_-14px_rgba(251,191,36,0.95)] transition-all hover:from-amber-300 hover:to-orange-300 disabled:opacity-50"
-                              >
-                                {credentialTaskLoadingKey === `recreate_username:${login.id}` ? (
-                                  <i className="fas fa-spinner fa-spin"></i>
-                                ) : (
-                                  <>Reset username</>
-                                )}
-                              </button>
+                            <div className="border-t border-amber-200/10 pt-1">
                               <button
                                 type="button"
                                 onClick={() => openCredentialResetModal(login, 'reset_password')}
                                 disabled={credentialTaskLoadingKey === `reset_password:${login.id}`}
-                                className="min-h-[44px] rounded-2xl border border-fuchsia-200/15 bg-gradient-to-r from-fuchsia-600 to-violet-600 px-3 py-2 text-sm font-black leading-tight text-white shadow-[0_10px_24px_-16px_rgba(217,70,239,0.95)] transition-all hover:from-fuchsia-500 hover:to-violet-500 disabled:opacity-50"
+                                className="min-h-[44px] w-full rounded-2xl border border-fuchsia-200/15 bg-gradient-to-r from-fuchsia-600 to-violet-600 px-3 py-2 text-sm font-black leading-tight text-white shadow-[0_10px_24px_-16px_rgba(217,70,239,0.95)] transition-all hover:from-fuchsia-500 hover:to-violet-500 disabled:opacity-50"
                               >
                                 {credentialTaskLoadingKey === `reset_password:${login.id}` ? (
                                   <i className="fas fa-spinner fa-spin"></i>
@@ -4035,9 +4035,12 @@ export default function PlayerPage() {
         </nav>
         <Link
           href="/player/chat"
-          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] left-4 z-50 inline-flex h-12 w-12 items-center justify-center rounded-full border border-emerald-300/50 bg-emerald-500/20 text-2xl shadow-lg shadow-emerald-500/30 backdrop-blur-sm transition hover:bg-emerald-500/30 md:bottom-4 md:left-4"
+          className={`fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] left-4 z-[60] h-12 w-12 items-center justify-center rounded-full border border-emerald-300/50 bg-emerald-500/20 text-2xl shadow-lg shadow-emerald-500/30 backdrop-blur-sm transition hover:bg-emerald-500/30 md:bottom-4 md:left-4 md:inline-flex ${
+            mobileMenuOpen ? 'inline-flex' : 'hidden'
+          }`}
           aria-label="Open player chat"
           title="Chat with online players"
+          onClick={() => setMobileMenuOpen(false)}
         >
           💬
         </Link>

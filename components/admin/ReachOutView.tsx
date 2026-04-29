@@ -116,9 +116,9 @@ export default function ReachOutView({
   };
 
   return (
-    <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col gap-4 overflow-hidden lg:grid lg:max-h-full lg:min-h-0 lg:grid-cols-[minmax(0,300px)_1fr] lg:grid-rows-1 lg:gap-6">
-      <div className="order-2 flex min-h-0 max-h-[min(36dvh,320px)] shrink-0 flex-col overflow-hidden rounded-2xl border border-violet-500/25 bg-gradient-to-b from-violet-950/80 to-black/60 p-3 shadow-lg shadow-violet-500/10 backdrop-blur-md sm:max-h-[min(40dvh,360px)] lg:order-1 lg:max-h-full lg:min-h-0 lg:p-4">
-        <div className="mb-3 flex shrink-0 items-center justify-between lg:mb-4">
+    <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col gap-4 overflow-hidden xl:grid xl:max-h-full xl:min-h-0 xl:grid-cols-[minmax(0,300px)_1fr] xl:grid-rows-1 xl:gap-6">
+      <div className="order-2 flex min-h-0 max-h-[min(36dvh,320px)] shrink-0 flex-col overflow-hidden rounded-2xl border border-violet-500/25 bg-gradient-to-b from-violet-950/80 to-black/60 p-3 shadow-lg shadow-violet-500/10 backdrop-blur-md sm:max-h-[min(40dvh,360px)] xl:order-1 xl:max-h-full xl:min-h-0 xl:p-4">
+        <div className="mb-3 flex shrink-0 items-center justify-between xl:mb-4">
           <h2 className="text-lg font-black tracking-tight text-amber-100 lg:text-xl">
             💬 Agents
           </h2>
@@ -134,7 +134,7 @@ export default function ReachOutView({
           <p className="text-sm text-violet-200/60">No agents available.</p>
         ) : (
           <div className="min-h-0 flex-1">
-            <div className="flex min-h-0 gap-2 overflow-x-auto overflow-y-hidden overscroll-contain pb-1 pr-1">
+            <div className="grid min-h-0 grid-cols-1 gap-2 overflow-x-hidden overflow-y-auto overscroll-contain pb-1 pr-1 sm:grid-cols-2 xl:flex xl:overflow-x-auto xl:overflow-y-hidden">
             {chatUsers.map((user) => {
               const unreadCount = unreadCounts[user.uid] || 0;
 
@@ -142,7 +142,7 @@ export default function ReachOutView({
                 <button
                   key={user.id}
                   onClick={() => onSelectUser(user)}
-                  className={`flex min-w-[220px] shrink-0 items-center gap-3 rounded-xl p-3 text-left transition sm:min-w-[240px] ${
+                  className={`flex w-full min-w-0 items-center gap-3 rounded-xl p-3 text-left transition xl:min-w-[220px] xl:shrink-0 2xl:min-w-[240px] ${
                     selectedChatUser?.id === user.id
                       ? 'bg-white text-black'
                       : unreadCount > 0
@@ -210,18 +210,20 @@ export default function ReachOutView({
         )}
       </div>
 
-      <div className="order-1 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-amber-500/20 bg-black/40 shadow-xl shadow-amber-500/5 backdrop-blur-md lg:order-2">
+      <div className="order-1 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-amber-500/20 bg-black/40 shadow-xl shadow-amber-500/5 backdrop-blur-md xl:order-2">
         {!selectedChatUser ? (
-          <div className="flex min-h-0 flex-1 items-center justify-center px-4 text-center text-sm text-amber-100/50">
-            <p>
+          <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden px-4 text-center text-sm text-amber-100/50">
+            <div className="w-full max-w-[16rem] min-w-0">
+              <p className="w-full min-w-0 break-words">
               <span className="text-2xl">✨</span>
               <br />
               Pick an agent to open your VIP messenger
-            </p>
+              </p>
+            </div>
           </div>
         ) : (
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-            <div className="shrink-0 border-b border-white/10 bg-black/30 p-3 lg:p-4">
+            <div className="shrink-0 border-b border-white/10 bg-black/30 p-3 xl:p-4">
               <div className="flex items-center gap-3">
                 <div className="relative">
                   <div className="flex h-10 w-10 items-center justify-center rounded-full bg-neutral-700 font-bold">
@@ -249,7 +251,7 @@ export default function ReachOutView({
 
             <div
               ref={messagesScrollRef}
-              className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain p-3 lg:p-4"
+              className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain p-3 xl:p-4"
             >
               {onLoadOlderMessages && hasMoreOlderMessages ? (
                 <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-center">
@@ -313,7 +315,7 @@ export default function ReachOutView({
 
             <form
               onSubmit={onSendMessage}
-              className="shrink-0 border-t border-white/10 bg-black/40 p-3 lg:p-4"
+              className="shrink-0 border-t border-white/10 bg-black/40 p-3 xl:p-4"
             >
               {imagePreview && (
                 <div className="mb-3 flex items-center gap-2 rounded-lg bg-white/5 p-3">
