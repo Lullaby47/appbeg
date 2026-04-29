@@ -3753,7 +3753,7 @@ export default function PlayerPage() {
                                   href={downloadGameUrl}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="mt-2 inline-flex items-center rounded-xl border border-red-300/40 bg-red-500/20 px-3 py-1.5 text-xs font-black uppercase tracking-[0.12em] text-red-100 shadow-[0_0_18px_-10px_rgba(248,113,113,0.95)] transition hover:bg-red-500/30 hover:text-white"
+                                  className="mt-2 inline-flex items-center rounded-xl border border-red-300/45 bg-red-500/20 px-3 py-1.5 text-xs font-black uppercase tracking-[0.12em] text-red-100 shadow-[0_0_22px_-6px_rgba(248,113,113,0.95),0_0_38px_-14px_rgba(239,68,68,0.95)] transition hover:bg-red-500/35 hover:text-white hover:shadow-[0_0_28px_-4px_rgba(252,165,165,1),0_0_46px_-12px_rgba(239,68,68,1)]"
                                 >
                                   Download Game
                                 </a>
