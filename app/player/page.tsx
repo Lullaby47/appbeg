@@ -2137,8 +2137,6 @@ export default function PlayerPage() {
     return `${m}:${String(s).padStart(2, '0')}`;
   }
 
-  // Kept for possible reuse outside the Play view while the Play panel no longer renders it.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   function renderRequestHistory() {
     return (
       <motion.div
@@ -2828,6 +2826,8 @@ export default function PlayerPage() {
                     </motion.div>
                   ))}
                 </div>
+
+                {renderRequestHistory()}
 
                 {false ? (
                 <div
@@ -4476,7 +4476,7 @@ export default function PlayerPage() {
             }
             setRedeemDismissSplashRequest(null);
           }}
-          className="fixed inset-0 z-[96] flex items-center justify-center bg-red-900/95 px-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[125] flex items-center justify-center bg-red-900/95 px-4 backdrop-blur-sm"
         >
           <div
             onClick={(event) => event.stopPropagation()}
