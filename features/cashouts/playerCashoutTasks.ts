@@ -1,6 +1,5 @@
 import {
   Timestamp,
-  addDoc,
   collection,
   doc,
   getDoc,
@@ -29,6 +28,7 @@ export type PlayerCashoutTask = {
   paymentAppName?: string | null;
   paymentAppCashTag?: string | null;
   paymentAppAccountName?: string | null;
+  cashDeductedOnRequest?: boolean;
   status: PlayerCashoutTaskStatus;
   assignedHandlerUid?: string | null;
   assignedHandlerUsername?: string | null;
@@ -182,8 +182,9 @@ export async function createPlayerCashoutTask(values: {
   }
 
   const playerRef = doc(db, 'users', currentUser.uid);
+  const taskRef = doc(collection(db, 'playerCashoutTasks'));
 
-  const playerProfile = await runTransaction(db, async (transaction) => {
+  await runTransaction(db, async (transaction) => {
     const playerSnap = await transaction.get(playerRef);
 
     if (!playerSnap.exists()) {
@@ -205,31 +206,30 @@ export async function createPlayerCashoutTask(values: {
       throw new Error('No cash available to cash out.');
     }
 
-    return {
+    transaction.update(playerRef, {
+      cash: 0,
+    });
+
+    transaction.set(taskRef, {
+      coadminUid: values.coadminUid,
       playerUid: currentUser.uid,
       playerUsername: playerData.username?.trim() || 'Player',
       amountNpr: availableCash,
-    };
-  });
-
-  await addDoc(collection(db, 'playerCashoutTasks'), {
-    coadminUid: values.coadminUid,
-    playerUid: playerProfile.playerUid,
-    playerUsername: playerProfile.playerUsername,
-    amountNpr: playerProfile.amountNpr,
-    paymentDetails,
-    payoutMethod: values.payoutMethod || null,
-    qrImageUrl: values.qrImageUrl?.trim() || null,
-    paymentAppName: values.paymentAppName?.trim() || null,
-    paymentAppCashTag: values.paymentAppCashTag?.trim() || null,
-    paymentAppAccountName: values.paymentAppAccountName?.trim() || null,
-    status: 'pending',
-    assignedHandlerUid: null,
-    assignedHandlerUsername: null,
-    startedAt: null,
-    expiresAt: null,
-    createdAt: serverTimestamp(),
-    completedAt: null,
+      paymentDetails,
+      payoutMethod: values.payoutMethod || null,
+      qrImageUrl: values.qrImageUrl?.trim() || null,
+      paymentAppName: values.paymentAppName?.trim() || null,
+      paymentAppCashTag: values.paymentAppCashTag?.trim() || null,
+      paymentAppAccountName: values.paymentAppAccountName?.trim() || null,
+      cashDeductedOnRequest: true,
+      status: 'pending',
+      assignedHandlerUid: null,
+      assignedHandlerUsername: null,
+      startedAt: null,
+      expiresAt: null,
+      createdAt: serverTimestamp(),
+      completedAt: null,
+    });
   });
 }
 
@@ -299,23 +299,27 @@ export async function completePlayerCashoutTask(taskId: string) {
       throw new Error('Only assigned handler can complete this task.');
     }
 
-    const playerRef = doc(db, 'users', taskData.playerUid);
-    const playerSnap = await transaction.get(playerRef);
+    const requestedAmount = Number(taskData.amountNpr || 0);
+    const shouldDeductOnComplete = !Boolean(taskData.cashDeductedOnRequest);
+    let playerRef: ReturnType<typeof doc> | null = null;
+    let playerCash = 0;
 
-    if (!playerSnap.exists()) {
-      transaction.delete(taskRef);
-      throw new Error(
-        'Cashout task dismissed: player profile not found or cash balance unavailable.'
-      );
+    if (shouldDeductOnComplete) {
+      playerRef = doc(db, 'users', taskData.playerUid);
+      const playerSnap = await transaction.get(playerRef);
+
+      if (!playerSnap.exists()) {
+        transaction.delete(taskRef);
+        throw new Error(
+          'Cashout task dismissed: player profile not found or cash balance unavailable.'
+        );
+      }
+
+      const playerData = playerSnap.data() as { cash?: number };
+      playerCash = Number(playerData.cash);
     }
 
-    const playerData = playerSnap.data() as { cash?: number };
-    const playerCash = Number(playerData.cash);
-    const requestedAmount = Number(taskData.amountNpr || 0);
-
     if (
-      !Number.isFinite(playerCash) ||
-      playerCash < 0 ||
       !Number.isFinite(requestedAmount) ||
       requestedAmount <= 0
     ) {
@@ -325,7 +329,7 @@ export async function completePlayerCashoutTask(taskId: string) {
       );
     }
 
-    if (playerCash < requestedAmount) {
+    if (shouldDeductOnComplete && (playerCash < 0 || !Number.isFinite(playerCash) || playerCash < requestedAmount)) {
       transaction.delete(taskRef);
       throw new Error(
         'Cashout task dismissed: player cash balance is lower than the requested amount.'
@@ -342,9 +346,11 @@ export async function completePlayerCashoutTask(taskId: string) {
       expiresAt: null,
       completedAt: serverTimestamp(),
     });
-    transaction.update(playerRef, {
-      cash: playerCash - requestedAmount,
-    });
+    if (shouldDeductOnComplete && playerRef) {
+      transaction.update(playerRef, {
+        cash: playerCash - requestedAmount,
+      });
+    }
     transaction.set(
       handlerRef,
       {
