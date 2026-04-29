@@ -3229,9 +3229,7 @@ export default function PlayerPage() {
                     🔐 VIP vault
                   </p>
                   <h2 className="mt-2 text-3xl font-black text-white sm:text-4xl">Credentials</h2>
-                  <p className="mt-2 text-sm text-amber-100/60">
-                    Usernames
-                  </p>
+                  <p className="mt-2 text-sm text-amber-100/60">Your Usernames and Password</p>
                 </div>
 
                 {loadingList ? (
