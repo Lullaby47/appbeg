@@ -1124,6 +1124,7 @@ export default function StaffPage() {
     setClaimPayLoading(true);
     setMessage('');
     try {
+      const requestedAmount = Number(staffCashBoxNpr || 0);
       const coadminUid = await getCurrentUserCoadminUid();
       const userSnap = await getDoc(doc(db, 'users', currentUser.uid));
       const username =
@@ -1135,7 +1136,7 @@ export default function StaffPage() {
         coadminUid,
         carerUid: currentUser.uid,
         carerUsername: username,
-        amountNpr: Number(staffCashBoxNpr || 0),
+        amountNpr: requestedAmount,
         paymentQrUrl: claimPayMethod === 'qr' ? claimPayQrUrl.trim() : '',
         paymentDetails,
       });
@@ -1146,7 +1147,9 @@ export default function StaffPage() {
       setClaimPayAppName('');
       setClaimPayCashTag('');
       setClaimPayAccountName('');
-      setMessage('Claim Pay request sent to your coadmin.');
+      setMessage(
+        `Claim Pay request sent to your coadmin for ${formatAed(requestedAmount)}. Cash box updated.`
+      );
     } catch (error: any) {
       setMessage(error?.message || 'Failed to send Claim Pay request.');
     } finally {

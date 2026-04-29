@@ -10,7 +10,6 @@ import {
   serverTimestamp,
   updateDoc,
   where,
-  addDoc,
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
@@ -25,6 +24,8 @@ export type CarerCashoutRequest = {
   paymentQrPublicId?: string | null;
   paymentDetails?: string | null;
   status: 'pending' | 'completed';
+  completedAmountNpr?: number | null;
+  remainingAmountNpr?: number | null;
   createdAt?: Timestamp | null;
   completedAt?: Timestamp | null;
 };
@@ -73,17 +74,31 @@ export async function createCarerCashoutRequest(values: {
     throw new Error('Only the current carer can create a cashout request.');
   }
 
-  await addDoc(collection(db, 'carerCashouts'), {
-    coadminUid: values.coadminUid,
-    carerUid: values.carerUid,
-    carerUsername: values.carerUsername || 'Carer',
-    amountNpr,
-    paymentQrUrl: values.paymentQrUrl?.trim() || null,
-    paymentQrPublicId: values.paymentQrPublicId?.trim() || null,
-    paymentDetails: values.paymentDetails?.trim() || null,
-    status: 'pending',
-    createdAt: serverTimestamp(),
-    completedAt: null,
+  const cashoutRef = doc(collection(db, 'carerCashouts'));
+  const userRef = doc(db, 'users', values.carerUid);
+
+  await runTransaction(db, async (transaction) => {
+    transaction.set(cashoutRef, {
+      coadminUid: values.coadminUid,
+      carerUid: values.carerUid,
+      carerUsername: values.carerUsername || 'Carer',
+      amountNpr,
+      paymentQrUrl: values.paymentQrUrl?.trim() || null,
+      paymentQrPublicId: values.paymentQrPublicId?.trim() || null,
+      paymentDetails: values.paymentDetails?.trim() || null,
+      status: 'pending',
+      createdAt: serverTimestamp(),
+      completedAt: null,
+    });
+
+    // Claim Pay should immediately clear the sender's cash box.
+    transaction.set(
+      userRef,
+      {
+        cashBoxNpr: 0,
+      },
+      { merge: true }
+    );
   });
 }
 
@@ -117,7 +132,7 @@ export function listenPendingCashoutsByCoadmin(
   );
 }
 
-export async function completeCarerCashoutRequest(cashoutId: string) {
+export async function completeCarerCashoutRequest(cashoutId: string, doneAmountNpr?: number) {
   const cashoutRef = doc(db, 'carerCashouts', cashoutId);
 
   const cashout = await runTransaction(db, async (transaction) => {
@@ -136,6 +151,15 @@ export async function completeCarerCashoutRequest(cashoutId: string) {
     return cashoutData;
   });
 
+  const resolvedDoneAmount = Math.max(0, Math.round(Number(doneAmountNpr ?? cashout.amountNpr || 0)));
+  const requestedAmount = Math.max(0, Math.round(Number(cashout.amountNpr || 0)));
+
+  if (resolvedDoneAmount > requestedAmount) {
+    throw new Error('Done amount cannot be greater than claim amount.');
+  }
+
+  const remainingAmountNpr = Math.max(0, requestedAmount - resolvedDoneAmount);
+
   const pendingForCarerQuery = query(
     collection(db, 'carerCashouts'),
     where('carerUid', '==', cashout.carerUid),
@@ -145,6 +169,16 @@ export async function completeCarerCashoutRequest(cashoutId: string) {
   const batch = writeBatch(db);
 
   pendingSnapshot.docs.forEach((docSnap) => {
+    if (docSnap.id === cashoutId) {
+      batch.update(docSnap.ref, {
+        status: 'completed',
+        completedAt: serverTimestamp(),
+        completedAmountNpr: resolvedDoneAmount,
+        remainingAmountNpr,
+      });
+      return;
+    }
+
     batch.update(docSnap.ref, {
       status: 'completed',
       completedAt: serverTimestamp(),
@@ -154,7 +188,7 @@ export async function completeCarerCashoutRequest(cashoutId: string) {
   batch.set(
     doc(db, 'users', cashout.carerUid),
     {
-      cashBoxNpr: 0,
+      cashBoxNpr: remainingAmountNpr,
     },
     { merge: true }
   );

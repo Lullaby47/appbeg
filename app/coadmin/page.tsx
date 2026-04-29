@@ -293,6 +293,7 @@ export default function CoadminPage() {
     string[]
   >([]);
   const [pendingCashouts, setPendingCashouts] = useState<CarerCashoutRequest[]>([]);
+  const [cashoutDoneAmountById, setCashoutDoneAmountById] = useState<Record<string, string>>({});
   const [carerRechargeRedeemTotals, setCarerRechargeRedeemTotals] = useState<
     Record<string, CarerRechargeRedeemTotals>
   >({});
@@ -1479,6 +1480,20 @@ export default function CoadminPage() {
   async function handleCompleteCashout(request: CarerCashoutRequest) {
     setLoading(true);
     setMessage('');
+    const requestedAmount = Math.max(0, Math.round(Number(request.amountNpr || 0)));
+    const doneAmountRaw = String(cashoutDoneAmountById[request.id] || '').trim();
+    const doneAmount = doneAmountRaw === '' ? requestedAmount : Math.round(Number(doneAmountRaw));
+    if (!Number.isFinite(doneAmount) || doneAmount < 0) {
+      setMessage('Enter a valid done amount.');
+      setLoading(false);
+      return;
+    }
+    if (doneAmount > requestedAmount) {
+      setMessage('Done amount cannot be greater than claim amount.');
+      setLoading(false);
+      return;
+    }
+    const remainingAmount = Math.max(0, requestedAmount - doneAmount);
     const previousPendingCashouts = pendingCashouts;
     const settledIdsForCarer = pendingCashouts
       .filter((item) => item.carerUid === request.carerUid)
@@ -1492,8 +1507,17 @@ export default function CoadminPage() {
     );
 
     try {
-      await completeCarerCashoutRequest(request.id);
-      setMessage(`Cashout settled for ${request.carerUsername}. Cash box reset.`);
+      await completeCarerCashoutRequest(request.id, doneAmount);
+      setCashoutDoneAmountById((current) => {
+        const next = { ...current };
+        delete next[request.id];
+        return next;
+      });
+      setMessage(
+        `Cashout settled for ${request.carerUsername}. Done: ${formatUsdFromNprDisplay(
+          doneAmount
+        )} | Remaining cash box: ${formatUsdFromNprDisplay(remainingAmount)}.`
+      );
     } catch (err: any) {
       settledIdsForCarer.forEach((id) => suppressedCashoutIdsRef.current.delete(id));
       // Restore UI list if request failed.
@@ -2342,14 +2366,32 @@ export default function CoadminPage() {
                             )}
                           </div>
 
-                          <button
-                            type="button"
-                            disabled={loading}
-                            onClick={() => void handleCompleteCashout(request)}
-                            className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-60"
-                          >
-                            Done
-                          </button>
+                          <div className="flex min-w-[220px] flex-col gap-2">
+                            <input
+                              type="number"
+                              min={0}
+                              step={1}
+                              value={cashoutDoneAmountById[request.id] || ''}
+                              onChange={(event) =>
+                                setCashoutDoneAmountById((current) => ({
+                                  ...current,
+                                  [request.id]: event.target.value,
+                                }))
+                              }
+                              placeholder={`Done amount (max ${Math.round(
+                                Number(request.amountNpr || 0)
+                              )})`}
+                              className="rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm text-white"
+                            />
+                            <button
+                              type="button"
+                              disabled={loading}
+                              onClick={() => void handleCompleteCashout(request)}
+                              className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-60"
+                            >
+                              Done
+                            </button>
+                          </div>
                         </div>
                       </div>
                     ))}
