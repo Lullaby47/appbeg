@@ -4,6 +4,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   query,
   runTransaction,
@@ -42,6 +43,49 @@ export type PlayerCashoutTask = {
 };
 
 const TASK_DURATION_MS = 3 * 60 * 1000;
+
+/** Max NPR a player may cash out in a rolling ~24-hour window (sums non-declined task amounts). */
+export const PLAYER_CASHOUT_MAX_NPR_PER_24_H = 1000;
+export const PLAYER_CASHOUT_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** Sum non-declined player cashouts with `createdAt` in [now − 24h, now]. */
+export function rolling24hCashoutUsageNprFromTasks(
+  tasks: PlayerCashoutTask[],
+  nowMs: number = Date.now()
+): number {
+  const since = nowMs - PLAYER_CASHOUT_ROLLING_WINDOW_MS;
+  let total = 0;
+  for (const task of tasks) {
+    const created = getSnapshotMs(task.createdAt);
+    if (!created || created < since) {
+      continue;
+    }
+    if (task.status === 'declined') {
+      continue;
+    }
+    total += Math.max(0, Number(task.amountNpr || 0));
+  }
+  return total;
+}
+
+async function fetchRolling24hCashoutUsageNprForPlayer(playerUid: string): Promise<number> {
+  const sinceMillis = Date.now() - PLAYER_CASHOUT_ROLLING_WINDOW_MS;
+  const q = query(
+    collection(db, 'playerCashoutTasks'),
+    where('playerUid', '==', playerUid),
+    where('createdAt', '>=', Timestamp.fromMillis(sinceMillis))
+  );
+  const snapshot = await getDocs(q);
+  let total = 0;
+  snapshot.forEach((docSnap) => {
+    const data = docSnap.data() as { status?: string; amountNpr?: number };
+    if (String(data.status || '') === 'declined') {
+      return;
+    }
+    total += Math.max(0, Number(data.amountNpr || 0));
+  });
+  return total;
+}
 
 function toTask(docId: string, value: Omit<PlayerCashoutTask, 'id'>): PlayerCashoutTask {
   return { id: docId, ...value };
@@ -202,6 +246,12 @@ export async function createPlayerCashoutTask(values: {
     throw new Error('Please provide clear payment details.');
   }
 
+  const rollingUsed = await fetchRolling24hCashoutUsageNprForPlayer(currentUser.uid);
+  const remainingQuota = Math.max(
+    0,
+    PLAYER_CASHOUT_MAX_NPR_PER_24_H - rollingUsed
+  );
+
   const playerRef = doc(db, 'users', currentUser.uid);
   const taskRef = doc(collection(db, 'playerCashoutTasks'));
 
@@ -227,15 +277,23 @@ export async function createPlayerCashoutTask(values: {
       throw new Error('No cash available to cash out.');
     }
 
+    const amountThisRequest = Math.min(availableCash, remainingQuota);
+
+    if (amountThisRequest <= 0) {
+      throw new Error(
+        `Rolling 24-hour cash out limit (${PLAYER_CASHOUT_MAX_NPR_PER_24_H} NPR) is reached for now. You've already requested ${rollingUsed.toFixed(2)} NPR in the window. Wait until older requests expire from this window before cashing out more.`
+      );
+    }
+
     transaction.update(playerRef, {
-      cash: 0,
+      cash: availableCash - amountThisRequest,
     });
 
     transaction.set(taskRef, {
       coadminUid: values.coadminUid,
       playerUid: currentUser.uid,
       playerUsername: playerData.username?.trim() || 'Player',
-      amountNpr: availableCash,
+      amountNpr: amountThisRequest,
       paymentDetails,
       payoutMethod: values.payoutMethod || null,
       qrImageUrl: values.qrImageUrl?.trim() || null,

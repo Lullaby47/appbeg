@@ -12,7 +12,7 @@ import {
 } from 'firebase/firestore';
 
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
-import { computeRewardCoinsAfterFee, REWARD_TRANSFER_FEE_PERCENT } from '@/lib/rewardCoinTransferFee';
+import { computeRewardCoinsAfterFee } from '@/lib/rewardCoinTransferFee';
 import { auth, db } from '@/lib/firebase/client';
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 import {
@@ -250,11 +250,9 @@ export default function PlayerChatPage() {
       const result = await rewardCoinsToPlayer(selectedPeer.uid, amount);
       await sendDirectTextMessage(
         selectedPeer.uid,
-        `Received ${result.recipientCoins} coin reward (${result.amountCoins} sent, ${result.feeCoins}-coin fee).`
+        `Received ${result.recipientCoins} coin reward.`
       );
-      setRewardNotice(
-        `Reward sent: ${result.amountCoins} deducted, ${result.feeCoins} fee (${REWARD_TRANSFER_FEE_PERCENT}%), friend receives ${result.recipientCoins}.`
-      );
+      setRewardNotice(`Reward sent. Friend receives ${result.recipientCoins} coins.`);
       setShowRewardPanel(false);
     } catch (error) {
       setMessageError(error instanceof Error ? error.message : 'Failed to reward coins.');
@@ -420,16 +418,7 @@ export default function PlayerChatPage() {
                     </button>
                     {rewardFeePreview !== null ? (
                       <span className="text-[11px] text-amber-100/65">
-                        {rewardFeePreview.feeCoins > 0 ? (
-                          <>
-                            {REWARD_TRANSFER_FEE_PERCENT}% fee −{rewardFeePreview.feeCoins} · Friend gets{' '}
-                            {rewardFeePreview.recipientCoins}
-                          </>
-                        ) : (
-                          <>
-                            Friend gets {rewardFeePreview.recipientCoins} (fee waived on tiny amounts)
-                          </>
-                        )}
+                        Friend gets {rewardFeePreview.recipientCoins}
                       </span>
                     ) : null}
                   </div>

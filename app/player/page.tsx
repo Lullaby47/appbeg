@@ -3,6 +3,7 @@
 import '../../styles/player-fire.css';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { MouseEvent } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { AnimatePresence, motion } from 'motion/react';
@@ -46,9 +47,11 @@ import {
   sendCarerCashboxInquiryAlert,
 } from '@/features/games/carerTasks';
 import {
+  PLAYER_CASHOUT_MAX_NPR_PER_24_H,
   createPlayerCashoutTask,
   getPlayerCashoutPaymentDisplay,
   listenPlayerCashoutTasksByPlayer,
+  rolling24hCashoutUsageNprFromTasks,
   type PlayerCashoutTask,
 } from '@/features/cashouts/playerCashoutTasks';
 import {
@@ -239,10 +242,48 @@ type PlayerAlertInfo = {
   raw: string;
 };
 
+type ClipboardToastTone = 'success' | 'warn' | 'error';
+type ClipboardToastState = {
+  text: string;
+  tone: ClipboardToastTone;
+  x: number;
+  y: number;
+  placeBelow: boolean;
+} | null;
+
+function clampClipboardToastX(clientX: number) {
+  if (typeof window === 'undefined') {
+    return clientX;
+  }
+  const half = 88;
+  const pad = 10;
+  return Math.min(Math.max(clientX, pad + half), window.innerWidth - pad - half);
+}
+
+function isClipboardBannerMessage(raw: string) {
+  const t = raw.trim().toLowerCase();
+
+  return (
+    t.endsWith(' copied to clipboard.') ||
+    /^nothing to copy for\b/.test(raw.trim()) ||
+    t.includes('nothing to copy for ') ||
+    t === 'could not copy. select and copy manually.' ||
+    t === 'referral code copied.' ||
+    t === 'referral code is not available yet.' ||
+    t === 'could not copy referral code.' ||
+    t === 'code copied to clipboard.' ||
+    (t.includes('copy failed') && t.includes('code'))
+  );
+}
+
 function getPlayerAlertInfo(raw: string): PlayerAlertInfo | null {
   const text = raw.trim();
 
   if (!text) {
+    return null;
+  }
+
+  if (isClipboardBannerMessage(raw)) {
     return null;
   }
 
@@ -450,6 +491,9 @@ export default function PlayerPage() {
   const transferResponseSeenRef = useRef<Set<string>>(new Set());
   const referralCodeEnsureInFlightRef = useRef(false);
   const lastSyncedRequestTotalsRef = useRef<string | null>(null);
+  const clipboardToastTimerRef = useRef<number | null>(null);
+
+  const [clipboardToast, setClipboardToast] = useState<ClipboardToastState>(null);
 
   const [message, setMessage] = useState('');
   const [loadingList, setLoadingList] = useState(false);
@@ -722,6 +766,18 @@ export default function PlayerPage() {
       );
   }, [playerCashoutTasks]);
 
+  const rollingCashoutUsedNpr = useMemo(
+    () => rolling24hCashoutUsageNprFromTasks(playerCashoutTasks),
+    [playerCashoutTasks]
+  );
+
+  const cashoutRemainingQuotaNpr = Math.max(
+    0,
+    PLAYER_CASHOUT_MAX_NPR_PER_24_H - rollingCashoutUsedNpr
+  );
+
+  const cashoutThisRequestNpr = Math.min(Number(wallet.cash || 0), cashoutRemainingQuotaNpr);
+
   useEffect(() => {
     const len = playerBonusEvents.length;
     if (len <= 1 || bonusStripPaused) {
@@ -927,34 +983,63 @@ export default function PlayerPage() {
     playRandomTrackRef.current = playRandomTrack;
   }, [playRandomTrack]);
 
-  async function copyCredentialValue(value: string, label: string) {
+  useEffect(() => {
+    return () => {
+      if (clipboardToastTimerRef.current !== null) {
+        clearTimeout(clipboardToastTimerRef.current);
+      }
+    };
+  }, []);
+
+  function showClipboardToast(
+    text: string,
+    tone: ClipboardToastTone,
+    event: Pick<MouseEvent, 'clientX' | 'clientY'>
+  ) {
+    if (clipboardToastTimerRef.current !== null) {
+      clearTimeout(clipboardToastTimerRef.current);
+      clipboardToastTimerRef.current = null;
+    }
+
+    const x = clampClipboardToastX(event.clientX);
+    const y = event.clientY;
+    const placeBelow = y < 52;
+
+    setClipboardToast({ text, tone, x, y, placeBelow });
+    clipboardToastTimerRef.current = window.setTimeout(() => {
+      setClipboardToast(null);
+      clipboardToastTimerRef.current = null;
+    }, 2200);
+  }
+
+  async function copyCredentialValue(value: string, label: string, event: MouseEvent) {
     const clean = value.trim();
 
     if (!clean) {
-      setMessage(`Nothing to copy for ${label}.`);
+      showClipboardToast(`Nothing to copy for ${label}.`, 'warn', event);
       return;
     }
 
     try {
       await navigator.clipboard.writeText(clean);
-      setMessage(`${label} copied to clipboard.`);
+      showClipboardToast('Copied.', 'success', event);
     } catch {
-      setMessage('Could not copy. Select and copy manually.');
+      showClipboardToast('Could not copy.', 'error', event);
     }
   }
 
-  async function handleCopyReferralCode() {
+  async function handleCopyReferralCode(event: MouseEvent) {
     const code = referralCode.trim();
     if (!code) {
-      setMessage('Referral code is not available yet.');
+      showClipboardToast('Referral code is not ready yet.', 'warn', event);
       return;
     }
 
     try {
       await navigator.clipboard.writeText(code);
-      setMessage('Referral code copied.');
+      showClipboardToast('Copied.', 'success', event);
     } catch {
-      setMessage('Could not copy referral code.');
+      showClipboardToast('Could not copy.', 'error', event);
     }
   }
 
@@ -2156,7 +2241,7 @@ export default function PlayerPage() {
         key={item.view}
         type="button"
         onClick={onNavigate}
-        className={`group flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left text-[0.98rem] font-bold transition-all duration-200 active:scale-[0.98] lg:text-[1.05rem] ${
+        className={`group flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left text-[0.98rem] font-bold transition-all duration-200 active:scale-[0.98] md:text-[1.05rem] ${
           isActive
             ? 'bg-gradient-to-r from-amber-400 via-yellow-500 to-amber-500 text-black shadow-[0_0_28px_-4px_rgba(234,179,8,0.65)]'
             : 'border border-white/10 bg-white/[0.04] text-amber-100/85 hover:border-amber-400/35 hover:bg-amber-500/10 hover:text-white'
@@ -2189,7 +2274,7 @@ export default function PlayerPage() {
     <ProtectedRoute allowedRoles={['player']}>
       <main
         ref={pageScrollRef}
-        className="player-fire-page relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white lg:flex-row lg:pb-0"
+        className="player-fire-page relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white md:flex-row md:pb-0"
       >
         <div className="ember-overlay" aria-hidden="true" />
         {showPlayerHelpHint && (
@@ -2198,7 +2283,7 @@ export default function PlayerPage() {
           </div>
         )}
 
-        <header className="fire-panel fire-orange sticky top-0 z-30 shrink-0 border-b border-amber-500/20 bg-black/65 px-3 py-2.5 backdrop-blur-2xl lg:hidden">
+        <header className="fire-panel fire-orange sticky top-0 z-30 shrink-0 border-b border-amber-500/20 bg-black/65 px-3 py-2.5 backdrop-blur-2xl md:hidden">
           <div className="flex items-center justify-between gap-2">
           <button
             type="button"
@@ -2259,7 +2344,7 @@ export default function PlayerPage() {
         <button
           type="button"
           onClick={() => setMusicEnabled((previous) => !previous)}
-          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] right-3 z-40 min-h-[44px] rounded-full border border-amber-400/35 bg-black/70 px-4 py-2 text-sm font-black uppercase tracking-wide text-amber-100 shadow-[0_0_24px_-10px_rgba(234,179,8,0.7)] backdrop-blur-xl transition hover:border-amber-300/60 hover:bg-black/80 lg:bottom-4 lg:right-4"
+          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] right-3 z-40 min-h-[44px] rounded-full border border-amber-400/35 bg-black/70 px-4 py-2 text-sm font-black uppercase tracking-wide text-amber-100 shadow-[0_0_24px_-10px_rgba(234,179,8,0.7)] backdrop-blur-xl transition hover:border-amber-300/60 hover:bg-black/80 md:bottom-4 md:right-4"
           aria-pressed={musicEnabled}
           aria-label={musicEnabled ? 'Turn music off' : 'Turn music on'}
         >
@@ -2275,7 +2360,7 @@ export default function PlayerPage() {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 aria-label="Close menu"
-                className="fixed inset-0 z-40 bg-black/75 backdrop-blur-md lg:hidden"
+                className="fixed inset-0 z-40 bg-black/75 backdrop-blur-md md:hidden"
                 onClick={() => setMobileMenuOpen(false)}
               />
               <motion.aside
@@ -2283,7 +2368,7 @@ export default function PlayerPage() {
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: -20, scale: 0.98 }}
                 transition={{ type: 'spring', damping: 24, stiffness: 280 }}
-                className="fixed inset-y-0 left-0 z-50 flex h-screen w-screen max-w-[17.6rem] flex-col overflow-hidden rounded-none rounded-r-3xl border-r border-amber-500/30 bg-[#0a0612]/97 shadow-2xl shadow-purple-900/40 backdrop-blur-2xl lg:hidden"
+                className="fixed inset-y-0 left-0 z-50 flex h-screen w-screen max-w-[17.6rem] flex-col overflow-hidden rounded-none rounded-r-3xl border-r border-amber-500/30 bg-[#0a0612]/97 shadow-2xl shadow-purple-900/40 backdrop-blur-2xl md:hidden"
               >
                 <div className="mb-4 border-b border-amber-500/25 bg-gradient-to-br from-[#3f2517] via-[#2a1839] to-[#120f16] px-4 py-5 text-center shadow-[inset_0_-18px_30px_-20px_rgba(251,146,60,0.7)]">
                   <p className="text-xs font-black uppercase tracking-[0.35em] text-amber-300">
@@ -2326,7 +2411,7 @@ export default function PlayerPage() {
           ) : null}
         </AnimatePresence>
 
-        <aside className="fire-panel fire-orange relative z-20 hidden w-72 shrink-0 overflow-y-auto border-r border-amber-500/25 bg-black/45 p-5 backdrop-blur-2xl xl:w-80 lg:block">
+        <aside className="fire-panel fire-orange relative z-20 hidden w-72 shrink-0 overflow-y-auto border-r border-amber-500/25 bg-black/45 p-5 backdrop-blur-2xl md:block xl:w-80">
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-amber-500/[0.07] via-transparent to-purple-600/10" />
           <div className="pointer-events-none absolute top-0 left-0 h-40 w-full bg-[radial-gradient(ellipse_at_top,rgba(250,204,21,0.18),transparent_70%)]" />
 
@@ -2366,7 +2451,7 @@ export default function PlayerPage() {
           </div>
         </aside>
 
-        <section className="relative z-10 flex min-h-0 flex-1 flex-col lg:min-h-screen">
+        <section className="relative z-10 flex min-h-0 flex-1 flex-col md:min-h-screen">
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_0%,rgba(250,204,21,0.09),transparent_40%),radial-gradient(circle_at_90%_15%,rgba(168,85,247,0.12),transparent_35%),radial-gradient(circle_at_50%_100%,rgba(220,38,38,0.06),transparent_45%)]" />
           <div className="pointer-events-none absolute top-0 right-0 h-72 w-72 rounded-full bg-amber-500/10 blur-3xl" />
 
@@ -2374,7 +2459,7 @@ export default function PlayerPage() {
             <div className="flex min-h-0 flex-1 flex-col overflow-x-hidden px-3 pb-4 pt-4 md:px-7 md:pb-8 md:pt-6">
               {activeView === 'dashboard' ? (
               <>
-              <div className="relative z-20 mb-4 hidden shrink-0 flex-wrap items-stretch justify-end gap-3 lg:flex">
+              <div className="relative z-20 mb-4 hidden shrink-0 flex-wrap items-stretch justify-end gap-3 md:flex">
                 <div className="fire-panel fire-orange rounded-2xl border border-amber-300/60 bg-gradient-to-br from-amber-400/35 to-yellow-500/20 px-5 py-3 text-right shadow-lg shadow-amber-400/25">
                   <div className="flex items-center justify-between gap-3">
                     <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-amber-200/40 bg-amber-200/15 text-2xl shadow-[0_0_18px_rgba(251,191,36,0.35)]">
@@ -2443,7 +2528,7 @@ export default function PlayerPage() {
                 </button>
               </div>
 
-              <div className="relative z-20 mb-4 grid shrink-0 grid-cols-3 gap-2 lg:hidden">
+              <div className="relative z-20 mb-4 grid shrink-0 grid-cols-3 gap-2 md:hidden">
                 <div className="fire-panel fire-orange rounded-2xl border border-amber-300/60 bg-gradient-to-br from-amber-400/35 to-yellow-600/20 p-3 text-center shadow-md shadow-amber-400/20">
                   <span className="mx-auto inline-flex h-9 w-9 items-center justify-center rounded-xl border border-amber-200/40 bg-amber-200/15 text-xl shadow-[0_0_14px_rgba(251,191,36,0.35)]">
                     🪙
@@ -2651,7 +2736,7 @@ export default function PlayerPage() {
                         </p>
                         <button
                           type="button"
-                          onClick={() => void handleCopyReferralCode()}
+                          onClick={(e) => void handleCopyReferralCode(e)}
                           disabled={!referralCode}
                           className="fire-button fire-orange rounded-xl bg-cyan-400 px-3 py-2 text-sm font-black text-black hover:bg-cyan-300 disabled:opacity-50 sm:text-base"
                         >
@@ -2673,7 +2758,7 @@ export default function PlayerPage() {
                       </div>
                     </div>
 
-                    <div className="player-dashboard-hero__cta mx-auto flex w-full min-w-0 min-h-0 max-w-md flex-col items-stretch justify-center gap-3 self-stretch sm:max-w-lg lg:mx-0 lg:min-w-0 lg:max-w-[min(19rem,36vw)]">
+                    <div className="player-dashboard-hero__cta mx-auto flex w-full min-w-0 min-h-0 max-w-md flex-col items-stretch justify-center gap-3 self-stretch sm:max-w-lg md:mx-0 md:min-w-0 md:max-w-[min(19rem,36vw)]">
                       <button
                         type="button"
                         onClick={() => setActiveView('play')}
@@ -3225,28 +3310,72 @@ export default function PlayerPage() {
                             </div>
                             {hasUsername && (
                               <div className="relative mt-1.5 rounded-xl border border-white/10 bg-black/35 px-2 py-1.5">
-                                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-100/55">
-                                  Game username
-                                </p>
-                                <p className="mt-0.5 truncate font-mono text-sm font-bold text-white">
-                                  {resolvedUsername}
-                                </p>
-                                <div className="mt-1.5 flex items-center justify-between gap-1.5">
-                                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-amber-100/55">
-                                    Game password
+                                <div className="flex items-start justify-between gap-1">
+                                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-100/55">
+                                    Game username
                                   </p>
-                                  <span
+                                  <button
+                                    type="button"
                                     onClick={(event) => {
                                       event.preventDefault();
                                       event.stopPropagation();
-                                      togglePassword(game.id);
+                                      void copyCredentialValue(resolvedUsername, 'Username', event);
                                     }}
-                                    className="cursor-pointer rounded-lg border border-amber-400/40 bg-amber-500/20 px-2 py-0.5 text-xs font-black text-amber-100 hover:bg-amber-500/30"
-                                    aria-label={isPasswordVisible ? 'Hide password' : 'Show password'}
-                                    role="button"
+                                    className="shrink-0 rounded-lg border border-amber-300/35 bg-amber-400/10 px-2 py-0.5 text-[10px] font-black text-amber-50 transition hover:bg-amber-400/20"
                                   >
-                                    {isPasswordVisible ? '🙈' : '👁'}
-                                  </span>
+                                    Copy
+                                  </button>
+                                </div>
+                                <p className="mt-0.5 truncate font-mono text-sm font-bold text-white">
+                                  {resolvedUsername}
+                                </p>
+                                <div className="mt-1.5 flex items-start justify-between gap-1">
+                                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-amber-100/55 leading-tight">
+                                    Game password
+                                  </p>
+                                  <div className="flex shrink-0 items-center gap-1">
+                                    <button
+                                      type="button"
+                                      disabled={!isPasswordVisible || !resolvedPassword}
+                                      title={
+                                        isPasswordVisible
+                                          ? 'Copy password'
+                                          : 'Show password to copy'
+                                      }
+                                      onClick={(event) => {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        void copyCredentialValue(
+                                          resolvedPassword,
+                                          'Password',
+                                          event
+                                        );
+                                      }}
+                                      className="rounded-lg border border-violet-300/35 bg-violet-400/10 px-2 py-0.5 text-[10px] font-black text-violet-50 transition hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                      Copy
+                                    </button>
+                                    <span
+                                      onClick={(event) => {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        togglePassword(game.id);
+                                      }}
+                                      className="cursor-pointer rounded-lg border border-amber-400/40 bg-amber-500/20 px-2 py-0.5 text-xs font-black text-amber-100 hover:bg-amber-500/30"
+                                      aria-label={isPasswordVisible ? 'Hide password' : 'Show password'}
+                                      role="button"
+                                      onKeyDown={(event) => {
+                                        if (event.key === 'Enter' || event.key === ' ') {
+                                          event.preventDefault();
+                                          event.stopPropagation();
+                                          togglePassword(game.id);
+                                        }
+                                      }}
+                                      tabIndex={0}
+                                    >
+                                      {isPasswordVisible ? '🙈' : '👁'}
+                                    </span>
+                                  </div>
                                 </div>
                                 <p className="mt-0.5 truncate font-mono text-sm font-bold tracking-wider text-white">
                                   {isPasswordVisible ? resolvedPassword || '—' : '••••••••••'}
@@ -3368,8 +3497,12 @@ export default function PlayerPage() {
                                 </p>
                                 <button
                                   type="button"
-                                  onClick={() =>
-                                    void copyCredentialValue(String(displayUsername || ''), 'Username')
+                                  onClick={(clickEvent) =>
+                                    void copyCredentialValue(
+                                      String(displayUsername || ''),
+                                      'Username',
+                                      clickEvent
+                                    )
                                   }
                                   className="rounded-xl border border-amber-300/35 bg-amber-400/10 px-3 py-1 text-[0.72rem] font-black text-amber-50 transition hover:bg-amber-400/20"
                                 >
@@ -3402,10 +3535,11 @@ export default function PlayerPage() {
                                 <div className="flex gap-2">
                                   <button
                                     type="button"
-                                    onClick={() =>
+                                    onClick={(clickEvent) =>
                                       void copyCredentialValue(
                                         visible ? String(displayPassword || '') : '',
-                                        'Password'
+                                        'Password',
+                                        clickEvent
                                       )
                                     }
                                     disabled={!visible}
@@ -3598,7 +3732,7 @@ export default function PlayerPage() {
         </section>
 
         <nav
-          className="fixed bottom-0 left-0 right-0 z-40 flex items-stretch justify-around border-t border-amber-500/25 bg-[#07030a]/95 px-1 pb-[env(safe-area-inset-bottom)] pt-2 shadow-[0_-8px_32px_rgba(0,0,0,0.55)] backdrop-blur-2xl lg:hidden"
+          className="fixed bottom-0 left-0 right-0 z-40 flex items-stretch justify-around border-t border-amber-500/25 bg-[#07030a]/95 px-1 pb-[env(safe-area-inset-bottom)] pt-2 shadow-[0_-8px_32px_rgba(0,0,0,0.55)] backdrop-blur-2xl md:hidden"
           aria-label="Main navigation"
         >
           {NAV_ITEMS.filter((item) => item.view !== 'play').map((item) => {
@@ -3640,13 +3774,39 @@ export default function PlayerPage() {
         </nav>
         <Link
           href="/player/chat"
-          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] left-4 z-50 inline-flex h-12 w-12 items-center justify-center rounded-full border border-emerald-300/50 bg-emerald-500/20 text-2xl shadow-lg shadow-emerald-500/30 backdrop-blur-sm transition hover:bg-emerald-500/30 lg:bottom-4 lg:left-4"
+          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] left-4 z-50 inline-flex h-12 w-12 items-center justify-center rounded-full border border-emerald-300/50 bg-emerald-500/20 text-2xl shadow-lg shadow-emerald-500/30 backdrop-blur-sm transition hover:bg-emerald-500/30 md:bottom-4 md:left-4"
           aria-label="Open player chat"
           title="Chat with online players"
         >
           💬
         </Link>
       </main>
+
+      {clipboardToast ? (
+        <motion.div
+          initial={{ opacity: 0, scale: 0.94 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.18 }}
+          className={`pointer-events-none fixed z-[200] max-w-[min(220px,calc(100vw-16px))] whitespace-normal rounded-lg border px-3 py-1.5 text-center text-xs font-bold shadow-lg backdrop-blur-md ${
+            clipboardToast.tone === 'success'
+              ? 'border-emerald-400/60 bg-emerald-600/90 text-emerald-50 shadow-emerald-950/40'
+              : clipboardToast.tone === 'warn'
+                ? 'border-amber-400/55 bg-amber-950/92 text-amber-50'
+                : 'border-rose-400/55 bg-rose-950/92 text-rose-50'
+          }`}
+          style={{
+            left: clipboardToast.x,
+            top: clipboardToast.y,
+            transform: clipboardToast.placeBelow
+              ? 'translate(-50%, 14px)'
+              : 'translate(-50%, calc(-100% - 14px))',
+          }}
+          role="status"
+          aria-live="polite"
+        >
+          {clipboardToast.text}
+        </motion.div>
+      ) : null}
 
       {credentialResetModal ? (
         <div
@@ -3911,12 +4071,12 @@ export default function PlayerPage() {
                     </code>
                     <button
                       type="button"
-                      onClick={async () => {
+                      onClick={async (e) => {
                         try {
                           await navigator.clipboard.writeText(activeCoinLoad.hashCode);
-                          setMessage('Code copied to clipboard.');
+                          showClipboardToast('Copied.', 'success', e);
                         } catch {
-                          setMessage('Copy failed. Select the code and copy manually.');
+                          showClipboardToast('Could not copy.', 'error', e);
                         }
                       }}
                       className="shrink-0 rounded-xl border border-violet-400/40 bg-violet-500/20 px-4 py-2 text-sm font-bold text-violet-50 hover:bg-violet-500/30"
@@ -4011,11 +4171,31 @@ export default function PlayerPage() {
           >
             <h3 className="text-2xl font-black">Player Cashout</h3>
             <p className="mt-2 text-sm text-cyan-100/80">
-              Cashout uses your full available cash amount. Add payment details to continue.
+              You can cash out up to {PLAYER_CASHOUT_MAX_NPR_PER_24_H} NPR in a rolling 24-hour window
+              (excluding declined requests). Anything above that stays in your cash balance until the
+              window allows more.
             </p>
             <p className="mt-4 rounded-xl border border-cyan-300/30 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100">
-              Cashing out full amount: ${formatWalletAmount(wallet.cash)}
+              <span className="block">
+                This request amount: ${formatWalletAmount(cashoutThisRequestNpr)}{' '}
+                {Number(wallet.cash || 0) > cashoutThisRequestNpr ? (
+                  <span className="text-cyan-200/85">
+                    (${formatWalletAmount(wallet.cash)} available; rest stays until quota opens)
+                  </span>
+                ) : null}
+              </span>
+              <span className="mt-2 block text-xs text-cyan-200/80">
+                Window used: ${formatWalletAmount(rollingCashoutUsedNpr)} /{' '}
+                {PLAYER_CASHOUT_MAX_NPR_PER_24_H}
+              </span>
             </p>
+
+            {cashoutThisRequestNpr <= 0 && Number(wallet.cash || 0) > 0 ? (
+              <p className="mt-3 rounded-xl border border-amber-400/35 bg-amber-500/15 px-4 py-3 text-sm font-semibold text-amber-100">
+                You already used this 24-hour allowance. More opens as older requests exit the window—no
+                fixed clock. Your cash stays in your wallet until then.
+              </p>
+            ) : null}
 
             <div className="mt-4">
               <p className="text-sm font-semibold text-cyan-100">How should we pay you?</p>
@@ -4138,7 +4318,7 @@ export default function PlayerPage() {
               <button
                 type="button"
                 onClick={() => void handlePlayerCashoutRequest()}
-                disabled={cashoutLoading}
+                disabled={cashoutLoading || cashoutThisRequestNpr <= 0}
                 className="fire-button fire-green flex-1 rounded-xl bg-cyan-400 px-4 py-3 text-sm font-black text-black hover:bg-cyan-300 disabled:opacity-60"
               >
                 {cashoutLoading ? 'Sending...' : 'Send Cashout'}

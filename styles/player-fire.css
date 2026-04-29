@@ -20,7 +20,9 @@
 .player-fire-page {
   position: relative;
   min-height: 100vh;
-  overflow: hidden;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  overflow-y: auto;
   color: var(--player-fire-text);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;

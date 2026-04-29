@@ -122,6 +122,14 @@
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "requestedAt", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "playerCashoutTasks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "playerUid", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

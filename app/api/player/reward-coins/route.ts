@@ -37,13 +37,59 @@ async function verifyPlayerFromAuthHeader(request: Request) {
   return { senderUid };
 }
 
+function httpStatusForRewardCoinsError(error: unknown): number {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'object' &&
+          error !== null &&
+          'message' in error &&
+          typeof (error as { message: unknown }).message === 'string'
+        ? (error as { message: string }).message
+        : '';
+
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code || '')
+      : '';
+
+  if (code.startsWith('auth/') || /id token|authorization|credential|jwt|token/i.test(message)) {
+    return 401;
+  }
+
+  const badRequestMarkers = [
+    'targetUid',
+    'yourself',
+    'at least 1 coin',
+    'Maximum reward',
+    'too low after',
+    'must be a player',
+    'Only players can reward',
+    'Sender profile',
+    'Player profile not found',
+    'Target player not found',
+    'Target user must be a player.',
+    'Not enough coin balance',
+  ];
+
+  if (badRequestMarkers.some((m) => message.includes(m))) {
+    return 400;
+  }
+
+  return 500;
+}
+
 export async function POST(request: Request) {
   try {
     const { senderUid } = await verifyPlayerFromAuthHeader(request);
-    const body = (await request.json()) as {
-      targetUid?: string;
-      amountCoins?: unknown;
-    };
+
+    let body: { targetUid?: string; amountCoins?: unknown };
+    try {
+      body = (await request.json()) as { targetUid?: string; amountCoins?: unknown };
+    } catch {
+      return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
+    }
+
     const targetUid = String(body.targetUid || '').trim();
     const amountCoins = parsePositiveWhole(body.amountCoins);
 
@@ -127,7 +173,20 @@ export async function POST(request: Request) {
       recipientCoins,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to reward coins.';
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error(
+      '[api/player/reward-coins]',
+      error instanceof Error ? error.stack ?? error.message : error
+    );
+
+    const rawMessage =
+      error instanceof Error ? error.message : 'Failed to reward coins.';
+    const status = httpStatusForRewardCoinsError(error);
+
+    const clientMessage =
+      status === 500 && process.env.NODE_ENV === 'production'
+        ? 'Reward could not be completed. Try again or contact support.'
+        : rawMessage;
+
+    return NextResponse.json({ error: clientMessage }, { status });
   }
 }
