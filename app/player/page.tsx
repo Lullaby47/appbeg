@@ -3352,7 +3352,7 @@ export default function PlayerPage() {
           className="fixed bottom-0 left-0 right-0 z-40 flex items-stretch justify-around border-t border-amber-500/25 bg-[#07030a]/95 px-1 pb-[env(safe-area-inset-bottom)] pt-2 shadow-[0_-8px_32px_rgba(0,0,0,0.55)] backdrop-blur-2xl lg:hidden"
           aria-label="Main navigation"
         >
-          {NAV_ITEMS.map((item) => {
+          {NAV_ITEMS.filter((item) => item.view !== 'play').map((item) => {
             const isActive = activeView === item.view;
             const unread = item.view === 'agents' ? totalUnread : 0;
 
