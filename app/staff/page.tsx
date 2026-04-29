@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, doc, getDoc, getDocs, onSnapshot, query, where } from 'firebase/firestore';
+import { onAuthStateChanged, type User } from 'firebase/auth';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
 import LogoutButton from '../../components/auth/LogoutButton';
@@ -32,12 +33,13 @@ import {
 import { usePaginatedChatMessages } from '@/features/messages/usePaginatedChatMessages';
 import {
   CarerEscalationAlert,
-  deleteCarerEscalationAlert,
+  dismissCarerEscalationAlertForCurrentUser,
   listenToCarerEscalationAlerts,
   listenToCarerEscalationAlertsByCoadmin,
 } from '@/features/games/carerTasks';
 import {
   completePlayerCashoutTask,
+  declinePlayerCashoutTaskForCurrentHandler,
   getEffectivePlayerCashoutTaskStatus,
   getPlayerCashoutTaskCountdown,
   getPlayerCashoutPaymentDisplay,
@@ -46,6 +48,7 @@ import {
   PlayerCashoutTask,
   startPlayerCashoutTask,
 } from '@/features/cashouts/playerCashoutTasks';
+import { createCarerCashoutRequest } from '@/features/cashouts/carerCashouts';
 import {
   approveTransferRequest,
   getPlayerRiskSnapshot,
@@ -65,6 +68,7 @@ import {
 } from '@/features/shifts/userShifts';
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 import { OnlineIndicator } from '@/components/presence/OnlineIndicator';
+import ImageUploadField from '@/components/common/ImageUploadField';
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
 
@@ -74,6 +78,7 @@ type StaffView =
   | 'create-player'
   | 'view-players'
   | 'reach-out'
+  | 'claim-pay'
   | 'create-coadmin'
   | 'view-coadmins';
 
@@ -94,7 +99,11 @@ function formatNpr(value: number) {
 }
 
 function formatAed(value: number) {
-  return `AED ${Math.round(value || 0).toLocaleString()}`;
+  return `USD ${Math.round(value || 0).toLocaleString()}`;
+}
+
+function formatUsdFromNpr(value: number) {
+  return formatAed(Number(value || 0));
 }
 
 function getRiskTone(level: string, score: number) {
@@ -164,6 +173,12 @@ export default function StaffPage() {
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
+  const [claimPayMethod, setClaimPayMethod] = useState<'qr' | 'app'>('qr');
+  const [claimPayQrUrl, setClaimPayQrUrl] = useState('');
+  const [claimPayAppName, setClaimPayAppName] = useState('');
+  const [claimPayCashTag, setClaimPayCashTag] = useState('');
+  const [claimPayAccountName, setClaimPayAccountName] = useState('');
+  const [claimPayLoading, setClaimPayLoading] = useState(false);
   const [staffCashBoxNpr, setStaffCashBoxNpr] = useState(0);
   const [latestCarerEscalation, setLatestCarerEscalation] =
     useState<CarerEscalationAlert | null>(null);
@@ -178,6 +193,7 @@ export default function StaffPage() {
   const [playerCashoutTaskLoadingId, setPlayerCashoutTaskLoadingId] = useState<string | null>(
     null
   );
+  const [staffAuthUid, setStaffAuthUid] = useState('');
   const [countdownTick, setCountdownTick] = useState(0);
   const [pendingTransferRequests, setPendingTransferRequests] = useState<TransferRequest[]>([]);
   const [riskSnapshots, setRiskSnapshots] = useState<PlayerRiskSnapshot[]>([]);
@@ -253,20 +269,24 @@ export default function StaffPage() {
   const visibleRecentCarerEscalations = recentCarerEscalations.filter(
     (alert) => !dismissedCarerEscalationIds.includes(alert.id)
   );
+  const currentUserUid = auth.currentUser?.uid || '';
   const visiblePlayerCashoutTasks = playerCashoutTasks
     .map((task) => ({
       ...task,
       status: getEffectivePlayerCashoutTaskStatus(task),
     }))
-    .filter((task) => task.status !== 'completed');
+    .filter(
+      (task) =>
+        task.status !== 'completed' &&
+        !((task.declinedByUids || []).includes(currentUserUid))
+    );
   const completedPlayerCashoutTasks = playerCashoutTasks
     .map((task) => ({
       ...task,
       status: getEffectivePlayerCashoutTaskStatus(task),
     }))
     .filter((task) => task.status === 'completed');
-  const currentUserUid = auth.currentUser?.uid || '';
-  const staffCashBoxAedEstimate = Number(staffCashBoxNpr || 0) * NPR_TO_AED;
+  const staffCashBoxUsdAmount = Number(staffCashBoxNpr || 0);
   const riskyPlayers = useMemo(
     () => riskSnapshots.filter((entry) => entry.riskLevel !== 'low').slice(0, 10),
     [riskSnapshots]
@@ -484,15 +504,13 @@ export default function StaffPage() {
   }, [creatorRole]);
 
   useEffect(() => {
-    const currentUser = auth.currentUser;
-
-    if (!currentUser) {
+    if (!staffAuthUid) {
       setStaffCashBoxNpr(0);
       return;
     }
 
     const unsubscribe = onSnapshot(
-      doc(db, 'users', currentUser.uid),
+      doc(db, 'users', staffAuthUid),
       (userSnap) => {
         if (!userSnap.exists()) {
           setStaffCashBoxNpr(0);
@@ -508,7 +526,7 @@ export default function StaffPage() {
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [staffAuthUid]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -526,11 +544,22 @@ export default function StaffPage() {
   }, [creatorRole]);
 
   useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setStaffAuthUid(user?.uid || '');
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
     let isCancelled = false;
     let unsubscribe: (() => void) | undefined;
 
     async function startPlayerCashoutTaskListener() {
       try {
+        if (!staffAuthUid) {
+          return;
+        }
+
         if (creatorRole === 'admin') {
           unsubscribe = listenAllPlayerCashoutTasks(
             (tasks) => {
@@ -579,7 +608,7 @@ export default function StaffPage() {
       isCancelled = true;
       unsubscribe?.();
     };
-  }, [creatorRole]);
+  }, [creatorRole, staffAuthUid]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -863,7 +892,7 @@ export default function StaffPage() {
 
   async function handleDismissCarerEscalation(alertId: string) {
     try {
-      await deleteCarerEscalationAlert(alertId);
+      await dismissCarerEscalationAlertForCurrentUser(alertId);
       setDismissedCarerEscalationIds((current) =>
         current.includes(alertId) ? current : [...current, alertId]
       );
@@ -901,6 +930,19 @@ export default function StaffPage() {
       setMessage('Player cashout task completed.');
     } catch (error: any) {
       setMessage(error.message || 'Failed to complete player cashout task.');
+    } finally {
+      setPlayerCashoutTaskLoadingId(null);
+    }
+  }
+
+  async function handleDeclinePlayerCashoutTask(taskId: string) {
+    setPlayerCashoutTaskLoadingId(taskId);
+    setMessage('');
+    try {
+      await declinePlayerCashoutTaskForCurrentHandler(taskId);
+      setMessage('Task declined for you.');
+    } catch (error: any) {
+      setMessage(error.message || 'Failed to decline player cashout task.');
     } finally {
       setPlayerCashoutTaskLoadingId(null);
     }
@@ -1023,6 +1065,95 @@ export default function StaffPage() {
     }
   }
 
+  async function handleSendClaimPayRequest() {
+    const currentUser =
+      auth.currentUser ||
+      (await new Promise<User | null>((resolve) => {
+        const timeoutId = window.setTimeout(() => {
+          unsubscribe();
+          resolve(null);
+        }, 1500);
+        const unsubscribe = onAuthStateChanged(auth, (user) => {
+          window.clearTimeout(timeoutId);
+          unsubscribe();
+          resolve(user);
+        });
+      }));
+
+    if (!currentUser) {
+      setMessage('Session is loading. Please try again.');
+      return;
+    }
+
+    if (staffCashBoxNpr <= 0) {
+      setMessage('No claimable amount available right now.');
+      return;
+    }
+
+    const paymentDetails =
+      claimPayMethod === 'qr'
+        ? claimPayQrUrl.trim()
+          ? `Payout method: QR\nQR image: ${claimPayQrUrl.trim()}`
+          : ''
+        : [
+            'Payout method: Payment app',
+            claimPayAppName.trim() ? `App name: ${claimPayAppName.trim()}` : '',
+            claimPayCashTag.trim() ? `Cash tag: ${claimPayCashTag.trim()}` : '',
+            claimPayAccountName.trim() ? `Name on app: ${claimPayAccountName.trim()}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n');
+
+    if (!paymentDetails) {
+      setMessage(
+        claimPayMethod === 'qr'
+          ? 'Upload your payment QR before sending Claim Pay.'
+          : 'Enter your payment app details before sending Claim Pay.'
+      );
+      return;
+    }
+
+    if (
+      claimPayMethod === 'app' &&
+      (!claimPayAppName.trim() || !claimPayCashTag.trim() || !claimPayAccountName.trim())
+    ) {
+      setMessage('Enter app name, cash tag, and account name.');
+      return;
+    }
+
+    setClaimPayLoading(true);
+    setMessage('');
+    try {
+      const coadminUid = await getCurrentUserCoadminUid();
+      const userSnap = await getDoc(doc(db, 'users', currentUser.uid));
+      const username =
+        (userSnap.exists()
+          ? String((userSnap.data() as { username?: string }).username || '').trim()
+          : '') || 'Staff';
+
+      await createCarerCashoutRequest({
+        coadminUid,
+        carerUid: currentUser.uid,
+        carerUsername: username,
+        amountNpr: Number(staffCashBoxNpr || 0),
+        paymentQrUrl: claimPayMethod === 'qr' ? claimPayQrUrl.trim() : '',
+        paymentDetails,
+      });
+
+      setActiveView('reach-out');
+      setClaimPayMethod('qr');
+      setClaimPayQrUrl('');
+      setClaimPayAppName('');
+      setClaimPayCashTag('');
+      setClaimPayAccountName('');
+      setMessage('Claim Pay request sent to your coadmin.');
+    } catch (error: any) {
+      setMessage(error?.message || 'Failed to send Claim Pay request.');
+    } finally {
+      setClaimPayLoading(false);
+    }
+  }
+
   function handleSelectReachOutUser(user: AdminUser) {
     setSelectedChatUser(user);
     setNewMessage('');
@@ -1091,13 +1222,15 @@ export default function StaffPage() {
         { label: 'Create Coadmin', view: 'create-coadmin' },
         { label: 'View Coadmins', view: 'view-coadmins' },
         { label: 'Reach Out', view: 'reach-out', unread: reachOutUnread },
+        { label: 'Claim Pay', view: 'claim-pay' },
       ]
     : [
         { label: 'Dashboard', view: 'dashboard' },
         { label: 'View Tasks', view: 'view-tasks' },
-        { label: 'Create Player', view: 'create-player' },
-        { label: 'View Players', view: 'view-players', unread: playerChatUnreadTotal },
+        { label: 'Create User', view: 'create-player' },
+        { label: 'View Users', view: 'view-players', unread: playerChatUnreadTotal },
         { label: 'Reach Out', view: 'reach-out', unread: reachOutUnread },
+        { label: 'Claim Pay', view: 'claim-pay' },
       ];
   const sidebarItems = menuItems.map((item) => ({
     ...item,
@@ -1158,14 +1291,13 @@ export default function StaffPage() {
       >
           <div className="mb-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-emerald-200/80">
-              Cash Box
+              USD Cash Box
             </p>
             <p className="mt-1 text-2xl font-bold text-emerald-100">
-              {formatAed(staffCashBoxAedEstimate)}
+              {formatAed(staffCashBoxUsdAmount)}
             </p>
             <p className="mt-1 text-xs text-emerald-100/70">
-              Stored base value: {formatNpr(staffCashBoxNpr)} (AED estimate via fixed FX).
-              Cashout handler reward is now 1.5%.
+              Includes 5% reward from each completed player cashout.
             </p>
           </div>
 
@@ -1271,7 +1403,7 @@ export default function StaffPage() {
                                 Player: {task.playerUsername}
                               </p>
                               <p className="text-sm text-cyan-100/85">
-                                Amount: {formatNpr(task.amountNpr || 0)}
+                                Amount: {formatUsdFromNpr(task.amountNpr || 0)}
                               </p>
                               {renderPlayerCashoutPayment(task)}
                             </div>
@@ -1286,6 +1418,14 @@ export default function StaffPage() {
                               className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-60"
                             >
                               {playerCashoutTaskLoadingId === task.id ? 'Saving...' : actionLabel}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeclinePlayerCashoutTask(task.id)}
+                              disabled={playerCashoutTaskLoadingId === task.id}
+                              className="rounded-lg border border-rose-400/35 bg-rose-500/15 px-4 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/25 disabled:opacity-60"
+                            >
+                              Decline
                             </button>
                           </div>
                         </div>
@@ -1313,10 +1453,10 @@ export default function StaffPage() {
                           Player: {request.playerUsername}
                         </p>
                         <p className="mt-1 text-xs text-amber-100/85">
-                          Cash balance: {formatNpr(request.cashBalanceSnapshot || request.amountNpr || 0)}
+                          Cash balance: {formatUsdFromNpr(request.cashBalanceSnapshot || request.amountNpr || 0)}
                         </p>
                         <p className="mt-1 text-xs text-amber-100/70">
-                          Requested transfer: {formatNpr(request.amountNpr || 0)}
+                          Requested transfer: {formatUsdFromNpr(request.amountNpr || 0)}
                         </p>
                         <p className="mt-1 text-xs text-amber-100/70">
                           Requested at: {request.requestedAt?.toDate?.().toLocaleString?.() || 'Now'}
@@ -1406,7 +1546,7 @@ export default function StaffPage() {
                         Player: {task.playerUsername}
                       </p>
                       <p className="text-sm text-cyan-100/85">
-                        Amount: {formatNpr(task.amountNpr || 0)}
+                        Amount: {formatUsdFromNpr(task.amountNpr || 0)}
                       </p>
                       {renderPlayerCashoutPayment(task)}
                       <p className="mt-1 text-xs text-cyan-100/70">
@@ -1424,8 +1564,8 @@ export default function StaffPage() {
 
           {!isAdminCreatedStaff && activeView === 'create-player' && (
             <CreateUserForm
-              title="Create Player"
-              buttonLabel="Create Player"
+              title="Create User"
+              buttonLabel="Create User"
               loadingLabel="Creating..."
               username={playerUsername}
               password={playerPassword}
@@ -1778,6 +1918,96 @@ export default function StaffPage() {
               nameMode="staff"
             />
           )}
+
+          {activeView === 'claim-pay' && (
+            <div className="mx-auto w-full max-w-md rounded-3xl border border-cyan-400/25 bg-neutral-900 p-5 text-white">
+            <h3 className="text-2xl font-black">Claim Pay</h3>
+            <p className="mt-2 text-sm text-cyan-100/75">
+              Submit your payout details. This request will be sent to your coadmin as a task.
+            </p>
+            <p className="mt-3 rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 font-semibold text-cyan-100">
+              Claiming full amount: {formatAed(staffCashBoxUsdAmount)}
+            </p>
+
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setClaimPayMethod('qr')}
+                className={`rounded-xl border px-3 py-2 text-sm font-bold ${
+                  claimPayMethod === 'qr'
+                    ? 'border-cyan-300 bg-cyan-500/20 text-cyan-100'
+                    : 'border-white/15 bg-black/35 text-white/80'
+                }`}
+              >
+                QR
+              </button>
+              <button
+                type="button"
+                onClick={() => setClaimPayMethod('app')}
+                className={`rounded-xl border px-3 py-2 text-sm font-bold ${
+                  claimPayMethod === 'app'
+                    ? 'border-cyan-300 bg-cyan-500/20 text-cyan-100'
+                    : 'border-white/15 bg-black/35 text-white/80'
+                }`}
+              >
+                Payment App
+              </button>
+            </div>
+
+            {claimPayMethod === 'qr' ? (
+              <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-3">
+                <ImageUploadField
+                  label="Upload payment QR"
+                  valueUrl={claimPayQrUrl || undefined}
+                  onUploaded={(uploaded) => {
+                    setClaimPayQrUrl(uploaded.url);
+                    setMessage('Payment QR uploaded.');
+                  }}
+                  onError={(errorMessage) => setMessage(errorMessage)}
+                />
+              </div>
+            ) : (
+              <div className="mt-4 space-y-2">
+                <input
+                  value={claimPayAppName}
+                  onChange={(event) => setClaimPayAppName(event.target.value)}
+                  placeholder="Payment app name"
+                  className="w-full rounded-xl border border-white/15 bg-black/35 px-3 py-2 text-sm text-white"
+                />
+                <input
+                  value={claimPayCashTag}
+                  onChange={(event) => setClaimPayCashTag(event.target.value)}
+                  placeholder="Cash tag / username"
+                  className="w-full rounded-xl border border-white/15 bg-black/35 px-3 py-2 text-sm text-white"
+                />
+                <input
+                  value={claimPayAccountName}
+                  onChange={(event) => setClaimPayAccountName(event.target.value)}
+                  placeholder="Name on app account"
+                  className="w-full rounded-xl border border-white/15 bg-black/35 px-3 py-2 text-sm text-white"
+                />
+              </div>
+            )}
+
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setActiveView('reach-out')}
+                className="flex-1 rounded-xl border border-white/15 bg-white/10 py-2 text-sm font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={claimPayLoading}
+                onClick={() => void handleSendClaimPayRequest()}
+                className="flex-1 rounded-xl bg-cyan-400 py-2 text-sm font-black text-black disabled:opacity-60"
+              >
+                {claimPayLoading ? 'Sending...' : 'Send Claim Pay'}
+              </button>
+            </div>
+            </div>
+          )}
       </RoleSidebarLayout>
 
       {showRiskPanel && selectedRiskSnapshot && (
@@ -1819,16 +2049,16 @@ export default function StaffPage() {
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
                 <p className="text-xs text-neutral-400">Financial Data</p>
                 <p className="mt-2 text-sm text-neutral-200">
-                  Deposits: {formatNpr(selectedRiskSnapshot.totalDeposits || 0)}
+                  Deposits: {formatUsdFromNpr(selectedRiskSnapshot.totalDeposits || 0)}
                 </p>
                 <p className="text-sm text-neutral-200">
-                  Cashouts: {formatNpr(selectedRiskSnapshot.totalCashouts || 0)}
+                  Cashouts: {formatUsdFromNpr(selectedRiskSnapshot.totalCashouts || 0)}
                 </p>
                 <p className="text-sm text-neutral-200">
-                  Transfers: {formatNpr(selectedRiskSnapshot.totalTransfers || 0)}
+                  Transfers: {formatUsdFromNpr(selectedRiskSnapshot.totalTransfers || 0)}
                 </p>
                 <p className="text-sm text-neutral-200">
-                  Bonus claimed: {formatNpr(selectedRiskSnapshot.totalBonusClaimed || 0)}
+                  Bonus claimed: {formatUsdFromNpr(selectedRiskSnapshot.totalBonusClaimed || 0)}
                 </p>
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4">

@@ -399,6 +399,7 @@ export default function PlayerPage() {
   const [showCashoutInquiryPanel, setShowCashoutInquiryPanel] = useState(false);
   const [cashoutInquiryMessage, setCashoutInquiryMessage] = useState('');
   const [sendingCashoutInquiry, setSendingCashoutInquiry] = useState(false);
+  const [showInquirySentToast, setShowInquirySentToast] = useState(false);
   const [activatingBonusEventId, setActivatingBonusEventId] = useState<string | null>(null);
   const [bonusErrorSplashMessage, setBonusErrorSplashMessage] = useState('');
   const [credentialTaskLoadingKey, setCredentialTaskLoadingKey] = useState<string | null>(
@@ -1964,6 +1965,8 @@ export default function PlayerPage() {
         message: cleanMessage,
       });
       setMessage('Inquiry sent to coadmin and staff.');
+      setShowInquirySentToast(true);
+      window.setTimeout(() => setShowInquirySentToast(false), 2500);
       setCashoutInquiryMessage('');
       setShowCashoutInquiryPanel(false);
     } catch (error) {
@@ -4198,6 +4201,20 @@ export default function PlayerPage() {
           </div>
         </div>
       )}
+
+      <AnimatePresence>
+        {showInquirySentToast ? (
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{ duration: 0.25 }}
+            className="fixed left-1/2 top-[calc(4.75rem+env(safe-area-inset-top))] z-[130] w-[min(92vw,460px)] -translate-x-1/2 rounded-2xl border border-emerald-400/45 bg-emerald-500/20 px-4 py-3 text-center text-sm font-bold text-emerald-100 shadow-[0_0_26px_-8px_rgba(52,211,153,0.85)] backdrop-blur-xl"
+          >
+            Inquiry sent successfully. Staff and coadmin have been notified.
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
       {bonusErrorSplashMessage && (
         <div

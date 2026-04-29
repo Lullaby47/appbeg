@@ -1,5 +1,6 @@
 import {
   addDoc,
+  arrayUnion,
   Timestamp,
   collection,
   deleteDoc,
@@ -89,6 +90,7 @@ export type CarerEscalationAlert = {
   message: string;
   createdByCarerUid: string;
   createdByCarerUsername: string;
+  dismissedByUids?: string[];
   createdAt?: Timestamp | null;
 };
 
@@ -1465,12 +1467,19 @@ export function listenToCarerEscalationAlertsByCoadmin(
   return onSnapshot(
     alertsQuery,
     (snapshot) => {
+      const currentUid = auth.currentUser?.uid || '';
       const alerts = snapshot.docs
         .map((docSnap) =>
           mapCarerEscalationAlert(
             docSnap.id,
             docSnap.data() as Omit<CarerEscalationAlert, 'id'>
           )
+        )
+        .filter(
+          (alert) =>
+            !currentUid || !Array.isArray(alert.dismissedByUids)
+              ? true
+              : !alert.dismissedByUids.includes(currentUid)
         )
         .sort((a, b) => {
           const aTime = a.createdAt?.toMillis?.() || 0;
@@ -1495,12 +1504,19 @@ export function listenToCarerEscalationAlerts(
   return onSnapshot(
     alertsQuery,
     (snapshot) => {
+      const currentUid = auth.currentUser?.uid || '';
       const alerts = snapshot.docs
         .map((docSnap) =>
           mapCarerEscalationAlert(
             docSnap.id,
             docSnap.data() as Omit<CarerEscalationAlert, 'id'>
           )
+        )
+        .filter(
+          (alert) =>
+            !currentUid || !Array.isArray(alert.dismissedByUids)
+              ? true
+              : !alert.dismissedByUids.includes(currentUid)
         )
         .sort((a, b) => {
           const aTime = a.createdAt?.toMillis?.() || 0;
@@ -1518,6 +1534,16 @@ export function listenToCarerEscalationAlerts(
 
 export async function deleteCarerEscalationAlert(alertId: string) {
   await deleteDoc(doc(db, 'carerEscalationAlerts', alertId));
+}
+
+export async function dismissCarerEscalationAlertForCurrentUser(alertId: string) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  await updateDoc(doc(db, 'carerEscalationAlerts', alertId), {
+    dismissedByUids: arrayUnion(currentUser.uid),
+  });
 }
 
 export async function completeRechargeRedeemTask(task: CarerTask) {

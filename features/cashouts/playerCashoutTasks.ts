@@ -1,4 +1,5 @@
 import {
+  arrayUnion,
   Timestamp,
   collection,
   doc,
@@ -7,6 +8,7 @@ import {
   query,
   runTransaction,
   serverTimestamp,
+  updateDoc,
   where,
 } from 'firebase/firestore';
 
@@ -29,6 +31,7 @@ export type PlayerCashoutTask = {
   paymentAppCashTag?: string | null;
   paymentAppAccountName?: string | null;
   cashDeductedOnRequest?: boolean;
+  declinedByUids?: string[];
   status: PlayerCashoutTaskStatus;
   assignedHandlerUid?: string | null;
   assignedHandlerUsername?: string | null;
@@ -295,12 +298,12 @@ export async function completePlayerCashoutTask(taskId: string) {
       toTask(taskSnap.id, taskData)
     );
 
-    if (effectiveStatus !== 'in_progress' || taskData.assignedHandlerUid !== identity.uid) {
-      throw new Error('Only assigned handler can complete this task.');
+    if (effectiveStatus !== 'in_progress' && effectiveStatus !== 'pending') {
+      throw new Error('Cashout task is not available to complete.');
     }
 
     const requestedAmount = Number(taskData.amountNpr || 0);
-    const shouldDeductOnComplete = !Boolean(taskData.cashDeductedOnRequest);
+    const shouldDeductOnComplete = taskData.cashDeductedOnRequest === false;
     let playerRef: ReturnType<typeof doc> | null = null;
     let playerCash = 0;
 
@@ -336,13 +339,18 @@ export async function completePlayerCashoutTask(taskId: string) {
       );
     }
 
-    const rewardNpr = Math.max(1, Math.round(Number(taskData.amountNpr || 0) * 0.015));
+    const rewardNpr = Math.max(1, Math.round(Number(taskData.amountNpr || 0) * 0.05));
+    const handlerCreditAmount = requestedAmount + rewardNpr;
     const handlerData = handlerSnap.exists()
       ? (handlerSnap.data() as { cashBoxNpr?: number })
       : { cashBoxNpr: 0 };
 
+    const now = Timestamp.now();
     transaction.update(taskRef, {
       status: 'completed',
+      assignedHandlerUid: identity.uid,
+      assignedHandlerUsername: identity.username,
+      startedAt: taskData.startedAt || now,
       expiresAt: null,
       completedAt: serverTimestamp(),
     });
@@ -354,7 +362,7 @@ export async function completePlayerCashoutTask(taskId: string) {
     transaction.set(
       handlerRef,
       {
-        cashBoxNpr: Number(handlerData.cashBoxNpr || 0) + rewardNpr,
+        cashBoxNpr: Number(handlerData.cashBoxNpr || 0) + handlerCreditAmount,
       },
       { merge: true }
     );
@@ -372,6 +380,14 @@ export async function completePlayerCashoutTask(taskId: string) {
       type: 'cashout',
     });
   }
+}
+
+export async function declinePlayerCashoutTaskForCurrentHandler(taskId: string) {
+  const identity = await getCurrentUserIdentity();
+  const taskRef = doc(db, 'playerCashoutTasks', taskId);
+  await updateDoc(taskRef, {
+    declinedByUids: arrayUnion(identity.uid),
+  });
 }
 
 function sortByNewest(tasks: PlayerCashoutTask[]) {

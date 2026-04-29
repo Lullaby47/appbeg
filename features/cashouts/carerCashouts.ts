@@ -63,8 +63,13 @@ export async function createCarerCashoutRequest(values: {
   }
 
   const currentUser = auth.currentUser;
+  const actorUid = currentUser?.uid || String(values.carerUid || '').trim();
 
-  if (!currentUser || currentUser.uid !== values.carerUid) {
+  if (!actorUid) {
+    throw new Error('Not authenticated.');
+  }
+
+  if (actorUid !== values.carerUid) {
     throw new Error('Only the current carer can create a cashout request.');
   }
 

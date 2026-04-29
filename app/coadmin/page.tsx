@@ -51,7 +51,7 @@ import {
 import {
   CarerEscalationAlert,
   CarerRechargeRedeemTotals,
-  deleteCarerEscalationAlert,
+  dismissCarerEscalationAlertForCurrentUser,
   listenCarerRechargeRedeemTotalsByCoadmin,
   listenToCarerEscalationAlertsByCoadmin,
 } from '@/features/games/carerTasks';
@@ -126,8 +126,20 @@ type CoadminView =
   | 'shifts'
   | 'reach-out';
 
+const AED_TO_USD = 0.2723;
+const NPR_TO_USD = 0.0075;
+const NPR_TO_AED = NPR_TO_USD / AED_TO_USD;
+
 function formatNprDisplay(value: number) {
   return `NPR ${Math.round(value).toLocaleString()}`;
+}
+
+function formatUsdDisplay(value: number) {
+  return `USD ${Math.round(value || 0).toLocaleString()}`;
+}
+
+function formatUsdFromNprDisplay(value: number) {
+  return formatUsdDisplay(Number(value || 0));
 }
 
 function formatDateTime(value?: { toDate?: () => Date } | null) {
@@ -1494,7 +1506,7 @@ export default function CoadminPage() {
 
   async function handleDismissCarerEscalation(alertId: string) {
     try {
-      await deleteCarerEscalationAlert(alertId);
+      await dismissCarerEscalationAlertForCurrentUser(alertId);
       setDismissedCarerEscalationIds((current) =>
         current.includes(alertId) ? current : [...current, alertId]
       );
@@ -2311,7 +2323,7 @@ export default function CoadminPage() {
                               {request.carerUsername}
                             </p>
                             <p className="text-sm text-neutral-300">
-                              Amount: NPR {Math.round(request.amountNpr || 0).toLocaleString()}
+                              Amount: {formatUsdFromNprDisplay(request.amountNpr || 0)}
                             </p>
                             {request.paymentDetails && (
                               <p className="mt-1 text-xs text-neutral-400">
@@ -2403,7 +2415,7 @@ export default function CoadminPage() {
                                 Player: {task.playerUsername}
                               </p>
                               <p className="text-sm text-cyan-100/85">
-                                Amount: NPR {Math.round(task.amountNpr || 0).toLocaleString()}
+                                Amount: {formatUsdFromNprDisplay(task.amountNpr || 0)}
                               </p>
                               {renderPlayerCashoutPayment(task)}
                             </div>
@@ -2446,10 +2458,10 @@ export default function CoadminPage() {
                           Player: {request.playerUsername}
                         </p>
                         <p className="mt-1 text-xs text-amber-100/85">
-                          Cash at request: {formatNprDisplay(request.cashBalanceSnapshot || 0)}
+                          Cash at request: {formatUsdFromNprDisplay(request.cashBalanceSnapshot || 0)}
                         </p>
                         <p className="mt-1 text-xs text-amber-100/70">
-                          Transfer amount: {formatNprDisplay(request.amountNpr || 0)}
+                          Transfer amount: {formatUsdFromNprDisplay(request.amountNpr || 0)}
                         </p>
                         <p className="mt-1 text-xs text-amber-100/70">
                           Requested:{' '}
@@ -2511,7 +2523,7 @@ export default function CoadminPage() {
                         Player: {task.playerUsername}
                       </p>
                       <p className="text-sm text-cyan-100/85">
-                        Amount: NPR {Math.round(task.amountNpr || 0).toLocaleString()}
+                        Amount: {formatUsdFromNprDisplay(task.amountNpr || 0)}
                       </p>
                       {renderPlayerCashoutPayment(task)}
                       <p className="mt-1 text-xs text-cyan-100/70">
@@ -2671,8 +2683,7 @@ export default function CoadminPage() {
                     >
                       <p className="text-base font-semibold text-white">{event.bonusName}</p>
                       <p className="mt-1 text-sm text-violet-100/85">
-                        Game: {event.gameName} | Amount: NPR{' '}
-                        {Math.round(event.amountNpr || 0).toLocaleString()}
+                        Game: {event.gameName} | Amount: {formatUsdFromNprDisplay(event.amountNpr || 0)}
                       </p>
                       <p className="mt-1 text-sm text-violet-100/85">{event.description}</p>
                       <p className="mt-1 text-xs text-violet-100/70">
