@@ -3086,7 +3086,7 @@ export default function PlayerPage() {
                         <p>No credentials match this filter.</p>
                       </div>
                     ) : (
-                  <div className="grid grid-cols-2 gap-3 lg:gap-5">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:gap-5">
                     {usernamesVisibleLogins.map((login) => {
                       const gameCarers =
                         usernameCarersByGame[normalizeGameKey(login.gameName || '')] || [];
@@ -3097,55 +3097,61 @@ export default function PlayerPage() {
                         <motion.div
                           key={login.id}
                           layout
-                          className="fire-panel fire-orange group rounded-2xl border border-amber-400/25 bg-gradient-to-br from-black/60 to-purple-950/30 p-2 shadow-xl backdrop-blur-xl transition-all sm:p-2.5 sm:hover:border-amber-400/45 sm:hover:shadow-[0_0_28px_-8px_rgba(234,179,8,0.35)]"
+                          className="fire-panel fire-orange group rounded-[1.7rem] border border-amber-300/25 bg-gradient-to-br from-[#3a140b]/88 via-[#5d2411]/78 to-[#261018]/92 p-3 shadow-[0_18px_40px_-18px_rgba(56,11,4,0.9)] backdrop-blur-xl transition-all sm:p-3.5 sm:hover:border-amber-300/45 sm:hover:shadow-[0_0_30px_-10px_rgba(251,191,36,0.38)]"
                         >
-                          <div className="mb-1.5 flex items-center justify-between gap-2">
+                          <div className="mb-3 flex items-start justify-between gap-3 border-b border-amber-200/10 pb-2.5">
                             <div className="min-w-0">
-                              <p className="text-xs font-bold uppercase tracking-wider text-amber-100/45">
+                              <p className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-amber-100/50">
                                 🎮 Game
                               </p>
-                              <h3 className="truncate bg-gradient-to-r from-amber-100 via-yellow-200 to-orange-300 bg-clip-text text-[1.05rem] font-black text-transparent">
+                              <h3 className="mt-1 break-words bg-gradient-to-r from-amber-50 via-yellow-100 to-orange-200 bg-clip-text text-[1.25rem] font-black leading-tight text-transparent">
                                 {login.gameName}
                               </h3>
                             </div>
-                            <span className="shrink-0 rounded-full border border-emerald-400/35 bg-emerald-500/15 px-2.5 py-0.5 text-xs font-black text-emerald-200">
+                            <span className="shrink-0 rounded-full border border-emerald-300/35 bg-emerald-400/12 px-3 py-1 text-[0.72rem] font-black tracking-wide text-emerald-100 shadow-[0_0_18px_-10px_rgba(52,211,153,0.9)]">
                               ✨ Active
                             </span>
                           </div>
 
-                          <div className="space-y-1.5">
-                            <div className="rounded-xl border border-white/10 bg-white/[0.06] p-2">
+                          <div className="space-y-2.5">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
                               <div className="flex items-center justify-between gap-2">
-                                <p className="text-xs font-bold text-amber-100/55">👤 Username</p>
+                                <p className="text-[0.72rem] font-black uppercase tracking-[0.18em] text-amber-100/58">
+                                  Username
+                                </p>
                                 <button
                                   type="button"
                                   onClick={() =>
                                     void copyCredentialValue(String(displayUsername || ''), 'Username')
                                   }
-                                  className="rounded-lg border border-amber-400/40 bg-amber-500/15 px-2 py-0.5 text-xs font-black text-amber-100 hover:bg-amber-500/25"
+                                  className="rounded-xl border border-amber-300/35 bg-amber-400/10 px-3 py-1 text-[0.72rem] font-black text-amber-50 transition hover:bg-amber-400/20"
                                 >
-                                  📋 Copy
+                                  Copy
                                 </button>
                               </div>
-                              <p className="mt-1 break-words rounded-lg border border-white/10 bg-black/35 px-2 py-1 font-mono text-sm font-bold tracking-wide text-white">
+                              <p className="mt-2 break-words rounded-xl border border-black/10 bg-black/30 px-3 py-2 font-mono text-[1.02rem] font-bold tracking-[0.08em] text-white shadow-inner">
                                 {displayUsername || '—'}
                               </p>
                             </div>
 
-                            <div className="rounded-xl border border-cyan-400/25 bg-cyan-950/25 p-2">
-                              <p className="text-xs font-bold text-cyan-200/90">🧑‍⚕️ Carer who created this</p>
+                            <div className="rounded-2xl border border-cyan-300/18 bg-cyan-950/18 p-3">
+                              <p className="text-[0.72rem] font-black uppercase tracking-[0.16em] text-cyan-100/82">
+                                Carer who created this
+                              </p>
                               {gameCarers.length === 0 ? (
-                                <p className="mt-1 text-sm text-cyan-100/65">No carer info yet.</p>
+                                <p className="mt-2 text-sm text-cyan-100/65">No carer info yet.</p>
                               ) : (
-                                <p className="mt-1 text-sm font-semibold text-white">
+                                <p className="mt-2 text-[1rem] font-semibold leading-snug text-white">
                                   {gameCarers.join(', ')}
                                 </p>
                               )}
                             </div>
 
-                            <div className="rounded-xl border border-white/10 bg-white/[0.06] p-2">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
                               <div className="flex items-center justify-between gap-2">
-                                <p className="text-xs font-bold text-amber-100/55">🔒 Password</p>
+                                <p className="text-[0.72rem] font-black uppercase tracking-[0.18em] text-amber-100/58">
+                                  Password
+                                </p>
                                 <div className="flex gap-2">
                                   <button
                                     type="button"
@@ -3156,54 +3162,50 @@ export default function PlayerPage() {
                                       )
                                     }
                                     disabled={!visible}
-                                    className="rounded-lg border border-violet-400/40 bg-violet-500/15 px-2 py-0.5 text-xs font-black text-violet-100 hover:bg-violet-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+                                    className="rounded-xl border border-violet-300/35 bg-violet-400/10 px-3 py-1 text-[0.72rem] font-black text-violet-50 transition hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-40"
                                   >
-                                    📋 Copy
+                                    Copy
                                   </button>
                                   <button
                                     type="button"
                                     onClick={() => togglePassword(login.id)}
-                                    className="rounded-lg bg-amber-500 px-2 py-0.5 text-sm font-black text-black hover:bg-amber-400"
+                                    className="rounded-xl border border-amber-200/30 bg-amber-400 px-3 py-1 text-sm font-black text-black transition hover:bg-amber-300"
                                     aria-label={visible ? 'Hide password' : 'Show password'}
                                   >
                                     {visible ? '🙈' : '👁️'}
                                   </button>
                                 </div>
                               </div>
-                              <p className="mt-1 break-all rounded-lg border border-white/10 bg-black/35 px-2 py-1 font-mono text-sm font-bold tracking-wider text-white">
+                              <p className="mt-2 break-all rounded-xl border border-black/10 bg-black/30 px-3 py-2 font-mono text-[1.02rem] font-bold tracking-[0.18em] text-white shadow-inner">
                                 {visible ? displayPassword : '••••••••••••••••'}
                               </p>
                             </div>
 
-                            <div className="grid grid-cols-2 gap-1.5 pt-0.5">
+                            <div className="grid grid-cols-2 gap-2 border-t border-amber-200/10 pt-1">
                               <button
                                 type="button"
                                 onClick={() => openCredentialResetModal(login, 'recreate_username')}
                                 disabled={
                                   credentialTaskLoadingKey === `recreate_username:${login.id}`
                                 }
-                                className="min-h-[38px] rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 px-2 py-1.5 text-sm font-black text-black transition-all hover:from-amber-400 hover:to-amber-500 disabled:opacity-50"
+                                className="min-h-[44px] rounded-2xl border border-amber-200/20 bg-gradient-to-r from-amber-400 to-orange-400 px-3 py-2 text-sm font-black leading-tight text-black shadow-[0_10px_22px_-14px_rgba(251,191,36,0.95)] transition-all hover:from-amber-300 hover:to-orange-300 disabled:opacity-50"
                               >
                                 {credentialTaskLoadingKey === `recreate_username:${login.id}` ? (
                                   <i className="fas fa-spinner fa-spin"></i>
                                 ) : (
-                                  <>
-                                    Reset username
-                                  </>
+                                  <>Reset username</>
                                 )}
                               </button>
                               <button
                                 type="button"
                                 onClick={() => openCredentialResetModal(login, 'reset_password')}
                                 disabled={credentialTaskLoadingKey === `reset_password:${login.id}`}
-                                className="min-h-[38px] rounded-xl bg-gradient-to-r from-fuchsia-600 to-purple-600 px-2 py-1.5 text-sm font-black text-white transition-all hover:from-fuchsia-500 hover:to-purple-500 disabled:opacity-50"
+                                className="min-h-[44px] rounded-2xl border border-fuchsia-200/15 bg-gradient-to-r from-fuchsia-600 to-violet-600 px-3 py-2 text-sm font-black leading-tight text-white shadow-[0_10px_24px_-16px_rgba(217,70,239,0.95)] transition-all hover:from-fuchsia-500 hover:to-violet-500 disabled:opacity-50"
                               >
                                 {credentialTaskLoadingKey === `reset_password:${login.id}` ? (
                                   <i className="fas fa-spinner fa-spin"></i>
                                 ) : (
-                                  <>
-                                    Reset password
-                                  </>
+                                  <>Reset password</>
                                 )}
                               </button>
                             </div>
@@ -3236,7 +3238,7 @@ export default function PlayerPage() {
                     📈 Earn percentage-based income every time your referred players recharge and play
                     <br />
                     <br />
-                    All earnings are added to your "Earn" section in real-time.
+                    All earnings are added to your Earn section in real-time.
                     <br />
                     <br />
                     Bonus terms apply
