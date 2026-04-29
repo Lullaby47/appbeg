@@ -3475,7 +3475,7 @@ export default function PlayerPage() {
                               gameCardBackgroundImage
                                 ? {
                                     backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.2) 0%, rgba(0, 0, 0, 0.42) 100%), url("${gameCardBackgroundImage}")`,
-                                    backgroundSize: 'cover',
+                                    backgroundSize: '100% 100%',
                                     backgroundPosition: 'center',
                                     backgroundRepeat: 'no-repeat',
                                     filter: 'brightness(1.12) saturate(1.08)',
@@ -3492,7 +3492,7 @@ export default function PlayerPage() {
                               </div>
                             </div>
                             {hasUsername && (
-                              <div className="relative mt-1.5 rounded-xl border border-white/10 bg-black/35 px-2 py-1.5">
+                              <div className="relative mt-1.5 rounded-xl border border-white/10 bg-black/35 px-2 py-1">
                                 <div className="flex items-start justify-between gap-1">
                                   <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-100/55">
                                     Game username
@@ -3509,7 +3509,7 @@ export default function PlayerPage() {
                                     Copy
                                   </button>
                                 </div>
-                                <p className="mt-0.5 truncate font-mono text-sm font-bold text-white">
+                                <p className="mt-0.5 truncate font-mono text-xs font-bold text-white">
                                   {resolvedUsername}
                                 </p>
                                 <div className="mt-1.5 flex items-start justify-between gap-1">
@@ -3560,7 +3560,7 @@ export default function PlayerPage() {
                                     </span>
                                   </div>
                                 </div>
-                                <p className="mt-0.5 truncate font-mono text-sm font-bold tracking-wider text-white">
+                                <p className="mt-0.5 truncate font-mono text-xs font-bold tracking-wider text-white">
                                   {isPasswordVisible ? resolvedPassword || '—' : '••••••••••'}
                                 </p>
                               </div>
@@ -3663,7 +3663,7 @@ export default function PlayerPage() {
                             gameCardBackgroundImage
                               ? {
                                   backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.24) 0%, rgba(0, 0, 0, 0.54) 100%), url("${gameCardBackgroundImage}")`,
-                                  backgroundSize: 'cover',
+                                  backgroundSize: '100% 100%',
                                   backgroundPosition: 'center',
                                   backgroundRepeat: 'no-repeat',
                                   filter: 'brightness(1.14) saturate(1.1)',
@@ -3686,7 +3686,7 @@ export default function PlayerPage() {
                           </div>
 
                           <div className="space-y-2.5">
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
                               <div className="flex items-center justify-between gap-2">
                                 <p className="text-[0.72rem] font-black uppercase tracking-[0.18em] text-amber-100/58">
                                   Username
@@ -3705,7 +3705,7 @@ export default function PlayerPage() {
                                   Copy
                                 </button>
                               </div>
-                              <p className="mt-2 break-words rounded-xl border border-black/10 bg-black/30 px-3 py-2 font-mono text-[1.02rem] font-bold tracking-[0.08em] text-white shadow-inner">
+                              <p className="mt-1.5 break-words rounded-xl border border-black/10 bg-black/30 px-3 py-1 font-mono text-[0.95rem] font-bold tracking-[0.08em] text-white shadow-inner">
                                 {displayUsername || '—'}
                               </p>
                             </div>
@@ -3723,7 +3723,7 @@ export default function PlayerPage() {
                               )}
                             </div>
 
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
                               <div className="flex items-center justify-between gap-2">
                                 <p className="text-[0.72rem] font-black uppercase tracking-[0.18em] text-amber-100/58">
                                   Password
@@ -3753,7 +3753,7 @@ export default function PlayerPage() {
                                   </button>
                                 </div>
                               </div>
-                              <p className="mt-2 break-all rounded-xl border border-black/10 bg-black/30 px-3 py-2 font-mono text-[1.02rem] font-bold tracking-[0.18em] text-white shadow-inner">
+                              <p className="mt-1.5 break-all rounded-xl border border-black/10 bg-black/30 px-3 py-1 font-mono text-[0.95rem] font-bold tracking-[0.18em] text-white shadow-inner">
                                 {visible ? displayPassword : '••••••••••••••••'}
                               </p>
                             </div>
@@ -4081,7 +4081,7 @@ export default function PlayerPage() {
               ...(selectedGameBackgroundImage
                 ? {
                     backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.22) 0%, rgba(0, 0, 0, 0.5) 100%), url("${selectedGameBackgroundImage}")`,
-                    backgroundSize: 'cover',
+                    backgroundSize: '100% 100%',
                     backgroundPosition: 'center',
                     backgroundRepeat: 'no-repeat',
                     filter: 'brightness(1.15) saturate(1.1)',
