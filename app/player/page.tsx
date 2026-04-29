@@ -12,6 +12,7 @@ import imageCompression from 'browser-image-compression';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
 import ReachOutView from '../../components/admin/ReachOutView';
+import ImageUploadField from '@/components/common/ImageUploadField';
 
 import { auth, db } from '@/lib/firebase/client';
 import { belongsToCoadmin, resolveCoadminUid } from '@/lib/coadmin/scope';
@@ -46,7 +47,9 @@ import {
 } from '@/features/games/carerTasks';
 import {
   createPlayerCashoutTask,
+  getPlayerCashoutPaymentDisplay,
   listenPlayerCashoutTasksByPlayer,
+  type PlayerCashoutTask,
 } from '@/features/cashouts/playerCashoutTasks';
 import {
   BonusEvent,
@@ -194,7 +197,7 @@ const PLAYER_SPLASH_CARD =
 const PLAYER_SPLASH_CARD_WIDE =
   'w-full max-w-lg rounded-3xl border border-amber-400/25 bg-gradient-to-b from-[#121018] via-zinc-950/98 to-black p-6 shadow-2xl shadow-amber-500/10 sm:max-w-2xl sm:p-7';
 const BONUS_ROTATE_MS = 7500;
-const CASINO_BACKGROUND_TRACKS = ['/theme1.mp3', '/theme2.mp3', '/theme3.mp3'] as const;
+const CASINO_BACKGROUND_TRACKS = ['/theme3.mp3'] as const;
 const PLAYER_MUSIC_STORAGE_KEY = 'playerBackgroundMusicEnabled';
 const DEFAULT_PLAYER_MUSIC_VOLUME = 0.3;
 const ACTIVE_TABLE_SPLASH_HISTORY_KEY = '__playerActiveTableSplash';
@@ -333,7 +336,7 @@ const NAV_ITEMS: {
 }[] = [
   { label: 'Lobby', view: 'dashboard', icon: 'tachometer-alt', emoji: '🏠' },
   { label: 'Play', view: 'play', icon: 'dice-d6', emoji: '🎰' },
-  { label: 'Bonus Events', view: 'bonus-events', icon: 'gift', emoji: '🎁' },
+  { label: 'Bonus', view: 'bonus-events', icon: 'gift', emoji: '🎁' },
   { label: 'Earn Coins', view: 'earn-coins', icon: 'coins', emoji: '🪙' },
   { label: 'Agents', view: 'agents', icon: 'headset', emoji: '💬' },
   { label: 'Vault', view: 'usernames', icon: 'user-secret', emoji: '🔐' },
@@ -383,7 +386,12 @@ export default function PlayerPage() {
   const [activeCoinLoad, setActiveCoinLoad] = useState<CoinLoadSession | null>(null);
   const [loadCoinTimeLeftSec, setLoadCoinTimeLeftSec] = useState(0);
   const [coinLoadBusy, setCoinLoadBusy] = useState(false);
-  const [cashoutPaymentDetails, setCashoutPaymentDetails] = useState('');
+  const [cashoutPayoutMethod, setCashoutPayoutMethod] = useState<'qr' | 'app'>('qr');
+  const [cashoutQrUrl, setCashoutQrUrl] = useState('');
+  const [cashoutAppName, setCashoutAppName] = useState('');
+  const [cashoutCashTag, setCashoutCashTag] = useState('');
+  const [cashoutAccountName, setCashoutAccountName] = useState('');
+  const [playerCashoutTasks, setPlayerCashoutTasks] = useState<PlayerCashoutTask[]>([]);
   const [cashoutLoading, setCashoutLoading] = useState(false);
   const [showCashoutSuccessSplash, setShowCashoutSuccessSplash] = useState(false);
   const [showCashoutInquiryPanel, setShowCashoutInquiryPanel] = useState(false);
@@ -620,6 +628,24 @@ export default function PlayerPage() {
 
     return Math.min(bonusCarouselIndex, Math.max(0, playerBonusEvents.length - 1));
   }, [bonusCarouselIndex, playerBonusEvents.length]);
+
+  const lastUsedQrCashout = useMemo(() => {
+    return playerCashoutTasks
+      .map((task) => ({ task, payment: getPlayerCashoutPaymentDisplay(task) }))
+      .find(({ payment }) => payment.method === 'qr' && payment.qrImageUrl);
+  }, [playerCashoutTasks]);
+
+  const lastUsedAppCashout = useMemo(() => {
+    return playerCashoutTasks
+      .map((task) => ({ task, payment: getPlayerCashoutPaymentDisplay(task) }))
+      .find(
+        ({ payment }) =>
+          payment.method === 'app' &&
+          payment.paymentAppName &&
+          payment.paymentAppCashTag &&
+          payment.paymentAppAccountName
+      );
+  }, [playerCashoutTasks]);
 
   useEffect(() => {
     const len = playerBonusEvents.length;
@@ -1144,6 +1170,7 @@ export default function PlayerPage() {
     const unsubscribe = listenPlayerCashoutTasksByPlayer(
       playerUid,
       (tasks) => {
+        setPlayerCashoutTasks(tasks);
         const completedTasks = tasks.filter((task) => task.status === 'completed');
         const recentCompletionCutoffMs = Date.now() - 5 * 60 * 1000;
 
@@ -1376,9 +1403,7 @@ export default function PlayerPage() {
 
         transferResponseSeenRef.current.add(latestProcessed.id);
         if (latestProcessed.status === 'approved') {
-          setMessage(
-            'Most profit comes from cashouts. Repeated cash-to-coin transfers may reduce long-term gains. Use this mainly for gameplay retention.'
-          );
+          setMessage('Transfer approved and converted to coin.');
           return;
         }
         setMessage(latestProcessed.rejectionReason || 'Transfer denied due to suspected misuse.');
@@ -1718,18 +1743,59 @@ export default function PlayerPage() {
       return;
     }
 
+    const composedPaymentDetails =
+      cashoutPayoutMethod === 'qr'
+        ? cashoutQrUrl.trim()
+          ? `Payout method: QR\nQR image: ${cashoutQrUrl.trim()}`
+          : ''
+        : [
+            'Payout method: Payment app',
+            cashoutAppName.trim() ? `App name: ${cashoutAppName.trim()}` : '',
+            cashoutCashTag.trim() ? `Cash tag: ${cashoutCashTag.trim()}` : '',
+            cashoutAccountName.trim() ? `Name on app: ${cashoutAccountName.trim()}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n');
+
+    if (!composedPaymentDetails) {
+      setMessage(
+        cashoutPayoutMethod === 'qr'
+          ? 'Upload your QR before sending cashout.'
+          : 'Enter your payment app name, cash tag, and name on the app.'
+      );
+      return;
+    }
+
+    if (
+      cashoutPayoutMethod === 'app' &&
+      (!cashoutAppName.trim() || !cashoutCashTag.trim() || !cashoutAccountName.trim())
+    ) {
+      setMessage('Enter your payment app name, cash tag, and name on the app.');
+      return;
+    }
+
     setCashoutLoading(true);
     setMessage('');
 
     try {
       await createPlayerCashoutTask({
         coadminUid: playerCoadminUid,
-        paymentDetails: cashoutPaymentDetails,
+        paymentDetails: composedPaymentDetails,
+        payoutMethod: cashoutPayoutMethod,
+        qrImageUrl: cashoutPayoutMethod === 'qr' ? cashoutQrUrl.trim() : '',
+        paymentAppName: cashoutPayoutMethod === 'app' ? cashoutAppName.trim() : '',
+        paymentAppCashTag: cashoutPayoutMethod === 'app' ? cashoutCashTag.trim() : '',
+        paymentAppAccountName:
+          cashoutPayoutMethod === 'app' ? cashoutAccountName.trim() : '',
       });
 
       setMessage('Cashout request sent. Waiting for confirmation.');
       setShowCashoutModal(false);
-      setCashoutPaymentDetails('');
+      setCashoutPayoutMethod('qr');
+      setCashoutQrUrl('');
+      setCashoutAppName('');
+      setCashoutCashTag('');
+      setCashoutAccountName('');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Failed to create cashout request.');
     } finally {
@@ -1987,7 +2053,7 @@ export default function PlayerPage() {
         key={item.view}
         type="button"
         onClick={onNavigate}
-        className={`group flex w-full items-center justify-between rounded-2xl px-4 py-3.5 text-left text-base font-bold transition-all duration-200 active:scale-[0.98] lg:text-[1.05rem] ${
+        className={`group flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left text-[0.98rem] font-bold transition-all duration-200 active:scale-[0.98] lg:text-[1.05rem] ${
           isActive
             ? 'bg-gradient-to-r from-amber-400 via-yellow-500 to-amber-500 text-black shadow-[0_0_28px_-4px_rgba(234,179,8,0.65)]'
             : 'border border-white/10 bg-white/[0.04] text-amber-100/85 hover:border-amber-400/35 hover:bg-amber-500/10 hover:text-white'
@@ -2105,13 +2171,13 @@ export default function PlayerPage() {
                 onClick={() => setMobileMenuOpen(false)}
               />
               <motion.aside
-                initial={{ x: '-105%' }}
-                animate={{ x: 0 }}
-                exit={{ x: '-105%' }}
-                transition={{ type: 'spring', damping: 26, stiffness: 280 }}
-                className="fire-panel fire-orange fixed bottom-0 left-0 top-0 z-50 flex w-[min(22rem,88vw)] flex-col overflow-y-auto border-r border-amber-500/30 bg-[#0a0612]/97 p-4 shadow-2xl shadow-purple-900/40 backdrop-blur-2xl lg:hidden"
+                initial={{ opacity: 0, y: -20, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -20, scale: 0.98 }}
+                transition={{ type: 'spring', damping: 24, stiffness: 280 }}
+                className="fixed inset-y-0 left-0 z-50 flex h-screen w-screen max-w-[17.6rem] flex-col overflow-hidden rounded-none rounded-r-3xl border-r border-amber-500/30 bg-[#0a0612]/97 shadow-2xl shadow-purple-900/40 backdrop-blur-2xl lg:hidden"
               >
-                <div className="fire-panel fire-orange fire-hero mb-6 rounded-2xl border border-amber-400/35 bg-gradient-to-br from-amber-500/15 via-purple-900/20 to-black/40 p-4 text-center">
+                <div className="mb-4 border-b border-amber-500/25 bg-gradient-to-br from-[#3f2517] via-[#2a1839] to-[#120f16] px-4 py-5 text-center shadow-[inset_0_-18px_30px_-20px_rgba(251,146,60,0.7)]">
                   <p className="text-xs font-black uppercase tracking-[0.35em] text-amber-300">
                     Jackpot Club
                   </p>
@@ -2119,7 +2185,8 @@ export default function PlayerPage() {
                     VIP Lounge
                   </h1>
                 </div>
-                <nav className="space-y-2">
+                <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+                <nav className="space-y-1.5">
                   {NAV_ITEMS.map((item) =>
                     renderNavButton(item, item.view === 'agents' ? totalUnread : 0, () => {
                       if (item.view === 'agents' && totalUnread > 0) {
@@ -2131,7 +2198,7 @@ export default function PlayerPage() {
                     })
                   )}
                 </nav>
-                <div className="mt-6 border-t border-amber-500/20 pt-4">
+                <div className="mt-auto border-t border-amber-500/20 pt-4">
                   <button
                     type="button"
                     onClick={() => {
@@ -2142,6 +2209,7 @@ export default function PlayerPage() {
                   >
                     Log out
                   </button>
+                </div>
                 </div>
               </motion.aside>
             </>
@@ -2216,7 +2284,7 @@ export default function PlayerPage() {
                     setShowCoinConfirmSplash(true);
                   }}
                   disabled={coinLoading}
-                  className="fire-button fire-orange rounded-2xl border border-amber-400/45 bg-amber-500/20 px-5 py-3 text-base font-black text-amber-50 shadow-md transition-all hover:bg-amber-500/35 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="fire-button fire-purple rounded-2xl border border-fuchsia-300/45 bg-gradient-to-r from-fuchsia-600 via-violet-500 to-purple-600 px-5 py-3 text-base font-black text-white shadow-[0_0_26px_-10px_rgba(192,38,211,0.9)] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {coinLoading ? '⏳ Transferring…' : '⇄ Transfer Cash → Coin'}
                 </button>
@@ -2304,7 +2372,7 @@ export default function PlayerPage() {
                     setMessage('');
                   }}
                   disabled={isBlockedPlayer}
-                  className="fire-button fire-orange min-h-[44px] rounded-2xl border border-amber-400/45 bg-amber-500/20 px-2 py-2 text-xs font-black text-amber-50 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+                  className="fire-button fire-purple min-h-[44px] rounded-2xl border border-fuchsia-300/45 bg-gradient-to-r from-fuchsia-600 via-violet-500 to-purple-600 px-2 py-2 text-xs font-black text-white shadow-[0_0_24px_-12px_rgba(192,38,211,0.95)] active:scale-[0.99] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   ⬇ Load coin
                 </button>
@@ -3677,8 +3745,9 @@ export default function PlayerPage() {
           >
             <h3 className="text-2xl font-black">Load coin</h3>
             <p className="mt-2 text-sm text-violet-100/80">
-              Get a one-time reference image from your co-admin and a 16-digit code. Use it to pay
-              and complete your top-up. The code expires in 10 minutes.
+              Get the one-time reference image and 16-digit code from your co-admin. When depositing,
+              you must paste this 16-digit code in the payment note/remark. If the code is missing,
+              your payment may not be matched and could be lost. The code expires in 10 minutes.
             </p>
 
             {!activeCoinLoad ? (
@@ -3825,15 +3894,115 @@ export default function PlayerPage() {
               Cashing out full amount: ${formatWalletAmount(wallet.cash)}
             </p>
 
-            <label className="mt-4 block text-sm font-semibold text-cyan-100">
-              Payment details
-              <textarea
-                value={cashoutPaymentDetails}
-                onChange={(event) => setCashoutPaymentDetails(event.target.value)}
-                className="mt-2 min-h-24 w-full rounded-xl border border-white/15 bg-black/40 px-4 py-3 text-white outline-none focus:border-cyan-400/60"
-                placeholder="eSewa/Khalti/Bank account details..."
-              />
-            </label>
+            <div className="mt-4">
+              <p className="text-sm font-semibold text-cyan-100">How should we pay you?</p>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCashoutPayoutMethod('qr')}
+                  className={`rounded-xl border px-4 py-3 text-sm font-black transition ${
+                    cashoutPayoutMethod === 'qr'
+                      ? 'border-cyan-300/60 bg-cyan-400/20 text-cyan-50'
+                      : 'border-white/15 bg-black/35 text-cyan-100/80 hover:border-cyan-400/40'
+                  }`}
+                >
+                  QR
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCashoutPayoutMethod('app')}
+                  className={`rounded-xl border px-4 py-3 text-sm font-black transition ${
+                    cashoutPayoutMethod === 'app'
+                      ? 'border-cyan-300/60 bg-cyan-400/20 text-cyan-50'
+                      : 'border-white/15 bg-black/35 text-cyan-100/80 hover:border-cyan-400/40'
+                  }`}
+                >
+                  Payment App
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              {lastUsedQrCashout?.payment.qrImageUrl ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCashoutPayoutMethod('qr');
+                    setCashoutQrUrl(lastUsedQrCashout.payment.qrImageUrl || '');
+                    setMessage('Loaded your last used QR details.');
+                  }}
+                  className="w-full rounded-xl border border-cyan-300/25 bg-cyan-500/10 px-4 py-3 text-left text-sm font-semibold text-cyan-50 transition hover:bg-cyan-500/15"
+                >
+                  Use last QR
+                </button>
+              ) : null}
+
+              {lastUsedAppCashout?.payment ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCashoutPayoutMethod('app');
+                    setCashoutAppName(lastUsedAppCashout.payment.paymentAppName || '');
+                    setCashoutCashTag(lastUsedAppCashout.payment.paymentAppCashTag || '');
+                    setCashoutAccountName(
+                      lastUsedAppCashout.payment.paymentAppAccountName || ''
+                    );
+                    setMessage('Loaded your last used payment app details.');
+                  }}
+                  className="w-full rounded-xl border border-cyan-300/25 bg-cyan-500/10 px-4 py-3 text-left text-sm font-semibold text-cyan-50 transition hover:bg-cyan-500/15"
+                >
+                  Use last payment app details
+                </button>
+              ) : null}
+            </div>
+
+            {cashoutPayoutMethod === 'qr' ? (
+              <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-4">
+                <ImageUploadField
+                  label="Upload your QR"
+                  valueUrl={cashoutQrUrl || undefined}
+                  onUploaded={(uploaded) => {
+                    setCashoutQrUrl(uploaded.url);
+                    setMessage('QR uploaded successfully.');
+                  }}
+                  onError={(uploadMessage) => setMessage(uploadMessage)}
+                  className="space-y-3"
+                />
+              </div>
+            ) : (
+              <div className="mt-4 grid gap-3">
+                <label className="block text-sm font-semibold text-cyan-100">
+                  Payment App Name
+                  <input
+                    type="text"
+                    value={cashoutAppName}
+                    onChange={(event) => setCashoutAppName(event.target.value)}
+                    className="mt-2 min-h-[48px] w-full rounded-xl border border-white/15 bg-black/40 px-4 py-3 text-white outline-none focus:border-cyan-400/60"
+                    placeholder="Chime, Cash App, Venmo..."
+                  />
+                </label>
+                <label className="block text-sm font-semibold text-cyan-100">
+                  CashTag / Username
+                  <input
+                    type="text"
+                    value={cashoutCashTag}
+                    onChange={(event) => setCashoutCashTag(event.target.value)}
+                    className="mt-2 min-h-[48px] w-full rounded-xl border border-white/15 bg-black/40 px-4 py-3 text-white outline-none focus:border-cyan-400/60"
+                    placeholder="$name or app username"
+                  />
+                </label>
+                <label className="block text-sm font-semibold text-cyan-100">
+                  Name On The App
+                  <input
+                    type="text"
+                    value={cashoutAccountName}
+                    onChange={(event) => setCashoutAccountName(event.target.value)}
+                    className="mt-2 min-h-[48px] w-full rounded-xl border border-white/15 bg-black/40 px-4 py-3 text-white outline-none focus:border-cyan-400/60"
+                    placeholder="Your payout name"
+                  />
+                </label>
+              </div>
+            )}
 
             <div className="mt-5 flex gap-3">
               <button

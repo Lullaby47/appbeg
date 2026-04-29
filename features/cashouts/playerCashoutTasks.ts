@@ -15,6 +15,7 @@ import { auth, db } from '@/lib/firebase/client';
 import { recordFinancialEvent } from '@/features/risk/playerRisk';
 
 export type PlayerCashoutTaskStatus = 'pending' | 'in_progress' | 'completed';
+export type PlayerCashoutPayoutMethod = 'qr' | 'app';
 
 export type PlayerCashoutTask = {
   id: string;
@@ -23,6 +24,11 @@ export type PlayerCashoutTask = {
   playerUsername: string;
   amountNpr: number;
   paymentDetails: string;
+  payoutMethod?: PlayerCashoutPayoutMethod | null;
+  qrImageUrl?: string | null;
+  paymentAppName?: string | null;
+  paymentAppCashTag?: string | null;
+  paymentAppAccountName?: string | null;
   status: PlayerCashoutTaskStatus;
   assignedHandlerUid?: string | null;
   assignedHandlerUsername?: string | null;
@@ -40,6 +46,77 @@ function toTask(docId: string, value: Omit<PlayerCashoutTask, 'id'>): PlayerCash
 
 function getSnapshotMs(value?: Timestamp | null) {
   return value?.toMillis?.() || 0;
+}
+
+export function getPlayerCashoutPaymentDisplay(task: PlayerCashoutTask) {
+  const rawText = String(task.paymentDetails || '').trim();
+  const method = task.payoutMethod || null;
+  const qrImageUrl = String(task.qrImageUrl || '').trim() || null;
+  const paymentAppName = String(task.paymentAppName || '').trim() || null;
+  const paymentAppCashTag = String(task.paymentAppCashTag || '').trim() || null;
+  const paymentAppAccountName = String(task.paymentAppAccountName || '').trim() || null;
+
+  if (method === 'qr' || qrImageUrl) {
+    return {
+      method: 'qr' as const,
+      qrImageUrl,
+      paymentAppName: null,
+      paymentAppCashTag: null,
+      paymentAppAccountName: null,
+      rawText,
+    };
+  }
+
+  if (
+    method === 'app' ||
+    paymentAppName ||
+    paymentAppCashTag ||
+    paymentAppAccountName
+  ) {
+    return {
+      method: 'app' as const,
+      qrImageUrl: null,
+      paymentAppName,
+      paymentAppCashTag,
+      paymentAppAccountName,
+      rawText,
+    };
+  }
+
+  if (/Payout method:\s*QR/i.test(rawText)) {
+    const qrMatch = rawText.match(/QR image:\s*(.+)/i);
+    return {
+      method: 'qr' as const,
+      qrImageUrl: qrMatch?.[1]?.trim() || null,
+      paymentAppName: null,
+      paymentAppCashTag: null,
+      paymentAppAccountName: null,
+      rawText,
+    };
+  }
+
+  if (/Payout method:\s*Payment app/i.test(rawText)) {
+    const appNameMatch = rawText.match(/App name:\s*(.+)/i);
+    const cashTagMatch = rawText.match(/Cash tag:\s*(.+)/i);
+    const accountNameMatch = rawText.match(/Name on app:\s*(.+)/i);
+    return {
+      method: 'app' as const,
+      qrImageUrl: null,
+      paymentAppName: appNameMatch?.[1]?.trim() || null,
+      paymentAppCashTag: cashTagMatch?.[1]?.trim() || null,
+      paymentAppAccountName: accountNameMatch?.[1]?.trim() || null,
+      rawText,
+    };
+  }
+
+  return {
+    method: null,
+    qrImageUrl: null,
+    paymentAppName: null,
+    paymentAppCashTag: null,
+    paymentAppAccountName: null,
+    rawText,
+  };
 }
 
 export function getEffectivePlayerCashoutTaskStatus(task: PlayerCashoutTask) {
@@ -86,6 +163,11 @@ async function getCurrentUserIdentity() {
 export async function createPlayerCashoutTask(values: {
   coadminUid: string;
   paymentDetails: string;
+  payoutMethod?: PlayerCashoutPayoutMethod;
+  qrImageUrl?: string;
+  paymentAppName?: string;
+  paymentAppCashTag?: string;
+  paymentAppAccountName?: string;
 }) {
   const currentUser = auth.currentUser;
 
@@ -136,6 +218,11 @@ export async function createPlayerCashoutTask(values: {
     playerUsername: playerProfile.playerUsername,
     amountNpr: playerProfile.amountNpr,
     paymentDetails,
+    payoutMethod: values.payoutMethod || null,
+    qrImageUrl: values.qrImageUrl?.trim() || null,
+    paymentAppName: values.paymentAppName?.trim() || null,
+    paymentAppCashTag: values.paymentAppCashTag?.trim() || null,
+    paymentAppAccountName: values.paymentAppAccountName?.trim() || null,
     status: 'pending',
     assignedHandlerUid: null,
     assignedHandlerUsername: null,

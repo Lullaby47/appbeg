@@ -64,6 +64,7 @@ import {
   completePlayerCashoutTask,
   getEffectivePlayerCashoutTaskStatus,
   getPlayerCashoutTaskCountdown,
+  getPlayerCashoutPaymentDisplay,
   listenPlayerCashoutTasksByCoadmin,
   PlayerCashoutTask,
   startPlayerCashoutTask,
@@ -2183,6 +2184,50 @@ export default function CoadminPage() {
     },
   ];
 
+  function renderPlayerCashoutPayment(task: PlayerCashoutTask) {
+    const payment = getPlayerCashoutPaymentDisplay(task);
+
+    if (payment.method === 'qr') {
+      return (
+        <div className="mt-2 space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-cyan-100/75">
+            Payout method: QR
+          </p>
+          {payment.qrImageUrl ? (
+            <div className="overflow-hidden rounded-xl border border-cyan-300/20 bg-black/35">
+              <img
+                src={payment.qrImageUrl}
+                alt="Player payout QR"
+                className="max-h-52 w-full object-contain"
+              />
+            </div>
+          ) : (
+            <p className="text-xs text-cyan-100/70">QR image not provided.</p>
+          )}
+        </div>
+      );
+    }
+
+    if (payment.method === 'app') {
+      return (
+        <div className="mt-2 grid gap-1 text-xs text-cyan-100/75">
+          <p className="font-semibold uppercase tracking-wide text-cyan-100/75">
+            Payout method: Payment app
+          </p>
+          <p>App name: {payment.paymentAppName || 'Not provided'}</p>
+          <p>Cash tag: {payment.paymentAppCashTag || 'Not provided'}</p>
+          <p>Name on app: {payment.paymentAppAccountName || 'Not provided'}</p>
+        </div>
+      );
+    }
+
+    return (
+      <p className="mt-1 text-xs text-cyan-100/70">
+        Payment details: {task.paymentDetails || 'Not provided'}
+      </p>
+    );
+  }
+
   return (
     <ProtectedRoute allowedRoles={['coadmin']}>
       <RoleSidebarLayout
@@ -2360,9 +2405,7 @@ export default function CoadminPage() {
                               <p className="text-sm text-cyan-100/85">
                                 Amount: NPR {Math.round(task.amountNpr || 0).toLocaleString()}
                               </p>
-                              <p className="mt-1 text-xs text-cyan-100/70">
-                                Payment details: {task.paymentDetails || 'Not provided'}
-                              </p>
+                              {renderPlayerCashoutPayment(task)}
                             </div>
                             <button
                               type="button"
@@ -2470,9 +2513,7 @@ export default function CoadminPage() {
                       <p className="text-sm text-cyan-100/85">
                         Amount: NPR {Math.round(task.amountNpr || 0).toLocaleString()}
                       </p>
-                      <p className="mt-1 text-xs text-cyan-100/70">
-                        Payment details: {task.paymentDetails || 'Not provided'}
-                      </p>
+                      {renderPlayerCashoutPayment(task)}
                       <p className="mt-1 text-xs text-cyan-100/70">
                         Completed: {task.completedAt?.toDate?.().toLocaleString?.() || 'Done'}
                       </p>
