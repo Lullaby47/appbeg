@@ -151,7 +151,10 @@ export async function completeCarerCashoutRequest(cashoutId: string, doneAmountN
     return cashoutData;
   });
 
-  const resolvedDoneAmount = Math.max(0, Math.round(Number(doneAmountNpr ?? cashout.amountNpr || 0)));
+  const resolvedDoneAmount = Math.max(
+    0,
+    Math.round(Number((doneAmountNpr ?? cashout.amountNpr) || 0))
+  );
   const requestedAmount = Math.max(0, Math.round(Number(cashout.amountNpr || 0)));
 
   if (resolvedDoneAmount > requestedAmount) {
