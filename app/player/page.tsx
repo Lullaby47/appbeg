@@ -87,6 +87,11 @@ type PlayerWallet = {
   cash: number;
 };
 
+type GameBackgroundAsset = {
+  key: string;
+  imageUrl: string;
+};
+
 function getTimestampMs(value: unknown) {
   if (!value) {
     return 0;
@@ -215,6 +220,39 @@ const ACTIVE_TABLE_SPLASH_HISTORY_KEY = '__playerActiveTableSplash';
 
 function normalizeGameKey(gameName: string) {
   return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+}
+
+function normalizeBackgroundKey(gameName: string) {
+  return gameName.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function buildGameBackgroundCandidates(gameName: string) {
+  const trimmed = gameName.trim();
+  if (!trimmed) {
+    return [] as string[];
+  }
+
+  const compact = normalizeBackgroundKey(trimmed);
+  const dashed = trimmed.trim().toLowerCase().replace(/\s+/g, '-');
+  const underscored = trimmed.trim().toLowerCase().replace(/\s+/g, '_');
+  const normalizedLower = trimmed.toLowerCase();
+  const baseNames = Array.from(
+    new Set([trimmed, normalizedLower, dashed, underscored, compact].filter(Boolean))
+  );
+  const roots = ['/gamebackgroundimage', '/assets/player/gamebackgroundimage', '/assets/player'];
+  const extensions = ['jpg', 'jpeg', 'png'];
+  const candidates: string[] = [];
+
+  for (const root of roots) {
+    for (const baseName of baseNames) {
+      const encodedBaseName = encodeURIComponent(baseName);
+      for (const ext of extensions) {
+        candidates.push(`${root}/${encodedBaseName}.${ext}`);
+      }
+    }
+  }
+
+  return candidates;
 }
 
 const UNKNOWN_CREATOR_FILTER_KEY = '__unknown_creator__';
@@ -408,6 +446,9 @@ export default function PlayerPage() {
   const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
 
   const [selectedGameName, setSelectedGameName] = useState('');
+  const [gameBackgroundImageByKey, setGameBackgroundImageByKey] = useState<Record<string, string>>(
+    {}
+  );
   const [playAmount, setPlayAmount] = useState('');
   const [requestLoading, setRequestLoading] = useState(false);
   const [playRequestSplash, setPlayRequestSplash] = useState<null | {
@@ -747,6 +788,13 @@ export default function PlayerPage() {
   );
   const shouldListenToBonusEvents =
     Boolean(playerCoadminUid) && activeView === 'bonus-events';
+  const selectedGameBackgroundImage = useMemo(() => {
+    const key = normalizeBackgroundKey(selectedGameName);
+    if (!key) {
+      return '';
+    }
+    return gameBackgroundImageByKey[key] || '';
+  }, [gameBackgroundImageByKey, selectedGameName]);
 
   const activeBonusCarouselIndex = useMemo(() => {
     if (playerBonusEvents.length === 0) {
@@ -785,6 +833,88 @@ export default function PlayerPage() {
   );
 
   const cashoutThisRequestNpr = Math.min(Number(wallet.cash || 0), cashoutRemainingQuotaNpr);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function loadGameBackgrounds() {
+      try {
+        const response = await fetch('/api/player/game-backgrounds');
+        if (!response.ok) {
+          return;
+        }
+        const payload = (await response.json()) as { backgrounds?: GameBackgroundAsset[] };
+        const nextMap: Record<string, string> = {};
+        for (const item of payload.backgrounds || []) {
+          const key = normalizeBackgroundKey(item.key);
+          if (!key) {
+            continue;
+          }
+          nextMap[key] = String(item.imageUrl || '');
+        }
+        if (!isCancelled) {
+          setGameBackgroundImageByKey(nextMap);
+        }
+      } catch {
+        if (!isCancelled) {
+          setGameBackgroundImageByKey({});
+        }
+      }
+    }
+
+    void loadGameBackgrounds();
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || gameLogins.length === 0) {
+      return;
+    }
+
+    let isCancelled = false;
+
+    const resolveFirstExistingImage = async (candidates: string[]) => {
+      for (const candidate of candidates) {
+        const exists = await new Promise<boolean>((resolve) => {
+          const img = new window.Image();
+          img.onload = () => resolve(true);
+          img.onerror = () => resolve(false);
+          img.src = candidate;
+        });
+        if (exists) {
+          return candidate;
+        }
+      }
+      return '';
+    };
+
+    async function hydrateMissingBackgrounds() {
+      const additions: Record<string, string> = {};
+
+      for (const login of gameLogins) {
+        const gameName = String(login.gameName || '');
+        const key = normalizeBackgroundKey(gameName);
+        if (!key || gameBackgroundImageByKey[key]) {
+          continue;
+        }
+        const resolvedUrl = await resolveFirstExistingImage(buildGameBackgroundCandidates(gameName));
+        if (resolvedUrl) {
+          additions[key] = resolvedUrl;
+        }
+      }
+
+      if (!isCancelled && Object.keys(additions).length > 0) {
+        setGameBackgroundImageByKey((prev) => ({ ...prev, ...additions }));
+      }
+    }
+
+    void hydrateMissingBackgrounds();
+    return () => {
+      isCancelled = true;
+    };
+  }, [gameBackgroundImageByKey, gameLogins]);
 
   useEffect(() => {
     const len = playerBonusEvents.length;
@@ -3322,6 +3452,8 @@ export default function PlayerPage() {
                         const isPasswordVisible = Boolean(visiblePasswords[game.id]);
                         const hasUsername = Boolean(resolvedUsername);
                         const isSelected = selectedGameName === game.gameName;
+                        const gameCardBackgroundImage =
+                          gameBackgroundImageByKey[normalizeBackgroundKey(game.gameName)] || '';
 
                         return (
                           <motion.button
@@ -3339,6 +3471,17 @@ export default function PlayerPage() {
                                 ? 'border-amber-400/60 bg-gradient-to-br from-amber-500/25 to-purple-900/40 shadow-[0_0_32px_-8px_rgba(234,179,8,0.55)]'
                                 : 'border-white/10 bg-black/45 hover:border-amber-400/35'
                             }`}
+                            style={
+                              gameCardBackgroundImage
+                                ? {
+                                    backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.2) 0%, rgba(0, 0, 0, 0.42) 100%), url("${gameCardBackgroundImage}")`,
+                                    backgroundSize: 'cover',
+                                    backgroundPosition: 'center',
+                                    backgroundRepeat: 'no-repeat',
+                                    filter: 'brightness(1.12) saturate(1.08)',
+                                  }
+                                : undefined
+                            }
                           >
                             <div className="pointer-events-none absolute -right-6 -top-6 h-24 w-24 rounded-full bg-amber-400/15 blur-2xl" />
                             <div className="relative flex items-start justify-center gap-2">
@@ -3509,11 +3652,24 @@ export default function PlayerPage() {
                       const visible = visiblePasswords[login.id];
                       const displayUsername = login.gameUsername;
                       const displayPassword = login.gamePassword;
+                      const gameCardBackgroundImage =
+                        gameBackgroundImageByKey[normalizeBackgroundKey(login.gameName || '')] || '';
                       return (
                         <motion.div
                           key={login.id}
                           layout
                           className="fire-panel fire-orange group rounded-[1.7rem] border border-amber-300/25 bg-gradient-to-br from-[#3a140b]/88 via-[#5d2411]/78 to-[#261018]/92 p-3 shadow-[0_18px_40px_-18px_rgba(56,11,4,0.9)] backdrop-blur-xl transition-all sm:p-3.5 sm:hover:border-amber-300/45 sm:hover:shadow-[0_0_30px_-10px_rgba(251,191,36,0.38)]"
+                          style={
+                            gameCardBackgroundImage
+                              ? {
+                                  backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.24) 0%, rgba(0, 0, 0, 0.54) 100%), url("${gameCardBackgroundImage}")`,
+                                  backgroundSize: 'cover',
+                                  backgroundPosition: 'center',
+                                  backgroundRepeat: 'no-repeat',
+                                  filter: 'brightness(1.14) saturate(1.1)',
+                                }
+                              : undefined
+                          }
                         >
                           <div className="mb-3 flex items-start justify-between gap-3 border-b border-amber-200/10 pb-2.5">
                             <div className="min-w-0">
@@ -3922,6 +4078,15 @@ export default function PlayerPage() {
               maxHeight: activeTableViewportHeight
                 ? `${Math.max(320, activeTableViewportHeight - 16)}px`
                 : 'calc(100dvh - 1rem)',
+              ...(selectedGameBackgroundImage
+                ? {
+                    backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.22) 0%, rgba(0, 0, 0, 0.5) 100%), url("${selectedGameBackgroundImage}")`,
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center',
+                    backgroundRepeat: 'no-repeat',
+                    filter: 'brightness(1.15) saturate(1.1)',
+                  }
+                : {}),
             }}
           >
             <div className="relative shrink-0 border-b border-white/10 px-4 pb-3 pt-4 sm:px-6 sm:pt-5">
