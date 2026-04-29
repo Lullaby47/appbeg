@@ -22,6 +22,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 
+import { computeRewardCoinsAfterFee } from '@/lib/rewardCoinTransferFee';
 import { auth, db } from '@/lib/firebase/client';
 import { uploadImageToCloudinary } from '@/lib/cloudinary/uploadImage';
 
@@ -602,13 +603,25 @@ export async function rewardCoinsToPlayer(targetUid: string, amountCoins: number
     }),
   });
 
-  const data = (await response.json()) as { error?: string; message?: string; amountCoins?: number };
+  const data = (await response.json()) as {
+    error?: string;
+    message?: string;
+    amountCoins?: number;
+    feeCoins?: number;
+    recipientCoins?: number;
+  };
   if (!response.ok) {
     throw new Error(data.error || 'Failed to reward coins.');
   }
 
+  const fallback = computeRewardCoinsAfterFee(cleanAmount);
   return {
-    amountCoins: Math.max(0, Math.floor(Number(data.amountCoins || cleanAmount))),
+    amountCoins: Math.max(0, Math.floor(Number(data.amountCoins ?? cleanAmount))),
+    feeCoins: Math.max(0, Math.floor(Number(data.feeCoins ?? fallback.feeCoins))),
+    recipientCoins: Math.max(
+      0,
+      Math.floor(Number(data.recipientCoins ?? fallback.recipientCoins))
+    ),
     message: data.message || 'Coin reward sent.',
   };
 }

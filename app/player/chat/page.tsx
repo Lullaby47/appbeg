@@ -12,6 +12,7 @@ import {
 } from 'firebase/firestore';
 
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
+import { computeRewardCoinsAfterFee, REWARD_TRANSFER_FEE_PERCENT } from '@/lib/rewardCoinTransferFee';
 import { auth, db } from '@/lib/firebase/client';
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 import {
@@ -151,6 +152,12 @@ export default function PlayerChatPage() {
     setRewardNotice('');
   }, [selectedPeer?.uid]);
 
+  const rewardFeePreview = useMemo(() => {
+    const amt = Math.max(0, Math.floor(Number(rewardAmount || 0)));
+    if (!amt) return null;
+    return computeRewardCoinsAfterFee(amt);
+  }, [rewardAmount]);
+
   const selectedMuted = selectedPeer ? Boolean(chatList[selectedPeer.uid]?.muted) : false;
   const selectedFriend = selectedPeer ? friendByUid[selectedPeer.uid] : null;
   const selfUid = auth.currentUser?.uid || '';
@@ -243,9 +250,11 @@ export default function PlayerChatPage() {
       const result = await rewardCoinsToPlayer(selectedPeer.uid, amount);
       await sendDirectTextMessage(
         selectedPeer.uid,
-        `🎁 Sent ${result.amountCoins} coin reward to you.`
+        `Received ${result.recipientCoins} coin reward (${result.amountCoins} sent, ${result.feeCoins}-coin fee).`
       );
-      setRewardNotice(`Reward sent: ${result.amountCoins} coin deducted.`);
+      setRewardNotice(
+        `Reward sent: ${result.amountCoins} deducted, ${result.feeCoins} fee (${REWARD_TRANSFER_FEE_PERCENT}%), friend receives ${result.recipientCoins}.`
+      );
       setShowRewardPanel(false);
     } catch (error) {
       setMessageError(error instanceof Error ? error.message : 'Failed to reward coins.');
@@ -391,7 +400,7 @@ export default function PlayerChatPage() {
                   </p>
                 ) : null}
                 {showRewardPanel ? (
-                  <div className="flex items-center gap-2 border-b border-white/10 bg-black/20 p-2">
+                  <div className="flex flex-wrap items-center gap-2 border-b border-white/10 bg-black/20 p-2">
                     <input
                       type="number"
                       min={1}
@@ -409,6 +418,20 @@ export default function PlayerChatPage() {
                     >
                       {rewardBusy ? 'Sending…' : 'Send Reward'}
                     </button>
+                    {rewardFeePreview !== null ? (
+                      <span className="text-[11px] text-amber-100/65">
+                        {rewardFeePreview.feeCoins > 0 ? (
+                          <>
+                            {REWARD_TRANSFER_FEE_PERCENT}% fee −{rewardFeePreview.feeCoins} · Friend gets{' '}
+                            {rewardFeePreview.recipientCoins}
+                          </>
+                        ) : (
+                          <>
+                            Friend gets {rewardFeePreview.recipientCoins} (fee waived on tiny amounts)
+                          </>
+                        )}
+                      </span>
+                    ) : null}
                   </div>
                 ) : null}
 

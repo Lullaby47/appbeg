@@ -372,6 +372,8 @@ export default function PlayerPage() {
   const [coinLoading, setCoinLoading] = useState(false);
   const [requestHistory, setRequestHistory] = useState<PlayerGameRequest[]>([]);
   const [dismissRedeemLoadingId, setDismissRedeemLoadingId] = useState<string | null>(null);
+  const [redeemDismissSplashRequest, setRedeemDismissSplashRequest] =
+    useState<PlayerGameRequest | null>(null);
   const [isBlockedPlayer, setIsBlockedPlayer] = useState(false);
   const [wallet, setWallet] = useState<PlayerWallet>({ coin: 0, cash: 0 });
   const [referralCode, setReferralCode] = useState('');
@@ -1644,7 +1646,7 @@ export default function PlayerPage() {
     }
   }
 
-  async function handleDismissRedeemRequest(request: PlayerGameRequest) {
+  async function performDismissRedeemRequest(request: PlayerGameRequest) {
     setDismissRedeemLoadingId(request.id);
     setMessage('');
 
@@ -1655,6 +1657,18 @@ export default function PlayerPage() {
       setMessage(error instanceof Error ? error.message : 'Failed to dismiss redeem request.');
     } finally {
       setDismissRedeemLoadingId(null);
+    }
+  }
+
+  async function confirmDismissRedeemSplash() {
+    const request = redeemDismissSplashRequest;
+    if (!request) {
+      return;
+    }
+    try {
+      await performDismissRedeemRequest(request);
+    } finally {
+      setRedeemDismissSplashRequest(null);
     }
   }
 
@@ -2106,7 +2120,7 @@ export default function PlayerPage() {
                       {canDismissRedeem && (
                         <button
                           type="button"
-                          onClick={() => void handleDismissRedeemRequest(request)}
+                          onClick={() => setRedeemDismissSplashRequest(request)}
                           disabled={dismissRedeemLoadingId === request.id}
                           className="rounded-xl bg-white/10 px-4 py-2 text-xs font-bold text-white hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50"
                         >
@@ -4270,6 +4284,71 @@ export default function PlayerPage() {
           </div>
         </div>
       )}
+
+      {redeemDismissSplashRequest ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="redeem-dismiss-splash-title"
+          onClick={() => {
+            if (dismissRedeemLoadingId === redeemDismissSplashRequest.id) {
+              return;
+            }
+            setRedeemDismissSplashRequest(null);
+          }}
+          className="fixed inset-0 z-[96] flex items-center justify-center bg-red-900/95 px-4 backdrop-blur-sm"
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            className="w-full max-w-lg rounded-3xl border border-red-300/50 bg-gradient-to-b from-red-950 to-red-900 p-8 shadow-2xl shadow-black/40"
+          >
+            <p className="text-center text-4xl font-black text-red-100">!</p>
+            <h3
+              id="redeem-dismiss-splash-title"
+              className="mt-2 text-center text-2xl font-black text-white"
+            >
+              Before you dismiss this redeem
+            </h3>
+            <p className="mt-5 text-center text-base leading-relaxed text-red-50/95">
+              Please confirm you received the <strong className="text-white">full redeem amount</strong>{' '}
+              for this request:{' '}
+              <strong className="tabular-nums text-white">
+                ${formatWalletAmount(Number(redeemDismissSplashRequest.amount || 0))}
+              </strong>
+              . Only dismiss if the payout is complete or you truly need to cancel this request.
+            </p>
+            <p className="mt-4 text-center text-sm leading-relaxed text-red-100/85">
+              Payout may be instant or take up to about 24 hours, and can arrive in smaller parts—wait
+              unless you are sure.
+            </p>
+            <p className="mt-5 rounded-xl border border-red-400/40 bg-black/30 p-4 text-sm leading-relaxed text-red-100/95">
+              <span className="font-black text-red-200">Warning: </span>
+              False or abusive dismissals may lead to a review and{' '}
+              <strong className="text-white">your account could be banned or restricted.</strong>
+            </p>
+            <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:justify-center">
+              <button
+                type="button"
+                disabled={dismissRedeemLoadingId === redeemDismissSplashRequest.id}
+                onClick={() => setRedeemDismissSplashRequest(null)}
+                className="flex-1 rounded-xl border border-white/20 bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Go back
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmDismissRedeemSplash()}
+                disabled={dismissRedeemLoadingId === redeemDismissSplashRequest.id}
+                className="flex-1 rounded-xl bg-white px-4 py-3 text-sm font-black uppercase tracking-wide text-red-900 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {dismissRedeemLoadingId === redeemDismissSplashRequest.id
+                  ? 'Dismissing…'
+                  : 'I understand — dismiss'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <AnimatePresence>
         {showLogoutConfirmSplash && (

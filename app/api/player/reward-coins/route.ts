@@ -2,6 +2,10 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import {
+  computeRewardCoinsAfterFee,
+  REWARD_TRANSFER_FEE_PERCENT,
+} from '@/lib/rewardCoinTransferFee';
 
 const MAX_REWARD_COINS_PER_TRANSFER = 50;
 
@@ -59,6 +63,14 @@ export async function POST(request: Request) {
       );
     }
 
+    const { feeCoins, recipientCoins } = computeRewardCoinsAfterFee(amountCoins);
+    if (recipientCoins < 1) {
+      return NextResponse.json(
+        { error: 'Reward amount is too low after the transfer fee.' },
+        { status: 400 }
+      );
+    }
+
     const senderRef = adminDb.collection('users').doc(senderUid);
     const targetRef = adminDb.collection('users').doc(targetUid);
     const rewardRef = adminDb.collection('playerCoinRewards').doc();
@@ -91,7 +103,7 @@ export async function POST(request: Request) {
         updatedAt: FieldValue.serverTimestamp(),
       });
       tx.update(targetRef, {
-        coin: Math.max(0, parsePositiveWhole(target.coin)) + amountCoins,
+        coin: Math.max(0, parsePositiveWhole(target.coin)) + recipientCoins,
         updatedAt: FieldValue.serverTimestamp(),
       });
       tx.set(rewardRef, {
@@ -100,14 +112,19 @@ export async function POST(request: Request) {
         toUid: targetUid,
         toUsername: String(target.username || '').trim() || 'Player',
         amountCoins,
+        feeCoins,
+        receivedCoins: recipientCoins,
+        feePercent: REWARD_TRANSFER_FEE_PERCENT,
         createdAt: FieldValue.serverTimestamp(),
       });
     });
 
     return NextResponse.json({
       success: true,
-      message: `Rewarded ${amountCoins} coin successfully.`,
+      message: `Reward sent (${feeCoins}-coin fee, ${recipientCoins} credited to recipient).`,
       amountCoins,
+      feeCoins,
+      recipientCoins,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to reward coins.';
