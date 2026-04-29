@@ -2941,7 +2941,7 @@ export default function PlayerPage() {
                   </div>
                 ) : (
                   <>
-                    <div className="grid grid-cols-3 gap-2 sm:items-start">
+                    <div className="grid grid-cols-2 gap-2 sm:items-start">
                       {gameLogins.map((game, index) => {
                         const resolvedUsername = (game.gameUsername || '').trim();
                         const resolvedPassword = String(game.gamePassword || '');
