@@ -14,27 +14,27 @@ const BONUS_ENSURE_LEASE_MS = 15_000;
 const BONUS_ENSURE_COOLDOWN_MS = 20_000;
 const BONUS_ENSURE_STATE_CACHE_MS = 45_000;
 const MAX_GAME_LOGINS_READ = 100;
-const FUNNY_BONUS_NAMES = [
-  'Freak Friday',
-  'Hello Honee',
-  'Mafia Boss',
-  'Saduleeee',
-  'Lucky Lassi',
-  'Drama Dollar',
-  'Paisa Pani',
-  'Jhakaas Jackpot',
-  'Bingo Bhoot',
-  'Crazy Chiya',
-  'Pocket Rocket',
-  'No Tension Bonus',
-  'Balle Balle',
-  'Dhamaka Drop',
-  'Laughter Loot',
-  'Chill Pill Reward',
-  'Pagal Paisa',
-  'Momo Money',
-  'Fatafat Fortune',
-  'Boss Baby Bonus',
+const AUTO_BONUS_NAMES = [
+  'Friday Fever',
+  'Lucky Streak',
+  'High Roller Rush',
+  'Hotshot Bonus',
+  'Dollar Dash',
+  'Jackpot Sprint',
+  'Neon Nights Bonus',
+  'Power Play Bonus',
+  'Golden Ticket Drop',
+  'Vegas Vibes',
+  'Pocket Payday',
+  'Prime Time Bonus',
+  'Rocket Reward',
+  'Cashwave Bonus',
+  'Flash Fortune',
+  'Rapid Reward',
+  'Double Up Drop',
+  'Crown Club Bonus',
+  'Big Win Boost',
+  'Main Event Bonus',
 ];
 
 type EnsureLeaseResult =
@@ -148,7 +148,7 @@ function buildActiveStateHash(
 }
 
 function pickFunnyBonusName(usedNames: Set<string>, fallbackIndex: number) {
-  const shuffled = [...FUNNY_BONUS_NAMES].sort(() => Math.random() - 0.5);
+  const shuffled = [...AUTO_BONUS_NAMES].sort(() => Math.random() - 0.5);
   for (const candidate of shuffled) {
     const key = candidate.trim().toLowerCase();
     if (!usedNames.has(key)) {
@@ -156,7 +156,7 @@ function pickFunnyBonusName(usedNames: Set<string>, fallbackIndex: number) {
       return candidate;
     }
   }
-  const fallback = `${FUNNY_BONUS_NAMES[fallbackIndex % FUNNY_BONUS_NAMES.length]} ${fallbackIndex}`;
+  const fallback = `${AUTO_BONUS_NAMES[fallbackIndex % AUTO_BONUS_NAMES.length]} ${fallbackIndex}`;
   usedNames.add(fallback.toLowerCase());
   return fallback;
 }

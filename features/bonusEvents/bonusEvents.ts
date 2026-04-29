@@ -64,6 +64,7 @@ function toBonusEvent(docId: string, value: Omit<BonusEvent, 'id'>): BonusEvent 
   return {
     id: docId,
     ...value,
+    bonusName: normalizeLegacyBonusName(String(value.bonusName || '')),
     bonusPercentage,
     bonus_percentage:
       (value as { bonus_percentage?: number }).bonus_percentage ?? bonusPercentage,
@@ -95,7 +96,29 @@ const COADMIN_MAX_PERCENT = 10;
 const COADMIN_MIN_AMOUNT = 10;
 const COADMIN_MAX_AMOUNT = 50;
 const MAX_GAME_LOGINS_READ = 100;
-const FUNNY_BONUS_NAMES = [
+const AUTO_BONUS_NAMES = [
+  'Friday Fever',
+  'Lucky Streak',
+  'High Roller Rush',
+  'Hotshot Bonus',
+  'Dollar Dash',
+  'Jackpot Sprint',
+  'Neon Nights Bonus',
+  'Power Play Bonus',
+  'Golden Ticket Drop',
+  'Vegas Vibes',
+  'Pocket Payday',
+  'Prime Time Bonus',
+  'Rocket Reward',
+  'Cashwave Bonus',
+  'Flash Fortune',
+  'Rapid Reward',
+  'Double Up Drop',
+  'Crown Club Bonus',
+  'Big Win Boost',
+  'Main Event Bonus',
+];
+const LEGACY_AUTO_BONUS_NAMES = [
   'Freak Friday',
   'Hello Honee',
   'Mafia Boss',
@@ -117,6 +140,30 @@ const FUNNY_BONUS_NAMES = [
   'Fatafat Fortune',
   'Boss Baby Bonus',
 ];
+const LEGACY_BONUS_NAME_MAP = new Map(
+  LEGACY_AUTO_BONUS_NAMES.map((legacyName, index) => [
+    legacyName.toLowerCase(),
+    AUTO_BONUS_NAMES[index % AUTO_BONUS_NAMES.length],
+  ])
+);
+
+function normalizeLegacyBonusName(value: string) {
+  const raw = String(value || '').trim();
+  if (!raw) return raw;
+
+  const lower = raw.toLowerCase();
+  const direct = LEGACY_BONUS_NAME_MAP.get(lower);
+  if (direct) return direct;
+
+  const suffixMatch = raw.match(/^(.*?)(\s+\d+)$/);
+  if (!suffixMatch) return raw;
+
+  const base = suffixMatch[1].trim().toLowerCase();
+  const suffix = suffixMatch[2];
+  const mapped = LEGACY_BONUS_NAME_MAP.get(base);
+  if (!mapped) return raw;
+  return `${mapped}${suffix}`;
+}
 
 /**
  * All bonus events for the player’s coadmin (staff- or coadmin-created), newest first.
@@ -254,7 +301,7 @@ export async function getCoadminAutoBonusPercentRange(coadminUid: string) {
 }
 
 function pickFunnyBonusName(usedNames: Set<string>, fallbackIndex: number) {
-  const shuffled = [...FUNNY_BONUS_NAMES].sort(() => Math.random() - 0.5);
+  const shuffled = [...AUTO_BONUS_NAMES].sort(() => Math.random() - 0.5);
   for (const candidate of shuffled) {
     const key = candidate.trim().toLowerCase();
     if (!usedNames.has(key)) {
@@ -262,7 +309,7 @@ function pickFunnyBonusName(usedNames: Set<string>, fallbackIndex: number) {
       return candidate;
     }
   }
-  const fallback = `${FUNNY_BONUS_NAMES[fallbackIndex % FUNNY_BONUS_NAMES.length]} ${fallbackIndex}`;
+  const fallback = `${AUTO_BONUS_NAMES[fallbackIndex % AUTO_BONUS_NAMES.length]} ${fallbackIndex}`;
   usedNames.add(fallback.toLowerCase());
   return fallback;
 }

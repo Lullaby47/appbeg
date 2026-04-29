@@ -16,28 +16,50 @@ type BonusEvent = {
   [key: string]: unknown;
 };
 
-const FUNNY_BONUS_NAMES = [
-  'Freak Friday',
-  'Hello Honee',
-  'Mafia Boss',
-  'Saduleeee',
-  'Lucky Lassi',
-  'Drama Dollar',
-  'Paisa Pani',
-  'Jhakaas Jackpot',
-  'Bingo Bhoot',
-  'Crazy Chiya',
-  'Pocket Rocket',
-  'No Tension Bonus',
-  'Balle Balle',
-  'Dhamaka Drop',
-  'Laughter Loot',
-  'Chill Pill Reward',
-  'Pagal Paisa',
-  'Momo Money',
-  'Fatafat Fortune',
-  'Boss Baby Bonus',
+const AUTO_BONUS_NAMES = [
+  'Friday Fever',
+  'Lucky Streak',
+  'High Roller Rush',
+  'Hotshot Bonus',
+  'Dollar Dash',
+  'Jackpot Sprint',
+  'Neon Nights Bonus',
+  'Power Play Bonus',
+  'Golden Ticket Drop',
+  'Vegas Vibes',
+  'Pocket Payday',
+  'Prime Time Bonus',
+  'Rocket Reward',
+  'Cashwave Bonus',
+  'Flash Fortune',
+  'Rapid Reward',
+  'Double Up Drop',
+  'Crown Club Bonus',
+  'Big Win Boost',
+  'Main Event Bonus',
 ];
+const LEGACY_AUTO_BONUS_NAMES = new Set([
+  'freak friday',
+  'hello honee',
+  'mafia boss',
+  'saduleeee',
+  'lucky lassi',
+  'drama dollar',
+  'paisa pani',
+  'jhakaas jackpot',
+  'bingo bhoot',
+  'crazy chiya',
+  'pocket rocket',
+  'no tension bonus',
+  'balle balle',
+  'dhamaka drop',
+  'laughter loot',
+  'chill pill reward',
+  'pagal paisa',
+  'momo money',
+  'fatafat fortune',
+  'boss baby bonus',
+]);
 
 function toMs(value: unknown) {
   if (!value || typeof value !== 'object') return 0;
@@ -61,7 +83,12 @@ function isActive(docData: BonusEvent) {
 
 function isLegacyAutoBonusName(name: string) {
   const clean = String(name || '').trim().toLowerCase();
-  return clean.startsWith('auto bonus') || clean.includes('2026-') || clean.includes('#');
+  return (
+    clean.startsWith('auto bonus') ||
+    clean.includes('2026-') ||
+    clean.includes('#') ||
+    LEGACY_AUTO_BONUS_NAMES.has(clean)
+  );
 }
 
 function isLegacyAutoGameName(name: string) {
@@ -149,7 +176,7 @@ export async function GET(request: Request) {
         const currentGameName = String(data.gameName || '');
 
         const funnyName =
-          FUNNY_BONUS_NAMES[hashText(`${id}:bonus`) % FUNNY_BONUS_NAMES.length];
+          AUTO_BONUS_NAMES[hashText(`${id}:bonus`) % AUTO_BONUS_NAMES.length];
         const randomGameFromList =
           gameNames.length > 0
             ? gameNames[hashText(`${id}:game`) % gameNames.length]

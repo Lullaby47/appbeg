@@ -200,6 +200,8 @@ const BONUS_ROTATE_MS = 7500;
 const CASINO_BACKGROUND_TRACKS = ['/theme3.mp3'] as const;
 const PLAYER_MUSIC_STORAGE_KEY = 'playerBackgroundMusicEnabled';
 const DEFAULT_PLAYER_MUSIC_VOLUME = 0.3;
+const PLAYER_HELP_HINT_MESSAGE =
+  'Press Play to get your game recharged, and click Menu to see more offers.';
 const ACTIVE_TABLE_SPLASH_HISTORY_KEY = '__playerActiveTableSplash';
 
 function normalizeGameKey(gameName: string) {
@@ -449,6 +451,7 @@ export default function PlayerPage() {
   const [message, setMessage] = useState('');
   const [loadingList, setLoadingList] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [showPlayerHelpHint, setShowPlayerHelpHint] = useState(false);
   const [musicEnabled, setMusicEnabled] = useState(() => {
     if (typeof window === 'undefined') {
       return false;
@@ -472,6 +475,9 @@ export default function PlayerPage() {
   const activeTableAmountInputRef = useRef<HTMLInputElement | null>(null);
   const [activeTableKeyboardInset, setActiveTableKeyboardInset] = useState(0);
   const [activeTableViewportHeight, setActiveTableViewportHeight] = useState<number | null>(null);
+  const playerHelpHintSeenRef = useRef(false);
+  const playerHelpHintHideTimeoutRef = useRef<number | null>(null);
+  const playerHelpHintIdleTimeoutRef = useRef<number | null>(null);
 
   function hasActiveTableSplashHistoryState() {
     const state = window.history.state as Record<string, unknown> | null;
@@ -515,6 +521,71 @@ export default function PlayerPage() {
   useEffect(() => {
     showActiveTableSplashRef.current = showActiveTableSplash;
   }, [showActiveTableSplash]);
+
+  const clearPlayerHelpHintHideTimeout = useCallback(() => {
+    if (playerHelpHintHideTimeoutRef.current !== null) {
+      window.clearTimeout(playerHelpHintHideTimeoutRef.current);
+      playerHelpHintHideTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearPlayerHelpHintIdleTimeout = useCallback(() => {
+    if (playerHelpHintIdleTimeoutRef.current !== null) {
+      window.clearTimeout(playerHelpHintIdleTimeoutRef.current);
+      playerHelpHintIdleTimeoutRef.current = null;
+    }
+  }, []);
+
+  const showPlayerHelpHintToast = useCallback(() => {
+    playerHelpHintSeenRef.current = true;
+    clearPlayerHelpHintHideTimeout();
+    setShowPlayerHelpHint(true);
+    playerHelpHintHideTimeoutRef.current = window.setTimeout(() => {
+      setShowPlayerHelpHint(false);
+      playerHelpHintHideTimeoutRef.current = null;
+    }, 5000);
+  }, [clearPlayerHelpHintHideTimeout]);
+
+  const schedulePlayerHelpHintOnIdle = useCallback(() => {
+    clearPlayerHelpHintIdleTimeout();
+    playerHelpHintIdleTimeoutRef.current = window.setTimeout(() => {
+      showPlayerHelpHintToast();
+      playerHelpHintIdleTimeoutRef.current = null;
+    }, 60000);
+  }, [clearPlayerHelpHintIdleTimeout, showPlayerHelpHintToast]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    showPlayerHelpHintToast();
+    schedulePlayerHelpHintOnIdle();
+
+    const handlePlayerActivity = () => {
+      setShowPlayerHelpHint(false);
+      clearPlayerHelpHintHideTimeout();
+      schedulePlayerHelpHintOnIdle();
+    };
+
+    const options: AddEventListenerOptions = { passive: true };
+    window.addEventListener('pointerdown', handlePlayerActivity, options);
+    window.addEventListener('keydown', handlePlayerActivity, options);
+    window.addEventListener('touchstart', handlePlayerActivity, options);
+
+    return () => {
+      window.removeEventListener('pointerdown', handlePlayerActivity);
+      window.removeEventListener('keydown', handlePlayerActivity);
+      window.removeEventListener('touchstart', handlePlayerActivity);
+      clearPlayerHelpHintHideTimeout();
+      clearPlayerHelpHintIdleTimeout();
+    };
+  }, [
+    clearPlayerHelpHintHideTimeout,
+    clearPlayerHelpHintIdleTimeout,
+    schedulePlayerHelpHintOnIdle,
+    showPlayerHelpHintToast,
+  ]);
 
   useEffect(() => {
     if (typeof document === 'undefined') {
@@ -2089,6 +2160,11 @@ export default function PlayerPage() {
         className="player-fire-page relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white lg:flex-row lg:pb-0"
       >
         <div className="ember-overlay" aria-hidden="true" />
+        {showPlayerHelpHint && (
+          <div className="pointer-events-none fixed left-1/2 top-1/2 z-50 w-[min(92vw,560px)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-amber-400/25 bg-black/55 px-4 py-3 text-center text-xs font-semibold text-amber-100/80 shadow-[0_0_24px_-10px_rgba(251,191,36,0.65)] backdrop-blur-xl">
+            {PLAYER_HELP_HINT_MESSAGE}
+          </div>
+        )}
 
         <header className="fire-panel fire-orange sticky top-0 z-30 shrink-0 border-b border-amber-500/20 bg-black/65 px-3 py-2.5 backdrop-blur-2xl lg:hidden">
           <div className="flex items-center justify-between gap-2">
@@ -2842,6 +2918,25 @@ export default function PlayerPage() {
 
             {activeView === 'bonus-events' && (
               <div className="-mb-[200px] space-y-5 pb-0 sm:space-y-6">
+                <AnimatePresence>
+                  {bonusVanishedToast ? (
+                    <motion.div
+                      key="bonus-events-vanish"
+                      initial={{ opacity: 0, y: -6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: 0.35 }}
+                      className="flex items-center gap-2 rounded-2xl border border-amber-400/30 bg-gradient-to-r from-amber-500/20 to-rose-500/15 px-3 py-2.5 text-xs font-semibold text-amber-100 shadow-lg shadow-amber-900/20"
+                    >
+                      <span className="text-lg" aria-hidden>
+                        ✨
+                      </span>
+                      <span>
+                        A bonus was just claimed and vanished. Keep watching for the next drop.
+                      </span>
+                    </motion.div>
+                  ) : null}
+                </AnimatePresence>
                 <div
                   className="fire-panel fire-purple group/bonus relative flex flex-col justify-start overflow-hidden rounded-3xl border border-violet-400/35 bg-gradient-to-br from-violet-950/70 via-black/55 to-fuchsia-950/30 px-4 pb-4 pt-0 shadow-[0_0_40px_-12px_rgba(139,92,246,0.35)] backdrop-blur-xl sm:px-6 sm:pb-6 sm:pt-0"
                   onPointerEnter={() => setBonusStripPaused(true)}
@@ -2851,26 +2946,6 @@ export default function PlayerPage() {
                     className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-fuchsia-500/20 blur-3xl"
                     aria-hidden
                   />
-                  <AnimatePresence>
-                    {bonusVanishedToast ? (
-                      <motion.div
-                        key="bonus-events-vanish"
-                        initial={{ opacity: 0, y: -6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -8 }}
-                        transition={{ duration: 0.35 }}
-                        className="mb-3 flex items-center gap-2 rounded-2xl border border-amber-400/30 bg-gradient-to-r from-amber-500/20 to-rose-500/15 px-3 py-2.5 text-xs font-semibold text-amber-100 shadow-lg shadow-amber-900/20"
-                      >
-                        <span className="text-lg" aria-hidden>
-                          ✨
-                        </span>
-                        <span>
-                          A bonus was just claimed and vanished. Keep watching for the next drop.
-                        </span>
-                      </motion.div>
-                    ) : null}
-                  </AnimatePresence>
-
                   {playerBonusEvents.length === 0 ? (
                     <div className="rounded-3xl border border-dashed border-violet-400/25 bg-black/25 px-5 py-12 text-center">
                       <p className="text-4xl" aria-hidden>
