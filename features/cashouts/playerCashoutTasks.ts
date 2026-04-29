@@ -15,7 +15,7 @@ import {
 import { auth, db } from '@/lib/firebase/client';
 import { recordFinancialEvent } from '@/features/risk/playerRisk';
 
-export type PlayerCashoutTaskStatus = 'pending' | 'in_progress' | 'completed';
+export type PlayerCashoutTaskStatus = 'pending' | 'in_progress' | 'completed' | 'declined';
 export type PlayerCashoutPayoutMethod = 'qr' | 'app';
 
 export type PlayerCashoutTask = {
@@ -140,6 +140,24 @@ export function getPlayerCashoutTaskCountdown(task: PlayerCashoutTask) {
   }
 
   return Math.max(0, task.expiresAt.toMillis() - Date.now());
+}
+
+/**
+ * When a task is in progress under another handler's claim, hide from other viewers' active lists.
+ * Expired windows still report effective `pending`, so competing staff can reclaim.
+ */
+export function isPlayerCashoutHandledBySomeoneElse(task: PlayerCashoutTask, viewerUid: string) {
+  const effective = getEffectivePlayerCashoutTaskStatus(task);
+  if (effective !== 'in_progress') {
+    return false;
+  }
+
+  const handlerUid = String(task.assignedHandlerUid || '').trim();
+  if (!handlerUid) {
+    return false;
+  }
+
+  return handlerUid !== String(viewerUid || '').trim();
 }
 
 async function getCurrentUserIdentity() {
@@ -390,8 +408,84 @@ export async function declinePlayerCashoutTaskForCurrentHandler(taskId: string) 
   });
 }
 
+export async function declinePlayerCashoutTaskByCoadmin(taskId: string) {
+  const taskRef = doc(db, 'playerCashoutTasks', taskId);
+
+  await runTransaction(db, async (transaction) => {
+    const taskSnap = await transaction.get(taskRef);
+
+    if (!taskSnap.exists()) {
+      throw new Error('Cashout task not found.');
+    }
+
+    const taskData = taskSnap.data() as Omit<PlayerCashoutTask, 'id'>;
+    const effectiveStatus = getEffectivePlayerCashoutTaskStatus(toTask(taskSnap.id, taskData));
+
+    if (effectiveStatus !== 'pending' && effectiveStatus !== 'in_progress') {
+      throw new Error('Only active cashout tasks can be declined.');
+    }
+
+    const amountNpr = Math.max(0, Math.round(Number(taskData.amountNpr || 0)));
+    const playerRef = doc(db, 'users', taskData.playerUid);
+    const playerSnap = await transaction.get(playerRef);
+    const playerCash = playerSnap.exists()
+      ? Math.max(0, Number((playerSnap.data() as { cash?: number }).cash || 0))
+      : 0;
+
+    transaction.update(taskRef, {
+      status: 'declined',
+      expiresAt: null,
+      completedAt: serverTimestamp(),
+    });
+
+    // Refund declined player cashout back to player's cash balance.
+    if (taskData.cashDeductedOnRequest === true && amountNpr > 0) {
+      transaction.set(
+        playerRef,
+        {
+          cash: playerCash + amountNpr,
+        },
+        { merge: true }
+      );
+    }
+  });
+}
+
 function sortByNewest(tasks: PlayerCashoutTask[]) {
   return [...tasks].sort((left, right) => getSnapshotMs(right.createdAt) - getSnapshotMs(left.createdAt));
+}
+
+function getTaskLedgerSortMs(task: PlayerCashoutTask) {
+  return Math.max(getSnapshotMs(task.completedAt), getSnapshotMs(task.createdAt));
+}
+
+function sortByLedgerNewest(tasks: PlayerCashoutTask[]) {
+  return [...tasks].sort(
+    (left, right) => getTaskLedgerSortMs(right) - getTaskLedgerSortMs(left)
+  );
+}
+
+/** Player payout tasks claimed or completed by a specific staff/carer handler. */
+export function listenPlayerCashoutTasksByAssignedHandler(
+  assignedHandlerUid: string,
+  onChange: (tasks: PlayerCashoutTask[]) => void,
+  onError?: (error: Error) => void
+) {
+  const tasksQuery = query(
+    collection(db, 'playerCashoutTasks'),
+    where('assignedHandlerUid', '==', assignedHandlerUid)
+  );
+
+  return onSnapshot(
+    tasksQuery,
+    (snapshot) => {
+      const tasks = snapshot.docs.map((docSnap) =>
+        toTask(docSnap.id, docSnap.data() as Omit<PlayerCashoutTask, 'id'>)
+      );
+      onChange(sortByLedgerNewest(tasks));
+    },
+    (error) => onError?.(error as Error)
+  );
 }
 
 export function listenPlayerCashoutTasksByCoadmin(

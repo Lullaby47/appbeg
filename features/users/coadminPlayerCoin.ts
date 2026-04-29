@@ -72,5 +72,72 @@ export async function adjustPlayerCoin({
   }
 }
 
+/**
+ * Add or remove whole-number cash for a player in the current user's coadmin scope.
+ * Same rules as {@link adjustPlayerCoin}; deductions cannot make cash negative.
+ */
+export async function adjustPlayerCash({
+  playerUid,
+  delta,
+}: {
+  playerUid: string;
+  delta: number;
+}) {
+  if (!Number.isFinite(delta) || delta === 0) {
+    throw new Error('Amount must be a non-zero number.');
+  }
+
+  if (!Number.isInteger(delta)) {
+    throw new Error('Use whole numbers only (no decimals).');
+  }
+
+  const coadminUid = await getCurrentUserCoadminUid();
+  const playerRef = doc(db, 'users', playerUid);
+
+  await runTransaction(db, async (transaction) => {
+    const playerSnap = await transaction.get(playerRef);
+
+    if (!playerSnap.exists()) {
+      throw new Error('Player not found.');
+    }
+
+    const data = playerSnap.data() as {
+      role?: string;
+      cash?: number;
+      coadminUid?: string | null;
+      createdBy?: string | null;
+    };
+
+    if (String(data.role || '').toLowerCase() !== 'player') {
+      throw new Error('This account is not a player.');
+    }
+
+    if (!belongsToCoadmin(data, coadminUid)) {
+      throw new Error('This player is not in your scope.');
+    }
+
+    const current = Math.max(0, Math.floor(Number(data.cash ?? 0)));
+    const next = current + delta;
+
+    if (next < 0) {
+      throw new Error('Not enough cash to deduct that amount.');
+    }
+
+    transaction.update(playerRef, { cash: next });
+  });
+
+  const absAmount = Math.abs(delta);
+  try {
+    await recordFinancialEvent({
+      playerUid,
+      coadminUid,
+      amountNpr: absAmount,
+      type: delta > 0 ? 'coadmin_cash_add' : 'coadmin_cash_deduct',
+    });
+  } catch (err) {
+    console.error('adjustPlayerCash: balance updated but activity log failed', err);
+  }
+}
+
 /** @deprecated Use `adjustPlayerCoin` — same behavior, kept for older imports. */
 export const adjustPlayerCoinByCoadmin = adjustPlayerCoin;

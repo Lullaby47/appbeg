@@ -1,7 +1,15 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  query,
+  where,
+} from 'firebase/firestore';
 import imageCompression from 'browser-image-compression';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
@@ -40,7 +48,10 @@ import {
   unblockPlayer,
   unblockStaff,
 } from '@/features/users/adminUsers';
-import { adjustPlayerCoin } from '@/features/users/coadminPlayerCoin';
+import {
+  adjustPlayerCash,
+  adjustPlayerCoin,
+} from '@/features/users/coadminPlayerCoin';
 
 import {
   GameLogin,
@@ -58,13 +69,18 @@ import {
 import {
   CarerCashoutRequest,
   completeCarerCashoutRequest,
+  declineCarerCashoutRequest,
+  listenCarerCashoutsByCarerUid,
   listenPendingCashoutsByCoadmin,
 } from '@/features/cashouts/carerCashouts';
 import {
   completePlayerCashoutTask,
+  declinePlayerCashoutTaskByCoadmin,
   getEffectivePlayerCashoutTaskStatus,
+  isPlayerCashoutHandledBySomeoneElse,
   getPlayerCashoutTaskCountdown,
   getPlayerCashoutPaymentDisplay,
+  listenPlayerCashoutTasksByAssignedHandler,
   listenPlayerCashoutTasksByCoadmin,
   PlayerCashoutTask,
   startPlayerCashoutTask,
@@ -235,7 +251,9 @@ export default function CoadminPage() {
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerUser | null>(null);
   const [deletePlayerTarget, setDeletePlayerTarget] = useState<PlayerUser | null>(null);
   const [playerCoinAmountInput, setPlayerCoinAmountInput] = useState('');
+  const [playerCashAmountInput, setPlayerCashAmountInput] = useState('');
   const [playerCoinAdjustBusy, setPlayerCoinAdjustBusy] = useState(false);
+  const [playerCashAdjustBusy, setPlayerCashAdjustBusy] = useState(false);
 
   const [gameName, setGameName] = useState('');
   const [gameUsername, setGameUsername] = useState('');
@@ -294,6 +312,9 @@ export default function CoadminPage() {
   >([]);
   const [pendingCashouts, setPendingCashouts] = useState<CarerCashoutRequest[]>([]);
   const [cashoutDoneAmountById, setCashoutDoneAmountById] = useState<Record<string, string>>({});
+  const [staffLedgerPayoutTasks, setStaffLedgerPayoutTasks] = useState<PlayerCashoutTask[]>([]);
+  const [staffLedgerClaimPay, setStaffLedgerClaimPay] = useState<CarerCashoutRequest[]>([]);
+  const [staffLiveCashBoxNpr, setStaffLiveCashBoxNpr] = useState<number | null>(null);
   const [carerRechargeRedeemTotals, setCarerRechargeRedeemTotals] = useState<
     Record<string, CarerRechargeRedeemTotals>
   >({});
@@ -356,15 +377,22 @@ export default function CoadminPage() {
     (total, user) => total + (unreadCounts[user.uid] || 0),
     0
   );
-  const visibleRecentCarerEscalations = recentCarerEscalations.filter(
-    (alert) => !dismissedCarerEscalationIds.includes(alert.id)
-  );
+  const visibleRecentCarerEscalations = recentCarerEscalations
+    .filter((alert) => !dismissedCarerEscalationIds.includes(alert.id))
+    .slice(0, 24);
+  const coadminCashoutViewerUid = auth.currentUser?.uid || '';
   const visiblePlayerCashoutTasks = playerCashoutTasks
+    .filter((task) => {
+      if (isPlayerCashoutHandledBySomeoneElse(task, coadminCashoutViewerUid)) {
+        return false;
+      }
+      const effective = getEffectivePlayerCashoutTaskStatus(task);
+      return effective !== 'completed' && effective !== 'declined';
+    })
     .map((task) => ({
       ...task,
       status: getEffectivePlayerCashoutTaskStatus(task),
-    }))
-    .filter((task) => task.status !== 'completed');
+    }));
   const completedPlayerCashoutTasks = playerCashoutTasks
     .map((task) => ({
       ...task,
@@ -372,6 +400,44 @@ export default function CoadminPage() {
     }))
     .filter((task) => task.status === 'completed');
   const myBonusEvents = bonusEvents;
+
+  const staffInspectionAlerts = useMemo(() => {
+    if (!selectedStaff) {
+      return [] as CarerEscalationAlert[];
+    }
+    const staffUid = selectedStaff.uid;
+    const handledPlayerIds = new Set(
+      staffLedgerPayoutTasks.map((task) => task.playerUid).filter(Boolean)
+    );
+    return [...recentCarerEscalations]
+      .filter((alert) => !dismissedCarerEscalationIds.includes(alert.id))
+      .filter((alert) => {
+        if (alert.createdByCarerUid === staffUid) {
+          return true;
+        }
+        if (alert.contextType !== 'cashbox_inquiry') {
+          return false;
+        }
+        const pid = alert.playerUid;
+        if (!pid || !handledPlayerIds.has(pid)) {
+          return false;
+        }
+        return (
+          alert.escalationFrom === 'player' ||
+          alert.escalationFrom === 'risk_auto' ||
+          !alert.escalationFrom
+        );
+      })
+      .sort(
+        (a, b) =>
+          (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0)
+      );
+  }, [
+    selectedStaff,
+    staffLedgerPayoutTasks,
+    recentCarerEscalations,
+    dismissedCarerEscalationIds,
+  ]);
 
   useEffect(() => {
     if (!message) {
@@ -925,7 +991,7 @@ export default function CoadminPage() {
               return;
             }
 
-            setRecentCarerEscalations(alerts.slice(0, 6));
+            setRecentCarerEscalations(alerts);
 
             if (!hasSeenCarerEscalationSnapshotRef.current) {
               hasSeenCarerEscalationSnapshotRef.current = true;
@@ -975,6 +1041,74 @@ export default function CoadminPage() {
       unsubscribe?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (!selectedStaff?.uid) {
+      setStaffLedgerPayoutTasks([]);
+      setStaffLedgerClaimPay([]);
+      setStaffLiveCashBoxNpr(null);
+      return;
+    }
+
+    const uid = selectedStaff.uid;
+    let cancelled = false;
+
+    const unsubscribePayoutLedger = listenPlayerCashoutTasksByAssignedHandler(
+      uid,
+      (tasks) => {
+        if (!cancelled) {
+          setStaffLedgerPayoutTasks(tasks);
+        }
+      },
+      (error) => {
+        if (!cancelled) {
+          setMessage(error.message || 'Could not load staff player cashout ledger.');
+        }
+      }
+    );
+
+    const unsubscribeClaimPayLedger = listenCarerCashoutsByCarerUid(
+      uid,
+      (requests) => {
+        if (!cancelled) {
+          setStaffLedgerClaimPay(requests);
+        }
+      },
+      (error) => {
+        if (!cancelled) {
+          setMessage(error.message || 'Could not load staff Claim Pay history.');
+        }
+      }
+    );
+
+    const profileRef = doc(db, 'users', uid);
+    const unsubscribeStaffProfile = onSnapshot(
+      profileRef,
+      (snapshot) => {
+        if (cancelled) {
+          return;
+        }
+        if (!snapshot.exists()) {
+          setStaffLiveCashBoxNpr(0);
+          return;
+        }
+        const data = snapshot.data() as { cashBoxNpr?: number };
+        setStaffLiveCashBoxNpr(Number(data.cashBoxNpr || 0));
+      },
+      (error) => {
+        if (!cancelled) {
+          setMessage(error.message || 'Could not monitor staff cash box.');
+        }
+      }
+    );
+
+    return () => {
+      cancelled = true;
+      unsubscribePayoutLedger();
+      unsubscribeClaimPayLedger();
+      unsubscribeStaffProfile();
+    };
+  }, [selectedStaff?.uid]);
 
   function playNotificationSound() {
     const audio = new Audio('/notification.mp3');
@@ -1439,6 +1573,44 @@ export default function CoadminPage() {
     }
   }
 
+  async function handleAdjustPlayerCash(player: PlayerUser, mode: 'add' | 'deduct') {
+    const raw = playerCashAmountInput.trim();
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setMessage('Enter a positive amount.');
+      return;
+    }
+
+    const amount = Math.floor(parsed);
+    if (amount <= 0) {
+      setMessage('Enter a positive amount.');
+      return;
+    }
+
+    const delta = mode === 'add' ? amount : -amount;
+
+    setPlayerCashAdjustBusy(true);
+    setMessage('');
+
+    try {
+      await adjustPlayerCash({ playerUid: player.uid, delta });
+      setMessage(
+        mode === 'add'
+          ? `Added ${amount} cash for ${player.username || 'player'}.`
+          : `Deducted ${amount} cash from ${player.username || 'player'}.`
+      );
+      setPlayerCashAmountInput('');
+
+      const list = await getUsersForCurrentCoadmin(getPlayers);
+      setPlayerList(list);
+      setSelectedPlayer(list.find((p) => p.uid === player.uid) ?? null);
+    } catch (err: any) {
+      setMessage(err?.message || 'Could not update cash balance.');
+    } finally {
+      setPlayerCashAdjustBusy(false);
+    }
+  }
+
   async function handleAdjustPlayerCoin(player: PlayerUser, mode: 'add' | 'deduct') {
     const raw = playerCoinAmountInput.trim();
     const parsed = Number(raw);
@@ -1528,6 +1700,28 @@ export default function CoadminPage() {
     }
   }
 
+  async function handleDeclineCashout(request: CarerCashoutRequest) {
+    setLoading(true);
+    setMessage('');
+    try {
+      await declineCarerCashoutRequest(request.id);
+      setCashoutDoneAmountById((current) => {
+        const next = { ...current };
+        delete next[request.id];
+        return next;
+      });
+      setMessage(
+        `Claim Pay declined for ${request.carerUsername}. ${formatUsdFromNprDisplay(
+          request.amountNpr || 0
+        )} added back to staff cash box.`
+      );
+    } catch (err: any) {
+      setMessage(err.message || 'Failed to decline cashout request.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleDismissCarerEscalation(alertId: string) {
     try {
       await dismissCarerEscalationAlertForCurrentUser(alertId);
@@ -1568,6 +1762,19 @@ export default function CoadminPage() {
       setMessage('Player cashout task completed.');
     } catch (error: any) {
       setMessage(error.message || 'Failed to complete player cashout task.');
+    } finally {
+      setPlayerCashoutTaskLoadingId(null);
+    }
+  }
+
+  async function handleDeclinePlayerCashoutTask(taskId: string) {
+    setPlayerCashoutTaskLoadingId(taskId);
+    setMessage('');
+    try {
+      await declinePlayerCashoutTaskByCoadmin(taskId);
+      setMessage('Player cashout task declined.');
+    } catch (error: any) {
+      setMessage(error.message || 'Failed to decline player cashout task.');
     } finally {
       setPlayerCashoutTaskLoadingId(null);
     }
@@ -2391,6 +2598,14 @@ export default function CoadminPage() {
                             >
                               Done
                             </button>
+                            <button
+                              type="button"
+                              disabled={loading}
+                              onClick={() => void handleDeclineCashout(request)}
+                              className="rounded-lg border border-red-400/40 bg-red-500/10 px-4 py-2 text-sm font-semibold text-red-100 hover:bg-red-500/20 disabled:opacity-60"
+                            >
+                              Decline
+                            </button>
                           </div>
                         </div>
                       </div>
@@ -2461,18 +2676,28 @@ export default function CoadminPage() {
                               </p>
                               {renderPlayerCashoutPayment(task)}
                             </div>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                void (isInProgress
-                                  ? handleCompletePlayerCashoutTask(task.id)
-                                  : handleStartPlayerCashoutTask(task.id))
-                              }
-                              disabled={playerCashoutTaskLoadingId === task.id}
-                              className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-60"
-                            >
-                              {playerCashoutTaskLoadingId === task.id ? 'Saving...' : actionLabel}
-                            </button>
+                            <div className="flex min-w-[130px] flex-col gap-2">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void (isInProgress
+                                    ? handleCompletePlayerCashoutTask(task.id)
+                                    : handleStartPlayerCashoutTask(task.id))
+                                }
+                                disabled={playerCashoutTaskLoadingId === task.id}
+                                className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-60"
+                              >
+                                {playerCashoutTaskLoadingId === task.id ? 'Saving...' : actionLabel}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleDeclinePlayerCashoutTask(task.id)}
+                                disabled={playerCashoutTaskLoadingId === task.id}
+                                className="rounded-lg border border-red-400/40 bg-red-500/10 px-4 py-2 text-sm font-semibold text-red-100 hover:bg-red-500/20 disabled:opacity-60"
+                              >
+                                {playerCashoutTaskLoadingId === task.id ? 'Saving...' : 'Decline'}
+                              </button>
+                            </div>
                           </div>
                         </div>
                       );
@@ -2790,6 +3015,251 @@ export default function CoadminPage() {
               hasMoreOlderMessages={pagedCoadminChat.hasMoreOlder}
               loadingOlderMessages={pagedCoadminChat.loadingOlder}
               onLoadOlderMessages={pagedCoadminChat.loadOlder}
+              renderSelectedExtras={(staffMember) => {
+                const completedPayouts = staffLedgerPayoutTasks.filter(
+                  (task) =>
+                    getEffectivePlayerCashoutTaskStatus(task) === 'completed'
+                );
+                const declinedPayouts = staffLedgerPayoutTasks.filter(
+                  (task) =>
+                    getEffectivePlayerCashoutTaskStatus(task) === 'declined'
+                );
+                const activePayouts = staffLedgerPayoutTasks.filter((task) => {
+                  const effective = getEffectivePlayerCashoutTaskStatus(task);
+                  return effective !== 'completed' && effective !== 'declined';
+                });
+
+                return (
+                  <div className="mt-6 space-y-5 border-t border-white/15 pt-6 text-left">
+                    <div>
+                      <h4 className="text-sm font-black uppercase tracking-wide text-teal-200/95">
+                        Staff oversight snapshot
+                      </h4>
+                      <p className="mt-1 text-xs leading-relaxed text-neutral-400">
+                        Tracks player cashouts where this login started or closed the payout,
+                        Claim Pay (cash box) payouts to you from this worker, linked inquiries about
+                        those players (newer inquires carry player linkage).
+                      </p>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div className="rounded-2xl border border-emerald-500/35 bg-emerald-950/30 p-4">
+                        <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-100/85">
+                          Live cash box
+                        </p>
+                        <p className="mt-2 text-2xl font-black text-emerald-50">
+                          {staffLiveCashBoxNpr === null
+                            ? '…'
+                            : formatUsdFromNprDisplay(staffLiveCashBoxNpr)}
+                        </p>
+                      </div>
+                      <div className="rounded-2xl border border-cyan-500/35 bg-cyan-950/25 p-4">
+                        <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-100/85">
+                          Player cashouts (ledger)
+                        </p>
+                        <p className="mt-2 text-lg font-bold text-cyan-50">
+                          {staffLedgerPayoutTasks.length} total · {completedPayouts.length} done ·{' '}
+                          {declinedPayouts.length} declined · {activePayouts.length} active
+                        </p>
+                      </div>
+                      <div className="rounded-2xl border border-amber-500/35 bg-amber-950/25 p-4">
+                        <p className="text-[11px] font-bold uppercase tracking-wide text-amber-100/85">
+                          Claim Pay sent
+                        </p>
+                        <p className="mt-2 text-lg font-bold text-amber-50">
+                          {staffLedgerClaimPay.length} record
+                          {staffLedgerClaimPay.length === 1 ? '' : 's'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-cyan-500/35 bg-neutral-950/40 p-4">
+                      <h5 className="text-xs font-black uppercase tracking-wide text-cyan-100">
+                        Player payouts handled ({staffLedgerPayoutTasks.length})
+                      </h5>
+                      <p className="mt-1 text-[11px] text-cyan-100/65">
+                        Task ID, player, payout method, timestamps, ledger status — same details you
+                        would verify on Tasks.
+                      </p>
+                      {staffLedgerPayoutTasks.length === 0 ? (
+                        <p className="mt-3 text-sm text-neutral-500">
+                          No routed player cashouts for {staffMember.username} yet.
+                        </p>
+                      ) : (
+                        <div className="mt-3 max-h-[26rem] space-y-3 overflow-y-auto pr-1">
+                          {staffLedgerPayoutTasks.map((task) => {
+                            const effective = getEffectivePlayerCashoutTaskStatus(task);
+                            const rewardNpr = Math.max(
+                              1,
+                              Math.round(Number(task.amountNpr || 0) * 0.05)
+                            );
+                            return (
+                              <div
+                                key={task.id}
+                                className="rounded-xl border border-white/15 bg-black/35 p-3 text-xs"
+                              >
+                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                  <div className="space-y-1">
+                                    <p className="text-sm font-semibold text-white">
+                                      {task.playerUsername}
+                                    </p>
+                                    <p className="text-[11px] text-neutral-500">
+                                      Task ID: {task.id}
+                                    </p>
+                                    <p className="text-[11px] text-cyan-100/80">
+                                      Amount: {formatUsdFromNprDisplay(task.amountNpr || 0)}{' '}
+                                      <span className="text-neutral-500">
+                                        (handler reward ≈{' '}
+                                        {formatUsdFromNprDisplay(rewardNpr)})
+                                      </span>
+                                    </p>
+                                    <p className="text-[11px] text-neutral-400">
+                                      Status:{' '}
+                                      <span className="font-semibold text-white">{effective}</span>
+                                      {' · '}Created{' '}
+                                      {formatDateTime(task.createdAt)}{' '}
+                                      {task.completedAt ? (
+                                        <>· Completed {formatDateTime(task.completedAt)} </>
+                                      ) : null}
+                                    </p>
+                                    {task.status === 'in_progress' && task.expiresAt ? (
+                                      <p className="text-[11px] text-orange-100/85">
+                                        Window: {formatDateTime(task.startedAt)} →{' '}
+                                        {formatDateTime(task.expiresAt)}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                </div>
+                                <div className="mt-2 border-t border-white/10 pt-2">
+                                  {renderPlayerCashoutPayment(task)}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="rounded-2xl border border-emerald-500/35 bg-neutral-950/40 p-4">
+                      <h5 className="text-xs font-black uppercase tracking-wide text-emerald-100">
+                        Claim Pay & payment trail ({staffLedgerClaimPay.length})
+                      </h5>
+                      <p className="mt-1 text-[11px] text-emerald-100/65">
+                        Each row is a Request-to-coadmin payout. Includes payout info they submitted &
+                        settle state.
+                      </p>
+                      {staffLedgerClaimPay.length === 0 ? (
+                        <p className="mt-3 text-sm text-neutral-500">
+                          No Claim Pay submissions recorded for this account.
+                        </p>
+                      ) : (
+                        <div className="mt-3 max-h-80 space-y-3 overflow-y-auto pr-1">
+                          {staffLedgerClaimPay.map((request) => (
+                            <div
+                              key={request.id}
+                              className="rounded-xl border border-white/15 bg-black/35 p-3 text-xs"
+                            >
+                              <div className="flex flex-wrap items-start justify-between gap-2">
+                                <div>
+                                  <p className="text-sm font-semibold text-white">
+                                    {formatUsdFromNprDisplay(request.amountNpr || 0)} ·{' '}
+                                    <span className="text-neutral-300">{request.status}</span>
+                                  </p>
+                                  <p className="text-[11px] text-neutral-500">ID: {request.id}</p>
+                                  <p className="text-[11px] text-neutral-400">
+                                    Requested {formatDateTime(request.createdAt)}
+                                    {request.completedAt ? (
+                                      <> · Settled {formatDateTime(request.completedAt)}</>
+                                    ) : null}
+                                  </p>
+                                  {typeof request.completedAmountNpr === 'number' ? (
+                                    <p className="text-[11px] text-emerald-100/90">
+                                      Done amount:{' '}
+                                      {formatUsdFromNprDisplay(request.completedAmountNpr)}
+                                      {' · '}
+                                      Remaining back to cash box:{' '}
+                                      {formatUsdFromNprDisplay(request.remainingAmountNpr || 0)}
+                                    </p>
+                                  ) : null}
+                                </div>
+                              </div>
+                              {request.paymentDetails ? (
+                                <pre className="mt-2 whitespace-pre-wrap rounded-lg border border-white/10 bg-black/40 p-2 text-[11px] text-neutral-200">
+                                  {request.paymentDetails}
+                                </pre>
+                              ) : (
+                                <p className="mt-2 text-[11px] text-neutral-500">
+                                  Payment details omitted.
+                                </p>
+                              )}
+                              {request.paymentQrUrl ? (
+                                <a
+                                  href={request.paymentQrUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="mt-2 inline-block text-[11px] font-semibold text-cyan-300 hover:text-cyan-200"
+                                >
+                                  Open Claim Pay QR ↗
+                                </a>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="rounded-2xl border border-orange-400/35 bg-orange-950/30 p-4">
+                      <h5 className="text-xs font-black uppercase tracking-wide text-orange-100">
+                        Inquiries & alerts ({staffInspectionAlerts.length})
+                      </h5>
+                      <p className="mt-1 text-[11px] text-orange-50/85">
+                        Includes payout messages initiated by{' '}
+                        <span className="font-semibold text-white">{staffMember.username}</span> and,
+                        player or risk payouts linked to cashouts routed through them.
+                      </p>
+                      {staffInspectionAlerts.length === 0 ? (
+                        <p className="mt-3 text-sm text-neutral-500">
+                          No linked alerts in the current feed.
+                        </p>
+                      ) : (
+                        <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
+                          {staffInspectionAlerts.map((alert) => {
+                            const tag =
+                              alert.createdByCarerUid === staffMember.uid
+                                ? 'Sent by worker'
+                                : alert.escalationFrom === 'player'
+                                  ? 'Player payout inquiry'
+                                  : alert.escalationFrom === 'risk_auto'
+                                    ? 'Risk system'
+                                    : 'Linked payout inquiry';
+                            return (
+                              <div
+                                key={alert.id}
+                                className="rounded-lg border border-white/10 bg-black/40 p-2 text-[11px] text-neutral-200"
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className="font-semibold text-white">{tag}</span>
+                                  <span className="text-neutral-500">
+                                    {formatDateTime(alert.createdAt)}
+                                  </span>
+                                </div>
+                                {alert.playerUsername ? (
+                                  <p className="mt-1 text-[11px] text-cyan-100/85">
+                                    Player hint: {alert.playerUsername}
+                                  </p>
+                                ) : null}
+                                <p className="mt-1 whitespace-pre-wrap text-neutral-100">
+                                  {alert.message}
+                                </p>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              }}
             />
           )}
 
@@ -2965,77 +3435,117 @@ export default function CoadminPage() {
               onlineByUid={coadminOnlineByUid}
               nameMode="coadmin"
               renderSelectedExtras={(user) => (
-                <div className="mt-5 w-full max-w-md rounded-2xl border border-emerald-500/20 bg-emerald-950/30 p-4">
-                  <p className="text-xs font-bold uppercase tracking-wider text-emerald-200/80">
-                    Coin balance
-                  </p>
-                  <p className="mt-1 text-2xl font-bold text-white tabular-nums">
-                    {Math.max(0, Math.floor(Number(user.coin || 0))).toLocaleString()} coin
-                  </p>
-                  {user.cash != null && (
-                    <p className="mt-1 text-sm text-neutral-500">
-                      Cash (view only):{' '}
-                      <span className="text-neutral-300">
-                        {Math.max(0, Math.floor(Number(user.cash || 0))).toLocaleString()}
+                <div className="mt-5 w-full max-w-md space-y-4">
+                  <div className="rounded-2xl border border-emerald-500/20 bg-emerald-950/30 p-4">
+                    <p className="text-xs font-bold uppercase tracking-wider text-emerald-200/80">
+                      Coin balance
+                    </p>
+                    <p className="mt-1 text-2xl font-bold text-white tabular-nums">
+                      {Math.max(0, Math.floor(Number(user.coin || 0))).toLocaleString()} coin
+                    </p>
+                    <p className="mt-1 text-sm text-neutral-400">
+                      Total recharged:{' '}
+                      <span className="font-semibold text-emerald-200">
+                        {Math.max(
+                          0,
+                          Math.floor(Number(user.totalRechargeAmount || 0))
+                        ).toLocaleString()}
                       </span>
                     </p>
-                  )}
-                  <p className="mt-1 text-sm text-neutral-400">
-                    Total recharged:{' '}
-                    <span className="font-semibold text-emerald-200">
-                      {Math.max(
-                        0,
-                        Math.floor(Number(user.totalRechargeAmount || 0))
-                      ).toLocaleString()}
-                    </span>
-                  </p>
-                  <p className="mt-0.5 text-sm text-neutral-400">
-                    Total redeemed:{' '}
-                    <span className="font-semibold text-rose-200">
-                      {Math.max(
-                        0,
-                        Math.floor(Number(user.totalRedeemAmount || 0))
-                      ).toLocaleString()}
-                    </span>
-                  </p>
-                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
-                    <label className="min-w-0 flex-1 text-sm text-neutral-400">
-                      Amount
-                      <input
-                        type="number"
-                        min={1}
-                        step={1}
-                        inputMode="numeric"
-                        value={playerCoinAmountInput}
-                        onChange={(e) => setPlayerCoinAmountInput(e.target.value)}
-                        disabled={playerCoinAdjustBusy}
-                        placeholder="0"
-                        className="mt-1 w-full rounded-xl border border-white/15 bg-black/40 px-3 py-2 text-white outline-none focus:border-emerald-500/50 disabled:opacity-50"
-                      />
-                    </label>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void handleAdjustPlayerCoin(user, 'add')}
-                        disabled={playerCoinAdjustBusy || blocking}
-                        className="whitespace-nowrap rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-black hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {playerCoinAdjustBusy ? '...' : 'Add coin'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleAdjustPlayerCoin(user, 'deduct')}
-                        disabled={playerCoinAdjustBusy || blocking}
-                        className="whitespace-nowrap rounded-xl border border-rose-500/50 bg-rose-950/40 px-4 py-2.5 text-sm font-bold text-rose-100 hover:bg-rose-900/50 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {playerCoinAdjustBusy ? '...' : 'Deduct coin'}
-                      </button>
+                    <p className="mt-0.5 text-sm text-neutral-400">
+                      Total redeemed:{' '}
+                      <span className="font-semibold text-rose-200">
+                        {Math.max(
+                          0,
+                          Math.floor(Number(user.totalRedeemAmount || 0))
+                        ).toLocaleString()}
+                      </span>
+                    </p>
+                    <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
+                      <label className="min-w-0 flex-1 text-sm text-neutral-400">
+                        Amount (coin)
+                        <input
+                          type="number"
+                          min={1}
+                          step={1}
+                          inputMode="numeric"
+                          value={playerCoinAmountInput}
+                          onChange={(e) => setPlayerCoinAmountInput(e.target.value)}
+                          disabled={playerCoinAdjustBusy}
+                          placeholder="0"
+                          className="mt-1 w-full rounded-xl border border-white/15 bg-black/40 px-3 py-2 text-white outline-none focus:border-emerald-500/50 disabled:opacity-50"
+                        />
+                      </label>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleAdjustPlayerCoin(user, 'add')}
+                          disabled={playerCoinAdjustBusy || blocking}
+                          className="whitespace-nowrap rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-black hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {playerCoinAdjustBusy ? '...' : 'Add coin'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleAdjustPlayerCoin(user, 'deduct')}
+                          disabled={playerCoinAdjustBusy || blocking}
+                          className="whitespace-nowrap rounded-xl border border-rose-500/50 bg-rose-950/40 px-4 py-2.5 text-sm font-bold text-rose-100 hover:bg-rose-900/50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {playerCoinAdjustBusy ? '...' : 'Deduct coin'}
+                        </button>
+                      </div>
                     </div>
+                    <p className="mt-2 text-xs text-neutral-500">
+                      Whole numbers only. Deductions cannot make coin go below zero.
+                    </p>
                   </div>
-                  <p className="mt-2 text-xs text-neutral-500">
-                    Whole numbers only. Deductions cannot make coin go below zero. Cash
-                    is shown for reference; only coin is changed here.
-                  </p>
+
+                  <div className="rounded-2xl border border-sky-500/25 bg-sky-950/25 p-4">
+                    <p className="text-xs font-bold uppercase tracking-wider text-sky-200/85">
+                      Cash balance
+                    </p>
+                    <p className="mt-1 text-xl font-bold text-white tabular-nums">
+                      {formatUsdFromNprDisplay(Math.max(0, Math.floor(Number(user.cash ?? 0))))}
+                    </p>
+                    <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
+                      <label className="min-w-0 flex-1 text-sm text-neutral-400">
+                        Amount (cash)
+                        <input
+                          type="number"
+                          min={1}
+                          step={1}
+                          inputMode="numeric"
+                          value={playerCashAmountInput}
+                          onChange={(e) => setPlayerCashAmountInput(e.target.value)}
+                          disabled={playerCashAdjustBusy}
+                          placeholder="0"
+                          className="mt-1 w-full rounded-xl border border-white/15 bg-black/40 px-3 py-2 text-white outline-none focus:border-sky-500/50 disabled:opacity-50"
+                        />
+                      </label>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleAdjustPlayerCash(user, 'add')}
+                          disabled={playerCashAdjustBusy || blocking}
+                          className="whitespace-nowrap rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-bold text-black hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {playerCashAdjustBusy ? '...' : 'Add cash'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleAdjustPlayerCash(user, 'deduct')}
+                          disabled={playerCashAdjustBusy || blocking}
+                          className="whitespace-nowrap rounded-xl border border-rose-500/50 bg-rose-950/40 px-4 py-2.5 text-sm font-bold text-rose-100 hover:bg-rose-900/50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {playerCashAdjustBusy ? '...' : 'Deduct cash'}
+                        </button>
+                      </div>
+                    </div>
+                    <p className="mt-2 text-xs text-neutral-500">
+                      Same increments as balances elsewhere (whole numbers). Deductions cannot make cash
+                      go below zero.
+                    </p>
+                  </div>
                 </div>
               )}
             />

@@ -27,7 +27,9 @@ export type FinancialEventType =
   | 'recharge'
   | 'redeem'
   | 'coadmin_coin_add'
-  | 'coadmin_coin_deduct';
+  | 'coadmin_coin_deduct'
+  | 'coadmin_cash_add'
+  | 'coadmin_cash_deduct';
 
 export type FinancialActivityWindow = {
   cashouts: number;
@@ -908,6 +910,7 @@ export async function sendRiskAlertToStaff(values: {
   await addDoc(collection(db, 'carerEscalationAlerts'), {
     coadminUid: values.coadminUid,
     contextType: 'cashbox_inquiry',
+    escalationFrom: 'risk_auto',
     taskId: null,
     playerUid: values.playerUid,
     playerUsername: values.playerUsername,

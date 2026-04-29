@@ -83,6 +83,8 @@ export type CarerEscalationAlert = {
   id: string;
   coadminUid: string;
   contextType?: 'task_help' | 'cashbox_inquiry';
+  /** Who raised this alert (helps coadmin filter staff/player inquiries). */
+  escalationFrom?: 'carer' | 'staff' | 'player' | 'risk_auto' | string | null;
   taskId?: string | null;
   playerUid?: string | null;
   playerUsername?: string | null;
@@ -346,11 +348,17 @@ async function getCurrentUserIdentityForEscalation() {
     throw new Error('Current user profile not found.');
   }
 
-  const userData = userSnap.data() as { username?: string };
+  const userData = userSnap.data() as {
+    username?: string;
+    role?: string;
+    coadminUid?: string | null;
+  };
 
   return {
     uid: currentUser.uid,
     username: userData.username?.trim() || 'User',
+    role: String(userData.role || '').trim().toLowerCase(),
+    coadminUid: userData.coadminUid ?? null,
   };
 }
 
@@ -1417,6 +1425,7 @@ export async function sendCarerEscalationAlert(task: CarerTask) {
   await addDoc(collection(db, 'carerEscalationAlerts'), {
     coadminUid: task.coadminUid,
     contextType: 'task_help',
+    escalationFrom: 'carer',
     taskId: task.id,
     playerUid: task.playerUid,
     playerUsername: task.playerUsername || 'Player',
@@ -1431,25 +1440,45 @@ export async function sendCarerEscalationAlert(task: CarerTask) {
 export async function sendCarerCashboxInquiryAlert(values: {
   coadminUid: string;
   message: string;
+  /** When the sender is the player, pass their UID so coadmins can audit inquiries. */
+  playerUid?: string | null;
+  playerUsername?: string | null;
 }) {
-  const { uid: senderUid, username: senderUsername } =
-    await getCurrentUserIdentityForEscalation();
+  const sender = await getCurrentUserIdentityForEscalation();
   const cleanMessage = values.message.trim();
 
   if (!cleanMessage) {
     throw new Error('Inquiry message is required.');
   }
 
+  const explicitPlayerUid = String(values.playerUid || '').trim();
+  const explicitPlayerUsername = String(values.playerUsername || '').trim();
+
+  const playerUid =
+    explicitPlayerUid ||
+    (sender.role === 'player' ? sender.uid : '') ||
+    null;
+  const playerUsername =
+    explicitPlayerUsername ||
+    (sender.role === 'player' ? sender.username || 'Player' : null);
+
+  let escalationFrom: CarerEscalationAlert['escalationFrom'] = sender.role === 'staff'
+      ? 'staff'
+      : sender.role === 'player'
+        ? 'player'
+        : 'carer';
+
   await addDoc(collection(db, 'carerEscalationAlerts'), {
     coadminUid: values.coadminUid,
     contextType: 'cashbox_inquiry',
+    escalationFrom,
     taskId: null,
-    playerUid: null,
-    playerUsername: null,
+    playerUid,
+    playerUsername,
     gameName: null,
     message: cleanMessage,
-    createdByCarerUid: senderUid,
-    createdByCarerUsername: senderUsername,
+    createdByCarerUid: sender.uid,
+    createdByCarerUsername: sender.username,
     createdAt: serverTimestamp(),
   });
 }

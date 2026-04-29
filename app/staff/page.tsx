@@ -42,6 +42,7 @@ import {
   declinePlayerCashoutTaskForCurrentHandler,
   getEffectivePlayerCashoutTaskStatus,
   getPlayerCashoutTaskCountdown,
+  isPlayerCashoutHandledBySomeoneElse,
   getPlayerCashoutPaymentDisplay,
   listenAllPlayerCashoutTasks,
   listenPlayerCashoutTasksByCoadmin,
@@ -271,15 +272,16 @@ export default function StaffPage() {
   );
   const currentUserUid = auth.currentUser?.uid || '';
   const visiblePlayerCashoutTasks = playerCashoutTasks
+    .filter(
+      (task) =>
+        !isPlayerCashoutHandledBySomeoneElse(task, currentUserUid) &&
+        !(task.declinedByUids || []).includes(currentUserUid) &&
+        getEffectivePlayerCashoutTaskStatus(task) !== 'completed'
+    )
     .map((task) => ({
       ...task,
       status: getEffectivePlayerCashoutTaskStatus(task),
-    }))
-    .filter(
-      (task) =>
-        task.status !== 'completed' &&
-        !((task.declinedByUids || []).includes(currentUserUid))
-    );
+    }));
   const completedPlayerCashoutTasks = playerCashoutTasks
     .map((task) => ({
       ...task,
@@ -1928,6 +1930,15 @@ export default function StaffPage() {
             <p className="mt-2 text-sm text-cyan-100/75">
               Submit your payout details. This request will be sent to your coadmin as a task.
             </p>
+            <div className="mt-3 rounded-xl border border-amber-400/25 bg-amber-500/10 px-3 py-3 text-sm leading-relaxed text-amber-50/95">
+              <p className="font-semibold text-amber-100">When you get paid</p>
+              <p className="mt-2 text-amber-50/90">
+                Payment usually arrives right away, but it can sometimes take up to <strong>24 hours</strong>.
+                It may arrive in <strong>separate smaller amounts</strong> instead of one transfer—this is
+                normal. If nothing has arrived yet, wait up to 24 hours before worrying. If it stays
+                stuck for <strong>more than 24 hours</strong>, use <strong>Reach out</strong> to contact admin.
+              </p>
+            </div>
             <p className="mt-3 rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 font-semibold text-cyan-100">
               Claiming full amount: {formatAed(staffCashBoxUsdAmount)}
             </p>

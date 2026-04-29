@@ -23,7 +23,7 @@ export type CarerCashoutRequest = {
   paymentQrUrl?: string | null;
   paymentQrPublicId?: string | null;
   paymentDetails?: string | null;
-  status: 'pending' | 'completed';
+  status: 'pending' | 'completed' | 'declined';
   completedAmountNpr?: number | null;
   remainingAmountNpr?: number | null;
   createdAt?: Timestamp | null;
@@ -132,6 +132,42 @@ export function listenPendingCashoutsByCoadmin(
   );
 }
 
+/** Claim Pay history for staff/carers (staff use `carerUid` matching their UID). */
+export function listenCarerCashoutsByCarerUid(
+  carerUid: string,
+  onChange: (items: CarerCashoutRequest[]) => void,
+  onError?: (error: Error) => void
+) {
+  const cashoutsQuery = query(
+    collection(db, 'carerCashouts'),
+    where('carerUid', '==', carerUid)
+  );
+
+  return onSnapshot(
+    cashoutsQuery,
+    (snapshot) => {
+      const items = snapshot.docs
+        .map((docSnap) => ({
+          id: docSnap.id,
+          ...(docSnap.data() as Omit<CarerCashoutRequest, 'id'>),
+        }))
+        .sort((a, b) => {
+          const aTime = Math.max(
+            a.completedAt?.toMillis?.() || 0,
+            a.createdAt?.toMillis?.() || 0
+          );
+          const bTime = Math.max(
+            b.completedAt?.toMillis?.() || 0,
+            b.createdAt?.toMillis?.() || 0
+          );
+          return bTime - aTime;
+        });
+      onChange(items);
+    },
+    (error) => onError?.(error as Error)
+  );
+}
+
 export async function completeCarerCashoutRequest(cashoutId: string, doneAmountNpr?: number) {
   const cashoutRef = doc(db, 'carerCashouts', cashoutId);
 
@@ -197,4 +233,43 @@ export async function completeCarerCashoutRequest(cashoutId: string, doneAmountN
   );
 
   await batch.commit();
+}
+
+export async function declineCarerCashoutRequest(cashoutId: string) {
+  const cashoutRef = doc(db, 'carerCashouts', cashoutId);
+
+  await runTransaction(db, async (transaction) => {
+    const cashoutSnap = await transaction.get(cashoutRef);
+
+    if (!cashoutSnap.exists()) {
+      throw new Error('Cashout request not found.');
+    }
+
+    const cashoutData = cashoutSnap.data() as Omit<CarerCashoutRequest, 'id'>;
+
+    if (cashoutData.status !== 'pending') {
+      throw new Error('Only pending cashout requests can be declined.');
+    }
+
+    const amountNpr = Math.max(0, Math.round(Number(cashoutData.amountNpr || 0)));
+    const userRef = doc(db, 'users', cashoutData.carerUid);
+    const userSnap = await transaction.get(userRef);
+    const currentCashBox = userSnap.exists()
+      ? Math.max(0, Number((userSnap.data() as { cashBoxNpr?: number }).cashBoxNpr || 0))
+      : 0;
+
+    transaction.update(cashoutRef, {
+      status: 'declined',
+      completedAt: serverTimestamp(),
+      completedAmountNpr: 0,
+      remainingAmountNpr: amountNpr,
+    });
+    transaction.set(
+      userRef,
+      {
+        cashBoxNpr: currentCashBox + amountNpr,
+      },
+      { merge: true }
+    );
+  });
 }
