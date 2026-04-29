@@ -2262,30 +2262,32 @@ export default function PlayerPage() {
                   </h1>
                 </div>
                 <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
-                <nav className="space-y-1.5">
-                  {NAV_ITEMS.map((item) =>
-                    renderNavButton(item, item.view === 'agents' ? totalUnread : 0, () => {
-                      if (item.view === 'agents' && totalUnread > 0) {
-                        handleOpenFirstUnreadAgent();
-                        setMobileMenuOpen(false);
-                        return;
-                      }
-                      handleChangeView(item.view);
-                    })
-                  )}
-                </nav>
-                <div className="mt-auto border-t border-amber-500/20 pt-4">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowLogoutConfirmSplash(true);
-                      setMobileMenuOpen(false);
-                    }}
-                    className="w-full rounded-2xl border border-rose-500/40 bg-rose-500/10 py-3.5 text-sm font-black text-rose-100 transition hover:bg-rose-500/20"
-                  >
-                    Log out
-                  </button>
-                </div>
+                  <nav className="space-y-1.5">
+                    {NAV_ITEMS.map((item) => (
+                      <div key={item.view} className="space-y-1.5">
+                        {renderNavButton(item, item.view === 'agents' ? totalUnread : 0, () => {
+                          if (item.view === 'agents' && totalUnread > 0) {
+                            handleOpenFirstUnreadAgent();
+                            setMobileMenuOpen(false);
+                            return;
+                          }
+                          handleChangeView(item.view);
+                        })}
+                        {item.view === 'usernames' ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowLogoutConfirmSplash(true);
+                              setMobileMenuOpen(false);
+                            }}
+                            className="w-full rounded-2xl border border-rose-500/40 bg-rose-500/10 py-3.5 text-sm font-black text-rose-100 transition hover:bg-rose-500/20"
+                          >
+                            Log out
+                          </button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </nav>
                 </div>
               </motion.aside>
             </>
@@ -2308,25 +2310,27 @@ export default function PlayerPage() {
             </div>
 
             <nav className="space-y-2">
-              {NAV_ITEMS.map((item) =>
-                renderNavButton(item, item.view === 'agents' ? totalUnread : 0, () => {
-                  if (item.view === 'agents' && totalUnread > 0) {
-                    handleOpenFirstUnreadAgent();
-                    return;
-                  }
-                  handleChangeView(item.view);
-                })
-              )}
+              {NAV_ITEMS.map((item) => (
+                <div key={item.view} className="space-y-2">
+                  {renderNavButton(item, item.view === 'agents' ? totalUnread : 0, () => {
+                    if (item.view === 'agents' && totalUnread > 0) {
+                      handleOpenFirstUnreadAgent();
+                      return;
+                    }
+                    handleChangeView(item.view);
+                  })}
+                  {item.view === 'usernames' ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowLogoutConfirmSplash(true)}
+                      className="w-full rounded-2xl border border-rose-500/40 bg-rose-950/40 py-3.5 text-sm font-bold text-rose-100 transition hover:bg-rose-500/15"
+                    >
+                      Log out
+                    </button>
+                  ) : null}
+                </div>
+              ))}
             </nav>
-            <div className="mt-8">
-              <button
-                type="button"
-                onClick={() => setShowLogoutConfirmSplash(true)}
-                className="w-full rounded-2xl border border-rose-500/40 bg-rose-950/40 py-3.5 text-sm font-bold text-rose-100 transition hover:bg-rose-500/15"
-              >
-                Log out
-              </button>
-            </div>
           </div>
         </aside>
 
