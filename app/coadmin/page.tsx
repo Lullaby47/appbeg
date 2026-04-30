@@ -140,7 +140,70 @@ type CoadminView =
   | 'game-list'
   | 'payment-details'
   | 'shifts'
-  | 'reach-out';
+  | 'reach-out'
+  | 'behaviours';
+
+type StaffBehaviourRow = {
+  staff: {
+    staffId: string;
+    name: string;
+    role: string;
+    createdAt?: { toDate?: () => Date } | null;
+  };
+  accountCreation: {
+    totalPlayersCreated: number;
+    playersCreatedToday: number;
+    playersCreatedYesterday: number;
+    playersCreatedLast7d: number;
+  };
+  cashoutActivity: {
+    totalCashoutRequestsHandled: number;
+    totalCashoutAmountHandled: number;
+    cashoutsToday: number;
+    cashoutsYesterday: number;
+    cashoutsLast7d: number;
+    averageCashoutAmount: number;
+  };
+  playerRiskPatterns: {
+    pendingReviewCashouts: number;
+    bonusBlockedPlayers: number;
+  };
+  staffRiskSummary: {
+    riskScore: number;
+    riskLevel: 'low' | 'medium' | 'high';
+    riskFlags: string[];
+  };
+  details: {
+    playersCreated: Array<{
+      playerId: string;
+      username: string;
+      createdAt?: { toDate?: () => Date } | null;
+      bonusBlocked?: boolean;
+    }>;
+    recentCashoutsHandled: Array<{
+      cashoutId: string;
+      playerId: string;
+      amount: number;
+      status: string;
+      createdAt?: { toDate?: () => Date } | null;
+      completedAt?: { toDate?: () => Date } | null;
+    }>;
+    riskyPlayers: Array<{
+      playerId: string;
+      username: string;
+      createdAt?: { toDate?: () => Date } | null;
+      flags: string[];
+    }>;
+    pendingReviewCashouts: Array<{
+      requestId: string;
+      playerId: string;
+      amount: number;
+      status: string;
+      reason: string;
+      createdAt?: { toDate?: () => Date } | null;
+    }>;
+  };
+};
 
 const AED_TO_USD = 0.2723;
 const NPR_TO_USD = 0.0075;
@@ -168,6 +231,12 @@ function formatDateTime(value?: { toDate?: () => Date } | null) {
 
 function formatHours(value: number) {
   return `${value.toFixed(2)} h`;
+}
+
+function trendBadge(today: number, yesterday: number) {
+  if (today > yesterday) return `up ${today} vs ${yesterday}`;
+  if (today < yesterday) return `down ${today} vs ${yesterday}`;
+  return `same ${today} vs ${yesterday}`;
 }
 
 function toMillis(value?: { toDate?: () => Date; toMillis?: () => number } | null) {
@@ -329,6 +398,9 @@ export default function CoadminPage() {
   const [countdownTick, setCountdownTick] = useState(0);
   const [pendingTransferRequests, setPendingTransferRequests] = useState<TransferRequest[]>([]);
   const [transferRequestBusyId, setTransferRequestBusyId] = useState<string | null>(null);
+  const [staffBehaviours, setStaffBehaviours] = useState<StaffBehaviourRow[]>([]);
+  const [behavioursLoading, setBehavioursLoading] = useState(false);
+  const [selectedBehaviourStaffId, setSelectedBehaviourStaffId] = useState<string | null>(null);
   const bonusAutoFillBusyRef = useRef(false);
   const bonusEventsRetryTimerRef = useRef<number | null>(null);
   const bonusEventsRetryCountRef = useRef(0);
@@ -403,6 +475,13 @@ export default function CoadminPage() {
       status: getEffectivePlayerCashoutTaskStatus(task),
     }))
     .filter((task) => task.status === 'completed');
+  const selectedBehaviour = useMemo(
+    () =>
+      staffBehaviours.find((row) => row.staff.staffId === selectedBehaviourStaffId) ||
+      staffBehaviours[0] ||
+      null,
+    [staffBehaviours, selectedBehaviourStaffId]
+  );
   const myBonusEvents = bonusEvents;
 
   const staffInspectionAlerts = useMemo(() => {
@@ -532,6 +611,7 @@ export default function CoadminPage() {
     if (activeView === 'view-players') loadPlayerList();
     if (activeView === 'game-list') loadGameLogins();
     if (activeView === 'reach-out') loadChatUsers();
+    if (activeView === 'behaviours') void loadStaffBehaviours();
   }, [activeView]);
 
   useEffect(() => {
@@ -1271,6 +1351,40 @@ export default function CoadminPage() {
       setChatUsers([...admins, ...adminStaff]);
     } catch (err: any) {
       setMessage(err.message || 'Failed to load users.');
+    }
+  }
+
+  async function loadStaffBehaviours(staffId?: string) {
+    setBehavioursLoading(true);
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        throw new Error('Not authenticated.');
+      }
+      const token = await currentUser.getIdToken();
+      const queryString = staffId ? `?staffId=${encodeURIComponent(staffId)}` : '';
+      const response = await fetch(`/api/coadmin/behaviours${queryString}`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || 'Failed to load behaviours.');
+      }
+      const rows = (data?.staffBehaviours || []) as StaffBehaviourRow[];
+      setStaffBehaviours(rows);
+      if (rows.length > 0 && !selectedBehaviourStaffId) {
+        setSelectedBehaviourStaffId(rows[0].staff.staffId);
+      }
+      if (rows.length === 0) {
+        setSelectedBehaviourStaffId(null);
+      }
+    } catch (error: any) {
+      setMessage(error?.message || 'Failed to load behaviours.');
+    } finally {
+      setBehavioursLoading(false);
     }
   }
 
@@ -2495,6 +2609,7 @@ export default function CoadminPage() {
     { label: 'Game List', view: 'game-list' },
     { label: 'Payment details (photos)', view: 'payment-details' },
     { label: 'Shifts', view: 'shifts' },
+    { label: 'Behaviours', view: 'behaviours' },
     {
       label: 'Reach Out',
       view: 'reach-out',
@@ -4089,6 +4204,235 @@ export default function CoadminPage() {
 
               {shiftsRows.length === 0 && (
                 <p className="mt-6 text-sm text-neutral-500">No staff or carer accounts found.</p>
+              )}
+            </div>
+          )}
+
+          {activeView === 'behaviours' && (
+            <div className="space-y-6">
+              <div className="rounded-2xl border border-rose-500/25 bg-rose-500/10 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-lg font-bold text-rose-100">Top Risky Staff</h3>
+                  <p className="text-xs uppercase tracking-wide text-rose-100/80">
+                    Quick view (highest risk score)
+                  </p>
+                </div>
+                <div className="mt-3 grid gap-3 md:grid-cols-3">
+                  {staffBehaviours
+                    .slice()
+                    .sort(
+                      (left, right) =>
+                        right.staffRiskSummary.riskScore - left.staffRiskSummary.riskScore
+                    )
+                    .slice(0, 3)
+                    .map((row) => (
+                      <button
+                        key={row.staff.staffId}
+                        type="button"
+                        onClick={() => setSelectedBehaviourStaffId(row.staff.staffId)}
+                        className="rounded-xl border border-white/15 bg-black/25 p-3 text-left hover:bg-black/35"
+                      >
+                        <p className="text-sm font-semibold text-white">{row.staff.name}</p>
+                        <p className="text-xs text-neutral-300">ID: {row.staff.staffId}</p>
+                        <p className="mt-2 text-xs text-rose-100">
+                          Risk: {row.staffRiskSummary.riskScore} ({row.staffRiskSummary.riskLevel})
+                        </p>
+                        <p className="text-xs text-neutral-300">
+                          Pending reviews: {row.playerRiskPatterns.pendingReviewCashouts}
+                        </p>
+                        <p className="text-xs text-neutral-300">
+                          Bonus blocked players: {row.playerRiskPatterns.bonusBlockedPlayers}
+                        </p>
+                        <p className="mt-1 text-xs text-cyan-200">
+                          Cashouts trend: {trendBadge(row.cashoutActivity.cashoutsToday, row.cashoutActivity.cashoutsYesterday)}
+                        </p>
+                        <p className="text-xs text-cyan-200">
+                          Players trend: {trendBadge(row.accountCreation.playersCreatedToday, row.accountCreation.playersCreatedYesterday)}
+                        </p>
+                      </button>
+                    ))}
+                  {staffBehaviours.length === 0 && (
+                    <p className="text-sm text-neutral-300">No staff behaviour data available yet.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-2xl font-bold text-white">Staff Behaviours</h2>
+                  <p className="text-sm text-neutral-400">
+                    Monitoring dashboard only. No automatic blocking is applied here.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadStaffBehaviours()}
+                  disabled={behavioursLoading}
+                  className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10 disabled:opacity-60"
+                >
+                  {behavioursLoading ? 'Refreshing…' : 'Refresh'}
+                </button>
+              </div>
+
+              <div className="overflow-x-auto rounded-2xl border border-white/10 bg-white/5">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-black/30 text-left text-xs uppercase tracking-wide text-neutral-300">
+                    <tr>
+                      <th className="px-3 py-3">Staff name</th>
+                      <th className="px-3 py-3">Players created</th>
+                      <th className="px-3 py-3">Cashouts handled</th>
+                      <th className="px-3 py-3">Total cashout amount</th>
+                      <th className="px-3 py-3">Pending reviews</th>
+                      <th className="px-3 py-3">Bonus blocked players</th>
+                      <th className="px-3 py-3">Risk score</th>
+                      <th className="px-3 py-3">Risk level</th>
+                      <th className="px-3 py-3 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {staffBehaviours.map((row) => (
+                      <tr key={row.staff.staffId} className="border-t border-white/10 text-neutral-200">
+                        <td className="px-3 py-3 font-semibold">{row.staff.name}</td>
+                        <td className="px-3 py-3">{row.accountCreation.totalPlayersCreated}</td>
+                        <td className="px-3 py-3">{row.cashoutActivity.totalCashoutRequestsHandled}</td>
+                        <td className="px-3 py-3">{formatNprDisplay(row.cashoutActivity.totalCashoutAmountHandled)}</td>
+                        <td className="px-3 py-3">{row.playerRiskPatterns.pendingReviewCashouts}</td>
+                        <td className="px-3 py-3">{row.playerRiskPatterns.bonusBlockedPlayers}</td>
+                        <td className="px-3 py-3">{row.staffRiskSummary.riskScore}</td>
+                        <td className="px-3 py-3 uppercase">{row.staffRiskSummary.riskLevel}</td>
+                        <td className="px-3 py-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedBehaviourStaffId(row.staff.staffId)}
+                            className="rounded-lg border border-cyan-300/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20"
+                          >
+                            View details
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {staffBehaviours.length === 0 && (
+                      <tr>
+                        <td colSpan={9} className="px-3 py-6 text-center text-neutral-400">
+                          {behavioursLoading ? 'Loading staff behaviours…' : 'No staff behaviour data found.'}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {selectedBehaviour && (
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <h3 className="text-lg font-bold text-white">Staff Summary</h3>
+                    <p className="mt-1 text-sm text-neutral-300">
+                      {selectedBehaviour.staff.name} ({selectedBehaviour.staff.role}) · Joined:{' '}
+                      {formatDateTime(selectedBehaviour.staff.createdAt || null)}
+                    </p>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-sm text-neutral-200">
+                      <p>Players today: {selectedBehaviour.accountCreation.playersCreatedToday}</p>
+                      <p>Players yesterday: {selectedBehaviour.accountCreation.playersCreatedYesterday}</p>
+                      <p>Players last 7d: {selectedBehaviour.accountCreation.playersCreatedLast7d}</p>
+                      <p>Cashouts today: {selectedBehaviour.cashoutActivity.cashoutsToday}</p>
+                      <p>Cashouts yesterday: {selectedBehaviour.cashoutActivity.cashoutsYesterday}</p>
+                      <p>Cashouts last 7d: {selectedBehaviour.cashoutActivity.cashoutsLast7d}</p>
+                      <p>
+                        Avg cashout:{' '}
+                        {formatNprDisplay(selectedBehaviour.cashoutActivity.averageCashoutAmount)}
+                      </p>
+                      <p>Risk score: {selectedBehaviour.staffRiskSummary.riskScore}</p>
+                      <p>
+                        Daily trend:{' '}
+                        {trendBadge(
+                          selectedBehaviour.cashoutActivity.cashoutsToday,
+                          selectedBehaviour.cashoutActivity.cashoutsYesterday
+                        )}
+                      </p>
+                      <p>
+                        Player trend:{' '}
+                        {trendBadge(
+                          selectedBehaviour.accountCreation.playersCreatedToday,
+                          selectedBehaviour.accountCreation.playersCreatedYesterday
+                        )}
+                      </p>
+                    </div>
+                    <div className="mt-3">
+                      <p className="text-xs uppercase tracking-wide text-neutral-400">Flags</p>
+                      <ul className="mt-1 space-y-1 text-sm text-amber-200">
+                        {selectedBehaviour.staffRiskSummary.riskFlags.map((flag) => (
+                          <li key={flag}>- {flag}</li>
+                        ))}
+                        {selectedBehaviour.staffRiskSummary.riskFlags.length === 0 && (
+                          <li className="text-neutral-400">- No high-risk flags detected.</li>
+                        )}
+                      </ul>
+                    </div>
+                  </article>
+
+                  <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <h3 className="text-lg font-bold text-white">Players Created</h3>
+                    <div className="mt-2 max-h-64 space-y-2 overflow-auto">
+                      {selectedBehaviour.details.playersCreated.map((player) => (
+                        <div key={player.playerId} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                          <p className="text-sm font-semibold text-white">{player.username}</p>
+                          <p className="text-xs text-neutral-400">ID: {player.playerId}</p>
+                          <p className="text-xs text-neutral-400">Created: {formatDateTime(player.createdAt || null)}</p>
+                          {player.bonusBlocked && (
+                            <p className="text-xs font-semibold text-rose-200">bonusBlocked = true</p>
+                          )}
+                        </div>
+                      ))}
+                      {selectedBehaviour.details.playersCreated.length === 0 && (
+                        <p className="text-sm text-neutral-500">No players linked to this staff yet.</p>
+                      )}
+                    </div>
+                  </article>
+
+                  <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <h3 className="text-lg font-bold text-white">Recent Cashouts Handled</h3>
+                    <div className="mt-2 max-h-64 space-y-2 overflow-auto">
+                      {selectedBehaviour.details.recentCashoutsHandled.map((cashout) => (
+                        <div key={cashout.cashoutId} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                          <p className="text-sm font-semibold text-white">{formatNprDisplay(cashout.amount)}</p>
+                          <p className="text-xs text-neutral-400">Player: {cashout.playerId}</p>
+                          <p className="text-xs text-neutral-400">Status: {cashout.status}</p>
+                          <p className="text-xs text-neutral-400">Time: {formatDateTime(cashout.completedAt || cashout.createdAt || null)}</p>
+                        </div>
+                      ))}
+                      {selectedBehaviour.details.recentCashoutsHandled.length === 0 && (
+                        <p className="text-sm text-neutral-500">No completed cashouts handled yet.</p>
+                      )}
+                    </div>
+                  </article>
+
+                  <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <h3 className="text-lg font-bold text-white">Risky Players & Pending Reviews</h3>
+                    <div className="mt-2 max-h-64 space-y-2 overflow-auto">
+                      {selectedBehaviour.details.riskyPlayers.map((player) => (
+                        <div key={player.playerId} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                          <p className="text-sm font-semibold text-white">{player.username}</p>
+                          <p className="text-xs text-neutral-400">Player: {player.playerId}</p>
+                          <p className="text-xs text-neutral-300">{player.flags.join(' | ')}</p>
+                        </div>
+                      ))}
+                      {selectedBehaviour.details.pendingReviewCashouts.map((entry) => (
+                        <div key={entry.requestId} className="rounded-xl border border-amber-400/25 bg-amber-500/10 p-3">
+                          <p className="text-sm font-semibold text-amber-100">
+                            Pending review: {formatNprDisplay(entry.amount)}
+                          </p>
+                          <p className="text-xs text-amber-100/80">Player: {entry.playerId}</p>
+                          <p className="text-xs text-amber-100/80">Reason: {entry.reason}</p>
+                          <p className="text-xs text-amber-100/70">Time: {formatDateTime(entry.createdAt || null)}</p>
+                        </div>
+                      ))}
+                      {selectedBehaviour.details.riskyPlayers.length === 0 &&
+                        selectedBehaviour.details.pendingReviewCashouts.length === 0 && (
+                          <p className="text-sm text-neutral-500">No risky records found for this staff.</p>
+                        )}
+                    </div>
+                  </article>
+                </div>
               )}
             </div>
           )}

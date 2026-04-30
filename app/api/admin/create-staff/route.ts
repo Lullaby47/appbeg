@@ -39,9 +39,19 @@ export async function POST(request: Request) {
     const username = String(body.username || '').trim().toLowerCase();
     const password = String(body.password || '');
     const createdBy = body.createdBy ? String(body.createdBy).trim() : null;
+    const creatorUid = body.creatorUid ? String(body.creatorUid).trim() : null;
     const coadminUid = body.coadminUid ? String(body.coadminUid).trim() : null;
     const role = String(body.role || 'staff').trim().toLowerCase();
     const ownerCoadminUid = coadminUid || createdBy;
+    let creatorRole = '';
+    if (creatorUid) {
+      const creatorSnap = await adminDb.collection('users').doc(creatorUid).get();
+      if (creatorSnap.exists) {
+        creatorRole = String((creatorSnap.data() as { role?: string }).role || '').toLowerCase();
+      }
+    }
+    const createdByStaffId = role === 'player' && creatorRole === 'staff' ? creatorUid : null;
+
     let referralCodeInput = '';
     try {
       referralCodeInput = parseReferralCodeInput(body.referralCodeInput);
@@ -173,6 +183,7 @@ export async function POST(request: Request) {
           referralRewardStatus: referralApplied ? 'pending_first_recharge' : null,
           referralQualifiedAt: null,
           referralRewardClaimedAt: null,
+          createdByStaffId,
         });
 
         if (referrerRef && referrerData) {

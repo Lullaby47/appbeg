@@ -275,11 +275,12 @@ async function getCurrentUserIdentity() {
     throw new Error('Current user profile not found.');
   }
 
-  const userData = userSnap.data() as { username?: string };
+  const userData = userSnap.data() as { username?: string; role?: string };
 
   return {
     uid: currentUser.uid,
     username: userData.username?.trim() || 'Handler',
+    role: String(userData.role || '').toLowerCase(),
   };
 }
 
@@ -497,6 +498,7 @@ export async function completePlayerCashoutTask(taskId: string) {
       status: 'completed',
       assignedHandlerUid: identity.uid,
       assignedHandlerUsername: identity.username,
+      cashoutRequestedByStaffId: identity.role === 'staff' ? identity.uid : null,
       startedAt: taskData.startedAt || now,
       expiresAt: null,
       completedAt: serverTimestamp(),

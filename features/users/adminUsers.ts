@@ -218,6 +218,7 @@ async function createManagedUser(
   }
 
   const coadminUid = await getCurrentUserCoadminUid();
+  const creatorUid = auth.currentUser?.uid || null;
 
   const response = await fetch('/api/admin/create-staff', {
     method: 'POST',
@@ -230,6 +231,7 @@ async function createManagedUser(
       role,
       createdBy: coadminUid,
       coadminUid,
+      creatorUid,
       ...(role === 'player'
         ? { referralCodeInput: String(referralCodeInput || '').trim() || null }
         : {}),
