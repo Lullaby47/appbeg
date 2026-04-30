@@ -52,6 +52,9 @@ export type PlayerGameRequest = {
   coinDeductedOnRequest?: boolean | null;
 };
 
+const MIN_REDEEM_AMOUNT = 50;
+const MAX_REDEEM_AMOUNT = 350;
+
 function mapRequestDoc(docId: string, value: Omit<PlayerGameRequest, 'id'>) {
   return {
     id: docId,
@@ -249,6 +252,12 @@ export async function createPlayerGameRequest(values: {
       );
     }
     return;
+  }
+
+  if (requestAmount < MIN_REDEEM_AMOUNT || requestAmount > MAX_REDEEM_AMOUNT) {
+    throw new Error(
+      `Redeem amount must be between ${MIN_REDEEM_AMOUNT} and ${MAX_REDEEM_AMOUNT}.`
+    );
   }
 
   const redeemRef = await addDoc(collection(db, 'playerGameRequests'), {

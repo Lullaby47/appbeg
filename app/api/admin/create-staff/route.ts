@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 import {
+  REFERRAL_REWARD_COINS,
+  SIGNUP_BONUS_COINS,
+} from '@/lib/economy/policy';
+import {
   buildUniqueReferralCodeCandidates,
   findFreeReferralCodeInTransaction,
   setReferralCodeIndexInTransaction,
@@ -14,12 +18,6 @@ function makeHiddenEmail(username: string) {
 
 function isCreatableRole(role: string): role is CreatableRole {
   return ['staff', 'carer', 'player'].includes(role);
-}
-
-function randomInt(min: number, max: number) {
-  const safeMin = Math.min(min, max);
-  const safeMax = Math.max(min, max);
-  return Math.floor(Math.random() * (safeMax - safeMin + 1)) + safeMin;
 }
 
 function parseReferralCodeInput(value: unknown) {
@@ -137,7 +135,7 @@ export async function POST(request: Request) {
             throw new Error('Invalid referral code.');
           }
           referrerData = referrerSnap.data() || null;
-          referralBonusCoins = randomInt(5, 15);
+          referralBonusCoins = REFERRAL_REWARD_COINS;
           referredByUid = validatedReferrerUid;
           referredByUsername =
             validatedReferrerUsername || String(referrerData?.username || 'Player');
@@ -164,23 +162,20 @@ export async function POST(request: Request) {
           coadminUid: ownerCoadminUid,
           createdAt: now,
           status: 'active',
-          coin: 0,
+          coin: SIGNUP_BONUS_COINS,
           cash: 0,
+          promoLockedCoins: SIGNUP_BONUS_COINS,
           referralCode: nextReferralCode,
           referredByUid,
           referredByCode,
           referralBonusCoins: referralApplied ? referralBonusCoins : 0,
           referralCreatedAt: referralApplied ? now : null,
+          referralRewardStatus: referralApplied ? 'pending_first_recharge' : null,
+          referralQualifiedAt: null,
+          referralRewardClaimedAt: null,
         });
 
         if (referrerRef && referrerData) {
-          const nextReferrerCoin = Number(referrerData.coin || 0) + referralBonusCoins;
-          transaction.update(referrerRef, {
-            coin: nextReferrerCoin,
-            referralBonusNotice: 'Your referral was successful. Referral bonus has been added.',
-            referralBonusNoticeAt: now,
-          });
-
           const referralLogRef = adminDb.collection('referrals').doc();
           transaction.set(referralLogRef, {
             referrerUid: referrerRef.id,
@@ -189,7 +184,10 @@ export async function POST(request: Request) {
             referredPlayerUsername: username,
             referralCode: referralCodeInput,
             rewardCoins: referralBonusCoins,
+            status: 'pending_first_recharge',
             createdAt: now,
+            qualifiedAt: null,
+            claimedAt: null,
           });
         }
       });

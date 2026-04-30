@@ -5,7 +5,9 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
+  orderBy,
   query,
   runTransaction,
   serverTimestamp,
@@ -14,6 +16,7 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
+import { evaluateWithdrawalPolicy } from '@/lib/economy/policy';
 import { recordFinancialEvent } from '@/features/risk/playerRisk';
 
 export type PlayerCashoutTaskStatus = 'pending' | 'in_progress' | 'completed' | 'declined';
@@ -85,6 +88,61 @@ async function fetchRolling24hCashoutUsageNprForPlayer(playerUid: string): Promi
     total += Math.max(0, Number(data.amountNpr || 0));
   });
   return total;
+}
+
+async function fetchCompletedCashoutCountForPlayer(playerUid: string): Promise<number> {
+  const q = query(
+    collection(db, 'playerCashoutTasks'),
+    where('playerUid', '==', playerUid),
+    where('status', '==', 'completed')
+  );
+  const snapshot = await getDocs(q);
+  return snapshot.size;
+}
+
+async function fetchLatestCompletedRechargeAmountForPlayer(playerUid: string): Promise<number> {
+  const q = query(
+    collection(db, 'playerGameRequests'),
+    where('playerUid', '==', playerUid),
+    where('type', '==', 'recharge'),
+    where('status', '==', 'completed'),
+    orderBy('completedAt', 'desc'),
+    limit(1)
+  );
+
+  try {
+    const snapshot = await getDocs(q);
+    const latest = snapshot.docs[0]?.data() as { amount?: number } | undefined;
+    return Math.max(0, Math.round(Number(latest?.amount || 0)));
+  } catch {
+    const fallback = await getDocs(
+      query(
+        collection(db, 'playerGameRequests'),
+        where('playerUid', '==', playerUid),
+        where('type', '==', 'recharge'),
+        where('status', '==', 'completed')
+      )
+    );
+
+    const sorted = fallback.docs
+      .map((docSnap) => {
+        const data = docSnap.data() as {
+          amount?: number;
+          completedAt?: Timestamp | null;
+          createdAt?: Timestamp | null;
+        };
+        return {
+          amount: Math.max(0, Math.round(Number(data.amount || 0))),
+          sortMs: Math.max(
+            data.completedAt?.toMillis?.() || 0,
+            data.createdAt?.toMillis?.() || 0
+          ),
+        };
+      })
+      .sort((left, right) => right.sortMs - left.sortMs);
+
+    return sorted[0]?.amount || 0;
+  }
 }
 
 function toTask(docId: string, value: Omit<PlayerCashoutTask, 'id'>): PlayerCashoutTask {
@@ -247,6 +305,10 @@ export async function createPlayerCashoutTask(values: {
   }
 
   const rollingUsed = await fetchRolling24hCashoutUsageNprForPlayer(currentUser.uid);
+  const [completedCashoutCount, lastRechargeAmountNpr] = await Promise.all([
+    fetchCompletedCashoutCountForPlayer(currentUser.uid),
+    fetchLatestCompletedRechargeAmountForPlayer(currentUser.uid),
+  ]);
   const remainingQuota = Math.max(
     0,
     PLAYER_CASHOUT_MAX_NPR_PER_24_H - rollingUsed
@@ -283,6 +345,15 @@ export async function createPlayerCashoutTask(values: {
       throw new Error(
         `Rolling 24-hour cash out limit (${PLAYER_CASHOUT_MAX_NPR_PER_24_H} NPR) is reached for now. You've already requested ${rollingUsed.toFixed(2)} NPR in the window. Wait until older requests expire from this window before cashing out more.`
       );
+    }
+
+    const decision = evaluateWithdrawalPolicy({
+      amountNpr: amountThisRequest,
+      completedWithdrawalCount: completedCashoutCount,
+      lastRechargeAmountNpr,
+    });
+    if (!decision.allowed) {
+      throw new Error(decision.message);
     }
 
     transaction.update(playerRef, {

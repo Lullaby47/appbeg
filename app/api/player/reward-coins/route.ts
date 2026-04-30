@@ -2,6 +2,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import { getTransferableCoinBalance } from '@/lib/economy/policy';
 import {
   computeRewardCoinsAfterFee,
   REWARD_TRANSFER_FEE_PERCENT,
@@ -70,6 +71,7 @@ function httpStatusForRewardCoinsError(error: unknown): number {
     'Target player not found',
     'Target user must be a player.',
     'Not enough coin balance',
+    'transferable coin balance',
   ];
 
   if (badRequestMarkers.some((m) => message.includes(m))) {
@@ -130,7 +132,12 @@ export async function POST(request: Request) {
         throw new Error('Target player not found.');
       }
 
-      const sender = senderSnap.data() as { role?: string; coin?: number; username?: string };
+      const sender = senderSnap.data() as {
+        role?: string;
+        coin?: number;
+        promoLockedCoins?: number;
+        username?: string;
+      };
       const target = targetSnap.data() as { role?: string; coin?: number; username?: string };
       if (String(target.role || '').toLowerCase() !== 'player') {
         throw new Error('Target user must be a player.');
@@ -140,8 +147,12 @@ export async function POST(request: Request) {
       }
 
       const senderCoin = Math.max(0, parsePositiveWhole(sender.coin));
-      if (senderCoin < amountCoins) {
-        throw new Error('Not enough coin balance to reward.');
+      const transferableCoinBalance = getTransferableCoinBalance(
+        sender.coin,
+        sender.promoLockedCoins
+      );
+      if (senderCoin < amountCoins || transferableCoinBalance < amountCoins) {
+        throw new Error('Not enough transferable coin balance to reward.');
       }
 
       tx.update(senderRef, {

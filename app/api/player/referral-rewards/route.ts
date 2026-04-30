@@ -2,6 +2,11 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import {
+  getLockedPromoCoins,
+  isReferralRechargeEligible,
+  REFERRAL_REWARD_COINS,
+} from '@/lib/economy/policy';
 
 type RewardGroup = {
   referredPlayerUid: string;
@@ -10,46 +15,18 @@ type RewardGroup = {
   hasClaimableReward: boolean;
 };
 
+type RechargeLite = {
+  id: string;
+  amount: number;
+  createdAtMs: number;
+  bonusEventId: string;
+  bonusPercentage: number | null;
+};
+
 function getNumber(value: unknown) {
   const n = Number(value || 0);
   return Number.isFinite(n) ? n : 0;
 }
-
-function isEligibleRecharge(values: {
-  bonusEventId?: string | null;
-  bonusPercentage?: number | null;
-}) {
-  const hasBonusEvent = Boolean(String(values.bonusEventId || '').trim());
-  if (!hasBonusEvent) {
-    return { eligible: true, ineligibleReason: null as string | null };
-  }
-
-  const bonusPercentage = getNumber(values.bonusPercentage);
-  if (bonusPercentage <= 10) {
-    return { eligible: true, ineligibleReason: null as string | null };
-  }
-
-  return {
-    eligible: false,
-    ineligibleReason: 'Bonus event above 10% is not eligible for referral reward.',
-  };
-}
-
-function buildClaimDocId(referrerUid: string, rechargeId: string) {
-  return `${referrerUid}__${rechargeId}`;
-}
-
-function buildCarryDocId(referrerUid: string, referredPlayerUid: string) {
-  return `${referrerUid}__${referredPlayerUid}`;
-}
-
-type RechargeLite = {
-  id: string;
-  amount: number;
-  bonusEventId: string;
-  bonusPercentage: number | null;
-  createdAtMs: number;
-};
 
 function toMs(value: unknown) {
   if (!value || typeof value !== 'object') {
@@ -68,25 +45,8 @@ function toMs(value: unknown) {
   return 0;
 }
 
-function computeRewardByRechargeId(recharges: RechargeLite[]) {
-  const eligible = recharges
-    .filter((recharge) =>
-      isEligibleRecharge({
-        bonusEventId: recharge.bonusEventId,
-        bonusPercentage: recharge.bonusPercentage,
-      }).eligible
-    )
-    .sort((left, right) => left.createdAtMs - right.createdAtMs);
-
-  const rewardById = new Map<string, number>();
-  eligible.forEach((recharge, index) => {
-    if (index === 0) {
-      rewardById.set(recharge.id, 5);
-      return;
-    }
-    rewardById.set(recharge.id, Math.max(0, Number((recharge.amount * 0.01).toFixed(4))));
-  });
-  return rewardById;
+function buildClaimDocId(referrerUid: string, referredPlayerUid: string) {
+  return `${referrerUid}__${referredPlayerUid}`;
 }
 
 async function verifyPlayerFromAuthHeader(request: Request) {
@@ -113,6 +73,47 @@ async function verifyPlayerFromAuthHeader(request: Request) {
   return { referrerUid, referrerRef };
 }
 
+async function loadQualifiedRechargeForReferredPlayer(
+  referredPlayerUid: string
+): Promise<RechargeLite | null> {
+  const rechargesSnap = await adminDb
+    .collection('playerGameRequests')
+    .where('playerUid', '==', referredPlayerUid)
+    .where('type', '==', 'recharge')
+    .where('status', '==', 'completed')
+    .get();
+
+  const recharges = rechargesSnap.docs
+    .map((docSnap) => {
+      const data = docSnap.data() as {
+        amount?: number;
+        createdAt?: unknown;
+        completedAt?: unknown;
+        bonusEventId?: string | null;
+        bonusPercentage?: number | null;
+      };
+
+      return {
+        id: docSnap.id,
+        amount: Math.max(0, getNumber(data.amount)),
+        createdAtMs: Math.max(toMs(data.completedAt), toMs(data.createdAt)),
+        bonusEventId: String(data.bonusEventId || '').trim(),
+        bonusPercentage: data.bonusEventId ? getNumber(data.bonusPercentage) : null,
+      } satisfies RechargeLite;
+    })
+    .filter(
+      (recharge) =>
+        recharge.amount > 0 &&
+        isReferralRechargeEligible({
+          bonusEventId: recharge.bonusEventId,
+          bonusPercentage: recharge.bonusPercentage,
+        })
+    )
+    .sort((left, right) => left.createdAtMs - right.createdAtMs);
+
+  return recharges[0] || null;
+}
+
 async function loadRewardGroups(referrerUid: string): Promise<RewardGroup[]> {
   const referredSnap = await adminDb
     .collection('users')
@@ -124,88 +125,37 @@ async function loadRewardGroups(referrerUid: string): Promise<RewardGroup[]> {
     return [];
   }
 
-  const groups: RewardGroup[] = [];
+  const groups = await Promise.all(
+    referredSnap.docs.map(async (referredDoc) => {
+      const referredPlayerUid = referredDoc.id;
+      const referredData = referredDoc.data() as { username?: string };
+      const referredPlayerName =
+        String(referredData.username || '').trim() || 'Unnamed Player';
 
-  for (const referredDoc of referredSnap.docs) {
-    const referredUid = referredDoc.id;
-    const referredData = referredDoc.data() as { username?: string };
-    const referredPlayerName = String(referredData.username || '').trim() || 'Unnamed Player';
+      const [claimSnap, qualifiedRecharge] = await Promise.all([
+        adminDb
+          .collection('referralRewardClaims')
+          .doc(buildClaimDocId(referrerUid, referredPlayerUid))
+          .get(),
+        loadQualifiedRechargeForReferredPlayer(referredPlayerUid),
+      ]);
 
-    const rechargesSnap = await adminDb
-      .collection('playerGameRequests')
-      .where('playerUid', '==', referredUid)
-      .where('type', '==', 'recharge')
-      .where('status', '==', 'completed')
-      .get();
+      const alreadyClaimed =
+        claimSnap.exists &&
+        String((claimSnap.data() as { status?: string }).status || '').toLowerCase() ===
+          'claimed';
+      const isPending = Boolean(qualifiedRecharge) && !alreadyClaimed;
 
-    let pendingRewardCoins = 0;
-    const recharges: RechargeLite[] = [];
+      return {
+        referredPlayerUid,
+        referredPlayerName,
+        pendingRewardCoins: isPending ? REFERRAL_REWARD_COINS : 0,
+        hasClaimableReward: isPending,
+      } satisfies RewardGroup;
+    })
+  );
 
-    for (const rechargeDoc of rechargesSnap.docs) {
-      const rechargeId = rechargeDoc.id;
-      const rechargeData = rechargeDoc.data() as {
-        amount?: number;
-        bonusEventId?: string | null;
-        bonusPercentage?: number | null;
-      };
-
-      const rechargeAmount = Math.max(0, getNumber(rechargeData.amount));
-      const bonusEventId = String(rechargeData.bonusEventId || '').trim();
-      const bonusPercentage = bonusEventId ? getNumber(rechargeData.bonusPercentage) : null;
-      recharges.push({
-        id: rechargeId,
-        amount: rechargeAmount,
-        bonusEventId,
-        bonusPercentage,
-        createdAtMs: toMs((rechargeDoc.data() as { createdAt?: unknown }).createdAt),
-      });
-    }
-
-    const rewardById = computeRewardByRechargeId(recharges);
-
-    for (const recharge of recharges) {
-      const rechargeId = recharge.id;
-      const rewardCoins = Math.max(0, Number(rewardById.get(rechargeId) || 0));
-      const eligibility = isEligibleRecharge({
-        bonusEventId: recharge.bonusEventId,
-        bonusPercentage: recharge.bonusPercentage,
-      });
-
-      const claimDocRef = adminDb
-        .collection('referralRewardClaims')
-        .doc(buildClaimDocId(referrerUid, rechargeId));
-      const claimDoc = await claimDocRef.get();
-      const claimData = claimDoc.exists
-        ? (claimDoc.data() as { status?: string })
-        : null;
-      const alreadyClaimed = String(claimData?.status || '').toLowerCase() === 'claimed';
-      if (!eligibility.eligible || rewardCoins <= 0) {
-        continue;
-      }
-      if (!alreadyClaimed) {
-        pendingRewardCoins += rewardCoins;
-      }
-    }
-
-    const carryRef = adminDb
-      .collection('referralRewardCarry')
-      .doc(buildCarryDocId(referrerUid, referredUid));
-    const carrySnap = await carryRef.get();
-    const carryData = carrySnap.exists
-      ? (carrySnap.data() as { carryPoints?: number })
-      : null;
-    const carryPoints = Math.max(0, getNumber(carryData?.carryPoints));
-    const totalPendingPoints = pendingRewardCoins + carryPoints;
-
-    groups.push({
-      referredPlayerUid: referredUid,
-      referredPlayerName,
-      pendingRewardCoins: Number(totalPendingPoints.toFixed(4)),
-      hasClaimableReward: totalPendingPoints >= 1,
-    });
-  }
-
-  return groups;
+  return groups.filter((group) => group.pendingRewardCoins > 0);
 }
 
 export async function GET(request: Request) {
@@ -230,6 +180,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Referred player uid is required.' }, { status: 400 });
     }
 
+    const qualifiedRecharge = await loadQualifiedRechargeForReferredPlayer(referredPlayerUid);
+    if (!qualifiedRecharge) {
+      return NextResponse.json({ error: 'No rewards available.' }, { status: 400 });
+    }
+
     let rewardCoins = 0;
 
     await adminDb.runTransaction(async (transaction) => {
@@ -246,118 +201,63 @@ export async function POST(request: Request) {
         throw new Error('Referred player profile not found.');
       }
 
-      const referredData = referredSnap.data() as { referredByUid?: string | null };
+      const referredData = referredSnap.data() as {
+        referredByUid?: string | null;
+        username?: string;
+      };
       if (String(referredData.referredByUid || '').trim() !== referrerUid) {
         throw new Error('This player is not in your referral list.');
       }
 
-      const rechargeQuery = adminDb
-        .collection('playerGameRequests')
-        .where('playerUid', '==', referredPlayerUid)
-        .where('type', '==', 'recharge')
-        .where('status', '==', 'completed');
-      const rechargeSnap = await transaction.get(rechargeQuery);
-
-      if (rechargeSnap.empty) {
-        throw new Error('No rewards available.');
+      const claimRef = adminDb
+        .collection('referralRewardClaims')
+        .doc(buildClaimDocId(referrerUid, referredPlayerUid));
+      const claimSnap = await transaction.get(claimRef);
+      if (
+        claimSnap.exists &&
+        String((claimSnap.data() as { status?: string }).status || '').toLowerCase() ===
+          'claimed'
+      ) {
+        throw new Error('Reward already claimed.');
       }
 
-      const recharges: RechargeLite[] = rechargeSnap.docs.map((docSnap) => {
-        const data = docSnap.data() as {
-          amount?: number;
-          bonusEventId?: string | null;
-          bonusPercentage?: number | null;
-          createdAt?: unknown;
-        };
-        return {
-          id: docSnap.id,
-          amount: Math.max(0, getNumber(data.amount)),
-          bonusEventId: String(data.bonusEventId || '').trim(),
-          bonusPercentage: data.bonusEventId ? getNumber(data.bonusPercentage) : null,
-          createdAtMs: toMs(data.createdAt),
-        };
+      rewardCoins = REFERRAL_REWARD_COINS;
+      const referrerData = referrerSnap.data() as {
+        coin?: number;
+        promoLockedCoins?: number;
+      };
+
+      transaction.update(referrerRef, {
+        coin: Math.max(0, getNumber(referrerData.coin)) + rewardCoins,
+        promoLockedCoins:
+          getLockedPromoCoins(referrerData.promoLockedCoins) + rewardCoins,
+        referralBonusNotice: 'Your referral completed their first recharge. Reward added.',
+        referralBonusNoticeAt: FieldValue.serverTimestamp(),
       });
 
-      const rewardById = computeRewardByRechargeId(recharges);
-      const claimRefs = recharges.map((recharge) =>
-        adminDb.collection('referralRewardClaims').doc(buildClaimDocId(referrerUid, recharge.id))
-      );
-      const claimSnaps = await Promise.all(claimRefs.map((claimRef) => transaction.get(claimRef)));
-      const claimedRechargeIds = new Set(
-        claimSnaps
-          .filter((claimSnap) => claimSnap.exists)
-          .map((claimSnap) =>
-            String((claimSnap.data() as { rechargeId?: string }).rechargeId || '')
-          )
-          .filter(Boolean)
-      );
-
-      const pendingRecharges = recharges.filter((recharge) => {
-        const reward = Math.max(0, Number(rewardById.get(recharge.id) || 0));
-        return reward > 0 && !claimedRechargeIds.has(recharge.id);
+      transaction.update(referredSnap.ref, {
+        referralRewardStatus: 'qualified',
+        referralQualifiedAt: FieldValue.serverTimestamp(),
       });
 
-      const pendingPoints = pendingRecharges.reduce(
-        (sum, recharge) => sum + Math.max(0, Number(rewardById.get(recharge.id) || 0)),
-        0
-      );
-      const carryRef = adminDb
-        .collection('referralRewardCarry')
-        .doc(buildCarryDocId(referrerUid, referredPlayerUid));
-      const carrySnap = await transaction.get(carryRef);
-      const carryData = carrySnap.exists
-        ? (carrySnap.data() as { carryPoints?: number })
-        : null;
-      const carryPoints = Math.max(0, getNumber(carryData?.carryPoints));
-
-      const totalPoints = pendingPoints + carryPoints;
-      rewardCoins = Math.floor(totalPoints);
-      const nextCarryPoints = Number((totalPoints - rewardCoins).toFixed(4));
-
-      if (rewardCoins <= 0) {
-        throw new Error(
-          `You have ${Number(totalPoints.toFixed(4))} points. Need at least 1.0 points to claim 1 coin.`
-        );
-      }
-
-      const referrerData = referrerSnap.data() as { coin?: number };
-      const nextCoin = Math.max(0, getNumber(referrerData.coin)) + rewardCoins;
-      transaction.update(referrerRef, { coin: nextCoin });
-
-      for (const recharge of pendingRecharges) {
-        const rewardAmount = Math.max(0, Number(rewardById.get(recharge.id) || 0));
-        const claimRef = adminDb
-          .collection('referralRewardClaims')
-          .doc(buildClaimDocId(referrerUid, recharge.id));
-        transaction.set(claimRef, {
-          referrerUid,
-          referredPlayerUid,
-          rechargeId: recharge.id,
-          rechargeAmount: recharge.amount,
-          rewardAmount,
-          status: 'claimed',
-          claimedAt: FieldValue.serverTimestamp(),
-        });
-      }
-
-      transaction.set(
-        carryRef,
-        {
-          referrerUid,
-          referredPlayerUid,
-          carryPoints: nextCarryPoints,
-          updatedAt: FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
+      transaction.set(claimRef, {
+        referrerUid,
+        referredPlayerUid,
+        referredPlayerName: String(referredData.username || '').trim() || 'Player',
+        rechargeId: qualifiedRecharge.id,
+        rechargeAmount: qualifiedRecharge.amount,
+        rewardAmount: rewardCoins,
+        status: 'claimed',
+        qualifiedAt: FieldValue.serverTimestamp(),
+        claimedAt: FieldValue.serverTimestamp(),
+      });
     });
 
     return NextResponse.json({
       success: true,
       rewardCoins,
       referredPlayerUid,
-      message:
-        "Congratulations! You received referral reward coins from this player's recharge.",
+      message: "Congratulations! You received referral reward coins from this player's recharge.",
     });
   } catch (error) {
     return NextResponse.json(

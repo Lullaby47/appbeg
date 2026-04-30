@@ -1714,6 +1714,35 @@ export async function completeRechargeRedeemTask(task: CarerTask) {
       completedEventType = 'redeem';
       completedEventAmount = redeemAmount;
       completedEventCoadminUid = requestData.coadminUid || task.coadminUid;
+      const completedRedeemSnapshot = await transaction.get(
+        query(
+          collection(db, 'carerTasks'),
+          where('playerUid', '==', task.playerUid),
+          where('type', '==', 'redeem'),
+          where('status', '==', 'completed'),
+          limit(1)
+        )
+      );
+      const shouldEnforceRedeemLimit = !completedRedeemSnapshot.empty;
+      if (shouldEnforceRedeemLimit) {
+        const lastRechargeSnapshot = await transaction.get(
+          query(
+            collection(db, 'carerTasks'),
+            where('playerUid', '==', task.playerUid),
+            where('type', '==', 'recharge'),
+            where('status', '==', 'completed'),
+            orderBy('completedAt', 'desc'),
+            limit(1)
+          )
+        );
+        const latestRechargeTask = lastRechargeSnapshot.docs[0]?.data() as
+          | Omit<CarerTask, 'id'>
+          | undefined;
+        const lastRechargeAmount = Math.max(0, Number(latestRechargeTask?.amount || 0));
+        if (!latestRechargeTask || redeemAmount >= lastRechargeAmount) {
+          throw new Error('Possible Bonus Abuse');
+        }
+      }
 
       transaction.update(taskRef, buildCompletedTaskUpdate({
         carerUid,
