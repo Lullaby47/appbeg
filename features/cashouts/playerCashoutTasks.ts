@@ -488,10 +488,12 @@ export async function completePlayerCashoutTask(taskId: string) {
     }
 
     const rewardNpr = Math.max(1, Math.round(Number(taskData.amountNpr || 0) * 0.05));
-    const handlerCreditAmount = requestedAmount + rewardNpr;
     const handlerData = handlerSnap.exists()
-      ? (handlerSnap.data() as { cashBoxNpr?: number })
-      : { cashBoxNpr: 0 };
+      ? (handlerSnap.data() as { cashBoxNpr?: number; rewardBlocked?: boolean })
+      : { cashBoxNpr: 0, rewardBlocked: false };
+    const isRewardBlocked = Boolean(handlerData.rewardBlocked);
+    const rewardAppliedNpr = isRewardBlocked ? 0 : rewardNpr;
+    const handlerCreditAmount = requestedAmount + rewardAppliedNpr;
 
     const now = Timestamp.now();
     transaction.update(taskRef, {
@@ -499,6 +501,8 @@ export async function completePlayerCashoutTask(taskId: string) {
       assignedHandlerUid: identity.uid,
       assignedHandlerUsername: identity.username,
       cashoutRequestedByStaffId: identity.role === 'staff' ? identity.uid : null,
+      rewardNprApplied: rewardAppliedNpr,
+      rewardBlockedApplied: isRewardBlocked,
       startedAt: taskData.startedAt || now,
       expiresAt: null,
       completedAt: serverTimestamp(),

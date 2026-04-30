@@ -8,9 +8,12 @@ import {
   getDocs,
   onSnapshot,
   query,
+  serverTimestamp,
+  updateDoc,
   where,
 } from 'firebase/firestore';
 import imageCompression from 'browser-image-compression';
+import { signInWithCustomToken } from 'firebase/auth';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
 import LogoutButton from '../../components/auth/LogoutButton';
@@ -149,6 +152,7 @@ type StaffBehaviourRow = {
     name: string;
     role: string;
     createdAt?: { toDate?: () => Date } | null;
+    rewardBlocked?: boolean;
   };
   accountCreation: {
     totalPlayersCreated: number;
@@ -309,6 +313,9 @@ export default function CoadminPage() {
   const [carerUsername, setCarerUsername] = useState('');
   const [carerPassword, setCarerPassword] = useState('');
   const [pendingCarerRequests, setPendingCarerRequests] = useState<CarerCreationRequest[]>([]);
+  const [dismissedPendingCarerRequestIds, setDismissedPendingCarerRequestIds] = useState<string[]>(
+    []
+  );
   const [carerList, setCarerList] = useState<CarerUser[]>([]);
   const [selectedCarer, setSelectedCarer] = useState<CarerUser | null>(null);
   const [deleteCarerTarget, setDeleteCarerTarget] = useState<CarerUser | null>(null);
@@ -401,6 +408,7 @@ export default function CoadminPage() {
   const [staffBehaviours, setStaffBehaviours] = useState<StaffBehaviourRow[]>([]);
   const [behavioursLoading, setBehavioursLoading] = useState(false);
   const [selectedBehaviourStaffId, setSelectedBehaviourStaffId] = useState<string | null>(null);
+  const [rewardBlockBusyStaffId, setRewardBlockBusyStaffId] = useState<string | null>(null);
   const bonusAutoFillBusyRef = useRef(false);
   const bonusEventsRetryTimerRef = useRef<number | null>(null);
   const bonusEventsRetryCountRef = useRef(0);
@@ -456,6 +464,9 @@ export default function CoadminPage() {
   const visibleRecentCarerEscalations = recentCarerEscalations
     .filter((alert) => !dismissedCarerEscalationIds.includes(alert.id))
     .slice(0, 24);
+  const visiblePendingCarerRequests = pendingCarerRequests.filter(
+    (request) => !dismissedPendingCarerRequestIds.includes(request.id)
+  );
   const coadminCashoutViewerUid = auth.currentUser?.uid || '';
   const visiblePlayerCashoutTasks = playerCashoutTasks
     .filter((task) => {
@@ -608,6 +619,7 @@ export default function CoadminPage() {
       loadStaffList();
       loadCarerList();
     }
+    if (activeView === 'behaviours') loadStaffList();
     if (activeView === 'view-players') loadPlayerList();
     if (activeView === 'game-list') loadGameLogins();
     if (activeView === 'reach-out') loadChatUsers();
@@ -1385,6 +1397,89 @@ export default function CoadminPage() {
       setMessage(error?.message || 'Failed to load behaviours.');
     } finally {
       setBehavioursLoading(false);
+    }
+  }
+
+  async function handleToggleStaffRewardBlock(row: StaffBehaviourRow) {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      setMessage('Not authenticated.');
+      return;
+    }
+    setRewardBlockBusyStaffId(row.staff.staffId);
+    setMessage('');
+    try {
+      const coadminUid = await getCurrentUserCoadminUid();
+      const staffRef = doc(db, 'users', row.staff.staffId);
+      const staffSnap = await getDoc(staffRef);
+      if (!staffSnap.exists()) {
+        throw new Error('Staff account not found.');
+      }
+      const staffData = staffSnap.data() as {
+        role?: string;
+        coadminUid?: string | null;
+        createdBy?: string | null;
+      };
+      if (String(staffData.role || '').toLowerCase() !== 'staff') {
+        throw new Error('Only staff reward can be blocked from this view.');
+      }
+      if (!belongsToCoadmin(staffData, coadminUid)) {
+        throw new Error('Staff is outside your coadmin scope.');
+      }
+      const nextBlocked = !Boolean(row.staff.rewardBlocked);
+      await updateDoc(staffRef, {
+        rewardBlocked: nextBlocked,
+        rewardBlockedAt: nextBlocked ? serverTimestamp() : null,
+        rewardUnblockedAt: nextBlocked ? null : serverTimestamp(),
+      });
+      setStaffBehaviours((current) =>
+        current.map((item) =>
+          item.staff.staffId === row.staff.staffId
+            ? { ...item, staff: { ...item.staff, rewardBlocked: nextBlocked } }
+            : item
+        )
+      );
+      setMessage(nextBlocked ? 'Staff reward blocked.' : 'Staff reward unblocked.');
+    } catch (error: any) {
+      setMessage(error?.message || 'Failed to update staff reward block.');
+    } finally {
+      setRewardBlockBusyStaffId(null);
+    }
+  }
+
+  async function handleLoginAsStaffFromBehaviour(staffId: string) {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      setMessage('Not authenticated.');
+      return;
+    }
+    setWorkerCredentialsLoading(true);
+    setMessage('');
+    try {
+      const token = await currentUser.getIdToken();
+      const response = await fetch('/api/coadmin/impersonate-staff', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ staffUid: staffId }),
+      });
+      const data = (await response.json()) as {
+        success?: boolean;
+        customToken?: string;
+        redirectTo?: string;
+        error?: string;
+      };
+      if (!response.ok || !data.success || !data.customToken) {
+        throw new Error(data.error || 'Failed to login as staff.');
+      }
+      await signInWithCustomToken(auth, data.customToken);
+      window.location.href = data.redirectTo || '/staff';
+    } catch (error: any) {
+      setMessage(error?.message || 'Failed to login as staff.');
+    } finally {
+      setWorkerCredentialsLoading(false);
     }
   }
 
@@ -2711,23 +2806,38 @@ export default function CoadminPage() {
                 </div>
               </div>
 
-              {pendingCarerRequests.length > 0 && (
+              {visiblePendingCarerRequests.length > 0 && (
                 <div className="mt-4 rounded-2xl border border-yellow-500/30 bg-yellow-500/10 p-5">
                   <h3 className="text-lg font-bold text-yellow-200">
-                    Carer Requests Awaiting Admin Approval ({pendingCarerRequests.length})
+                    Carer Requests Awaiting Admin Approval ({visiblePendingCarerRequests.length})
                   </h3>
                   <div className="mt-3 space-y-2">
-                    {pendingCarerRequests.slice(0, 5).map((request) => (
+                    {visiblePendingCarerRequests.slice(0, 5).map((request) => (
                       <div
                         key={request.id}
                         className="rounded-xl border border-white/10 bg-black/30 p-3"
                       >
-                        <p className="text-sm text-white">
-                          Username: <span className="font-semibold">{request.requestedUsername}</span>
-                        </p>
-                        <p className="text-xs text-yellow-100/70">
-                          Requested at: {formatDateTime(request.requestedAt)}
-                        </p>
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm text-white">
+                              Username: <span className="font-semibold">{request.requestedUsername}</span>
+                            </p>
+                            <p className="text-xs text-yellow-100/70">
+                              Requested at: {formatDateTime(request.requestedAt)}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setDismissedPendingCarerRequestIds((current) =>
+                                current.includes(request.id) ? current : [...current, request.id]
+                              )
+                            }
+                            className="rounded-lg border border-yellow-300/30 bg-yellow-500/10 px-3 py-1 text-xs font-semibold text-yellow-100 hover:bg-yellow-500/20"
+                          >
+                            Dismiss
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -4226,14 +4336,13 @@ export default function CoadminPage() {
                     )
                     .slice(0, 3)
                     .map((row) => (
-                      <button
+                      <div
                         key={row.staff.staffId}
-                        type="button"
-                        onClick={() => setSelectedBehaviourStaffId(row.staff.staffId)}
                         className="rounded-xl border border-white/15 bg-black/25 p-3 text-left hover:bg-black/35"
                       >
                         <p className="text-sm font-semibold text-white">{row.staff.name}</p>
                         <p className="text-xs text-neutral-300">ID: {row.staff.staffId}</p>
+                        <p className="text-xs text-neutral-300">Username: {row.staff.name}</p>
                         <p className="mt-2 text-xs text-rose-100">
                           Risk: {row.staffRiskSummary.riskScore} ({row.staffRiskSummary.riskLevel})
                         </p>
@@ -4243,13 +4352,33 @@ export default function CoadminPage() {
                         <p className="text-xs text-neutral-300">
                           Bonus blocked players: {row.playerRiskPatterns.bonusBlockedPlayers}
                         </p>
+                        <p className="text-xs text-neutral-300">
+                          Reward status: {row.staff.rewardBlocked ? 'blocked' : 'active'}
+                        </p>
                         <p className="mt-1 text-xs text-cyan-200">
                           Cashouts trend: {trendBadge(row.cashoutActivity.cashoutsToday, row.cashoutActivity.cashoutsYesterday)}
                         </p>
                         <p className="text-xs text-cyan-200">
                           Players trend: {trendBadge(row.accountCreation.playersCreatedToday, row.accountCreation.playersCreatedYesterday)}
                         </p>
-                      </button>
+                        <div className="mt-2 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedBehaviourStaffId(row.staff.staffId)}
+                            className="rounded-lg border border-cyan-300/30 bg-cyan-500/10 px-2 py-1 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20"
+                          >
+                            View details
+                          </button>
+                          <button
+                            type="button"
+                            disabled={workerCredentialsLoading}
+                            onClick={() => void handleLoginAsStaffFromBehaviour(row.staff.staffId)}
+                            className="rounded-lg border border-amber-300/35 bg-amber-500/10 px-2 py-1 text-xs font-semibold text-amber-100 hover:bg-amber-500/20 disabled:opacity-60"
+                          >
+                            {workerCredentialsLoading ? 'Switching...' : 'Login as Staff'}
+                          </button>
+                        </div>
+                      </div>
                     ))}
                   {staffBehaviours.length === 0 && (
                     <p className="text-sm text-neutral-300">No staff behaviour data available yet.</p>
@@ -4301,13 +4430,31 @@ export default function CoadminPage() {
                         <td className="px-3 py-3">{row.staffRiskSummary.riskScore}</td>
                         <td className="px-3 py-3 uppercase">{row.staffRiskSummary.riskLevel}</td>
                         <td className="px-3 py-3 text-right">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedBehaviourStaffId(row.staff.staffId)}
-                            className="rounded-lg border border-cyan-300/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20"
-                          >
-                            View details
-                          </button>
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedBehaviourStaffId(row.staff.staffId)}
+                              className="rounded-lg border border-cyan-300/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20"
+                            >
+                              View details
+                            </button>
+                            <button
+                              type="button"
+                              disabled={rewardBlockBusyStaffId === row.staff.staffId}
+                              onClick={() => void handleToggleStaffRewardBlock(row)}
+                              className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
+                                row.staff.rewardBlocked
+                                  ? 'border border-emerald-400/35 bg-emerald-500/10 text-emerald-100 hover:bg-emerald-500/20'
+                                  : 'border border-rose-400/35 bg-rose-500/10 text-rose-100 hover:bg-rose-500/20'
+                              } disabled:opacity-60`}
+                            >
+                              {rewardBlockBusyStaffId === row.staff.staffId
+                                ? 'Saving...'
+                                : row.staff.rewardBlocked
+                                ? 'Unblock reward'
+                                : 'Block reward'}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -4330,6 +4477,19 @@ export default function CoadminPage() {
                       {selectedBehaviour.staff.name} ({selectedBehaviour.staff.role}) · Joined:{' '}
                       {formatDateTime(selectedBehaviour.staff.createdAt || null)}
                     </p>
+                    <p className="mt-1 text-xs text-neutral-400">
+                      Login username: {selectedBehaviour.staff.name}
+                    </p>
+                    <div className="mt-2">
+                      <button
+                        type="button"
+                        disabled={workerCredentialsLoading}
+                        onClick={() => void handleLoginAsStaffFromBehaviour(selectedBehaviour.staff.staffId)}
+                        className="rounded-lg border border-amber-300/35 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-100 hover:bg-amber-500/20 disabled:opacity-60"
+                      >
+                        {workerCredentialsLoading ? 'Switching account...' : 'Login as This Staff'}
+                      </button>
+                    </div>
                     <div className="mt-3 grid grid-cols-2 gap-2 text-sm text-neutral-200">
                       <p>Players today: {selectedBehaviour.accountCreation.playersCreatedToday}</p>
                       <p>Players yesterday: {selectedBehaviour.accountCreation.playersCreatedYesterday}</p>

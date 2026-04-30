@@ -199,6 +199,7 @@ export async function GET(request: Request) {
             name: String(staff.username || 'Staff'),
             role: String(staff.role || 'staff'),
             createdAt: staff.createdAt || null,
+            rewardBlocked: Boolean(staff.rewardBlocked),
           },
           accountCreation: {
             totalPlayersCreated: linkedPlayers.length,

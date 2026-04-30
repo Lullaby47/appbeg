@@ -1269,9 +1269,11 @@ export default function PlayerPage() {
       return;
     }
 
-    const existingCode = String(
-      (playerSnap.data() as { referralCode?: string }).referralCode || ''
-    ).trim();
+  const profile = playerSnap.data() as { role?: string; referralCode?: string };
+  if (String(profile.role || '').toLowerCase() !== 'player') {
+    return;
+  }
+  const existingCode = String(profile.referralCode || '').trim();
     if (/^\d{6,10}$/.test(existingCode)) {
       setReferralCode(existingCode);
     }
@@ -1294,7 +1296,7 @@ export default function PlayerPage() {
       };
       if (data.success && data.referralCode) {
         setReferralCode(String(data.referralCode).trim());
-      } else if (data.error) {
+      } else if (data.error && data.error !== 'Only players have referral codes.') {
         console.warn('Referral code ensure failed:', data.error);
       }
     } catch (error) {
@@ -1713,6 +1715,7 @@ export default function PlayerPage() {
         }
 
         const playerData = snapshot.data() as {
+          role?: string;
           status?: string;
           coin?: number;
           cash?: number;
@@ -1727,12 +1730,15 @@ export default function PlayerPage() {
           coin: Number(playerData.coin || 0),
           cash: Number(playerData.cash || 0),
         });
+        const isPlayerRole = String(playerData.role || '').toLowerCase() === 'player';
         const nextReferralCode = String(playerData.referralCode || '').trim();
-        if (/^\d{6,10}$/.test(nextReferralCode)) {
+        if (isPlayerRole && /^\d{6,10}$/.test(nextReferralCode)) {
           setReferralCode(nextReferralCode);
-        } else {
+        } else if (isPlayerRole) {
           setReferralCode('');
           void ensureCurrentPlayerReferralCode(playerUid);
+        } else {
+          setReferralCode('');
         }
         setReferredByPlayerName(String(playerData.referredByUsername || '').trim());
         setReferredByPlayerUid(String(playerData.referredByUid || '').trim());
