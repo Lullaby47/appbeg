@@ -1,0 +1,286 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid));
+    }
+
+    function userExists(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid));
+    }
+
+    function role() {
+      return signedIn() && userExists(request.auth.uid)
+        ? userDoc(request.auth.uid).data.role
+        : null;
+    }
+
+    function isAdmin() {
+      return role() == 'admin';
+    }
+
+    function isCoadmin() {
+      return role() == 'coadmin';
+    }
+
+    function isStaff() {
+      return role() == 'staff';
+    }
+
+    function isCarer() {
+      return role() == 'carer';
+    }
+
+    function isPlayer() {
+      return role() == 'player';
+    }
+
+    function callerCoadminUid() {
+      let data = userDoc(request.auth.uid).data;
+      return isCoadmin() ? request.auth.uid : (data.coadminUid != null ? data.coadminUid : data.createdBy);
+    }
+
+    function scopedToCaller(data) {
+      return signedIn() && (
+        isAdmin() ||
+        data.coadminUid == callerCoadminUid() ||
+        data.createdBy == callerCoadminUid()
+      );
+    }
+
+    function protectedUserFieldsChanged() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny([
+        'role',
+        'coin',
+        'cash',
+        'cashBoxNpr',
+        'createdBy',
+        'coadminUid',
+        'email',
+        'uid'
+      ]);
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin() || scopedToCaller(resource.data));
+
+      // Users may maintain only harmless own-profile fields. Balance, role,
+      // scope, and identity fields must move through trusted server/admin paths.
+      allow update: if signedIn()
+        && request.auth.uid == uid
+        && !protectedUserFieldsChanged();
+
+      // Existing admin/coadmin screens still perform some scoped profile updates
+      // directly. Keep those functional, but never allow direct role changes.
+      allow update: if signedIn()
+        && (isAdmin() || (isCoadmin() && scopedToCaller(resource.data)))
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'uid', 'email']);
+
+      allow create, delete: if isAdmin();
+    }
+
+    match /playerGameRequests/{requestId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        resource.data.playerUid == request.auth.uid ||
+        scopedToCaller(resource.data)
+      );
+      allow create: if signedIn()
+        && isPlayer()
+        && request.resource.data.playerUid == request.auth.uid
+        && request.resource.data.status == 'pending';
+      allow update: if signedIn() && (
+        isAdmin() ||
+        scopedToCaller(resource.data) ||
+        (
+          isPlayer() &&
+          resource.data.playerUid == request.auth.uid &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status',
+            'completedAt',
+            'ttlExpiresAt',
+            'pokedAt',
+            'pokeMessage'
+          ])
+        )
+      );
+      allow delete: if isAdmin() || scopedToCaller(resource.data);
+    }
+
+    match /carerTasks/{taskId} {
+      allow read: if signedIn() && (isAdmin() || scopedToCaller(resource.data));
+      allow create: if signedIn() && (isAdmin() || scopedToCaller(request.resource.data));
+      allow update: if signedIn() && (
+        isAdmin() ||
+        isCoadmin() ||
+        (
+          (isCarer() || isStaff()) &&
+          scopedToCaller(resource.data) &&
+          (
+            resource.data.assignedCarerUid == request.auth.uid ||
+            resource.data.assignedHandlerUid == request.auth.uid ||
+            resource.data.status == 'pending'
+          )
+        )
+      );
+      allow delete: if isAdmin() || (isCoadmin() && scopedToCaller(resource.data));
+    }
+
+    match /playerCashoutTasks/{taskId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        resource.data.playerUid == request.auth.uid ||
+        scopedToCaller(resource.data)
+      );
+      allow create: if signedIn()
+        && isPlayer()
+        && request.resource.data.playerUid == request.auth.uid;
+      allow update: if signedIn() && (isAdmin() || scopedToCaller(resource.data));
+      allow delete: if isAdmin() || (isCoadmin() && scopedToCaller(resource.data));
+    }
+
+    match /financialEvents/{eventId} {
+      allow read: if signedIn() && (isAdmin() || scopedToCaller(resource.data) || resource.data.playerUid == request.auth.uid);
+      // TODO: move all financial event creation to server routes. Until then,
+      // allow scoped workers/admins to keep current transaction-based workflows.
+      allow create: if signedIn() && (isAdmin() || isCoadmin() || isStaff() || isCarer());
+      allow update, delete: if false;
+    }
+
+    match /gameLogins/{docId} {
+      allow read, update, delete: if signedIn() && (isAdmin() || scopedToCaller(resource.data));
+      allow create: if signedIn() && (isAdmin() || scopedToCaller(request.resource.data));
+    }
+
+    match /playerGameLogins/{docId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        resource.data.playerUid == request.auth.uid ||
+        scopedToCaller(resource.data)
+      );
+      allow create, update: if signedIn() && (
+        isAdmin() ||
+        request.resource.data.playerUid == request.auth.uid ||
+        scopedToCaller(request.resource.data) ||
+        scopedToCaller(resource.data)
+      );
+      allow delete: if isAdmin() || scopedToCaller(resource.data);
+    }
+
+    match /bonusEvents/{docId} {
+      allow read: if signedIn() && (isAdmin() || isPlayer() || scopedToCaller(resource.data));
+      allow create: if signedIn() && (isAdmin() || scopedToCaller(request.resource.data));
+      allow update, delete: if signedIn() && (isAdmin() || scopedToCaller(resource.data));
+    }
+
+    match /carerCashouts/{docId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        resource.data.carerUid == request.auth.uid ||
+        scopedToCaller(resource.data)
+      );
+      allow create: if signedIn() && (
+        isAdmin() ||
+        request.resource.data.carerUid == request.auth.uid ||
+        scopedToCaller(request.resource.data)
+      );
+      allow update: if signedIn() && (isAdmin() || scopedToCaller(resource.data));
+      allow delete: if false;
+    }
+
+    match /transferRequests/{docId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        resource.data.playerUid == request.auth.uid ||
+        scopedToCaller(resource.data)
+      );
+      allow create: if signedIn() && isPlayer() && request.resource.data.playerUid == request.auth.uid;
+      allow update: if signedIn() && (isAdmin() || scopedToCaller(resource.data));
+      allow delete: if false;
+    }
+
+    match /shiftSessions/{docId} {
+      allow read: if signedIn() && (isAdmin() || scopedToCaller(resource.data) || resource.data.userUid == request.auth.uid);
+      allow create: if signedIn() && request.resource.data.userUid == request.auth.uid;
+      allow update: if signedIn() && (
+        isAdmin() ||
+        resource.data.userUid == request.auth.uid ||
+        scopedToCaller(resource.data)
+      );
+      allow delete: if false;
+    }
+
+    match /coinLoadSessions/{docId} {
+      allow read, create, update: if signedIn() && (
+        isAdmin() ||
+        request.resource.data.playerUid == request.auth.uid ||
+        scopedToCaller(request.resource.data) ||
+        resource.data.playerUid == request.auth.uid ||
+        scopedToCaller(resource.data)
+      );
+      allow delete: if false;
+    }
+
+    match /devUsageEstimates/{docId} {
+      allow read: if isAdmin();
+      allow create, update: if signedIn() && (isAdmin() || isCoadmin() || isStaff() || isCarer() || isPlayer());
+      allow delete: if false;
+    }
+
+    match /presence/{docId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && docId == request.auth.uid;
+      allow delete: if false;
+    }
+
+    match /conversations/{conversationId} {
+      allow read, update: if signedIn() && request.auth.uid in resource.data.participants;
+      allow create: if signedIn() && request.auth.uid in request.resource.data.participants;
+      allow delete: if false;
+      match /messages/{messageId} {
+        allow read, create: if signedIn();
+        allow update: if signedIn();
+        allow delete: if false;
+      }
+    }
+
+    match /playerConversations/{conversationId} {
+      allow read, update: if signedIn() && request.auth.uid in resource.data.participants;
+      allow create: if signedIn() && request.auth.uid in request.resource.data.participants;
+      allow delete: if false;
+      match /messages/{messageId} {
+        allow read, create, update: if signedIn();
+        allow delete: if false;
+      }
+    }
+
+    match /playerGroupConversations/{conversationId}/{document=**} {
+      allow read, create, update: if signedIn() && isPlayer();
+      allow delete: if false;
+    }
+
+    match /automation_jobs/{jobId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        resource.data.carerUid == request.auth.uid ||
+        scopedToCaller(resource.data)
+      );
+      allow create, update: if signedIn() && (
+        isAdmin() ||
+        request.resource.data.carerUid == request.auth.uid ||
+        resource.data.carerUid == request.auth.uid ||
+        scopedToCaller(request.resource.data)
+      );
+      allow delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

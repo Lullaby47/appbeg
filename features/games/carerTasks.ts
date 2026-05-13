@@ -7,7 +7,9 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
+  orderBy,
   query,
   runTransaction,
   serverTimestamp,
@@ -34,7 +36,11 @@ import {
   PlayerGameRequestType,
 } from '@/features/games/playerGameRequests';
 import { getPlayersByCoadmin, PlayerUser } from '@/features/users/adminUsers';
-import { recordFinancialEvent } from '@/features/risk/playerRisk';
+import {
+  automationJobTtl,
+  completedCarerTaskTtl,
+  completedPlayerGameRequestTtl,
+} from '@/lib/firestore/ttl';
 
 export type CarerTaskType =
   | 'create_game_username'
@@ -59,7 +65,13 @@ export type CarerTask = {
   requestId?: string | null;
   status: CarerTaskStatus;
   assignedCarerUid: string | null;
+  assignedCarer?: string | null;
   assignedCarerUsername?: string | null;
+  claimedStatus?: string | null;
+  claimedAt?: Timestamp | null;
+  claimedByUid?: string | null;
+  claimedByUsername?: string | null;
+  lastHeartbeatAt?: Timestamp | null;
   startedAt?: Timestamp | null;
   expiresAt?: Timestamp | null;
   completedAt?: Timestamp | null;
@@ -72,7 +84,22 @@ export type CarerTask = {
   automationStatus?: 'waiting' | 'running' | 'completed' | 'failed' | null;
   automationJobId?: string | null;
   automationUpdatedAt?: Timestamp | null;
+  automationError?: string | null;
+  currentUsername?: string | null;
+  gameAccountUsername?: string | null;
+  loginUrl?: string | null;
+  gameLoginUrl?: string | null;
+  lobbyUrl?: string | null;
+  siteUrl?: string | null;
+  baseUrl?: string | null;
+  gameCredentialUsername?: string | null;
+  gameCredentialPassword?: string | null;
 };
+
+const CARER_TASK_LIVE_LISTENER_LIMIT = 150;
+const CARER_TASK_COMPLETED_LISTENER_LIMIT = 50;
+const CARER_TOTALS_HISTORY_LIMIT_PER_TYPE = 500;
+const CARER_TOTALS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type CarerRewardSummary = {
   completedTaskCount: number;
@@ -116,6 +143,33 @@ type SyncTaskInput = {
 
 function normalizeGameName(gameName: string) {
   return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+}
+
+function normalizeTaskUrl(value?: string | null) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) {
+    return null;
+  }
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+function normalizeTaskText(value?: string | null) {
+  return String(value || '').trim() || null;
+}
+
+function resolveTaskGameAccess(game?: GameLogin | null) {
+  const loginUrl = normalizeTaskUrl(game?.backendUrl || game?.siteUrl || '');
+  const siteUrl = normalizeTaskUrl(game?.siteUrl || game?.frontendUrl || game?.backendUrl || '');
+
+  return {
+    loginUrl,
+    gameLoginUrl: loginUrl,
+    lobbyUrl: loginUrl,
+    siteUrl,
+    baseUrl: loginUrl || siteUrl,
+    gameCredentialUsername: normalizeTaskText(game?.username || ''),
+    gameCredentialPassword: normalizeTaskText(game?.password || ''),
+  };
 }
 
 function getTimestampMs(value: unknown) {
@@ -215,6 +269,9 @@ function buildCompletedTaskUpdate(values: {
     status: 'completed' as const,
     expiresAt: null,
     completedAt: serverTimestamp(),
+    ttlExpiresAt: completedCarerTaskTtl(),
+    automationStatus: 'completed' as const,
+    automationUpdatedAt: serverTimestamp(),
     isPoked: false,
     pokedAt: null,
     pokeMessage: null,
@@ -339,6 +396,30 @@ async function getCurrentCarerIdentity() {
   };
 }
 
+async function getAuthHeaders() {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await currentUser.getIdToken();
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+  };
+}
+
+function readApiError(messageFallback: string, payload: unknown) {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    'error' in payload &&
+    typeof (payload as { error?: unknown }).error === 'string'
+  ) {
+    return String((payload as { error: string }).error || messageFallback);
+  }
+  return messageFallback;
+}
+
 async function getCurrentUserIdentityForEscalation() {
   const currentUser = auth.currentUser;
 
@@ -371,6 +452,7 @@ function buildUsernameTask(
   player: PlayerUser,
   game: GameLogin
 ): CarerTask {
+  const access = resolveTaskGameAccess(game);
   return toCarerTask(usernameTaskId(coadminUid, player.uid, game.gameName), {
     coadminUid,
     type: 'create_game_username',
@@ -391,15 +473,20 @@ function buildUsernameTask(
     pokeMessage: null,
     completedByCarerUid: null,
     completedByCarerUsername: null,
+    ...access,
   });
 }
 
 function buildRequestTask(
   coadminUid: string,
   request: PlayerGameRequest,
-  playerUsername: string
+  playerUsername: string,
+  currentUsername?: string | null,
+  game?: GameLogin | null
 ): CarerTask {
   const nextStatus = getTaskStatusFromRequestStatus(request.status);
+  const normalizedCurrentUsername = String(currentUsername || '').trim() || null;
+  const access = resolveTaskGameAccess(game);
 
   return toCarerTask(requestTaskId(request.id), {
     coadminUid,
@@ -421,6 +508,9 @@ function buildRequestTask(
     pokeMessage: null,
     completedByCarerUid: null,
     completedByCarerUsername: null,
+    currentUsername: normalizedCurrentUsername,
+    gameAccountUsername: normalizedCurrentUsername,
+    ...access,
   });
 }
 
@@ -432,9 +522,11 @@ export function computeRequestLinkedCarerTaskWrite(
   coadminUid: string,
   request: PlayerGameRequest,
   playerUsername: string,
-  existingTask: CarerTask | undefined
+  existingTask: CarerTask | undefined,
+  currentUsername?: string | null,
+  game?: GameLogin | null
 ): Record<string, unknown> {
-  const task = buildRequestTask(coadminUid, request, playerUsername);
+  const task = buildRequestTask(coadminUid, request, playerUsername, currentUsername, game);
   const desiredStatus = task.status;
   const existingCompletedAt = existingTask?.completedAt || null;
   const existingCompletedByUid =
@@ -502,6 +594,16 @@ export function computeRequestLinkedCarerTaskWrite(
         : nextStatus === 'urgent'
           ? request.completedAt || existingCompletedAt || null
           : null,
+    automationStatus:
+      nextStatus === 'completed'
+        ? 'completed'
+        : nextStatus === 'pending'
+          ? existingTask?.automationStatus ?? null
+          : existingTask?.automationStatus ?? null,
+    automationUpdatedAt:
+      nextStatus === 'completed'
+        ? serverTimestamp()
+        : existingTask?.automationUpdatedAt ?? null,
     createdAt: request.createdAt || existingTask?.createdAt || serverTimestamp(),
     isPoked: false,
     pokedAt: null,
@@ -540,12 +642,33 @@ export async function upsertCarerTaskForPlayerGameRequest(
   const existingTask = existingSnap.exists()
     ? toCarerTask(existingSnap.id, existingSnap.data() as Omit<CarerTask, 'id'>)
     : undefined;
+  const loginQuery = query(
+    collection(db, 'playerGameLogins'),
+    where('playerUid', '==', request.playerUid)
+  );
+  const loginSnap = await getDocs(loginQuery);
+  const normalizedRequestGame = normalizeGameName(request.gameName || '');
+  const coadminGames = await getGameLoginsByCoadmin(coadminUid);
+  const matchedGame =
+    coadminGames.find(
+      (game) => normalizeGameName(String(game.gameName || '')) === normalizedRequestGame
+    ) || null;
+  const matchedLogin = loginSnap.docs
+    .map((docSnap) => docSnap.data() as { gameName?: string; gameUsername?: string })
+    .find(
+      (entry) =>
+        normalizeGameName(String(entry.gameName || '')) === normalizedRequestGame &&
+        String(entry.gameUsername || '').trim().length > 0
+    );
+  const requestGameUsername = String(matchedLogin?.gameUsername || '').trim() || null;
 
   const payload = computeRequestLinkedCarerTaskWrite(
     coadminUid,
     request,
     playerUsername,
-    existingTask
+    existingTask,
+    requestGameUsername,
+    matchedGame
   );
   await setDoc(taskRef, payload, { merge: true });
 
@@ -632,6 +755,32 @@ export function getEffectiveCarerTaskStatus(task: CarerTask): CarerTaskStatus {
   return task.status;
 }
 
+export function isRealCompletedCarerTask(task: CarerTask): boolean {
+  if (getEffectiveCarerTaskStatus(task) !== 'completed') {
+    return false;
+  }
+  const automationStatus = String(task.automationStatus || '').trim().toLowerCase();
+  if (
+    automationStatus === 'failed' ||
+    automationStatus === 'fake_redeem' ||
+    automationStatus === 'dismissed' ||
+    automationStatus === 'returned_to_pending' ||
+    automationStatus === 'cancelled'
+  ) {
+    return false;
+  }
+  const lowerPoke = String(task.pokeMessage || '').toLowerCase();
+  if (
+    lowerPoke.includes('fake redeem') ||
+    lowerPoke.includes('dismissed') ||
+    lowerPoke.includes('cancelled') ||
+    lowerPoke.includes('returned to pending')
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export async function syncCarerTasks({
   coadminUid,
   players,
@@ -650,8 +799,17 @@ export async function syncCarerTasks({
       (login) => `${login.playerUid}::${normalizeGameName(login.gameName || '')}`
     )
   );
+  const loginUsernameByPlayerGame = new Map(
+    logins.map((login) => [
+      `${login.playerUid}::${normalizeGameName(login.gameName || '')}`,
+      String(login.gameUsername || '').trim() || null,
+    ])
+  );
   const allRequests = [...pendingRequests, ...completedRequests];
   const requestIds = new Set(allRequests.map((request) => request.id));
+  const gameByNormalizedName = new Map(
+    games.map((game) => [normalizeGameName(game.gameName || ''), game] as const)
+  );
 
   const batch = writeBatch(db);
   let changed = false;
@@ -680,15 +838,19 @@ export async function syncCarerTasks({
       }
 
       if (hasLogin && existingTask.status !== 'completed') {
+        const access = resolveTaskGameAccess(game);
         batch.update(taskRef, {
           playerUsername: player.username || 'Player',
           gameName: game.gameName || 'Unknown Game',
           status: 'completed',
+          automationStatus: 'completed',
+          automationUpdatedAt: serverTimestamp(),
           assignedCarerUid: existingTask.assignedCarerUid ?? null,
           assignedCarerUsername: existingTask.assignedCarerUsername ?? null,
           startedAt: existingTask.startedAt ?? null,
           expiresAt: null,
           completedAt: serverTimestamp(),
+          ttlExpiresAt: completedCarerTaskTtl(),
           isPoked: false,
           pokedAt: null,
           pokeMessage: null,
@@ -698,16 +860,20 @@ export async function syncCarerTasks({
             existingTask.completedByCarerUsername ||
             existingTask.assignedCarerUsername ||
             null,
+          ...access,
         });
         changed = true;
         continue;
       }
 
       if (!hasLogin && existingTask.status === 'completed' && !existingTask.requestId) {
+        const access = resolveTaskGameAccess(game);
         batch.update(taskRef, {
           playerUsername: player.username || 'Player',
           gameName: game.gameName || 'Unknown Game',
           status: 'pending',
+          automationStatus: null,
+          automationUpdatedAt: serverTimestamp(),
           assignedCarerUid: null,
           assignedCarerUsername: null,
           startedAt: null,
@@ -718,6 +884,7 @@ export async function syncCarerTasks({
           pokeMessage: null,
           completedByCarerUid: null,
           completedByCarerUsername: null,
+          ...access,
         });
         changed = true;
         continue;
@@ -725,11 +892,17 @@ export async function syncCarerTasks({
 
       if (
         existingTask.playerUsername !== (player.username || 'Player') ||
-        existingTask.gameName !== (game.gameName || 'Unknown Game')
+        existingTask.gameName !== (game.gameName || 'Unknown Game') ||
+        existingTask.loginUrl !== (resolveTaskGameAccess(game).loginUrl ?? null) ||
+        existingTask.gameCredentialUsername !==
+          (resolveTaskGameAccess(game).gameCredentialUsername ?? null) ||
+        existingTask.siteUrl !== (resolveTaskGameAccess(game).siteUrl ?? null)
       ) {
+        const access = resolveTaskGameAccess(game);
         batch.update(taskRef, {
           playerUsername: player.username || 'Player',
           gameName: game.gameName || 'Unknown Game',
+          ...access,
         });
         changed = true;
       }
@@ -741,11 +914,17 @@ export async function syncCarerTasks({
     const taskRef = doc(db, 'carerTasks', taskId);
     const existingTask = existingTasks.get(taskId);
     const playerUsername = playerNameMap.get(request.playerUid) || 'Player';
+    const loginUsername =
+      loginUsernameByPlayerGame.get(
+        `${request.playerUid}::${normalizeGameName(request.gameName || '')}`
+      ) || null;
     const payload = computeRequestLinkedCarerTaskWrite(
       coadminUid,
       request,
       playerUsername,
-      existingTask
+      existingTask,
+      loginUsername,
+      gameByNormalizedName.get(normalizeGameName(request.gameName || '')) || null
     );
 
     batch.set(taskRef, payload, { merge: true });
@@ -760,11 +939,14 @@ export async function syncCarerTasks({
 
       batch.update(doc(db, 'carerTasks', existingTask.id), {
         status: 'completed',
+        automationStatus: 'completed',
+        automationUpdatedAt: serverTimestamp(),
         assignedCarerUid: existingTask.assignedCarerUid ?? null,
         assignedCarerUsername: existingTask.assignedCarerUsername ?? null,
         startedAt: null,
         expiresAt: null,
         completedAt: existingTask.completedAt ?? serverTimestamp(),
+        ttlExpiresAt: completedCarerTaskTtl(),
         isPoked: false,
         pokedAt: null,
         pokeMessage: null,
@@ -793,11 +975,14 @@ export async function syncCarerTasks({
 
     batch.update(doc(db, 'carerTasks', existingTask.id), {
       status: 'completed',
+      automationStatus: 'completed',
+      automationUpdatedAt: serverTimestamp(),
       assignedCarerUid: existingTask.assignedCarerUid ?? null,
       assignedCarerUsername: existingTask.assignedCarerUsername ?? null,
       startedAt: null,
       expiresAt: null,
       completedAt: serverTimestamp(),
+      ttlExpiresAt: completedCarerTaskTtl(),
       isPoked: false,
       pokedAt: null,
       pokeMessage: null,
@@ -841,19 +1026,13 @@ async function dropPendingRechargeRequestsWithoutEnoughCoin(
     })
     .map((request) => request.id);
 
-  if (invalidRechargeIds.length === 0) {
-    return pendingRequests;
+  if (invalidRechargeIds.length > 0) {
+    // Keep tasks visible for manual handling. Carer can dismiss explicitly from UI.
+    console.info('[carerTasks] keeping pending recharge tasks with low coin', {
+      invalidRechargeIds,
+    });
   }
-
-  const invalidSet = new Set(invalidRechargeIds);
-  const batch = writeBatch(db);
-  invalidRechargeIds.forEach((requestId) => {
-    batch.delete(doc(db, 'playerGameRequests', requestId));
-    batch.delete(doc(db, 'carerTasks', requestTaskId(requestId)));
-  });
-  await batch.commit();
-
-  return pendingRequests.filter((request) => !invalidSet.has(request.id));
+  return pendingRequests;
 }
 
 export async function syncCarerTasksForCoadmin(coadminUid: string) {
@@ -895,32 +1074,68 @@ export function listenToAvailableCarerTasks(
   callback: (tasks: CarerTask[]) => void,
   onError?: (error: Error) => void
 ) {
-  const tasksQuery = query(
+  const activeTasksQuery = query(
     collection(db, 'carerTasks'),
     where('coadminUid', '==', coadminUid),
-    where('status', 'in', ['pending', 'in_progress', 'urgent'])
+    where('status', 'in', ['pending', 'in_progress', 'urgent']),
+    orderBy('createdAt', 'desc'),
+    limit(CARER_TASK_LIVE_LISTENER_LIMIT)
   );
+  const completedTasksQuery = query(
+    collection(db, 'carerTasks'),
+    where('coadminUid', '==', coadminUid),
+    where('status', '==', 'completed'),
+    orderBy('completedAt', 'desc'),
+    limit(CARER_TASK_COMPLETED_LISTENER_LIMIT)
+  );
+  let activeTasks: CarerTask[] = [];
+  let completedTasks: CarerTask[] = [];
 
-  return onSnapshot(
-    tasksQuery,
+  const emit = () => {
+    const byId = new Map<string, CarerTask>();
+    for (const task of [...activeTasks, ...completedTasks]) {
+      byId.set(task.id, task);
+    }
+    callback(Array.from(byId.values()));
+  };
+
+  const mapVisibleTasks = (docs: Array<{ id: string; data: () => unknown }>) =>
+    docs
+      .map((docSnap) => {
+        const task = {
+          id: docSnap.id,
+          ...(docSnap.data() as Omit<CarerTask, 'id'>),
+        } satisfies CarerTask;
+
+        return getVisibleTaskForCarer(task, currentCarerUid);
+      })
+      .filter((task): task is CarerTask => Boolean(task));
+
+  const unsubscribeActive = onSnapshot(
+    activeTasksQuery,
     (snapshot) => {
-      const tasks = snapshot.docs
-        .map((docSnap) => {
-          const task = {
-            id: docSnap.id,
-            ...(docSnap.data() as Omit<CarerTask, 'id'>),
-          } satisfies CarerTask;
-
-          return getVisibleTaskForCarer(task, currentCarerUid);
-        })
-        .filter((task): task is CarerTask => Boolean(task));
-
-      callback(tasks);
+      activeTasks = mapVisibleTasks(snapshot.docs);
+      emit();
     },
     (error) => {
       onError?.(error as Error);
     }
   );
+  const unsubscribeCompleted = onSnapshot(
+    completedTasksQuery,
+    (snapshot) => {
+      completedTasks = mapVisibleTasks(snapshot.docs);
+      emit();
+    },
+    (error) => {
+      onError?.(error as Error);
+    }
+  );
+
+  return () => {
+    unsubscribeActive();
+    unsubscribeCompleted();
+  };
 }
 
 export async function releaseExpiredCarerTasks(coadminUid: string) {
@@ -1040,14 +1255,21 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
           transaction.update(taskRef, {
             status: 'pending',
             assignedCarerUid: null,
+            assignedCarer: null,
             assignedCarerUsername: null,
+            claimedStatus: null,
+            claimedAt: null,
+            claimedByUid: null,
+            claimedByUsername: null,
             startedAt: null,
             expiresAt: null,
             completedAt: null,
             completedByCarerUid: null,
             completedByCarerUsername: null,
             automationStatus: 'waiting',
-            automationJobId: job.id,
+            automationJobId: null,
+            lastHeartbeatAt: null,
+            automationError: timeoutMessage,
             automationUpdatedAt: serverTimestamp(),
           });
         }
@@ -1070,6 +1292,7 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
       transaction.update(jobRef, {
         status: 'failed',
         completedAt: serverTimestamp(),
+        ttlExpiresAt: automationJobTtl(),
         updatedAt: serverTimestamp(),
         error: timeoutMessage,
       });
@@ -1078,6 +1301,7 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
         transaction.update(taskRef, {
           status: 'failed',
           expiresAt: null,
+          ttlExpiresAt: completedCarerTaskTtl(),
           automationStatus: 'failed',
           automationJobId: job.id,
           automationUpdatedAt: serverTimestamp(),
@@ -1143,13 +1367,21 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
       transaction.update(taskRef, {
         status: 'pending',
         assignedCarerUid: null,
+        assignedCarer: null,
         assignedCarerUsername: null,
+        claimedStatus: null,
+        claimedAt: null,
+        claimedByUid: null,
+        claimedByUsername: null,
         startedAt: null,
         expiresAt: null,
         completedAt: null,
         completedByCarerUid: null,
         completedByCarerUsername: null,
         automationStatus: null,
+        automationJobId: null,
+        lastHeartbeatAt: null,
+        automationError: null,
         automationUpdatedAt: serverTimestamp(),
       });
 
@@ -1302,68 +1534,27 @@ export async function completeUsernameTaskForPlayerGame(
   playerUid: string,
   gameName: string
 ) {
-  const { uid: carerUid, username: carerUsername } =
-    await getCurrentCarerIdentity();
-  const taskRefs = [
-    doc(db, 'carerTasks', usernameTaskId(coadminUid, playerUid, gameName)),
-    doc(db, 'carerTasks', resetPasswordTaskId(coadminUid, playerUid, gameName)),
-    doc(db, 'carerTasks', recreateUsernameTaskId(coadminUid, playerUid, gameName)),
-  ];
-
-  let completedTaskCount = 0;
-  let totalAwardNpr = 0;
-
-  await runTransaction(db, async (transaction) => {
-    const taskSnaps = await Promise.all(taskRefs.map((taskRef) => transaction.get(taskRef)));
-    const carerRef = doc(db, 'users', carerUid);
-    const carerSnap = await transaction.get(carerRef);
-    const carerData = carerSnap.exists()
-      ? (carerSnap.data() as { cashBoxNpr?: number })
-      : { cashBoxNpr: 0 };
-
-    for (const taskSnap of taskSnaps) {
-      if (!taskSnap.exists()) {
-        continue;
-      }
-
-      const task = taskSnap.data() as Omit<CarerTask, 'id'>;
-      const effectiveStatus = getEffectiveCarerTaskStatus({
-        id: taskSnap.id,
-        ...task,
-      });
-
-      if (effectiveStatus === 'completed') {
-        continue;
-      }
-
-      if (effectiveStatus !== 'in_progress' || task.assignedCarerUid !== carerUid) {
-        throw new Error('Start the task first so it moves to In Progress before completion.');
-      }
-
-      transaction.update(taskSnap.ref, buildCompletedTaskUpdate({
-        carerUid,
-        carerUsername,
-      }));
-      completedTaskCount += 1;
-      const baseRewardNpr = calculateUsernameTaskBaseRewardNpr();
-      const rewardWithBonusNpr = applyNightBonusNpr(baseRewardNpr);
-      totalAwardNpr += rewardWithBonusNpr;
-    }
-
-    if (completedTaskCount > 0) {
-      transaction.set(
-        carerRef,
-        {
-          cashBoxNpr: Number(carerData.cashBoxNpr || 0) + totalAwardNpr,
-        },
-        { merge: true }
-      );
-    }
+  const headers = await getAuthHeaders();
+  const response = await fetch('/api/carer/tasks/complete-username', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      coadminUid,
+      playerUid,
+      gameName,
+    }),
   });
-
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    completedTaskCount?: number;
+    totalAwardNpr?: number;
+  };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to complete username task.', payload));
+  }
   return {
-    completedTaskCount,
-    totalAwardNpr,
+    completedTaskCount: Number(payload.completedTaskCount || 0),
+    totalAwardNpr: Number(payload.totalAwardNpr || 0),
   } satisfies CarerRewardSummary;
 }
 
@@ -1583,211 +1774,23 @@ export async function completeRechargeRedeemTask(task: CarerTask) {
   if (!task.requestId) {
     throw new Error('This task is not linked to a request.');
   }
-
-  const { uid: carerUid, username: carerUsername } =
-    await getCurrentCarerIdentity();
-  const taskRef = doc(db, 'carerTasks', task.id);
-  const requestRef = doc(db, 'playerGameRequests', task.requestId);
-  const playerRef = doc(db, 'users', task.playerUid);
-
-  const baseRewardNpr = calculateRechargeRedeemBaseRewardNpr();
-  let finalRewardFromTransaction = baseRewardNpr;
-  let completedEventType: 'deposit' | 'redeem' = 'deposit';
-  let completedEventAmount = 0;
-  let completedEventCoadminUid = task.coadminUid;
-
-  await runTransaction(db, async (transaction) => {
-    const [taskSnap, requestSnap, playerSnap] = await Promise.all([
-      transaction.get(taskRef),
-      transaction.get(requestRef),
-      transaction.get(playerRef),
-    ]);
-    const carerRef = doc(db, 'users', carerUid);
-    const carerSnap = await transaction.get(carerRef);
-
-    if (!taskSnap.exists()) {
-      throw new Error('Task not found.');
-    }
-
-    if (!requestSnap.exists()) {
-      throw new Error('Related request not found.');
-    }
-
-    if (!playerSnap.exists()) {
-      throw new Error('Related player not found.');
-    }
-
-    const taskData = taskSnap.data() as Omit<CarerTask, 'id'>;
-    const requestData = requestSnap.data() as Omit<PlayerGameRequest, 'id'>;
-    const playerData = playerSnap.data() as {
-      coin?: number;
-      cash?: number;
-      activeBonusStaffUid?: string | null;
-      activeBonusEventId?: string | null;
-      activeBonusEventName?: string | null;
-      activeBonusPercentage?: number | null;
-    };
-    const bonusStaffUid = String(playerData.activeBonusStaffUid || '').trim();
-    const bonusStaffRef = bonusStaffUid ? doc(db, 'users', bonusStaffUid) : null;
-    const bonusStaffSnap = bonusStaffRef
-      ? await transaction.get(bonusStaffRef)
-      : null;
-    const effectiveStatus = getEffectiveCarerTaskStatus({
-      id: task.id,
-      ...taskData,
-    });
-
-    if (effectiveStatus !== 'in_progress' || taskData.assignedCarerUid !== carerUid) {
-      throw new Error('Only the assigned carer can complete this task.');
-    }
-
-    const rewardWithBonusNpr = applyNightBonusNpr(baseRewardNpr);
-    const finalRewardNpr = applyUrgentPenaltyNpr(rewardWithBonusNpr, false);
-    finalRewardFromTransaction = finalRewardNpr;
-
-    if (requestData.type === 'recharge') {
-      const rechargeAmount = Math.max(0, Number(requestData.amount || 0));
-      const coinAlreadyHeld = Boolean(
-        (requestData as { coinDeductedOnRequest?: boolean | null })
-          .coinDeductedOnRequest
-      );
-      completedEventType = 'deposit';
-      completedEventAmount = rechargeAmount;
-      completedEventCoadminUid = requestData.coadminUid || task.coadminUid;
-      const currentCoin = Number(playerData.coin || 0);
-      const nextPlayerUpdate: Record<string, unknown> = {};
-
-      if (!coinAlreadyHeld) {
-        if (currentCoin < rechargeAmount) {
-          throw new Error(
-            'Cannot complete: player no longer has enough coin for this recharge. Dismiss the task or wait for the player to top up.'
-          );
-        }
-        nextPlayerUpdate.coin = currentCoin - rechargeAmount;
-      }
-
-      if (bonusStaffUid && bonusStaffRef) {
-        const configuredBonusPercent = Number(playerData.activeBonusPercentage || 0);
-        const bonusPercent =
-          configuredBonusPercent > 20
-            ? Number((Math.random() * 1.9 + 0.1).toFixed(2)) // 0.10% - 1.99%
-            : Math.floor(Math.random() * 11) + 5; // 5-15%
-        const bonusRewardNpr = Math.max(
-          1,
-          Math.round((Number(requestData.amount || 0) * bonusPercent) / 100)
-        );
-        const bonusStaffData = bonusStaffSnap?.exists()
-          ? (bonusStaffSnap.data() as { cashBoxNpr?: number })
-          : { cashBoxNpr: 0 };
-
-        transaction.set(
-          bonusStaffRef,
-          {
-            cashBoxNpr: Number(bonusStaffData.cashBoxNpr || 0) + bonusRewardNpr,
-          },
-          { merge: true }
-        );
-
-        nextPlayerUpdate.activeBonusStaffUid = null;
-        nextPlayerUpdate.activeBonusEventId = null;
-        nextPlayerUpdate.activeBonusEventName = null;
-        nextPlayerUpdate.activeBonusPercentage = null;
-      }
-
-      if (Object.keys(nextPlayerUpdate).length > 0) {
-        transaction.update(playerRef, nextPlayerUpdate);
-      }
-
-      transaction.update(taskRef, buildCompletedTaskUpdate({
-        carerUid,
-        carerUsername,
-      }));
-
-      transaction.update(requestRef, {
-        status: 'completed',
-        completedAt: serverTimestamp(),
-        pokedAt: null,
-        pokeMessage: null,
-      });
-    } else if (requestData.type === 'redeem') {
-      const redeemAmount = Math.max(0, Number(requestData.amount || 0));
-      completedEventType = 'redeem';
-      completedEventAmount = redeemAmount;
-      completedEventCoadminUid = requestData.coadminUid || task.coadminUid;
-      const completedRedeemSnapshot = await transaction.get(
-        query(
-          collection(db, 'carerTasks'),
-          where('playerUid', '==', task.playerUid),
-          where('type', '==', 'redeem'),
-          where('status', '==', 'completed'),
-          limit(1)
-        )
-      );
-      const shouldEnforceRedeemLimit = !completedRedeemSnapshot.empty;
-      if (shouldEnforceRedeemLimit) {
-        const lastRechargeSnapshot = await transaction.get(
-          query(
-            collection(db, 'carerTasks'),
-            where('playerUid', '==', task.playerUid),
-            where('type', '==', 'recharge'),
-            where('status', '==', 'completed'),
-            orderBy('completedAt', 'desc'),
-            limit(1)
-          )
-        );
-        const latestRechargeTask = lastRechargeSnapshot.docs[0]?.data() as
-          | Omit<CarerTask, 'id'>
-          | undefined;
-        const lastRechargeAmount = Math.max(0, Number(latestRechargeTask?.amount || 0));
-        if (!latestRechargeTask || redeemAmount >= lastRechargeAmount) {
-          throw new Error('Possible Bonus Abuse');
-        }
-      }
-
-      transaction.update(taskRef, buildCompletedTaskUpdate({
-        carerUid,
-        carerUsername,
-      }));
-
-      transaction.update(requestRef, {
-        status: 'completed',
-        completedAt: serverTimestamp(),
-        pokedAt: null,
-        pokeMessage: null,
-      });
-
-      transaction.update(playerRef, {
-        cash: Number(playerData.cash || 0) + redeemAmount,
-      });
-    } else {
-      throw new Error('Unsupported request type for completion.');
-    }
-
-    const carerData = carerSnap.exists()
-      ? (carerSnap.data() as { cashBoxNpr?: number })
-      : { cashBoxNpr: 0 };
-
-    transaction.set(
-      carerRef,
-      {
-        cashBoxNpr: Number(carerData.cashBoxNpr || 0) + finalRewardNpr,
-      },
-      { merge: true }
-    );
+  const response = await fetch('/api/carer/tasks/complete-recharge-redeem', {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({ taskId: task.id }),
   });
-
-  if (completedEventAmount > 0) {
-    await recordFinancialEvent({
-      playerUid: task.playerUid,
-      coadminUid: completedEventCoadminUid,
-      amountNpr: completedEventAmount,
-      type: completedEventType,
-    });
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    completedTaskCount?: number;
+    totalAwardNpr?: number;
+  };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to complete task.', payload));
   }
 
   return {
-    completedTaskCount: 1,
-    totalAwardNpr: finalRewardFromTransaction,
+    completedTaskCount: Number(payload.completedTaskCount || 0),
+    totalAwardNpr: Number(payload.totalAwardNpr || 0),
   } satisfies CarerRewardSummary;
 }
 
@@ -1842,6 +1845,7 @@ export async function completeLegacyRechargeRedeemTask(taskId: string) {
     status: 'completed',
     expiresAt: null,
     completedAt: serverTimestamp(),
+    ttlExpiresAt: completedCarerTaskTtl(),
     isPoked: false,
     pokedAt: null,
     pokeMessage: null,
@@ -1907,17 +1911,24 @@ export function listenCarerRechargeRedeemTotalsByCoadmin(
   onChange: (totalsByCarerUid: Record<string, CarerRechargeRedeemTotals>) => void,
   onError?: (error: Error) => void
 ) {
+  const windowStart = Timestamp.fromMillis(Date.now() - CARER_TOTALS_WINDOW_MS);
   const rechargeQuery = query(
     collection(db, 'carerTasks'),
     where('coadminUid', '==', coadminUid),
     where('status', '==', 'completed'),
-    where('type', '==', 'recharge')
+    where('type', '==', 'recharge'),
+    where('completedAt', '>=', windowStart),
+    orderBy('completedAt', 'desc'),
+    limit(CARER_TOTALS_HISTORY_LIMIT_PER_TYPE)
   );
   const redeemQuery = query(
     collection(db, 'carerTasks'),
     where('coadminUid', '==', coadminUid),
     where('status', '==', 'completed'),
-    where('type', '==', 'redeem')
+    where('type', '==', 'redeem'),
+    where('completedAt', '>=', windowStart),
+    orderBy('completedAt', 'desc'),
+    limit(CARER_TOTALS_HISTORY_LIMIT_PER_TYPE)
   );
 
   let rechargeTasks: CarerTask[] = [];

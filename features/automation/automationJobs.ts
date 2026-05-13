@@ -1,6 +1,7 @@
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   limit,
   onSnapshot,
@@ -8,19 +9,27 @@ import {
   query,
   runTransaction,
   serverTimestamp,
+  Timestamp,
   where,
+  writeBatch,
 } from 'firebase/firestore';
 
-import { auth, db } from '@/lib/firebase/client';
+import { auth, db, getClientDb } from '@/lib/firebase/client';
 import type { CarerTaskStatus } from '@/features/games/carerTasks';
 import {
   automationJobDocId,
   validateAutomationAgentId,
 } from '@/features/automation/carerAutomationAgent';
 import { recordDevUsageEstimate } from '@/features/dev/devUsageEstimates';
+import { automationJobTtl } from '@/lib/firestore/ttl';
 
 export type AutomationJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
-export type AutomationUiStatus = 'waiting' | 'running' | 'completed' | 'failed';
+export type AutomationUiStatus =
+  | 'waiting'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'pending_review';
 
 export type AutomationJob = {
   id: string;
@@ -47,9 +56,19 @@ type QueuedAutomationType =
 
 type AutomationPayload = {
   player: string;
+  playerUid?: string | null;
+  playerUsername?: string | null;
   game: string;
+  loginUrl?: string | null;
+  gameLoginUrl?: string | null;
+  lobbyUrl?: string | null;
+  siteUrl?: string | null;
+  baseUrl?: string | null;
+  gameCredentialUsername?: string | null;
+  gameCredentialPassword?: string | null;
   username: string | null;
   currentUsername: string | null;
+  gameAccountUsername?: string | null;
   amount: number | null;
   originalTask: Record<string, unknown>;
 };
@@ -62,13 +81,121 @@ type AutomationPayloadInput = {
   currentUsername?: string | null;
 };
 
+const DEFAULT_GAME_VAULT_LOGIN_URL = 'https://agent.gamevault999.com/login';
+/** Agent/store entry used when gameLogins URLs are missing (mirrors GV default-login behaviour). */
+const DEFAULT_ORION_STARS_AGENT_URL = 'https://orionstars.vip:8781/Store.aspx';
+const STALE_TASK_CLAIM_TIMEOUT_MS = 5 * 60 * 1000;
+
+type GameLoginDetailsInput = {
+  username?: string | null;
+  password?: string | null;
+  backendUrl?: string | null;
+  frontendUrl?: string | null;
+  siteUrl?: string | null;
+} | null;
+
 function isActiveAutomationJobStatus(value: unknown) {
   const normalized = String(value || '').trim().toLowerCase();
-  return normalized === 'queued' || normalized === 'running' || normalized === 'cancelled_requested';
+  return (
+    normalized === 'queued' ||
+    normalized === 'running' ||
+    normalized === 'waiting' ||
+    normalized === 'in_progress' ||
+    normalized === 'cancelled_requested'
+  );
+}
+
+function getTimestampMs(value: unknown) {
+  if (!value) {
+    return 0;
+  }
+  if (value instanceof Timestamp) {
+    return value.toMillis();
+  }
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'toMillis' in value &&
+    typeof (value as { toMillis?: unknown }).toMillis === 'function'
+  ) {
+    try {
+      return Number((value as { toMillis: () => number }).toMillis()) || 0;
+    } catch {
+      return 0;
+    }
+  }
+  return 0;
+}
+
+function normalizeAutomationStatus(value: unknown) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isFreshAutomationJobSignal(job: {
+  status?: string | null;
+  heartbeatMs?: number;
+  data?: Record<string, unknown> | null;
+}) {
+  const status = normalizeAutomationStatus(job.status);
+  const signalMs = Math.max(
+    Number(job.heartbeatMs || 0),
+    getTimestampMs(job.data?.updatedAt),
+    getTimestampMs(job.data?.createdAt)
+  );
+  if (!signalMs) {
+    return false;
+  }
+  if (Date.now() - signalMs >= STALE_TASK_CLAIM_TIMEOUT_MS) {
+    return false;
+  }
+  if (status === 'queued') {
+    return true;
+  }
+  if (status === 'running') {
+    return Boolean(job.heartbeatMs);
+  }
+  return false;
+}
+
+function normalizeClaimedStatus(value: unknown) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'unclaimed') return 'unclaimed';
+  if (normalized === 'running') return 'running';
+  return normalized;
+}
+
+function buildTaskClaimReleaseFields(
+  automationError: string | null,
+  status: 'pending' | 'failed' = 'pending',
+  automationStatus: 'waiting' | 'failed' | 'pending_review' | null = 'waiting'
+) {
+  return {
+    status,
+    assignedCarerUid: null,
+    assignedCarer: null,
+    assignedCarerUsername: null,
+    claimedStatus: null,
+    claimedAt: null,
+    claimedByUid: null,
+    claimedByUsername: null,
+    startedAt: null,
+    lastHeartbeatAt: null,
+    automationStatus,
+    automationJobId: null,
+    automationError,
+    automationUpdatedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
 }
 
 function isAgentSupportedAutomationType(value: QueuedAutomationType) {
-  return value === 'RECHARGE' || value === 'REDEEM';
+  return (
+    value === 'CREATE_USERNAME' ||
+    value === 'RESET_PASSWORD' ||
+    value === 'RECHARGE' ||
+    value === 'REDEEM'
+  );
 }
 
 function sanitizeForFirestore(value: unknown): unknown {
@@ -84,18 +211,6 @@ function sanitizeForFirestore(value: unknown): unknown {
     );
   }
   return value;
-}
-
-function mapJobType(taskLabel: string) {
-  const normalized = taskLabel.trim().toUpperCase().replace(/\s+/g, ' ');
-
-  if (normalized === 'CREATE USERNAME' || normalized === 'RECREATE USERNAME') {
-    return 'CREATE_USERNAME';
-  }
-  if (normalized === 'RECHARGE') return 'RECHARGE';
-  if (normalized === 'REDEEM') return 'REDEEM';
-  if (normalized === 'LOGIN') return 'LOGIN';
-  return 'COMPLETE_TASK';
 }
 
 function sanitizeStatus(value: unknown): CarerTaskStatus {
@@ -130,7 +245,7 @@ export function mapTaskType(taskType: string): QueuedAutomationType {
 }
 
 function resolveTaskTypeLabel(task: Record<string, unknown>) {
-  const fromTaskType = String(task.type || '').trim();
+  const fromTaskType = String(task.type || task.kind || '').trim();
   if (!fromTaskType) {
     return 'COMPLETE_TASK';
   }
@@ -139,6 +254,159 @@ function resolveTaskTypeLabel(task: Record<string, unknown>) {
     return fromTaskType.replace(/_/g, ' ');
   }
   return fromTaskType;
+}
+
+function normalizeUrlValue(value: unknown) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+}
+
+function normalizeTextValue(value: unknown) {
+  return String(value || '').trim() || null;
+}
+
+function isGameVaultTask(task: Record<string, unknown>) {
+  const gameName = String(task.gameName || task.game || '').trim().toLowerCase();
+  return gameName === 'game vault';
+}
+
+function normalizedAutomationGameKey(task: Record<string, unknown>) {
+  return String(task.gameName || task.game || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_|_$/g, '');
+}
+
+function isOrionStarsAutomationTask(task: Record<string, unknown>) {
+  const key = normalizedAutomationGameKey(task);
+  return key === 'orion_stars' || key === 'orionstars';
+}
+
+function resolveAutomationAccessFields(
+  task: Record<string, unknown>,
+  gameLoginDetails?: GameLoginDetailsInput
+) {
+  const originalTask =
+    task.originalTask && typeof task.originalTask === 'object'
+      ? (task.originalTask as Record<string, unknown>)
+      : {};
+
+  const resolvedLoginUrl =
+    normalizeUrlValue(
+      gameLoginDetails?.backendUrl ||
+        task.loginUrl ||
+        task.gameLoginUrl ||
+        task.siteUrl ||
+        task.baseUrl ||
+        task.lobbyUrl ||
+        task.backendUrl ||
+        originalTask.loginUrl ||
+        originalTask.gameLoginUrl ||
+        originalTask.siteUrl ||
+        originalTask.baseUrl ||
+        originalTask.lobbyUrl ||
+        originalTask.backendUrl ||
+        gameLoginDetails?.siteUrl
+    ) ||
+    (isGameVaultTask(task) ? DEFAULT_GAME_VAULT_LOGIN_URL : null) ||
+    (isOrionStarsAutomationTask(task) ? DEFAULT_ORION_STARS_AGENT_URL : null);
+
+  const resolvedSiteUrl =
+    normalizeUrlValue(
+      gameLoginDetails?.siteUrl ||
+        gameLoginDetails?.frontendUrl ||
+        task.siteUrl ||
+        task.frontendUrl ||
+        task.baseUrl ||
+        task.loginUrl ||
+        task.gameLoginUrl ||
+        task.backendUrl ||
+        originalTask.siteUrl ||
+        originalTask.frontendUrl ||
+        originalTask.baseUrl ||
+        originalTask.loginUrl ||
+        originalTask.gameLoginUrl ||
+        originalTask.backendUrl
+    ) || resolvedLoginUrl;
+
+  const resolvedBaseUrl =
+    normalizeUrlValue(
+      gameLoginDetails?.backendUrl ||
+        task.baseUrl ||
+        task.backendUrl ||
+        task.siteUrl ||
+        task.loginUrl ||
+        task.gameLoginUrl ||
+        originalTask.baseUrl ||
+        originalTask.backendUrl ||
+        originalTask.siteUrl ||
+        originalTask.loginUrl ||
+        originalTask.gameLoginUrl
+    ) || resolvedLoginUrl;
+
+  const resolvedLobbyUrl =
+    normalizeUrlValue(
+      task.lobbyUrl ||
+        task.loginUrl ||
+        task.gameLoginUrl ||
+        originalTask.lobbyUrl ||
+        originalTask.loginUrl ||
+        originalTask.gameLoginUrl ||
+        gameLoginDetails?.backendUrl
+    ) || resolvedLoginUrl;
+
+  return {
+    loginUrl: resolvedLoginUrl,
+    gameLoginUrl:
+      normalizeUrlValue(task.gameLoginUrl || originalTask.gameLoginUrl) || resolvedLoginUrl,
+    lobbyUrl: resolvedLobbyUrl,
+    siteUrl: resolvedSiteUrl,
+    baseUrl: resolvedBaseUrl,
+    gameCredentialUsername:
+      normalizeTextValue(
+        gameLoginDetails?.username ||
+          task.gameCredentialUsername ||
+          task.loginUsername ||
+          originalTask.gameCredentialUsername ||
+          originalTask.loginUsername
+      ) || null,
+    gameCredentialPassword:
+      normalizeTextValue(
+        gameLoginDetails?.password ||
+          task.gameCredentialPassword ||
+          task.loginPassword ||
+          originalTask.gameCredentialPassword ||
+          originalTask.loginPassword
+      ) || null,
+  };
+}
+
+function buildOriginalTaskCommon(
+  input: AutomationPayloadInput,
+  mergedTask: Record<string, unknown>,
+  base: Omit<AutomationPayload, 'username' | 'amount' | 'originalTask'>
+) {
+  return {
+    id: input.taskId,
+    type: String(mergedTask.type || mergedTask.kind || '').trim() || null,
+    kind: String(mergedTask.kind || mergedTask.type || '').trim() || null,
+    status: 'in_progress',
+    assignedCarerUid: input.currentUserUid,
+    assignedCarer: input.currentCarerName,
+    playerUid: base.playerUid,
+    playerUsername: base.playerUsername,
+    currentUsername: base.currentUsername,
+    gameAccountUsername: base.gameAccountUsername,
+    loginUrl: base.loginUrl,
+    gameLoginUrl: base.gameLoginUrl,
+    lobbyUrl: base.lobbyUrl,
+    siteUrl: base.siteUrl,
+    baseUrl: base.baseUrl,
+    gameCredentialUsername: base.gameCredentialUsername,
+    gameCredentialPassword: base.gameCredentialPassword,
+  };
 }
 
 export function buildAutomationPayload(input: AutomationPayloadInput): AutomationPayload {
@@ -152,23 +420,36 @@ export function buildAutomationPayload(input: AutomationPayloadInput): Automatio
     currentUsername: input.currentUsername ?? input.freshTask.currentUsername ?? null,
   } as Record<string, unknown>;
   const mappedType = mapTaskType(resolveTaskTypeLabel(mergedTask));
+  const resolvedAccess = resolveAutomationAccessFields(mergedTask);
   const base = {
     player: String(mergedTask.playerUsername || mergedTask.player || 'Player'),
+    playerUid: String(mergedTask.playerUid || '').trim() || null,
+    playerUsername:
+      String(mergedTask.playerUsername || mergedTask.player || '').trim() || null,
     game: String(mergedTask.gameName || mergedTask.game || 'Unknown Game'),
-    currentUsername: (mergedTask.currentUsername as string | null | undefined) ?? null,
+    currentUsername:
+      ((mergedTask.currentUsername as string | null | undefined) ??
+        (mergedTask.gameAccountUsername as string | null | undefined) ??
+        null),
+    gameAccountUsername:
+      ((mergedTask.gameAccountUsername as string | null | undefined) ??
+        (mergedTask.currentUsername as string | null | undefined) ??
+        null),
+    loginUrl: resolvedAccess.loginUrl,
+    gameLoginUrl: resolvedAccess.gameLoginUrl,
+    lobbyUrl: resolvedAccess.lobbyUrl,
+    siteUrl: resolvedAccess.siteUrl,
+    baseUrl: resolvedAccess.baseUrl,
+    gameCredentialUsername: resolvedAccess.gameCredentialUsername,
+    gameCredentialPassword: resolvedAccess.gameCredentialPassword,
   };
 
   if (mappedType === 'CREATE_USERNAME') {
     return {
       ...base,
-      username: null,
+      username: base.currentUsername || base.player || null,
       amount: null,
-      originalTask: {
-        id: input.taskId,
-        status: 'in_progress',
-        assignedCarerUid: input.currentUserUid,
-        assignedCarer: input.currentCarerName,
-      },
+      originalTask: buildOriginalTaskCommon(input, mergedTask, base),
     };
   }
 
@@ -177,12 +458,7 @@ export function buildAutomationPayload(input: AutomationPayloadInput): Automatio
       ...base,
       username: base.currentUsername || null,
       amount: null,
-      originalTask: {
-        id: input.taskId,
-        status: 'in_progress',
-        assignedCarerUid: input.currentUserUid,
-        assignedCarer: input.currentCarerName,
-      },
+      originalTask: buildOriginalTaskCommon(input, mergedTask, base),
     };
   }
 
@@ -192,12 +468,7 @@ export function buildAutomationPayload(input: AutomationPayloadInput): Automatio
       ...base,
       username: base.currentUsername || null,
       amount: Number.isFinite(amountValue) ? amountValue : null,
-      originalTask: {
-        id: input.taskId,
-        status: 'in_progress',
-        assignedCarerUid: input.currentUserUid,
-        assignedCarer: input.currentCarerName,
-      },
+      originalTask: buildOriginalTaskCommon(input, mergedTask, base),
     };
   }
 
@@ -206,12 +477,7 @@ export function buildAutomationPayload(input: AutomationPayloadInput): Automatio
       ...base,
       username: base.currentUsername || null,
       amount: null,
-      originalTask: {
-        id: input.taskId,
-        status: 'in_progress',
-        assignedCarerUid: input.currentUserUid,
-        assignedCarer: input.currentCarerName,
-      },
+      originalTask: buildOriginalTaskCommon(input, mergedTask, base),
     };
   }
 
@@ -219,12 +485,7 @@ export function buildAutomationPayload(input: AutomationPayloadInput): Automatio
     ...base,
     username: base.currentUsername || null,
     amount: null,
-    originalTask: {
-      id: input.taskId,
-      status: 'in_progress',
-      assignedCarerUid: input.currentUserUid,
-      assignedCarer: input.currentCarerName,
-    },
+    originalTask: buildOriginalTaskCommon(input, mergedTask, base),
   };
 }
 
@@ -232,125 +493,525 @@ export async function claimTaskAndCreateJob(input: {
   taskId: string;
   currentUsername?: string | null;
   carerName?: string | null;
+  gameLoginDetails?: GameLoginDetailsInput;
 }) {
   const currentUser = auth.currentUser;
   if (!currentUser) {
     throw new Error('Not authenticated.');
   }
-  const taskRef = doc(db, 'carerTasks', input.taskId);
-  const userRef = doc(db, 'users', currentUser.uid);
+  const firestoreDb = getClientDb('claimTaskAndCreateJob');
+  const taskRef = doc(firestoreDb, 'carerTasks', input.taskId);
+  const userRef = doc(firestoreDb, 'users', currentUser.uid);
 
-  return runTransaction(db, async (transaction) => {
-    const [userSnap, taskSnap] = await Promise.all([
-      transaction.get(userRef),
-      transaction.get(taskRef),
-    ]);
-    if (!userSnap.exists()) {
-      throw new Error('Current user profile not found.');
-    }
-    const userData = userSnap.data() as {
-      username?: string;
-      automationAgentId?: string | null;
-    };
-    const linkedAgentRaw = String(userData.automationAgentId || '').trim();
-    const agentCheck = validateAutomationAgentId(linkedAgentRaw);
-    if (!agentCheck.valid || !agentCheck.normalized) {
-      throw new Error(
-        'No automation agent connected. Use “Connect Automation Agent” on the carer panel, set the same ID as in your agent .env, then try again.'
-      );
-    }
-    const resolvedAgentId = agentCheck.normalized;
-
-    if (!taskSnap.exists()) {
-      throw new Error('Task not found');
-    }
-
-    const freshTask = taskSnap.data() as Record<string, unknown>;
-    const currentStatus = sanitizeStatus(freshTask.status);
-    if (currentStatus !== 'pending') {
-      throw new Error('Task already claimed');
-    }
-
-    const createdByName =
-      input.carerName?.trim() || userData.username?.trim() || 'Carer';
-
-    const claimedTaskData = {
-      ...freshTask,
-      status: 'in_progress',
-      assignedCarerUid: currentUser.uid,
-      assignedCarerUsername: createdByName,
-      assignedCarer: createdByName,
-      currentUsername: input.currentUsername ?? freshTask.currentUsername ?? null,
-    } as Record<string, unknown>;
-    const mappedType = mapTaskType(resolveTaskTypeLabel(claimedTaskData));
-    if (!isAgentSupportedAutomationType(mappedType)) {
-      console.info('[automation] unsupported-job-type-blocked', {
-        taskId: taskSnap.id,
-        mappedType,
-      });
-      throw new Error(
-        `Automation is currently supported only for RECHARGE and REDEEM. ${mappedType} must be handled manually.`
-      );
-    }
-    const payload = buildAutomationPayload({
-      taskId: taskSnap.id,
-      freshTask: claimedTaskData,
-      currentUserUid: currentUser.uid,
-      currentCarerName: createdByName,
-      currentUsername: input.currentUsername ?? null,
-    });
-    const coadminUid = String(freshTask.coadminUid || '').trim();
-    const jobRef = doc(
-      db,
-      'automation_jobs',
-      automationJobDocId(currentUser.uid, taskSnap.id)
+  const isRetryableConcurrencyError = (error: unknown) => {
+    const code = String(
+      (error as { code?: string } | null | undefined)?.code || ''
+    ).toLowerCase();
+    const message = String(
+      (error as { message?: string } | null | undefined)?.message || ''
+    ).toLowerCase();
+    return (
+      code.includes('failed-precondition') ||
+      code.includes('aborted') ||
+      message.includes('failed-precondition') ||
+      message.includes('too much contention') ||
+      message.includes('transaction')
     );
-    const jobSnap = await transaction.get(jobRef);
-    if (jobSnap.exists()) {
-      const existingJobData = jobSnap.data() as { status?: string };
-      if (isActiveAutomationJobStatus(existingJobData.status)) {
+  };
+
+  const loadSameTaskJobRefs = async () => {
+    const sameTaskJobsSnap = await getDocs(
+      query(collection(firestoreDb, 'automation_jobs'), where('taskId', '==', input.taskId), limit(20))
+    );
+    return sameTaskJobsSnap.docs.map((jobSnap) => jobSnap.ref);
+  };
+
+  const runClaimTransaction = async () => {
+    const sameTaskJobRefs = await loadSameTaskJobRefs();
+    return (
+    runTransaction(firestoreDb, async (transaction) => {
+      const [userSnap, taskSnap] = await Promise.all([
+        transaction.get(userRef),
+        transaction.get(taskRef),
+      ]);
+      if (!userSnap.exists()) {
+        throw new Error('Current user profile not found.');
+      }
+      const userData = userSnap.data() as {
+        username?: string;
+        automationAgentId?: string | null;
+      };
+      const linkedAgentRaw = String(userData.automationAgentId || '').trim();
+      const agentCheck = validateAutomationAgentId(linkedAgentRaw);
+      if (!agentCheck.valid || !agentCheck.normalized) {
         throw new Error(
-          'Automation job already exists for this task. The manual part is also available.'
+          'No automation agent connected. Use “Connect Automation Agent” on the carer panel, set the same ID as in your agent .env, then try again.'
         );
       }
+      const resolvedAgentId = agentCheck.normalized;
+
+      if (!taskSnap.exists()) {
+        throw new Error('Task not found');
+      }
+
+      const freshTask = taskSnap.data() as Record<string, unknown>;
+      const createdByName =
+        input.carerName?.trim() || userData.username?.trim() || 'Carer';
+      const currentStatus = sanitizeStatus(freshTask.status);
+      const rawTaskStatus = String(freshTask.status || '').trim().toLowerCase() || 'pending';
+      const automationStatus = normalizeAutomationStatus(freshTask.automationStatus);
+      const claimedStatus = normalizeClaimedStatus(freshTask.claimedStatus);
+      const claimedByUid = String(freshTask.claimedByUid || '').trim();
+      const automationError = String(freshTask.automationError || '').trim() || null;
+      const assignedCarerUid = String(freshTask.assignedCarerUid || '').trim();
+      const assignedCarerName = String(
+        freshTask.assignedCarerUsername || freshTask.assignedCarer || ''
+      ).trim();
+      const claimedByCurrentCarer =
+        (assignedCarerUid === currentUser.uid ||
+          claimedByUid === currentUser.uid ||
+          (currentStatus === 'in_progress' &&
+            (assignedCarerUid === currentUser.uid ||
+              (assignedCarerName &&
+                createdByName &&
+                assignedCarerName.toLowerCase() === createdByName.toLowerCase()))) ||
+          (assignedCarerName &&
+            createdByName &&
+            assignedCarerName.toLowerCase() === createdByName.toLowerCase()));
+      const linkedJobId = String(freshTask.automationJobId || '').trim();
+      const legacyJobId = automationJobDocId(currentUser.uid, taskSnap.id);
+      const candidateJobIds = Array.from(
+        new Set([linkedJobId, legacyJobId].filter((value) => Boolean(value)))
+      );
+      const candidateJobRefs = candidateJobIds.map((jobId) => doc(firestoreDb, 'automation_jobs', jobId));
+      const candidateJobSnaps = await Promise.all(
+        candidateJobRefs.map((jobRef) => transaction.get(jobRef))
+      );
+      const sameTaskJobSnaps = await Promise.all(
+        sameTaskJobRefs
+          .filter((jobRef) => !candidateJobIds.includes(jobRef.id))
+          .map((jobRef) => transaction.get(jobRef))
+      );
+      const legacyCandidateJobs = candidateJobRefs.map((jobRef, index) => {
+        const jobSnap = candidateJobSnaps[index];
+        const jobData = jobSnap.exists() ? (jobSnap.data() as Record<string, unknown>) : null;
+        const heartbeatMs = Math.max(
+          getTimestampMs(jobData?.lastHeartbeatAt),
+          getTimestampMs(jobData?.updatedAt),
+          getTimestampMs(jobData?.createdAt)
+        );
+        return {
+          ref: jobRef,
+          snap: jobSnap,
+          data: jobData,
+          status: normalizeAutomationStatus(jobData?.status),
+          heartbeatMs,
+        };
+      });
+      const sameTaskJobs = sameTaskJobSnaps
+        .filter((jobSnap) => jobSnap.exists())
+        .map((jobSnap) => {
+        const jobData = jobSnap.data() as Record<string, unknown>;
+        const heartbeatMs = Math.max(
+          getTimestampMs(jobData.lastHeartbeatAt),
+          getTimestampMs(jobData.updatedAt),
+          getTimestampMs(jobData.createdAt)
+        );
+        return {
+          ref: jobSnap.ref,
+          snap: jobSnap,
+          data: jobData,
+          status: normalizeAutomationStatus(jobData.status),
+          heartbeatMs,
+        };
+      });
+      const candidateJobs = Array.from(
+        new Map(
+          [...legacyCandidateJobs, ...sameTaskJobs].map((job) => [
+            job.ref.id,
+            job,
+          ])
+        ).values()
+      );
+      const activeSameTaskJobs = candidateJobs.filter((job) =>
+        isActiveAutomationJobStatus(job.status)
+      );
+      const oldSameTaskJobs = candidateJobs.filter((job) =>
+        job.snap.exists() && !isActiveAutomationJobStatus(job.status)
+      );
+      oldSameTaskJobs.forEach((job) => {
+        console.info('START_TASK_IGNORED_OLD_COMPLETED_JOB', {
+          taskId: taskSnap.id,
+          jobId: job.ref.id,
+          status: job.status || null,
+        });
+      });
+      const freshActiveSameTaskJobs = activeSameTaskJobs.filter((job) =>
+        isFreshAutomationJobSignal(job)
+      );
+      const activeExistingJob = [...activeSameTaskJobs].sort(
+        (left, right) => right.heartbeatMs - left.heartbeatMs
+      )[0];
+      if (activeExistingJob) {
+        console.info('START_TASK_BLOCKED_ACTIVE_JOB', {
+          taskId: taskSnap.id,
+          jobId: activeExistingJob.ref.id,
+          status: activeExistingJob.status || null,
+          isFresh: isFreshAutomationJobSignal(activeExistingJob),
+        });
+      }
+      const reusableActiveJob = [...freshActiveSameTaskJobs].sort(
+        (left, right) => right.heartbeatMs - left.heartbeatMs
+      )[0];
+      const latestLockActivityMs = Math.max(
+        getTimestampMs(freshTask.lastHeartbeatAt),
+        getTimestampMs(freshTask.claimedAt),
+        reusableActiveJob?.heartbeatMs || 0
+      );
+      const hasFreshLock =
+        Boolean(latestLockActivityMs) &&
+        Date.now() - latestLockActivityMs < STALE_TASK_CLAIM_TIMEOUT_MS;
+      const linkedAutomationJob = linkedJobId
+        ? candidateJobs.find((job) => job.ref.id === linkedJobId) || null
+        : null;
+      const hasLinkedAutomationJob = Boolean(
+        linkedAutomationJob && isActiveAutomationJobStatus(linkedAutomationJob.status)
+      );
+      const orphanedClaimFields =
+        rawTaskStatus === 'pending' &&
+        !claimedByUid &&
+        !assignedCarerUid &&
+        !hasLinkedAutomationJob &&
+        freshActiveSameTaskJobs.length === 0 &&
+        Boolean(claimedStatus || automationStatus === 'running');
+      const restartableTask =
+        rawTaskStatus === 'pending' ||
+        rawTaskStatus === 'waiting' ||
+        automationStatus === 'waiting' ||
+        automationStatus === 'failed' ||
+        automationStatus === 'pending_review' ||
+        automationStatus === 'returned_to_pending' ||
+        automationStatus === 'cancelled' ||
+        Boolean(
+          automationError &&
+            (automationStatus === 'waiting' ||
+              automationStatus === 'failed' ||
+              automationStatus === 'pending_review')
+        );
+      const staleClaim =
+        claimedStatus === 'running' &&
+        (
+          orphanedClaimFields ||
+          !hasFreshLock ||
+          (activeExistingJob?.status === 'running' && !activeExistingJob.heartbeatMs)
+        );
+      const hasFreshActiveClaim =
+        claimedStatus === 'running' &&
+        hasFreshLock &&
+        !orphanedClaimFields;
+
+      const canStartTask =
+        rawTaskStatus === 'pending' &&
+        !claimedByUid &&
+        (!claimedStatus || orphanedClaimFields) &&
+        !hasLinkedAutomationJob &&
+        freshActiveSameTaskJobs.length === 0;
+      console.info('[CARER_UI] claim transaction state', {
+        taskId: taskSnap.id,
+        canStart: canStartTask,
+        disabledReason: canStartTask
+          ? null
+          : freshActiveSameTaskJobs.length > 0
+            ? 'fresh_active_job_exists_for_same_task'
+            : rawTaskStatus !== 'pending'
+              ? `status_${rawTaskStatus}`
+              : claimedByUid
+                ? 'claimed_by_uid_present'
+                : claimedStatus
+                  ? `claimed_status_${claimedStatus}`
+                  : hasLinkedAutomationJob
+                    ? 'automation_job_id_present'
+                    : 'task_not_startable',
+        status: rawTaskStatus,
+        automationStatus: automationStatus || null,
+        claimedStatus: claimedStatus || null,
+        claimedByUid: claimedByUid || null,
+        assignedCarerUid: assignedCarerUid || null,
+        automationJobId: linkedJobId || null,
+        orphanedClaimFields,
+        activeJobsForSameTask: activeSameTaskJobs.map((job) => ({
+          jobId: job.ref.id,
+          status: job.status || null,
+          heartbeatMs: job.heartbeatMs || 0,
+          isFresh: isFreshAutomationJobSignal(job),
+        })),
+        lastHeartbeatAt: freshTask.lastHeartbeatAt || freshTask.claimedAt || null,
+        automationError,
+      });
+
+      if (orphanedClaimFields) {
+        console.info('[automation] start-task:decision', {
+          taskId: taskSnap.id,
+          decision: 'orphaned claim fields ignored for restart',
+          status: rawTaskStatus,
+          claimedStatus: claimedStatus || null,
+          automationStatus: automationStatus || null,
+          automationJobId: linkedJobId || null,
+          activeJobsForSameTask: activeSameTaskJobs.length,
+        });
+      }
+
+      if (
+        activeSameTaskJobs.length > 0 &&
+        (!reusableActiveJob || !claimedByCurrentCarer)
+      ) {
+        throw new Error('Automation job already exists for this task.');
+      }
+
+      if (
+        hasFreshActiveClaim &&
+        !claimedByCurrentCarer &&
+        (!reusableActiveJob || reusableActiveJob.status === 'running')
+      ) {
+        console.info('[automation] start-task:decision', {
+          taskId: taskSnap.id,
+          decision: 'rejected because fresh active claim',
+        });
+        throw new Error('Task already claimed');
+      }
+
+      const resolvedAccess = resolveAutomationAccessFields(freshTask, input.gameLoginDetails);
+      const claimedTaskData = {
+        ...freshTask,
+        status: 'in_progress',
+        assignedCarerUid: currentUser.uid,
+        assignedCarerUsername: createdByName,
+        assignedCarer: createdByName,
+        currentUsername: input.currentUsername ?? freshTask.currentUsername ?? null,
+        gameCredentialUsername: resolvedAccess.gameCredentialUsername,
+        gameCredentialPassword: resolvedAccess.gameCredentialPassword,
+        loginUrl: resolvedAccess.loginUrl,
+        gameLoginUrl: resolvedAccess.gameLoginUrl,
+        baseUrl: resolvedAccess.baseUrl,
+        siteUrl: resolvedAccess.siteUrl,
+        lobbyUrl: resolvedAccess.lobbyUrl,
+      } as Record<string, unknown>;
+      const mappedType = mapTaskType(resolveTaskTypeLabel(claimedTaskData));
+      if (!isAgentSupportedAutomationType(mappedType)) {
+        console.info('[automation] unsupported-job-type-blocked', {
+          taskId: taskSnap.id,
+          mappedType,
+        });
+        throw new Error(
+          `Automation is currently supported only for CREATE_USERNAME, RESET_PASSWORD, RECHARGE, and REDEEM. ${mappedType} must be handled manually.`
+        );
+      }
+      const payload = buildAutomationPayload({
+        taskId: taskSnap.id,
+        freshTask: claimedTaskData,
+        currentUserUid: currentUser.uid,
+        currentCarerName: createdByName,
+        currentUsername: input.currentUsername ?? null,
+      });
+      const coadminUid = String(freshTask.coadminUid || '').trim();
+      const staleOrFailedJob =
+        activeExistingJob &&
+        (staleClaim || Boolean(automationError) || !isFreshAutomationJobSignal(activeExistingJob))
+          ? activeExistingJob
+          : null;
+      if (staleOrFailedJob) {
+        transaction.update(staleOrFailedJob.ref, {
+          status: automationError ? 'failed' : 'cancelled',
+          completedAt: serverTimestamp(),
+          ttlExpiresAt: automationJobTtl(),
+          updatedAt: serverTimestamp(),
+          lastHeartbeatAt: serverTimestamp(),
+          error: automationError || 'Task claim expired and was cleared before restart.',
+          cancelledReason: automationError ? 'failed_automation_claim_released' : 'stale_claim_cleared',
+        });
+        console.info('[automation] start-task:decision', {
+          taskId: taskSnap.id,
+          decision: automationError
+            ? 'failed automation claim released'
+            : 'stale claim cleared',
+          previousJobId: staleOrFailedJob.ref.id,
+        });
+      }
+
+      if (
+        reusableActiveJob &&
+        isActiveAutomationJobStatus(reusableActiveJob.status) &&
+        isFreshAutomationJobSignal(reusableActiveJob) &&
+        !staleOrFailedJob &&
+        hasFreshLock
+      ) {
+        transaction.update(taskRef, {
+          ...claimedTaskData,
+          claimedStatus: 'running',
+          claimedByUid: currentUser.uid,
+          claimedByUsername: createdByName,
+          claimedAt: serverTimestamp(),
+          startedAt: serverTimestamp(),
+          lastHeartbeatAt: serverTimestamp(),
+          automationStatus: reusableActiveJob.status === 'running' ? 'running' : 'waiting',
+          automationJobId: reusableActiveJob.ref.id,
+          automationError: null,
+          automationUpdatedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        console.info('[automation] start-task:decision', {
+          taskId: taskSnap.id,
+          decision: 'claim allowed',
+          reusedExistingJob: true,
+          jobId: reusableActiveJob.ref.id,
+        });
+
+        return {
+          jobId: reusableActiveJob.ref.id,
+          taskId: taskSnap.id,
+          status: reusableActiveJob.status || 'queued',
+          reusedExistingJob: true as const,
+        };
+      }
+
+      if (!claimedByCurrentCarer && !restartableTask && !staleClaim && rawTaskStatus !== 'pending') {
+        console.info('[automation] start-task:decision', {
+          taskId: taskSnap.id,
+          decision: 'rejected because task is not reclaimable',
+        });
+        throw new Error('Task already claimed');
+      }
+
+      const jobRef = doc(collection(firestoreDb, 'automation_jobs'));
+
+      transaction.update(taskRef, {
+        ...claimedTaskData,
+        claimedStatus: 'running',
+        claimedByUid: currentUser.uid,
+        claimedByUsername: createdByName,
+        claimedAt: serverTimestamp(),
+        startedAt: serverTimestamp(),
+        lastHeartbeatAt: serverTimestamp(),
+        automationStatus: 'waiting',
+        automationJobId: jobRef.id,
+        automationError: null,
+        automationUpdatedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      const jobData = {
+        carerUid: currentUser.uid,
+        coadminUid,
+        agentId: resolvedAgentId,
+        taskId: taskSnap.id,
+        type: mappedType,
+        status: 'queued',
+        payload,
+        createdByUid: currentUser.uid,
+        createdByName,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        startedAt: null,
+        completedAt: null,
+        ttlExpiresAt: null,
+        error: null,
+        attempts: 0,
+        lastHeartbeatAt: null,
+      };
+      transaction.set(jobRef, jobData);
+      console.info('[automation] start-task:decision', {
+        taskId: taskSnap.id,
+        decision: 'new automation job created',
+        jobId: jobRef.id,
+      });
+      console.info('[CARER_UI] automation job created', {
+        taskId: taskSnap.id,
+        jobId: jobRef.id,
+      });
+
+      return {
+        jobId: jobRef.id,
+        taskId: taskSnap.id,
+        status: 'queued' as const,
+        reusedExistingJob: false as const,
+      };
+    })
+    );
+  };
+
+  let result:
+    | {
+        jobId: string;
+        taskId: string;
+        status: string;
+        reusedExistingJob: boolean;
+      }
+    | null = null;
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      result = await runClaimTransaction();
+      break;
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableConcurrencyError(error) || attempt >= 2) {
+        break;
+      }
+      console.info('START_TASK_RETRY_AFTER_PRECONDITION', {
+        taskId: input.taskId,
+        attempt,
+        nextAttempt: attempt + 1,
+        code: String((error as { code?: string } | null | undefined)?.code || ''),
+        message: String((error as { message?: string } | null | undefined)?.message || ''),
+      });
+      await getDoc(taskRef);
+      await new Promise((resolve) => setTimeout(resolve, 200));
     }
+  }
 
-    transaction.update(taskRef, {
-      ...claimedTaskData,
-      claimedAt: serverTimestamp(),
-      automationStatus: 'waiting',
-      automationJobId: jobRef.id,
-      automationUpdatedAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+  if (!result && isRetryableConcurrencyError(lastError)) {
+    const latestTaskSnap = await getDoc(taskRef);
+    if (latestTaskSnap.exists()) {
+      const latestTask = latestTaskSnap.data() as Record<string, unknown>;
+      const latestStatus = sanitizeStatus(latestTask.status);
+      const latestAssignedCarerUid = String(
+        latestTask.claimedByUid || latestTask.assignedCarerUid || ''
+      ).trim();
+      const latestLinkedJobId = String(latestTask.automationJobId || '').trim();
+      const latestJobSnap = latestLinkedJobId
+        ? await getDoc(doc(firestoreDb, 'automation_jobs', latestLinkedJobId))
+        : null;
+      const latestJobStatus =
+        latestJobSnap?.exists()
+          ? String((latestJobSnap.data() as { status?: string }).status || '')
+              .trim()
+              .toLowerCase()
+          : '';
 
-    const jobData = {
-      carerUid: currentUser.uid,
-      coadminUid,
-      agentId: resolvedAgentId,
-      taskId: taskSnap.id,
-      type: mappedType,
-      status: 'queued',
-      payload,
-      createdByUid: currentUser.uid,
-      createdByName,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      startedAt: null,
-      completedAt: null,
-      error: null,
-      attempts: 0,
-      lastHeartbeatAt: null,
-    };
-    transaction.set(jobRef, jobData);
+      if (latestStatus === 'in_progress' && latestAssignedCarerUid === currentUser.uid) {
+        result = {
+          jobId: latestLinkedJobId || automationJobDocId(currentUser.uid, input.taskId),
+          taskId: input.taskId,
+          status: latestJobStatus || 'queued',
+          reusedExistingJob: true,
+        };
+      }
+    }
+  }
 
-    return { jobId: jobRef.id, taskId: taskSnap.id, status: 'queued' as const };
-  }).then((result) => {
-    recordDevUsageEstimate({
-      automationJobsCreated: 1,
-      estReads: 7,
-      estWrites: 3,
-    });
+  if (!result) {
+    throw (lastError instanceof Error ? lastError : new Error('Failed to queue the task.'));
+  }
+
+  return Promise.resolve(result).then((result) => {
+    if (!result.reusedExistingJob) {
+      recordDevUsageEstimate({
+        automationJobsCreated: 1,
+        estReads: 7,
+        estWrites: 3,
+      });
+    }
     return result;
   });
 }
@@ -364,23 +1025,16 @@ export async function startAutomationForTask(input: {
   currentUsername?: string | null;
   amount?: number | null;
   originalTask: Record<string, unknown>;
+  gameLoginDetails?: GameLoginDetailsInput;
 }) {
   const currentUser = auth.currentUser;
   if (!currentUser) {
     throw new Error('Not authenticated.');
   }
   const userRef = doc(db, 'users', currentUser.uid);
-  const jobRef = doc(
-    db,
-    'automation_jobs',
-    automationJobDocId(currentUser.uid, input.taskId)
-  );
 
   return runTransaction(db, async (transaction) => {
-    const [userSnap, jobSnap] = await Promise.all([
-      transaction.get(userRef),
-      transaction.get(jobRef),
-    ]);
+    const userSnap = await transaction.get(userRef);
     if (!userSnap.exists()) {
       throw new Error('Current user profile not found.');
     }
@@ -392,21 +1046,25 @@ export async function startAutomationForTask(input: {
         'No automation agent connected. Use “Connect Automation Agent” on the carer panel first.'
       );
     }
-    if (jobSnap.exists()) {
-      const existingJobData = jobSnap.data() as { status?: string };
-      if (isActiveAutomationJobStatus(existingJobData.status)) {
-        throw new Error(
-          'Automation job already exists for this task. The manual part is also available.'
-        );
-      }
-    }
-
+    const jobRef = doc(collection(db, 'automation_jobs'));
     const taskRef = doc(db, 'carerTasks', input.taskId);
     const taskSnap = await transaction.get(taskRef);
     if (!taskSnap.exists()) {
       throw new Error('Task not found');
     }
     const taskData = taskSnap.data() as Record<string, unknown>;
+    const linkedJobId = String(taskData.automationJobId || '').trim();
+    if (linkedJobId) {
+      const linkedJobSnap = await transaction.get(doc(db, 'automation_jobs', linkedJobId));
+      if (
+        linkedJobSnap.exists() &&
+        isActiveAutomationJobStatus((linkedJobSnap.data() as { status?: string }).status)
+      ) {
+        throw new Error(
+          'Automation job already exists for this task. The manual part is also available.'
+        );
+      }
+    }
     const status = sanitizeStatus(taskData.status);
     if (status !== 'in_progress') {
       throw new Error('Task must be in progress before queueing automation this way.');
@@ -414,20 +1072,39 @@ export async function startAutomationForTask(input: {
     if (String(taskData.assignedCarerUid || '') !== currentUser.uid) {
       throw new Error('Only the assigned carer can queue automation for this task.');
     }
-    const mappedType = mapJobType(input.taskLabel);
-    if (mappedType !== 'RECHARGE' && mappedType !== 'REDEEM') {
+    const mappedType = mapTaskType(resolveTaskTypeLabel(taskData));
+    if (!isAgentSupportedAutomationType(mappedType)) {
       console.info('[automation] unsupported-job-type-blocked', {
         taskId: input.taskId,
         taskLabel: input.taskLabel,
         mappedType,
       });
       throw new Error(
-        `Automation is currently supported only for RECHARGE and REDEEM. ${mappedType} must be handled manually.`
+        `Automation is currently supported only for CREATE_USERNAME, RESET_PASSWORD, RECHARGE, and REDEEM. ${mappedType} must be handled manually.`
       );
     }
 
     const profile = userSnap.data() as { username?: string };
     const createdByName = profile.username?.trim() || 'Carer';
+    const resolvedAccess = resolveAutomationAccessFields(taskData, input.gameLoginDetails);
+    const enrichedTaskData = {
+      ...taskData,
+      gameCredentialUsername: resolvedAccess.gameCredentialUsername,
+      gameCredentialPassword: resolvedAccess.gameCredentialPassword,
+      loginUrl: resolvedAccess.loginUrl,
+      gameLoginUrl: resolvedAccess.gameLoginUrl,
+      baseUrl: resolvedAccess.baseUrl,
+      siteUrl: resolvedAccess.siteUrl,
+      lobbyUrl: resolvedAccess.lobbyUrl,
+    } as Record<string, unknown>;
+
+    const payload = buildAutomationPayload({
+      taskId: input.taskId,
+      freshTask: enrichedTaskData,
+      currentUserUid: currentUser.uid,
+      currentCarerName: createdByName,
+      currentUsername: input.currentUsername ?? null,
+    });
 
     transaction.set(jobRef, {
       carerUid: currentUser.uid,
@@ -436,27 +1113,34 @@ export async function startAutomationForTask(input: {
       taskId: input.taskId,
       type: mappedType,
       status: 'queued',
-      payload: {
-        player: input.player,
-        game: input.game,
-        currentUsername: input.currentUsername ?? null,
-        amount: input.amount ?? null,
-        originalTask: sanitizeForFirestore(input.originalTask) as Record<string, unknown>,
-      },
+      payload: sanitizeForFirestore({
+        ...payload,
+        originalTask: {
+          ...((sanitizeForFirestore(input.originalTask) as Record<string, unknown> | null) || {}),
+          ...(payload.originalTask || {}),
+        },
+      }) as Record<string, unknown>,
       createdByUid: currentUser.uid,
       createdByName,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
       startedAt: null,
       completedAt: null,
+      ttlExpiresAt: null,
       error: null,
       attempts: 0,
       lastHeartbeatAt: null,
     });
 
     transaction.update(taskRef, {
+      claimedStatus: 'running',
+      claimedByUid: currentUser.uid,
+      claimedByUsername: createdByName,
+      claimedAt: serverTimestamp(),
+      lastHeartbeatAt: serverTimestamp(),
       automationStatus: 'waiting',
       automationJobId: jobRef.id,
+      automationError: null,
       automationUpdatedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -478,11 +1162,15 @@ export async function startAutomationForTask(input: {
   });
 }
 
-function mapJobStatusToUiStatus(status: AutomationJobStatus | 'cancelled_requested'): AutomationUiStatus | null {
+function mapJobStatusToUiStatus(
+  status: AutomationJobStatus | 'cancelled_requested',
+  data?: { needsManualReview?: boolean | null }
+): AutomationUiStatus | null {
   if (status === 'queued') return 'waiting';
   if (status === 'running') return 'running';
   if (status === 'completed') return 'completed';
   if (status === 'cancelled' || status === 'cancelled_requested') return null;
+  if (data?.needsManualReview) return 'pending_review';
   return 'failed';
 }
 
@@ -494,91 +1182,207 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
 
   const taskRef = doc(db, 'carerTasks', taskId);
   const deterministicJobRef = doc(db, 'automation_jobs', automationJobDocId(currentUser.uid, taskId));
-  const jobQuerySnap = await getDocs(
-    query(
-      collection(db, 'automation_jobs'),
-      where('taskId', '==', taskId),
-      limit(50)
-    )
-  );
-  const candidateJobRefs = [
-    deterministicJobRef,
-    ...jobQuerySnap.docs
-      .filter((d) => String((d.data() as { createdByUid?: string }).createdByUid || '').trim() === currentUser.uid)
-      .map((d) => doc(db, 'automation_jobs', d.id)),
-  ];
-  const seenJobIds = new Set<string>();
-  const uniqueJobRefs = candidateJobRefs.filter((ref) => {
-    if (seenJobIds.has(ref.id)) return false;
-    seenJobIds.add(ref.id);
-    return true;
-  });
+  const loadSameTaskJobRefs = async () => {
+    const sameTaskJobsSnap = await getDocs(
+      query(collection(db, 'automation_jobs'), where('taskId', '==', taskId), limit(20))
+    );
+    return sameTaskJobsSnap.docs.map((jobSnap) => jobSnap.ref);
+  };
+  const isRetryableConcurrencyError = (error: unknown) => {
+    const code = String(
+      (error as { code?: string } | null | undefined)?.code || ''
+    ).toLowerCase();
+    const message = String(
+      (error as { message?: string } | null | undefined)?.message || ''
+    ).toLowerCase();
+    return (
+      code.includes('failed-precondition') ||
+      code.includes('aborted') ||
+      message.includes('failed-precondition') ||
+      message.includes('too much contention') ||
+      message.includes('transaction')
+    );
+  };
 
-  return runTransaction(db, async (transaction) => {
-    const taskSnap = await transaction.get(taskRef);
+  const concurrencyRetryMessage = 'Task was already changed. Please refresh and try again.';
+  const runResetTransaction = async (attempt: number) => {
+    const sameTaskJobRefs = await loadSameTaskJobRefs();
+    console.info('[carer] returnToPendingTransactionStarted', {
+      taskId,
+      retryCount: attempt - 1,
+      sameTaskJobIds: sameTaskJobRefs.map((jobRef) => jobRef.id),
+    });
+    const taskSnap = await getDoc(taskRef);
     if (!taskSnap.exists()) {
       throw new Error('Task not found.');
     }
     const taskData = taskSnap.data() as Record<string, unknown>;
     const linkedJobId = String(taskData.automationJobId || '').trim();
-    const linkedJobRef = linkedJobId
-      ? doc(db, 'automation_jobs', linkedJobId)
-      : deterministicJobRef;
-    const allJobRefs = [
-      linkedJobRef,
-      ...uniqueJobRefs,
-    ].filter((ref, index, arr) => arr.findIndex((x) => x.id === ref.id) === index);
+    const oldTaskStatus = String(taskData.status || '').trim().toLowerCase() || null;
+    const jobRefs = Array.from(
+      new Map(
+        [
+          deterministicJobRef,
+          ...(linkedJobId ? [doc(db, 'automation_jobs', linkedJobId)] : []),
+          ...sameTaskJobRefs,
+        ].map((jobRef) => [jobRef.id, jobRef])
+      ).values()
+    );
+    const jobSnaps = await Promise.all(jobRefs.map((jobRef) => getDoc(jobRef)));
+    const jobStates = jobRefs.map((jobRef, index) => {
+      const jobSnap = jobSnaps[index];
+      const jobData = jobSnap.exists() ? (jobSnap.data() as Record<string, unknown>) : null;
+      return {
+        ref: jobRef,
+        exists: jobSnap.exists(),
+        status: String(jobData?.status || '').trim().toLowerCase(),
+        taskId: String(jobData?.taskId || '').trim(),
+      };
+    });
+    const linkedJobState =
+      jobStates.find((job) => job.ref.id === linkedJobId) ||
+      jobStates.find((job) => job.ref.id === deterministicJobRef.id) ||
+      null;
 
     console.info('[carer] back-to-pending clicked', {
       taskId,
-      linkedJobId: linkedJobRef.id,
-      candidateJobCount: allJobRefs.length,
+      linkedJobId: linkedJobId || deterministicJobRef.id,
+      attempt,
+    });
+    console.info('[carer] returnToPendingTransactionState', {
+      taskId,
+      oldTaskStatus,
+      oldAutomationJobId: linkedJobId || null,
+      oldJobStatus: linkedJobState?.status || null,
+      retryCount: attempt - 1,
+      jobStates: jobStates.map((job) => ({
+        jobId: job.ref.id,
+        exists: job.exists,
+        status: job.status || null,
+        taskId: job.taskId || null,
+      })),
     });
 
-    const jobSnaps = await Promise.all(allJobRefs.map((jobRef) => transaction.get(jobRef)));
-    const cancellableJobs = allJobRefs
-      .map((jobRef, index) => ({ jobRef, jobSnap: jobSnaps[index] }))
-      .filter(({ jobSnap }) => jobSnap.exists())
-      .map(({ jobRef, jobSnap }) => {
-        const linkedJobData = jobSnap.data() as { status?: string };
-        const status = String(linkedJobData.status || '').trim().toLowerCase();
-        return { jobRef, status };
-      })
-      .filter(({ status }) => status === 'queued' || status === 'running' || status === 'cancelled_requested');
-
-    for (const { jobRef, status } of cancellableJobs) {
-      transaction.update(jobRef, {
-        status: 'cancelled',
-        cancelledAt: serverTimestamp(),
-        cancelledReason: 'returned_to_pending',
-        updatedAt: serverTimestamp(),
-        lastHeartbeatAt: serverTimestamp(),
-        completedAt: serverTimestamp(),
-      });
-      console.info('[carer] linked job cancelled', {
+    const batch = writeBatch(db);
+    jobStates.forEach((job) => {
+      if (!job.exists) {
+        return;
+      }
+      if (job.taskId && job.taskId !== taskId) {
+        return;
+      }
+      if (job.status === 'queued' || job.status === 'running' || job.status === 'cancelled_requested') {
+        batch.update(job.ref, {
+          status: 'cancelled',
+          claimedStatus: 'cancelled',
+          cancelledAt: serverTimestamp(),
+          cancelledReason: 'returned_to_pending',
+          updatedAt: serverTimestamp(),
+          lastHeartbeatAt: serverTimestamp(),
+          completedAt: serverTimestamp(),
+          ttlExpiresAt: automationJobTtl(),
+          error: 'Cancelled by carer (returned_to_pending).',
+        });
+        console.info('[carer] linked job cancelled', {
+          taskId,
+          linkedJobId: job.ref.id,
+          previousStatus: job.status,
+          nextStatus: 'cancelled',
+        });
+        return;
+      }
+      console.info('[carer] linked job already terminal; cancel skipped', {
         taskId,
-        linkedJobId: jobRef.id,
-        previousStatus: status,
-        nextStatus: 'cancelled',
+        linkedJobId: job.ref.id,
+        previousStatus: job.status || null,
       });
-    }
-
-    transaction.update(taskRef, {
-      status: 'pending',
-      assignedCarerUid: null,
-      assignedCarer: null,
-      assignedCarerUsername: null,
-      startedAt: null,
-      claimedAt: null,
-      queuedAt: null,
-      automationStatus: null,
-      automationJobId: null,
-      automationError: null,
-      automationUpdatedAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
     });
-    console.info('[carer] task reset complete', { taskId });
-  });
+
+    batch.update(taskRef, {
+      ...buildTaskClaimReleaseFields(null, 'pending', null),
+      queuedAt: null,
+    });
+    await batch.commit();
+    console.info('[carer] task reset complete', {
+      taskId,
+      attempt,
+      oldTaskStatus,
+      oldAutomationJobId: linkedJobId || null,
+      oldJobStatus: linkedJobState?.status || null,
+      clearedClaimFields: [
+        'status',
+        'assignedCarerUid',
+        'assignedCarer',
+        'assignedCarerUsername',
+        'claimedStatus',
+        'claimedAt',
+        'claimedByUid',
+        'claimedByUsername',
+        'startedAt',
+        'lastHeartbeatAt',
+        'automationStatus',
+        'automationJobId',
+        'automationError',
+        'queuedAt',
+      ],
+      retryCount: attempt - 1,
+    });
+  };
+
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    try {
+      await runResetTransaction(attempt);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableConcurrencyError(error) || attempt >= 4) {
+        break;
+      }
+      // Explicit fresh read before one retry to avoid stale write races.
+      await getDoc(taskRef);
+      console.info('[carer] returnToPending retrying after concurrency error', {
+        taskId,
+        retryCount: attempt,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
+    }
+  }
+
+  const latestTaskSnap = await getDoc(taskRef);
+  if (latestTaskSnap.exists()) {
+    const latestTask = latestTaskSnap.data() as Record<string, unknown>;
+    const latestStatus = String(latestTask.status || '').trim().toLowerCase();
+    const latestClaimedStatus = String(latestTask.claimedStatus || '').trim();
+    const latestClaimedByUid = String(latestTask.claimedByUid || '').trim();
+    const latestAssignedCarerUid = String(latestTask.assignedCarerUid || '').trim();
+    const latestAutomationJobId = String(latestTask.automationJobId || '').trim();
+    if (
+      latestStatus === 'pending' &&
+      !latestClaimedStatus &&
+      !latestClaimedByUid &&
+      !latestAssignedCarerUid &&
+      !latestAutomationJobId
+    ) {
+      return;
+    }
+    console.info('[carer] returnToPending latest state still claimed', {
+      taskId,
+      status: latestStatus || null,
+      claimedStatus: latestClaimedStatus || null,
+      claimedByUid: latestClaimedByUid || null,
+      assignedCarerUid: latestAssignedCarerUid || null,
+      automationJobId: latestAutomationJobId || null,
+    });
+  }
+
+  if (isRetryableConcurrencyError(lastError)) {
+    throw new Error(concurrencyRetryMessage);
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('Failed to move task back to pending.');
 }
 
 export function listenAutomationUiStatusByTask(
@@ -606,7 +1410,10 @@ export function listenAutomationUiStatusByTask(
           continue;
         }
         seenTaskIds.add(taskId);
-        const mapped = mapJobStatusToUiStatus(data.status as AutomationJobStatus | 'cancelled_requested');
+        const mapped = mapJobStatusToUiStatus(
+          data.status as AutomationJobStatus | 'cancelled_requested',
+          data as { needsManualReview?: boolean | null }
+        );
         if (mapped) {
           statusByTaskId[taskId] = mapped;
         }

@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import {
+  apiError,
+  belongsToScope,
+  requireApiUser,
+  scopedCoadminUid,
+} from '@/lib/firebase/apiAuth';
 
 type UserStatus = 'active' | 'disabled';
 
@@ -10,6 +16,9 @@ function isValidStatus(status: string): status is UserStatus {
 
 export async function POST(request: Request) {
   try {
+    const auth = await requireApiUser(request, ['admin', 'coadmin']);
+    if ('response' in auth) return auth.response;
+
     const body = await request.json();
     const uid = String(body.uid || '').trim();
     const status = String(body.status || '').trim().toLowerCase();
@@ -38,6 +47,17 @@ export async function POST(request: Request) {
       );
     }
 
+    const targetRole = String(userData?.role || '').toLowerCase();
+    if (auth.user.role !== 'admin') {
+      if (targetRole === 'coadmin') {
+        return apiError('Only admin can change coadmin status.', 403);
+      }
+      const coadminUid = scopedCoadminUid(auth.user);
+      if (!coadminUid || !belongsToScope(userData || {}, coadminUid)) {
+        return apiError('Target user is outside your coadmin scope.', 403);
+      }
+    }
+
     const isDisabled = status === 'disabled';
     const role = String(userData?.role || '');
     const isPlayer = role === 'player';
@@ -61,9 +81,9 @@ export async function POST(request: Request) {
       success: true,
       message: `User ${isDisabled ? 'blocked' : 'unblocked'} successfully.`,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     return NextResponse.json(
-      { error: error.message || 'Failed to update user status.' },
+      { error: error instanceof Error ? error.message : 'Failed to update user status.' },
       { status: 500 }
     );
   }

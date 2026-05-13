@@ -29,7 +29,8 @@ export type FinancialEventType =
   | 'coadmin_coin_add'
   | 'coadmin_coin_deduct'
   | 'coadmin_cash_add'
-  | 'coadmin_cash_deduct';
+  | 'coadmin_cash_deduct'
+  | 'recharge_refund';
 
 export type FinancialActivityWindow = {
   cashouts: number;
@@ -667,69 +668,31 @@ export async function createCashToCoinTransferRequest(playerUid: string, request
 }
 
 export async function approveTransferRequest(requestId: string) {
-  const actor = await getCurrentActorIdentity();
   const requestRef = doc(db, 'transferRequests', requestId);
-  let playerUid = '';
-  let coadminUid = '';
-  let playerUsername = 'Player';
-
-  await runTransaction(db, async (transaction) => {
-    const requestSnap = await transaction.get(requestRef);
-
-    if (!requestSnap.exists()) {
-      throw new Error('Transfer request not found.');
-    }
-
-    const requestData = requestSnap.data() as Omit<TransferRequest, 'id'>;
-    if (requestData.status !== 'pending') {
-      throw new Error('Transfer request already processed.');
-    }
-
-    playerUid = requestData.playerUid;
-    coadminUid = requestData.coadminUid || '';
-    playerUsername = requestData.playerUsername || 'Player';
-
-    const playerRef = doc(db, 'users', requestData.playerUid);
-    const playerSnap = await transaction.get(playerRef);
-
-    if (!playerSnap.exists()) {
-      throw new Error('Player profile not found.');
-    }
-
-    const playerData = playerSnap.data() as { coin?: number; cash?: number };
-    const cashNow = Number(playerData.cash || 0);
-    const amountNpr = Math.max(0, Number(requestData.amountNpr || 0));
-
-    if (cashNow < amountNpr || amountNpr <= 0) {
-      throw new Error('Transfer request is no longer valid due to low cash balance.');
-    }
-
-    const eventRef = doc(collection(db, 'financialEvents'));
-    transaction.update(playerRef, {
-      coin: Number(playerData.coin || 0) + amountNpr,
-      cash: cashNow - amountNpr,
-    });
-    transaction.update(requestRef, {
-      status: 'approved',
-      approvedByUid: actor.uid,
-      approvedByUsername: actor.username,
-      approvedAt: serverTimestamp(),
-      rejectionReason: null,
-      processedAt: serverTimestamp(),
-    });
-    transaction.set(eventRef, {
-      playerUid: requestData.playerUid,
-      coadminUid: requestData.coadminUid || '',
-      amountNpr,
-      type: 'transfer',
-      createdAt: serverTimestamp(),
-    });
+  const requestSnap = await getDoc(requestRef);
+  if (!requestSnap.exists()) {
+    throw new Error('Transfer request not found.');
+  }
+  const requestData = requestSnap.data() as Omit<TransferRequest, 'id'>;
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('Not authenticated.');
+  const response = await fetch('/api/risk/transfer-requests/approve', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ requestId }),
   });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to approve transfer request.');
+  }
 
   await createRiskAction({
-    playerUid,
-    coadminUid,
-    playerUsername,
+    playerUid: requestData.playerUid,
+    coadminUid: requestData.coadminUid || '',
+    playerUsername: requestData.playerUsername || 'Player',
     action: 'transfer_request_approved',
     details:
       'Most profit comes from cashouts. Repeated cash-to-coin transfers may reduce long-term gains. Use this mainly for gameplay retention.',

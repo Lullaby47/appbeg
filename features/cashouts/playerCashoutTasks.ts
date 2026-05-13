@@ -17,7 +17,6 @@ import {
 
 import { auth, db } from '@/lib/firebase/client';
 import { evaluateWithdrawalPolicy } from '@/lib/economy/policy';
-import { recordFinancialEvent } from '@/features/risk/playerRisk';
 
 export type PlayerCashoutTaskStatus = 'pending' | 'in_progress' | 'completed' | 'declined';
 export type PlayerCashoutPayoutMethod = 'qr' | 'app';
@@ -46,6 +45,8 @@ export type PlayerCashoutTask = {
 };
 
 const TASK_DURATION_MS = 3 * 60 * 1000;
+const CASHOUT_ACTIVE_LISTENER_LIMIT = 100;
+const CASHOUT_HISTORY_LISTENER_LIMIT = 50;
 
 /** Max NPR a player may cash out in a rolling ~24-hour window (sums non-declined task amounts). */
 export const PLAYER_CASHOUT_MAX_NPR_PER_24_H = 1000;
@@ -284,6 +285,30 @@ async function getCurrentUserIdentity() {
   };
 }
 
+async function getAuthHeaders() {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await currentUser.getIdToken();
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+  };
+}
+
+function readApiError(messageFallback: string, payload: unknown) {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    'error' in payload &&
+    typeof (payload as { error?: unknown }).error === 'string'
+  ) {
+    return String((payload as { error: string }).error || messageFallback);
+  }
+  return messageFallback;
+}
+
 export async function createPlayerCashoutTask(values: {
   coadminUid: string;
   paymentDetails: string;
@@ -293,95 +318,15 @@ export async function createPlayerCashoutTask(values: {
   paymentAppCashTag?: string;
   paymentAppAccountName?: string;
 }) {
-  const currentUser = auth.currentUser;
-
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-
-  const paymentDetails = values.paymentDetails.trim();
-
-  if (paymentDetails.length < 5) {
-    throw new Error('Please provide clear payment details.');
-  }
-
-  const rollingUsed = await fetchRolling24hCashoutUsageNprForPlayer(currentUser.uid);
-  const [completedCashoutCount, lastRechargeAmountNpr] = await Promise.all([
-    fetchCompletedCashoutCountForPlayer(currentUser.uid),
-    fetchLatestCompletedRechargeAmountForPlayer(currentUser.uid),
-  ]);
-  const remainingQuota = Math.max(
-    0,
-    PLAYER_CASHOUT_MAX_NPR_PER_24_H - rollingUsed
-  );
-
-  const playerRef = doc(db, 'users', currentUser.uid);
-  const taskRef = doc(collection(db, 'playerCashoutTasks'));
-
-  await runTransaction(db, async (transaction) => {
-    const playerSnap = await transaction.get(playerRef);
-
-    if (!playerSnap.exists()) {
-      throw new Error('Player profile not found.');
-    }
-
-    const playerData = playerSnap.data() as {
-      role?: string;
-      username?: string;
-      cash?: number;
-    };
-    const availableCash = Number(playerData.cash || 0);
-
-    if (String(playerData.role || '').toLowerCase() !== 'player') {
-      throw new Error('Only players can create cashout tasks.');
-    }
-
-    if (availableCash <= 0) {
-      throw new Error('No cash available to cash out.');
-    }
-
-    const amountThisRequest = Math.min(availableCash, remainingQuota);
-
-    if (amountThisRequest <= 0) {
-      throw new Error(
-        `Rolling 24-hour cash out limit (${PLAYER_CASHOUT_MAX_NPR_PER_24_H} NPR) is reached for now. You've already requested ${rollingUsed.toFixed(2)} NPR in the window. Wait until older requests expire from this window before cashing out more.`
-      );
-    }
-
-    const decision = evaluateWithdrawalPolicy({
-      amountNpr: amountThisRequest,
-      completedWithdrawalCount: completedCashoutCount,
-      lastRechargeAmountNpr,
-    });
-    if (!decision.allowed) {
-      throw new Error(decision.message);
-    }
-
-    transaction.update(playerRef, {
-      cash: availableCash - amountThisRequest,
-    });
-
-    transaction.set(taskRef, {
-      coadminUid: values.coadminUid,
-      playerUid: currentUser.uid,
-      playerUsername: playerData.username?.trim() || 'Player',
-      amountNpr: amountThisRequest,
-      paymentDetails,
-      payoutMethod: values.payoutMethod || null,
-      qrImageUrl: values.qrImageUrl?.trim() || null,
-      paymentAppName: values.paymentAppName?.trim() || null,
-      paymentAppCashTag: values.paymentAppCashTag?.trim() || null,
-      paymentAppAccountName: values.paymentAppAccountName?.trim() || null,
-      cashDeductedOnRequest: true,
-      status: 'pending',
-      assignedHandlerUid: null,
-      assignedHandlerUsername: null,
-      startedAt: null,
-      expiresAt: null,
-      createdAt: serverTimestamp(),
-      completedAt: null,
-    });
+  const response = await fetch('/api/player/cashout-tasks/create', {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: JSON.stringify(values),
   });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to create cashout request.', payload));
+  }
 }
 
 export async function startPlayerCashoutTask(taskId: string) {
@@ -424,114 +369,14 @@ export async function startPlayerCashoutTask(taskId: string) {
 }
 
 export async function completePlayerCashoutTask(taskId: string) {
-  const identity = await getCurrentUserIdentity();
-  const taskRef = doc(db, 'playerCashoutTasks', taskId);
-  const handlerRef = doc(db, 'users', identity.uid);
-  let completedPlayerUid = '';
-  let completedCoadminUid = '';
-  let completedAmountNpr = 0;
-
-  await runTransaction(db, async (transaction) => {
-    const [taskSnap, handlerSnap] = await Promise.all([
-      transaction.get(taskRef),
-      transaction.get(handlerRef),
-    ]);
-
-    if (!taskSnap.exists()) {
-      throw new Error('Cashout task not found.');
-    }
-
-    const taskData = taskSnap.data() as Omit<PlayerCashoutTask, 'id'>;
-    const effectiveStatus = getEffectivePlayerCashoutTaskStatus(
-      toTask(taskSnap.id, taskData)
-    );
-
-    if (effectiveStatus !== 'in_progress' && effectiveStatus !== 'pending') {
-      throw new Error('Cashout task is not available to complete.');
-    }
-
-    const requestedAmount = Number(taskData.amountNpr || 0);
-    const shouldDeductOnComplete = taskData.cashDeductedOnRequest === false;
-    let playerRef: ReturnType<typeof doc> | null = null;
-    let playerCash = 0;
-
-    if (shouldDeductOnComplete) {
-      playerRef = doc(db, 'users', taskData.playerUid);
-      const playerSnap = await transaction.get(playerRef);
-
-      if (!playerSnap.exists()) {
-        transaction.delete(taskRef);
-        throw new Error(
-          'Cashout task dismissed: player profile not found or cash balance unavailable.'
-        );
-      }
-
-      const playerData = playerSnap.data() as { cash?: number };
-      playerCash = Number(playerData.cash);
-    }
-
-    if (
-      !Number.isFinite(requestedAmount) ||
-      requestedAmount <= 0
-    ) {
-      transaction.delete(taskRef);
-      throw new Error(
-        'Cashout task dismissed: player cash balance is invalid for this request.'
-      );
-    }
-
-    if (shouldDeductOnComplete && (playerCash < 0 || !Number.isFinite(playerCash) || playerCash < requestedAmount)) {
-      transaction.delete(taskRef);
-      throw new Error(
-        'Cashout task dismissed: player cash balance is lower than the requested amount.'
-      );
-    }
-
-    const rewardNpr = Math.max(1, Math.round(Number(taskData.amountNpr || 0) * 0.05));
-    const handlerData = handlerSnap.exists()
-      ? (handlerSnap.data() as { cashBoxNpr?: number; rewardBlocked?: boolean })
-      : { cashBoxNpr: 0, rewardBlocked: false };
-    const isRewardBlocked = Boolean(handlerData.rewardBlocked);
-    const rewardAppliedNpr = isRewardBlocked ? 0 : rewardNpr;
-    const handlerCreditAmount = requestedAmount + rewardAppliedNpr;
-
-    const now = Timestamp.now();
-    transaction.update(taskRef, {
-      status: 'completed',
-      assignedHandlerUid: identity.uid,
-      assignedHandlerUsername: identity.username,
-      cashoutRequestedByStaffId: identity.role === 'staff' ? identity.uid : null,
-      rewardNprApplied: rewardAppliedNpr,
-      rewardBlockedApplied: isRewardBlocked,
-      startedAt: taskData.startedAt || now,
-      expiresAt: null,
-      completedAt: serverTimestamp(),
-    });
-    if (shouldDeductOnComplete && playerRef) {
-      transaction.update(playerRef, {
-        cash: playerCash - requestedAmount,
-      });
-    }
-    transaction.set(
-      handlerRef,
-      {
-        cashBoxNpr: Number(handlerData.cashBoxNpr || 0) + handlerCreditAmount,
-      },
-      { merge: true }
-    );
-
-    completedPlayerUid = taskData.playerUid;
-    completedCoadminUid = taskData.coadminUid;
-    completedAmountNpr = requestedAmount;
+  const response = await fetch('/api/cashout-tasks/complete', {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({ taskId }),
   });
-
-  if (completedPlayerUid && completedAmountNpr > 0) {
-    await recordFinancialEvent({
-      playerUid: completedPlayerUid,
-      coadminUid: completedCoadminUid,
-      amountNpr: completedAmountNpr,
-      type: 'cashout',
-    });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to complete cashout task.', payload));
   }
 }
 
@@ -544,46 +389,15 @@ export async function declinePlayerCashoutTaskForCurrentHandler(taskId: string) 
 }
 
 export async function declinePlayerCashoutTaskByCoadmin(taskId: string) {
-  const taskRef = doc(db, 'playerCashoutTasks', taskId);
-
-  await runTransaction(db, async (transaction) => {
-    const taskSnap = await transaction.get(taskRef);
-
-    if (!taskSnap.exists()) {
-      throw new Error('Cashout task not found.');
-    }
-
-    const taskData = taskSnap.data() as Omit<PlayerCashoutTask, 'id'>;
-    const effectiveStatus = getEffectivePlayerCashoutTaskStatus(toTask(taskSnap.id, taskData));
-
-    if (effectiveStatus !== 'pending' && effectiveStatus !== 'in_progress') {
-      throw new Error('Only active cashout tasks can be declined.');
-    }
-
-    const amountNpr = Math.max(0, Math.round(Number(taskData.amountNpr || 0)));
-    const playerRef = doc(db, 'users', taskData.playerUid);
-    const playerSnap = await transaction.get(playerRef);
-    const playerCash = playerSnap.exists()
-      ? Math.max(0, Number((playerSnap.data() as { cash?: number }).cash || 0))
-      : 0;
-
-    transaction.update(taskRef, {
-      status: 'declined',
-      expiresAt: null,
-      completedAt: serverTimestamp(),
-    });
-
-    // Refund declined player cashout back to player's cash balance.
-    if (taskData.cashDeductedOnRequest === true && amountNpr > 0) {
-      transaction.set(
-        playerRef,
-        {
-          cash: playerCash + amountNpr,
-        },
-        { merge: true }
-      );
-    }
+  const response = await fetch('/api/cashout-tasks/decline', {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({ taskId }),
   });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to decline cashout task.', payload));
+  }
 }
 
 function sortByNewest(tasks: PlayerCashoutTask[]) {
@@ -608,7 +422,9 @@ export function listenPlayerCashoutTasksByAssignedHandler(
 ) {
   const tasksQuery = query(
     collection(db, 'playerCashoutTasks'),
-    where('assignedHandlerUid', '==', assignedHandlerUid)
+    where('assignedHandlerUid', '==', assignedHandlerUid),
+    orderBy('createdAt', 'desc'),
+    limit(CASHOUT_HISTORY_LISTENER_LIMIT)
   );
 
   return onSnapshot(
@@ -630,7 +446,9 @@ export function listenPlayerCashoutTasksByCoadmin(
 ) {
   const tasksQuery = query(
     collection(db, 'playerCashoutTasks'),
-    where('coadminUid', '==', coadminUid)
+    where('coadminUid', '==', coadminUid),
+    orderBy('createdAt', 'desc'),
+    limit(CASHOUT_ACTIVE_LISTENER_LIMIT)
   );
 
   return onSnapshot(
@@ -648,7 +466,11 @@ export function listenAllPlayerCashoutTasks(
   onChange: (tasks: PlayerCashoutTask[]) => void,
   onError?: (error: Error) => void
 ) {
-  const tasksQuery = query(collection(db, 'playerCashoutTasks'));
+  const tasksQuery = query(
+    collection(db, 'playerCashoutTasks'),
+    orderBy('createdAt', 'desc'),
+    limit(CASHOUT_ACTIVE_LISTENER_LIMIT)
+  );
 
   return onSnapshot(
     tasksQuery,
@@ -668,7 +490,9 @@ export function listenPlayerCashoutTasksByPlayer(
 ) {
   const tasksQuery = query(
     collection(db, 'playerCashoutTasks'),
-    where('playerUid', '==', playerUid)
+    where('playerUid', '==', playerUid),
+    orderBy('createdAt', 'desc'),
+    limit(CASHOUT_HISTORY_LISTENER_LIMIT)
   );
 
   return onSnapshot(

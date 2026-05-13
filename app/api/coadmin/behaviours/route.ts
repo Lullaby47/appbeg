@@ -63,12 +63,24 @@ export async function GET(request: Request) {
     const oneDayAgoMs = now - 24 * 60 * 60 * 1000;
     const oneHourMs = 60 * 60 * 1000;
 
-    const staffDocs = staffSnap.docs.map((d) => ({ id: d.id, ...(d.data() as AnyDoc) }));
-    const playerDocs = playersSnap.docs.map((d) => ({ id: d.id, ...(d.data() as AnyDoc) }));
-    const cashoutDocs = cashoutsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as AnyDoc) }));
-    const redeemRequestDocs = requestsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as AnyDoc) }));
+    const staffDocs: Array<{ id: string } & AnyDoc> = staffSnap.docs.map((d) => ({
+      id: d.id,
+      ...(d.data() as AnyDoc),
+    }));
+    const playerDocs: Array<{ id: string } & AnyDoc> = playersSnap.docs.map((d) => ({
+      id: d.id,
+      ...(d.data() as AnyDoc),
+    }));
+    const cashoutDocs: Array<{ id: string } & AnyDoc> = cashoutsSnap.docs.map((d) => ({
+      id: d.id,
+      ...(d.data() as AnyDoc),
+    }));
+    const redeemRequestDocs: Array<{ id: string } & AnyDoc> = requestsSnap.docs.map((d) => ({
+      id: d.id,
+      ...(d.data() as AnyDoc),
+    }));
 
-    const playersByStaffId = new Map<string, AnyDoc[]>();
+    const playersByStaffId = new Map<string, Array<{ id: string } & AnyDoc>>();
     for (const player of playerDocs) {
       const staffId = String(player.createdByStaffId || '').trim();
       if (!staffId) continue;

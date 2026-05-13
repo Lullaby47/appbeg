@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import {
+  apiError,
+  belongsToScope,
+  requireApiUser,
+  scopedCoadminUid,
+} from '@/lib/firebase/apiAuth';
 
 function isAuthUserNotFound(error: unknown) {
   if (!error || typeof error !== 'object') {
@@ -37,10 +43,13 @@ async function ensureAuthUserDeleted(uid: string, email?: string | null) {
 
 export async function POST(request: Request) {
   try {
+    const auth = await requireApiUser(request, ['admin', 'coadmin']);
+    if ('response' in auth) return auth.response;
+
     const body = await request.json();
-    const uid = String(body.uid || '');
-    const deletedByUid = body.deletedByUid ? String(body.deletedByUid) : null;
-    const permanent = Boolean(body.permanent);
+    const uid = String(body.uid || '').trim();
+    const deletedByUid = auth.user.uid;
+    const permanent = auth.user.role === 'admin' && Boolean(body.permanent);
 
     if (!uid) {
       return NextResponse.json(
@@ -68,6 +77,17 @@ export async function POST(request: Request) {
       );
     }
 
+    const targetRole = String(userData?.role || '').toLowerCase();
+    if (auth.user.role !== 'admin') {
+      if (targetRole === 'coadmin') {
+        return apiError('Only admin can delete coadmin accounts.', 403);
+      }
+      const coadminUid = scopedCoadminUid(auth.user);
+      if (!coadminUid || !belongsToScope(userData || {}, coadminUid)) {
+        return apiError('Target user is outside your coadmin scope.', 403);
+      }
+    }
+
     if (userData?.role === 'player' && !permanent) {
       await adminDb.collection('deletedPlayers').doc(uid).set({
         ...userData,
@@ -88,11 +108,11 @@ export async function POST(request: Request) {
           ? 'Player archived and deleted from active users.'
           : 'User deleted from Auth and Firestore.',
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error(err);
 
     return NextResponse.json(
-      { error: err.message || 'Failed to delete user.' },
+      { error: err instanceof Error ? err.message : 'Failed to delete user.' },
       { status: 500 }
     );
   }

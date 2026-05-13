@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import { requireApiUser } from '@/lib/firebase/apiAuth';
 
 function makeHiddenEmail(username: string) {
   return `${username}@app.local`;
@@ -8,18 +9,14 @@ function makeHiddenEmail(username: string) {
 
 export async function POST(request: Request) {
   try {
+    const auth = await requireApiUser(request, ['admin']);
+    if ('response' in auth) return auth.response;
+
     const body = await request.json();
 
     const username = String(body.username || '').trim().toLowerCase();
     const password = String(body.password || '');
-    const createdBy = body.createdBy ? String(body.createdBy).trim() : null;
-
-    if (!createdBy) {
-      return NextResponse.json(
-        { error: 'Creator is required.' },
-        { status: 400 }
-      );
-    }
+    const createdBy = auth.user.uid;
 
     if (!username) {
       return NextResponse.json(
@@ -32,69 +29,6 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { error: 'Password must be at least 6 characters.' },
         { status: 400 }
-      );
-    }
-
-    const creatorSnap = await adminDb.collection('users').doc(createdBy).get();
-
-    if (!creatorSnap.exists) {
-      return NextResponse.json(
-        { error: 'Creator account not found.' },
-        { status: 403 }
-      );
-    }
-
-    const creatorData = creatorSnap.data() as {
-      role?: string;
-      createdBy?: string | null;
-    };
-    const creatorRole = String(creatorData.role || '').toLowerCase();
-
-    // Permission rule:
-    // - Admin can create coadmin.
-    // - Staff is allowed only when that staff was created by an admin.
-    // - Coadmin and coadmin-created staff are not allowed.
-    if (creatorRole === 'coadmin') {
-      return NextResponse.json(
-        { error: 'Coadmin-created staff cannot create coadmin accounts.' },
-        { status: 403 }
-      );
-    }
-
-    if (creatorRole === 'staff') {
-      const creatorParentUid = creatorData.createdBy ? String(creatorData.createdBy) : '';
-
-      if (!creatorParentUid) {
-        return NextResponse.json(
-          { error: 'Staff creator scope is invalid.' },
-          { status: 403 }
-        );
-      }
-
-      const parentSnap = await adminDb.collection('users').doc(creatorParentUid).get();
-
-      if (!parentSnap.exists) {
-        return NextResponse.json(
-          { error: 'Staff creator owner not found.' },
-          { status: 403 }
-        );
-      }
-
-      const parentData = parentSnap.data() as { role?: string };
-      const parentRole = String(parentData.role || '').toLowerCase();
-
-      if (parentRole !== 'admin') {
-        return NextResponse.json(
-          { error: 'Coadmin-created staff cannot create coadmin accounts.' },
-          { status: 403 }
-        );
-      }
-    }
-
-    if (creatorRole !== 'admin' && creatorRole !== 'staff') {
-      return NextResponse.json(
-        { error: 'You are not allowed to create coadmin accounts.' },
-        { status: 403 }
       );
     }
 
@@ -135,11 +69,11 @@ export async function POST(request: Request) {
       uid: authUser.uid,
       message: 'Co-admin created.',
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error(err);
 
     return NextResponse.json(
-      { error: err.message || 'Failed to create co-admin.' },
+      { error: err instanceof Error ? err.message : 'Failed to create co-admin.' },
       { status: 500 }
     );
   }

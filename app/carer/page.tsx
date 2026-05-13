@@ -2,21 +2,31 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc, serverTimestamp, updateDoc } from 'firebase/firestore';
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  query,
+  where,
+} from 'firebase/firestore';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
 import LogoutButton from '../../components/auth/LogoutButton';
 import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 import ImageUploadField from '@/components/common/ImageUploadField';
-import { auth, db } from '@/lib/firebase/client';
+import { auth, db, getClientDb } from '@/lib/firebase/client';
 import { GameLogin } from '@/features/games/gameLogins';
 import {
   createPlayerGameLogin,
   getPlayerGameLoginsByCoadmin,
+  listenToPlayerGameLoginsByCoadmin,
   PlayerGameLogin,
   updatePlayerGameLogin,
 } from '@/features/games/playerGameLogins';
 import {
+  dismissPendingRechargeAsCarer,
   dismissPendingRedeemAsCarer,
   PlayerGameRequest,
 } from '@/features/games/playerGameRequests';
@@ -31,6 +41,7 @@ import {
   completeRechargeRedeemTask,
   completeUsernameTaskForPlayerGame,
   getEffectiveCarerTaskStatus,
+  isRealCompletedCarerTask,
   getCurrentUserCoadminUid,
   listenCarerRechargeRedeemTotalsByCoadmin,
   listenToAvailableCarerTasks,
@@ -95,6 +106,8 @@ type DashboardCard = {
 type TaskSection = 'pending' | 'mine' | 'completed';
 
 const AUTO_AUTOMATION_INTERVAL_MS = 7000;
+const CREATE_USERNAME_UI_GRACE_MS = 5 * 60 * 1000;
+const TASK_CLAIM_STALE_TIMEOUT_MS = 5 * 60 * 1000;
 function getTimestampMs(value: unknown) {
   if (!value) {
     return 0;
@@ -149,6 +162,62 @@ function normalizeGameName(gameName: string) {
   return gameName.trim().toLowerCase();
 }
 
+function isFreshActiveTaskClaim(task: CarerTask) {
+  const taskStatus = String(task.status || '').trim().toLowerCase();
+  const claimedStatus = String(task.claimedStatus || '').trim().toLowerCase();
+  const automationStatus = String(task.automationStatus || '').trim().toLowerCase();
+  const hasAutomationError = Boolean(String(task.automationError || '').trim());
+  const heartbeatMs = Math.max(
+    getTimestampMs(task.lastHeartbeatAt),
+    getTimestampMs(task.claimedAt)
+  );
+
+  if (taskStatus !== 'in_progress') {
+    return false;
+  }
+
+  if (claimedStatus !== 'running') {
+    return false;
+  }
+
+  if (automationStatus === 'failed' || automationStatus === 'waiting' || hasAutomationError) {
+    return false;
+  }
+
+  return Boolean(heartbeatMs) && Date.now() - heartbeatMs < TASK_CLAIM_STALE_TIMEOUT_MS;
+}
+
+function getStartTaskDisabledReason(task: CarerTask, options: {
+  isLoading: boolean;
+  automationStatus: string | null;
+  hasFreshTaskClaim: boolean;
+  hasFreshRunnableJob: boolean;
+}) {
+  if (options.isLoading) {
+    return 'queueing';
+  }
+  if (options.automationStatus === 'waiting' && options.hasFreshRunnableJob) {
+    return 'already_queued_same_task';
+  }
+  if (options.automationStatus === 'running' && options.hasFreshRunnableJob) {
+    return 'already_running_same_task';
+  }
+  if (options.hasFreshTaskClaim) {
+    return 'fresh_claim_running_same_task';
+  }
+  return null;
+}
+
+function isActiveAutomationUiStatus(status: string | null | undefined) {
+  const normalized = String(status || '').trim().toLowerCase();
+  return (
+    normalized === 'queued' ||
+    normalized === 'waiting' ||
+    normalized === 'running' ||
+    normalized === 'in_progress'
+  );
+}
+
 function normalizeSiteUrl(siteUrl?: string | null) {
   const trimmed = String(siteUrl || '').trim();
 
@@ -159,20 +228,27 @@ function normalizeSiteUrl(siteUrl?: string | null) {
   return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 }
 
+function getTaskTypeKey(task: CarerTask) {
+  const fallbackKind = (task as CarerTask & { kind?: string | null }).kind;
+  return String(task.type || fallbackKind || '').trim().toLowerCase();
+}
+
 function getTaskTypeLabel(task: CarerTask) {
-  if (task.type === 'create_game_username') {
+  const taskType = getTaskTypeKey(task);
+
+  if (taskType === 'create_game_username') {
     return 'Create Username';
   }
 
-  if (task.type === 'recreate_username') {
+  if (taskType === 'recreate_username') {
     return 'Recreate Username';
   }
 
-  if (task.type === 'reset_password') {
+  if (taskType === 'reset_password') {
     return 'Reset Password';
   }
 
-  if (task.type === 'recharge') {
+  if (taskType === 'recharge') {
     return 'Recharge';
   }
 
@@ -180,19 +256,21 @@ function getTaskTypeLabel(task: CarerTask) {
 }
 
 function getTaskTypeClass(task: CarerTask) {
-  if (task.type === 'create_game_username') {
+  const taskType = getTaskTypeKey(task);
+
+  if (taskType === 'create_game_username') {
     return 'bg-yellow-500/20 text-yellow-200';
   }
 
-  if (task.type === 'recreate_username') {
+  if (taskType === 'recreate_username') {
     return 'bg-amber-500/20 text-amber-200';
   }
 
-  if (task.type === 'reset_password') {
+  if (taskType === 'reset_password') {
     return 'bg-indigo-500/20 text-indigo-200';
   }
 
-  if (task.type === 'recharge') {
+  if (taskType === 'recharge') {
     return 'bg-green-500/20 text-green-200';
   }
 
@@ -200,7 +278,9 @@ function getTaskTypeClass(task: CarerTask) {
 }
 
 function getTaskActionLabel(task: CarerTask) {
-  if (task.type === 'recharge' || task.type === 'redeem') {
+  const taskType = getTaskTypeKey(task);
+
+  if (taskType === 'recharge' || taskType === 'redeem') {
     return 'Done';
   }
 
@@ -208,19 +288,23 @@ function getTaskActionLabel(task: CarerTask) {
 }
 
 function mapCarerTaskToAutomationType(task: CarerTask) {
-  if (task.type === 'create_game_username') return mapTaskType('CREATE USERNAME');
-  if (task.type === 'recreate_username') return mapTaskType('RECREATE USERNAME');
-  if (task.type === 'reset_password') return mapTaskType('RESET PASSWORD');
-  if (task.type === 'recharge') return mapTaskType('RECHARGE');
-  if (task.type === 'redeem') return mapTaskType('REDEEM');
+  const taskType = getTaskTypeKey(task);
+
+  if (taskType === 'create_game_username') return mapTaskType('CREATE USERNAME');
+  if (taskType === 'recreate_username') return mapTaskType('RECREATE USERNAME');
+  if (taskType === 'reset_password') return mapTaskType('RESET PASSWORD');
+  if (taskType === 'recharge') return mapTaskType('RECHARGE');
+  if (taskType === 'redeem') return mapTaskType('REDEEM');
   return mapTaskType('COMPLETE TASK');
 }
 
 function isUsernameWorkflowTask(task: CarerTask) {
+  const taskType = getTaskTypeKey(task);
+
   return (
-    task.type === 'create_game_username' ||
-    task.type === 'recreate_username' ||
-    task.type === 'reset_password'
+    taskType === 'create_game_username' ||
+    taskType === 'recreate_username' ||
+    taskType === 'reset_password'
   );
 }
 
@@ -303,6 +387,9 @@ export default function CarerPage() {
   const [dismissRedeemRequestId, setDismissRedeemRequestId] = useState<
     string | null
   >(null);
+  const [dismissRechargeRequestId, setDismissRechargeRequestId] = useState<
+    string | null
+  >(null);
   const [showRevTotals, setShowRevTotals] = useState(false);
   const [carerRechargeRedeemTotals, setCarerRechargeRedeemTotals] = useState<
     Record<string, CarerRechargeRedeemTotals>
@@ -338,6 +425,9 @@ export default function CarerPage() {
   const [pendingAutomationResetTaskIds, setPendingAutomationResetTaskIds] = useState<
     Record<string, true>
   >({});
+  const [localAutomationProcessingByTaskId, setLocalAutomationProcessingByTaskId] = useState<
+    Record<string, number>
+  >({});
   const [agentInputDraft, setAgentInputDraft] = useState('');
   const [agentPanelNotice, setAgentPanelNotice] = useState('');
   const [agentPanelError, setAgentPanelError] = useState('');
@@ -346,6 +436,7 @@ export default function CarerPage() {
   const previousPendingCountRef = useRef(0);
   const shiftSessionIdRef = useRef<string | null>(null);
   const lastAutoAutomationRunMsRef = useRef(0);
+  const startTaskInFlightIdsRef = useRef<Set<string>>(new Set());
 
   const selectedPlayer = useMemo((): PlayerUser | null => {
     if (!selectedPlayerUid.trim()) {
@@ -410,7 +501,10 @@ export default function CarerPage() {
   );
 
   const completedTasks = useMemo(
-    () => sortByNewest(tasks.filter((task) => task.status === 'completed')),
+    () =>
+      sortByNewest(
+        tasks.filter((task) => isRealCompletedCarerTask(task))
+      ).slice(0, 30),
     [tasks]
   );
 
@@ -432,7 +526,7 @@ export default function CarerPage() {
     let redeemCount = 0;
 
     for (const task of tasks) {
-      if (task.status !== 'completed') {
+      if (!isRealCompletedCarerTask(task)) {
         continue;
       }
 
@@ -568,6 +662,25 @@ export default function CarerPage() {
 
     return () => unsubscribe();
   }, [carerIdentity?.uid, coadminUid]);
+
+  useEffect(() => {
+    if (!coadminUid) {
+      setAllPlayerLogins([]);
+      return;
+    }
+
+    const unsubscribe = listenToPlayerGameLoginsByCoadmin(
+      coadminUid,
+      (incomingLogins) => {
+        setAllPlayerLogins(sortByNewest(incomingLogins));
+      },
+      (error) => {
+        setErrorMessage(error.message || 'Failed to listen for player game logins.');
+      }
+    );
+
+    return () => unsubscribe();
+  }, [coadminUid]);
 
   useEffect(() => {
     if (!carerIdentity?.uid) {
@@ -714,6 +827,53 @@ export default function CarerPage() {
   }, [selectedPlayerUid]);
 
   useEffect(() => {
+    const now = Date.now();
+    let changed = false;
+    const next: Record<string, number> = {};
+
+    for (const [taskId, expiresAt] of Object.entries(localAutomationProcessingByTaskId)) {
+      if (expiresAt > now) {
+        next[taskId] = expiresAt;
+      } else {
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      setLocalAutomationProcessingByTaskId(next);
+    }
+  }, [localAutomationProcessingByTaskId]);
+
+  useEffect(() => {
+    setLocalAutomationProcessingByTaskId((current) => {
+      let changed = false;
+      const next = { ...current };
+
+      for (const [taskId, status] of Object.entries(automationStatusByTaskId)) {
+        if (
+          status === 'completed' ||
+          status === 'failed' ||
+          status === 'pending_review'
+        ) {
+          if (next[taskId]) {
+            delete next[taskId];
+            changed = true;
+          }
+        }
+      }
+
+      for (const task of tasks) {
+        if (task.status === 'completed' && next[task.id]) {
+          delete next[task.id];
+          changed = true;
+        }
+      }
+
+      return changed ? next : current;
+    });
+  }, [automationStatusByTaskId, tasks]);
+
+  useEffect(() => {
     if (!autoAutomationEnabled) {
       return;
     }
@@ -723,7 +883,7 @@ export default function CarerPage() {
     }
 
     const nextPendingTask = claimablePendingTasks[0];
-    if (!nextPendingTask) {
+    if (!nextPendingTask || startTaskInFlightIdsRef.current.has(nextPendingTask.id)) {
       return;
     }
 
@@ -1002,17 +1162,32 @@ export default function CarerPage() {
   }
 
   async function handleStartTask(task: CarerTask) {
-    console.info('[carer-ui] start-task:clicked', {
-      taskId: task.id,
-      taskType: task.type,
-      sectionStatus: task.status,
-      automationJobId: task.automationJobId || null,
-      automationStatus: task.automationStatus || null,
+    const isTaskLoading = automationLoadingTaskId === task.id;
+    const disabledReason = getStartTaskDisabledReason(task, {
+      isLoading: isTaskLoading,
+      automationStatus: automationStatusByTaskId[task.id] || null,
+      hasFreshTaskClaim: isFreshActiveTaskClaim(task),
+      hasFreshRunnableJob: isActiveAutomationUiStatus(automationStatusByTaskId[task.id] || null),
     });
+    const canStart = !disabledReason && !startTaskInFlightIdsRef.current.has(task.id);
+    console.info('[CARER_UI] start clicked taskId', {
+      taskId: task.id,
+      canStart,
+      disabledReason: disabledReason || (startTaskInFlightIdsRef.current.has(task.id) ? 'in_flight' : null),
+      existingAutomationJobId: task.automationJobId || null,
+      claimedByUid: task.claimedByUid || null,
+      claimedStatus: task.claimedStatus || null,
+      status: task.status || null,
+    });
+    if (!canStart) {
+      return;
+    }
+    startTaskInFlightIdsRef.current.add(task.id);
     if (!carerIdentity) {
-      console.warn('[carer-ui] start-task:blocked-no-carer-identity', {
+      console.warn('[CARER_UI] canStart=False blocked-no-carer-identity', {
         taskId: task.id,
       });
+      startTaskInFlightIdsRef.current.delete(task.id);
       setErrorMessage('Carer profile not ready yet. Please try again.');
       return;
     }
@@ -1022,7 +1197,8 @@ export default function CarerPage() {
     setNoticeMessage('');
 
     try {
-      console.info('[carer-ui] start-task:start', {
+      getClientDb('handleStartTask');
+      console.info('[CARER_UI] canStart=True start-task', {
         taskId: task.id,
       });
       const loginForTask =
@@ -1032,11 +1208,32 @@ export default function CarerPage() {
             normalizeGameName(login.gameName || '') ===
               normalizeGameName(task.gameName || '')
         ) || null;
+      const resolvedCurrentUsername =
+        String(
+          loginForTask?.gameUsername ||
+            (task as { currentUsername?: string | null }).currentUsername ||
+            (task as { gameAccountUsername?: string | null }).gameAccountUsername ||
+            ''
+        ).trim() || null;
+      const relatedCoadminGame =
+        gameOptions.find(
+          (game) =>
+            normalizeGameName(game.gameName || '') === normalizeGameName(task.gameName || '')
+        ) || null;
 
-      await claimTaskAndCreateJob({
+      const claimResult = await claimTaskAndCreateJob({
         taskId: task.id,
-        currentUsername: loginForTask?.gameUsername || null,
+        currentUsername: resolvedCurrentUsername,
         carerName: carerIdentity.username,
+        gameLoginDetails: relatedCoadminGame
+          ? {
+              username: relatedCoadminGame.username,
+              password: relatedCoadminGame.password,
+              backendUrl: relatedCoadminGame.backendUrl || relatedCoadminGame.siteUrl || '',
+              frontendUrl: relatedCoadminGame.frontendUrl || '',
+              siteUrl: relatedCoadminGame.siteUrl || '',
+            }
+          : null,
       });
       setPendingAutomationResetTaskIds((previous) => {
         if (!previous[task.id]) return previous;
@@ -1047,21 +1244,42 @@ export default function CarerPage() {
 
       setAutomationStatusByTaskId((previous) => ({
         ...previous,
-        [task.id]: 'waiting',
+        [task.id]: claimResult.status === 'running' ? 'running' : 'waiting',
       }));
-      console.info('[carer-ui] start-task:success', {
+      if (isUsernameWorkflowTask(task)) {
+        setLocalAutomationProcessingByTaskId((previous) => ({
+          ...previous,
+          [task.id]: Date.now() + CREATE_USERNAME_UI_GRACE_MS,
+        }));
+      }
+      console.info('[CARER_UI] start-task success', {
         taskId: task.id,
-        queuedStatus: 'waiting',
+        queuedStatus: claimResult.status,
+        reusedExistingJob: claimResult.reusedExistingJob,
+        createdAutomationJobId: claimResult.jobId,
       });
-      setNoticeMessage('Task claimed and automation job queued.');
+      setNoticeMessage(
+        claimResult.reusedExistingJob
+          ? claimResult.status === 'running'
+            ? 'Your existing automation job was resumed and is already running.'
+            : 'Your existing automation job was resumed.'
+          : isUsernameWorkflowTask(task)
+            ? 'Task claimed. Username automation is processing in the background.'
+            : 'Task claimed and automation job queued.'
+      );
     } catch (error) {
       const fallback =
         error instanceof Error ? error.message : 'Failed to queue the task.';
-      console.error('[carer-ui] start-task:error', {
+      console.error('[CARER_UI] start-task error', {
         taskId: task.id,
         message: fallback,
       });
       const normalized = fallback.toLowerCase();
+      const isConcurrencyIssue =
+        normalized.includes('failed-precondition') ||
+        normalized.includes('aborted') ||
+        normalized.includes('contention') ||
+        normalized.includes('updated at the same time');
       if (normalized.includes('resource_exhausted') || normalized.includes('quota exceeded')) {
         setAutoAutomationEnabled(false);
         setErrorMessage(
@@ -1069,14 +1287,73 @@ export default function CarerPage() {
         );
         return;
       }
-      if (fallback === 'Task already claimed') {
-        setErrorMessage('This task was already claimed by another carer.');
+      if (isConcurrencyIssue) {
+        await refreshPageData(false);
+        setErrorMessage('Task was already changed. Please refresh and try again.');
+      } else if (fallback === 'Task already claimed') {
+        const latestTaskSnap = await getDoc(doc(db, 'carerTasks', task.id));
+        const latestTask = latestTaskSnap.exists()
+          ? (latestTaskSnap.data() as Record<string, unknown>)
+          : null;
+        const latestAutomationJobId = String(latestTask?.automationJobId || '').trim();
+        const latestJobSnaps = await getDocs(
+          query(collection(db, 'automation_jobs'), where('taskId', '==', task.id), limit(10))
+        );
+        const latestJobs = latestJobSnaps.docs.map((jobSnap) => {
+          const job = jobSnap.data() as Record<string, unknown>;
+          return {
+            jobId: jobSnap.id,
+            status: String(job.status || '').trim() || null,
+            claimedStatus: String(job.claimedStatus || '').trim() || null,
+            updatedAt: job.updatedAt || null,
+            lastHeartbeatAt: job.lastHeartbeatAt || null,
+            completedAt: job.completedAt || null,
+          };
+        });
+        const activeJobs = latestJobs.filter((job) =>
+          ['queued', 'waiting', 'running', 'in_progress', 'cancelled_requested'].includes(
+            String(job.status || '').trim().toLowerCase()
+          )
+        );
+        console.warn('[CARER_UI] startBlockedByActiveJob', {
+          taskId: task.id,
+          taskExists: latestTaskSnap.exists(),
+          status: latestTask ? String(latestTask.status || '').trim() || null : null,
+          claimedStatus: latestTask ? String(latestTask.claimedStatus || '').trim() || null : null,
+          claimedByUid: latestTask ? String(latestTask.claimedByUid || '').trim() || null : null,
+          assignedCarerUid: latestTask ? String(latestTask.assignedCarerUid || '').trim() || null : null,
+          automationStatus: latestTask ? String(latestTask.automationStatus || '').trim() || null : null,
+          automationJobId: latestAutomationJobId || null,
+          activeJobs,
+          latestJobs,
+        });
+        await refreshPageData(false);
+        if (activeJobs.length > 0) {
+          setErrorMessage(
+            `This task still has an active automation job (${activeJobs[0].status}). Return it to pending, wait a moment, then try again.`
+          );
+        } else if (latestTask && String(latestTask.status || '').trim().toLowerCase() !== 'pending') {
+          setErrorMessage(
+            `This task is currently ${String(latestTask.status || '').trim() || 'not pending'}.`
+          );
+        } else if (
+          latestTask &&
+          (String(latestTask.claimedStatus || '').trim() ||
+            String(latestTask.claimedByUid || '').trim() ||
+            String(latestTask.assignedCarerUid || '').trim() ||
+            latestAutomationJobId)
+        ) {
+          setErrorMessage('This task still has stale claim fields. Move it back to pending once more, then start again.');
+        } else {
+          setErrorMessage('This task was already claimed, but no active job was found. The latest state has been refreshed.');
+        }
       } else if (fallback === 'Task not found') {
         setErrorMessage('This task no longer exists.');
       } else {
         setErrorMessage(fallback);
       }
     } finally {
+      startTaskInFlightIdsRef.current.delete(task.id);
       setAutomationLoadingTaskId(null);
     }
   }
@@ -1115,6 +1392,43 @@ export default function CarerPage() {
       );
     } finally {
       setDismissRedeemRequestId(null);
+    }
+  }
+
+  async function handleDismissPendingRecharge(task: CarerTask) {
+    const requestId = task.requestId?.trim();
+
+    if (!requestId) {
+      setErrorMessage('This task has no linked request to dismiss.');
+      return;
+    }
+
+    if (task.type !== 'recharge') {
+      return;
+    }
+
+    const ok = window.confirm(
+      'Dismiss this pending recharge request? It will be removed from the queue.'
+    );
+
+    if (!ok) {
+      return;
+    }
+
+    setDismissRechargeRequestId(requestId);
+    setErrorMessage('');
+    setNoticeMessage('');
+
+    try {
+      await dismissPendingRechargeAsCarer(requestId);
+      setNoticeMessage('Pending recharge request dismissed.');
+      await refreshPageData(false);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Failed to dismiss pending recharge request.'
+      );
+    } finally {
+      setDismissRechargeRequestId(null);
     }
   }
 
@@ -1166,6 +1480,14 @@ export default function CarerPage() {
         delete next[task.id];
         return next;
       });
+      setLocalAutomationProcessingByTaskId((previous) => {
+        if (!previous[task.id]) {
+          return previous;
+        }
+        const next = { ...previous };
+        delete next[task.id];
+        return next;
+      });
       setPendingAutomationResetTaskIds((previous) => ({
         ...previous,
         [task.id]: true,
@@ -1177,12 +1499,26 @@ export default function CarerPage() {
       });
       setNoticeMessage('Task moved back to pending.');
     } catch (error) {
+      const rawMessage = error instanceof Error ? error.message : String(error);
+      const lower = rawMessage.toLowerCase();
+      const isConcurrencyIssue =
+        lower.includes('failed-precondition') ||
+        lower.includes('aborted') ||
+        lower.includes('contention') ||
+        lower.includes('updated at the same time');
+      if (isConcurrencyIssue) {
+        await refreshPageData(false);
+      }
       console.error('[carer-ui] reset-automation:error', {
         taskId: task.id,
-        message: error instanceof Error ? error.message : String(error),
+        message: rawMessage,
       });
       setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to move task back to pending.'
+        isConcurrencyIssue
+          ? 'Task was already changed. Please refresh and try again.'
+          : error instanceof Error
+            ? error.message
+            : 'Failed to move task back to pending.'
       );
     } finally {
       setTaskLoadingId(null);
@@ -1213,6 +1549,18 @@ export default function CarerPage() {
           normalizeGameName(login.gameName || '') ===
             normalizeGameName(task.gameName || '')
       ) || null;
+    const resolvedCurrentUsername =
+      String(
+        loginForTask?.gameUsername ||
+          (task as { currentUsername?: string | null }).currentUsername ||
+          (task as { gameAccountUsername?: string | null }).gameAccountUsername ||
+          ''
+      ).trim() || null;
+    const relatedCoadminGame =
+      gameOptions.find(
+        (game) =>
+          normalizeGameName(game.gameName || '') === normalizeGameName(task.gameName || '')
+      ) || null;
     try {
       await startAutomationForTask({
         taskId: task.id,
@@ -1220,9 +1568,18 @@ export default function CarerPage() {
         coadminUid: String(task.coadminUid || coadminUid || '').trim(),
         player: task.playerUsername || 'Unknown player',
         game: task.gameName || 'Unknown Game',
-        currentUsername: loginForTask?.gameUsername || null,
+        currentUsername: resolvedCurrentUsername,
         amount: task.amount ?? null,
         originalTask: task as Record<string, unknown>,
+        gameLoginDetails: relatedCoadminGame
+          ? {
+              username: relatedCoadminGame.username,
+              password: relatedCoadminGame.password,
+              backendUrl: relatedCoadminGame.backendUrl || relatedCoadminGame.siteUrl || '',
+              frontendUrl: relatedCoadminGame.frontendUrl || '',
+              siteUrl: relatedCoadminGame.siteUrl || '',
+            }
+          : null,
       });
       setPendingAutomationResetTaskIds((previous) => {
         if (!previous[task.id]) return previous;
@@ -1234,6 +1591,12 @@ export default function CarerPage() {
         ...previous,
         [task.id]: 'waiting',
       }));
+      if (isUsernameWorkflowTask(task)) {
+        setLocalAutomationProcessingByTaskId((previous) => ({
+          ...previous,
+          [task.id]: Date.now() + CREATE_USERNAME_UI_GRACE_MS,
+        }));
+      }
       setNoticeMessage('Automation job queued. Waiting for local agent.');
     } catch (error) {
       setErrorMessage(
@@ -2008,6 +2371,13 @@ export default function CarerPage() {
           normalizeGameName(login.gameName || '') ===
             normalizeGameName(task.gameName || '')
       ) || null;
+    const taskCurrentUsername =
+      String(
+        loginForTask?.gameUsername ||
+          (task as { currentUsername?: string | null }).currentUsername ||
+          (task as { gameAccountUsername?: string | null }).gameAccountUsername ||
+          ''
+      ).trim() || null;
 
     const isRequestTask = task.type === 'recharge' || task.type === 'redeem';
 
@@ -2020,17 +2390,30 @@ export default function CarerPage() {
     const wasResetToPending = Boolean(pendingAutomationResetTaskIds[task.id]);
     const hasLinkedAutomationJob = Boolean(String(task.automationJobId || '').trim());
     const liveAutomationStatus = automationStatusByTaskId[task.id] || null;
+    const hasActiveLinkedAutomationJob =
+      hasLinkedAutomationJob && isActiveAutomationUiStatus(liveAutomationStatus);
+    const hasLocalProcessingGrace =
+      Boolean(localAutomationProcessingByTaskId[task.id]) &&
+      localAutomationProcessingByTaskId[task.id] > Date.now();
     const automationStatus =
       section === 'pending'
         ? wasResetToPending
           ? null
-          : hasLinkedAutomationJob
-            ? liveAutomationStatus
+          : hasActiveLinkedAutomationJob
+            ? liveAutomationStatus || (hasLocalProcessingGrace ? 'running' : null)
             : null
-        : liveAutomationStatus || task.automationStatus || null;
+        : liveAutomationStatus || (hasLocalProcessingGrace ? 'running' : null) || task.automationStatus || null;
     const isAutomationQueued =
       automationStatus === 'waiting' || automationStatus === 'running';
+    const hasFreshTaskClaim = isFreshActiveTaskClaim(task);
     const isPendingCard = section === 'pending';
+    const startTaskDisabledReason = getStartTaskDisabledReason(task, {
+      isLoading: automationLoadingTaskId === task.id,
+      automationStatus,
+      hasFreshTaskClaim,
+      hasFreshRunnableJob: hasActiveLinkedAutomationJob,
+    });
+    const canStartTask = !startTaskDisabledReason;
 
     return (
       <div
@@ -2054,7 +2437,12 @@ export default function CarerPage() {
               </span>
               {automationStatus && (
                 <span className="rounded-full bg-violet-500/20 px-3 py-1 text-xs font-bold uppercase text-violet-200">
-                  Automation: {automationStatus}
+                  Automation:{' '}
+                  {automationStatus === 'pending_review'
+                    ? 'review needed'
+                    : automationStatus === 'running'
+                      ? 'processing'
+                      : automationStatus}
                 </span>
               )}
             </div>
@@ -2076,7 +2464,7 @@ export default function CarerPage() {
             <p className="mt-1 text-sm text-neutral-400">
               Current Username:{' '}
               <span className="text-white">
-                {loginForTask?.gameUsername || 'Not assigned'}
+                {taskCurrentUsername || 'Not assigned'}
               </span>
             </p>
 
@@ -2110,7 +2498,7 @@ export default function CarerPage() {
                   event.stopPropagation();
                   void handleStartTask(task);
                 }}
-                disabled={automationLoadingTaskId === task.id || isAutomationQueued}
+                disabled={!canStartTask}
                 className="rounded-xl bg-white px-4 py-2 text-sm font-bold text-black hover:bg-neutral-200 disabled:opacity-60"
               >
                 {automationLoadingTaskId === task.id
@@ -2196,6 +2584,21 @@ export default function CarerPage() {
                   {dismissRedeemRequestId === task.requestId
                     ? 'Dismissing...'
                     : 'Dismiss fake redeem'}
+                </button>
+              )}
+              {task.type === 'recharge' && task.requestId && (
+                <button
+                  type="button"
+                  onClick={() => void handleDismissPendingRecharge(task)}
+                  disabled={
+                    dismissRechargeRequestId === task.requestId ||
+                    taskLoadingId === task.id
+                  }
+                  className="rounded-xl border border-amber-500/40 bg-amber-500/15 px-4 py-2 text-sm font-bold text-amber-100 hover:bg-amber-500/25 disabled:opacity-60"
+                >
+                  {dismissRechargeRequestId === task.requestId
+                    ? 'Dismissing...'
+                    : 'Dismiss recharge'}
                 </button>
               )}
               <button
@@ -2928,7 +3331,23 @@ export default function CarerPage() {
                           normalizeGameName(login.gameName || '') ===
                             normalizeGameName(pendingTaskPayloadPreview.gameName || '')
                       ) || null;
-                    const currentUsername = loginForTask?.gameUsername || null;
+                    const currentUsername =
+                      String(
+                        loginForTask?.gameUsername ||
+                          (
+                            pendingTaskPayloadPreview as {
+                              currentUsername?: string | null;
+                              gameAccountUsername?: string | null;
+                            }
+                          ).currentUsername ||
+                          (
+                            pendingTaskPayloadPreview as {
+                              currentUsername?: string | null;
+                              gameAccountUsername?: string | null;
+                            }
+                          ).gameAccountUsername ||
+                          ''
+                      ).trim() || null;
                     const carerUid = carerIdentity?.uid || '';
                     const carerName = carerIdentity?.username?.trim() || 'Carer';
                     const mappedType = mapCarerTaskToAutomationType(pendingTaskPayloadPreview);

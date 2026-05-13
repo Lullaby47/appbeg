@@ -3,6 +3,7 @@ import type { DocumentReference } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
+import { requireApiUser } from '@/lib/firebase/apiAuth';
 import {
   findUniqueReferralCodeWithQueries,
   generateCandidateReferralCode,
@@ -29,8 +30,11 @@ function toMillis(value: unknown): number {
   return 0;
 }
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
+    const auth = await requireApiUser(request, ['admin']);
+    if ('response' in auth) return auth.response;
+
     const nowMs = Date.now();
     const metaSnap = await BACKFILL_META_DOC.get();
     if (metaSnap.exists) {
@@ -170,9 +174,9 @@ export async function POST() {
       totalPlayers: rows.length,
       finalAssignments: assigned.size,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     return NextResponse.json(
-      { error: error?.message || 'Failed to backfill player referral codes.' },
+      { error: error instanceof Error ? error.message : 'Failed to backfill player referral codes.' },
       { status: 500 }
     );
   }

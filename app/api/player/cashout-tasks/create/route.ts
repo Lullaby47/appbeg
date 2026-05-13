@@ -1,0 +1,176 @@
+import { FieldValue } from 'firebase-admin/firestore';
+import { NextResponse } from 'next/server';
+
+import { evaluateWithdrawalPolicy } from '@/lib/economy/policy';
+import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { adminDb } from '@/lib/firebase/admin';
+
+const PLAYER_CASHOUT_MAX_NPR_PER_24_H = 1000;
+const PLAYER_CASHOUT_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+type Body = {
+  paymentDetails?: unknown;
+  payoutMethod?: unknown;
+  qrImageUrl?: unknown;
+  paymentAppName?: unknown;
+  paymentAppCashTag?: unknown;
+  paymentAppAccountName?: unknown;
+};
+
+async function fetchRolling24hCashoutUsageNprForPlayer(playerUid: string): Promise<number> {
+  const since = new Date(Date.now() - PLAYER_CASHOUT_ROLLING_WINDOW_MS);
+  const snapshot = await adminDb
+    .collection('playerCashoutTasks')
+    .where('playerUid', '==', playerUid)
+    .where('createdAt', '>=', since)
+    .get();
+  let total = 0;
+  snapshot.forEach((docSnap) => {
+    const row = docSnap.data() as { status?: string; amountNpr?: number };
+    if (String(row.status || '').toLowerCase() === 'declined') return;
+    total += Math.max(0, Number(row.amountNpr || 0));
+  });
+  return total;
+}
+
+async function fetchCompletedCashoutCountForPlayer(playerUid: string): Promise<number> {
+  const snapshot = await adminDb
+    .collection('playerCashoutTasks')
+    .where('playerUid', '==', playerUid)
+    .where('status', '==', 'completed')
+    .get();
+  return snapshot.size;
+}
+
+async function fetchLatestCompletedRechargeAmountForPlayer(playerUid: string): Promise<number> {
+  const snapshot = await adminDb
+    .collection('playerGameRequests')
+    .where('playerUid', '==', playerUid)
+    .where('type', '==', 'recharge')
+    .where('status', '==', 'completed')
+    .orderBy('completedAt', 'desc')
+    .limit(1)
+    .get();
+  const latest = snapshot.docs[0]?.data() as { amount?: number } | undefined;
+  return Math.max(0, Math.round(Number(latest?.amount || 0)));
+}
+
+function ttlAfterDays(days: number) {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  return new Date(Date.now() + days * DAY_MS);
+}
+
+export async function POST(request: Request) {
+  try {
+    const auth = await requireApiUser(request, ['player']);
+    if ('response' in auth) return auth.response;
+
+    const body = (await request.json()) as Body;
+    const paymentDetails = String(body.paymentDetails || '').trim();
+    if (paymentDetails.length < 5) {
+      return apiError('Please provide clear payment details.', 400);
+    }
+
+    const playerUid = auth.user.uid;
+    const [rollingUsed, completedCashoutCount, lastRechargeAmountNpr] = await Promise.all([
+      fetchRolling24hCashoutUsageNprForPlayer(playerUid),
+      fetchCompletedCashoutCountForPlayer(playerUid),
+      fetchLatestCompletedRechargeAmountForPlayer(playerUid),
+    ]);
+    const remainingQuota = Math.max(0, PLAYER_CASHOUT_MAX_NPR_PER_24_H - rollingUsed);
+    const playerRef = adminDb.collection('users').doc(playerUid);
+    const taskRef = adminDb.collection('playerCashoutTasks').doc();
+
+    await adminDb.runTransaction(async (transaction) => {
+      const playerSnap = await transaction.get(playerRef);
+      if (!playerSnap.exists) {
+        throw new Error('Player profile not found.');
+      }
+      const playerData = playerSnap.data() as {
+        role?: string;
+        username?: string;
+        cash?: number;
+        coadminUid?: string | null;
+        createdBy?: string | null;
+      };
+      if (String(playerData.role || '').toLowerCase() !== 'player') {
+        throw new Error('Only players can create cashout tasks.');
+      }
+
+      const availableCash = Number(playerData.cash || 0);
+      if (availableCash <= 0) {
+        throw new Error('No cash available to cash out.');
+      }
+      const amountThisRequest = Math.min(availableCash, remainingQuota);
+      if (amountThisRequest <= 0) {
+        throw new Error(
+          `Rolling 24-hour cash out limit (${PLAYER_CASHOUT_MAX_NPR_PER_24_H} NPR) is reached for now.`
+        );
+      }
+
+      const decision = evaluateWithdrawalPolicy({
+        amountNpr: amountThisRequest,
+        completedWithdrawalCount: completedCashoutCount,
+        lastRechargeAmountNpr,
+      });
+      if (!decision.allowed) {
+        throw new Error(decision.message);
+      }
+
+      const coadminUid =
+        String(playerData.coadminUid || '').trim() || String(playerData.createdBy || '').trim();
+      if (!coadminUid) {
+        throw new Error('Player coadmin scope not found.');
+      }
+
+      transaction.update(playerRef, {
+        cash: availableCash - amountThisRequest,
+      });
+      transaction.set(taskRef, {
+        coadminUid,
+        playerUid,
+        playerUsername: String(playerData.username || '').trim() || 'Player',
+        amountNpr: amountThisRequest,
+        paymentDetails,
+        payoutMethod: String(body.payoutMethod || '').trim() || null,
+        qrImageUrl: String(body.qrImageUrl || '').trim() || null,
+        paymentAppName: String(body.paymentAppName || '').trim() || null,
+        paymentAppCashTag: String(body.paymentAppCashTag || '').trim() || null,
+        paymentAppAccountName: String(body.paymentAppAccountName || '').trim() || null,
+        cashDeductedOnRequest: true,
+        status: 'pending',
+        assignedHandlerUid: null,
+        assignedHandlerUsername: null,
+        startedAt: null,
+        expiresAt: null,
+        createdAt: FieldValue.serverTimestamp(),
+        completedAt: null,
+      });
+      transaction.set(adminDb.collection('financialEvents').doc(), {
+        playerUid,
+        coadminUid,
+        amountNpr: amountThisRequest,
+        type: 'cashout_request_deduct',
+        cashoutTaskId: taskRef.id,
+        createdAt: FieldValue.serverTimestamp(),
+        ttlExpiresAt: ttlAfterDays(90),
+      });
+    });
+
+    return NextResponse.json({ success: true, taskId: taskRef.id });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to create cashout request.';
+    const status =
+      /not authenticated|authorization|token/i.test(message)
+        ? 401
+        : /forbidden|outside your scope/i.test(message)
+          ? 403
+          : /already|conflict|not available/i.test(message)
+            ? 409
+            : /required|valid|not found|only|limit|cash out|cashout|bonus/i.test(message)
+              ? 400
+              : 500;
+    return NextResponse.json({ error: message }, { status });
+  }
+}
+

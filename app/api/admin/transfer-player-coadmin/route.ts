@@ -1,28 +1,12 @@
 import { NextResponse } from 'next/server';
 
-import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import { adminDb } from '@/lib/firebase/admin';
+import { requireApiUser } from '@/lib/firebase/apiAuth';
 
 export async function POST(request: Request) {
   try {
-    const header = request.headers.get('Authorization') || '';
-    const token = header.match(/^Bearer\s+(\S+)$/i)?.[1];
-    if (!token) {
-      return NextResponse.json({ error: 'Missing or invalid authorization.' }, { status: 401 });
-    }
-
-    const decoded = await adminAuth.verifyIdToken(token);
-    const callerUid = decoded.uid;
-    const callerSnap = await adminDb.collection('users').doc(callerUid).get();
-    if (!callerSnap.exists) {
-      return NextResponse.json({ error: 'User profile not found.' }, { status: 404 });
-    }
-    const callerRole = String(callerSnap.data()?.role || '').toLowerCase();
-    if (callerRole !== 'admin' && callerRole !== 'staff') {
-      return NextResponse.json(
-        { error: 'Only admin or staff can transfer players between coadmins.' },
-        { status: 403 }
-      );
-    }
+    const auth = await requireApiUser(request, ['admin']);
+    if ('response' in auth) return auth.response;
 
     const body = (await request.json()) as {
       playerUid?: string;
@@ -56,7 +40,7 @@ export async function POST(request: Request) {
         coadminUid: targetCoadminUid,
         createdBy: targetCoadminUid,
         updatedAt: new Date(),
-        transferredByUid: callerUid,
+        transferredByUid: auth.user.uid,
       },
       { merge: true }
     );

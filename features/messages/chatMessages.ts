@@ -17,6 +17,7 @@ import {
 
 import { auth, db } from '@/lib/firebase/client';
 import { uploadImageToCloudinary } from '@/lib/cloudinary/uploadImage';
+import { chatMessageTtl } from '@/lib/firestore/ttl';
 
 export type FirestoreChatMessage = {
   id: string;
@@ -81,6 +82,7 @@ export async function sendChatMessage(receiverUid: string, text: string) {
     senderUid: currentUser.uid,
     receiverUid,
     createdAt: serverTimestamp(),
+    ttlExpiresAt: chatMessageTtl(),
   });
 }
 
@@ -129,6 +131,7 @@ export async function sendImageMessage(receiverUid: string, file: File) {
     senderUid: currentUser.uid,
     receiverUid,
     createdAt: serverTimestamp(),
+    ttlExpiresAt: chatMessageTtl(),
   });
 }
 

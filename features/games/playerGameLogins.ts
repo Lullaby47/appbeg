@@ -3,6 +3,7 @@ import {
   collection,
   doc,
   getDocs,
+  onSnapshot,
   query,
   serverTimestamp,
   updateDoc,
@@ -112,6 +113,32 @@ export async function getPlayerGameLoginsByPlayer(
   }));
 }
 
+/**
+ * Live updates when carer-agent (or anyone) merges new credentials — same pattern as
+ * listenToPlayerGameLoginsByCoadmin on the carer app.
+ */
+export function listenToPlayerGameLoginsByPlayer(
+  playerUid: string,
+  onChange: (logins: PlayerGameLogin[]) => void,
+  onError?: (error: Error) => void
+) {
+  const q = query(collection(db, 'playerGameLogins'), where('playerUid', '==', playerUid));
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const rows = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...(docSnap.data() as Omit<PlayerGameLogin, 'id'>),
+      }));
+      onChange(rows);
+    },
+    (error) => {
+      onError?.(error as Error);
+    }
+  );
+}
+
 export async function getPlayerGameLoginsByCoadmin(
   coadminUid: string
 ): Promise<PlayerGameLogin[]> {
@@ -125,4 +152,64 @@ export async function getPlayerGameLoginsByCoadmin(
       [...coadminOwned, ...legacyOwned].map((login) => [login.id, login])
     ).values()
   );
+}
+
+export function listenToPlayerGameLoginsByCoadmin(
+  coadminUid: string,
+  onChange: (logins: PlayerGameLogin[]) => void,
+  onError?: (error: Error) => void
+) {
+  const coadminQuery = query(
+    collection(db, 'playerGameLogins'),
+    where('coadminUid', '==', coadminUid)
+  );
+  const legacyQuery = query(
+    collection(db, 'playerGameLogins'),
+    where('createdBy', '==', coadminUid)
+  );
+
+  let coadminDocs: PlayerGameLogin[] = [];
+  let legacyDocs: PlayerGameLogin[] = [];
+
+  const emit = () => {
+    const merged = Array.from(
+      new Map(
+        [...coadminDocs, ...legacyDocs].map((login) => [login.id, login])
+      ).values()
+    );
+    onChange(merged);
+  };
+
+  const unsubCoadmin = onSnapshot(
+    coadminQuery,
+    (snapshot) => {
+      coadminDocs = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...(docSnap.data() as Omit<PlayerGameLogin, 'id'>),
+      }));
+      emit();
+    },
+    (error) => {
+      onError?.(error as Error);
+    }
+  );
+
+  const unsubLegacy = onSnapshot(
+    legacyQuery,
+    (snapshot) => {
+      legacyDocs = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...(docSnap.data() as Omit<PlayerGameLogin, 'id'>),
+      }));
+      emit();
+    },
+    (error) => {
+      onError?.(error as Error);
+    }
+  );
+
+  return () => {
+    unsubCoadmin();
+    unsubLegacy();
+  };
 }

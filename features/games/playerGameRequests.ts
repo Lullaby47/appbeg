@@ -8,6 +8,7 @@ import {
   query,
   runTransaction,
   serverTimestamp,
+  setDoc,
   updateDoc,
   where,
   Timestamp,
@@ -19,6 +20,8 @@ import {
   getCurrentUserCoadminUid,
   type CoadminScopedRecord,
 } from '@/lib/coadmin/scope';
+import { getPlayerGameLoginsByPlayer } from '@/features/games/playerGameLogins';
+import { completedPlayerGameRequestTtl } from '@/lib/firestore/ttl';
 
 export type PlayerGameRequestType = 'recharge' | 'redeem';
 export type PlayerGameRequestStatus =
@@ -33,10 +36,13 @@ export type PlayerGameRequest = {
   id: string;
   playerUid: string;
   gameName: string;
+  currentUsername?: string | null;
+  gameAccountUsername?: string | null;
   amount: number;
   baseAmount?: number | null;
   bonusPercentage?: number | null;
   bonusEventId?: string | null;
+  firstRechargeMatchApplied?: boolean | null;
   type: PlayerGameRequestType;
   status: PlayerGameRequestStatus;
   createdBy?: string;
@@ -50,10 +56,89 @@ export type PlayerGameRequest = {
    * created; carer completion must not deduct again (legacy requests omit this).
    */
   coinDeductedOnRequest?: boolean | null;
+  coinRefundedOnDismissal?: boolean | null;
 };
 
-const MIN_REDEEM_AMOUNT = 50;
-const MAX_REDEEM_AMOUNT = 350;
+type PlayerGameRedeemLimitReset = {
+  playerUid: string;
+  gameName: string;
+  resetAt?: Timestamp | null;
+  resetByUid?: string | null;
+  coadminUid?: string | null;
+};
+
+export type PlayerGameRedeemLimitSummary = {
+  gameName: string;
+  usedAmount: number;
+  remainingAmount: number;
+  onLimit: boolean;
+  windowStartedAtMs: number;
+  resetAtMs: number;
+};
+
+export const MIN_REDEEM_AMOUNT = 50;
+export const MAX_REDEEM_AMOUNT = 350;
+export const PLAYER_GAME_REDEEM_MAX_PER_24H = 350;
+export const PLAYER_GAME_REDEEM_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function normalizeGameName(gameName: string) {
+  return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+}
+
+async function resolveAssignedGameUsername(
+  playerUid: string,
+  gameName: string
+): Promise<string> {
+  const logins = await getPlayerGameLoginsByPlayer(playerUid);
+  const normalizedGame = normalizeGameName(gameName);
+  const matchingLogin = logins.find(
+    (login) =>
+      normalizeGameName(String(login.gameName || '')) === normalizedGame &&
+      String(login.gameUsername || '').trim().length > 0
+  );
+  const username = String(matchingLogin?.gameUsername || '').trim();
+  if (!username) {
+    throw new Error(
+      'Game username is not assigned for this game yet. Please create username first.'
+    );
+  }
+  return username;
+}
+
+function getRedeemLimitResetDocId(playerUid: string, gameName: string) {
+  return `${String(playerUid || '').trim()}__${encodeURIComponent(
+    String(gameName || '').trim()
+  )}`;
+}
+
+function getTimestampMs(value?: Timestamp | null) {
+  return value?.toMillis?.() || 0;
+}
+
+async function fetchRedeemLimitResetForPlayerGame(
+  playerUid: string,
+  gameName: string
+): Promise<PlayerGameRedeemLimitReset | null> {
+  const cleanPlayerUid = String(playerUid || '').trim();
+  const cleanGameName = String(gameName || '').trim();
+  if (!cleanPlayerUid || !cleanGameName) {
+    return null;
+  }
+
+  const resetSnap = await getDoc(
+    doc(
+      db,
+      'playerGameRedeemLimitResets',
+      getRedeemLimitResetDocId(cleanPlayerUid, cleanGameName)
+    )
+  );
+
+  if (!resetSnap.exists()) {
+    return null;
+  }
+
+  return resetSnap.data() as PlayerGameRedeemLimitReset;
+}
 
 function mapRequestDoc(docId: string, value: Omit<PlayerGameRequest, 'id'>) {
   return {
@@ -83,6 +168,154 @@ function sortByNewest(requests: PlayerGameRequest[]) {
 
     return rightTime - leftTime;
   });
+}
+
+async function getAuthHeaders() {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await currentUser.getIdToken();
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+  };
+}
+
+function readApiError(messageFallback: string, payload: unknown) {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    'error' in payload &&
+    typeof (payload as { error?: unknown }).error === 'string'
+  ) {
+    return String((payload as { error: string }).error || messageFallback);
+  }
+  return messageFallback;
+}
+
+async function fetchRolling24hRedeemUsageForPlayerGame(
+  playerUid: string,
+  gameName: string
+) {
+  const cleanGameName = String(gameName || '').trim();
+  const cleanPlayerUid = String(playerUid || '').trim();
+  if (!cleanPlayerUid || !cleanGameName) {
+    return 0;
+  }
+
+  const sinceMillis = Date.now() - PLAYER_GAME_REDEEM_ROLLING_WINDOW_MS;
+  const resetRecord = await fetchRedeemLimitResetForPlayerGame(
+    cleanPlayerUid,
+    cleanGameName
+  );
+  const resetAtMs = getTimestampMs(resetRecord?.resetAt || null);
+  const effectiveSinceMillis = Math.max(sinceMillis, resetAtMs);
+  const redeemQuery = query(
+    collection(db, 'playerGameRequests'),
+    where('playerUid', '==', cleanPlayerUid),
+    where('type', '==', 'redeem'),
+    where('gameName', '==', cleanGameName),
+    where('createdAt', '>=', Timestamp.fromMillis(sinceMillis))
+  );
+  const snapshot = await getDocs(redeemQuery);
+  let total = 0;
+
+  snapshot.forEach((docSnap) => {
+    const data = docSnap.data() as {
+      status?: string;
+      amount?: number;
+      createdAt?: Timestamp | null;
+    };
+    const status = String(data.status || '').toLowerCase();
+    if (status === 'dismissed' || status === 'failed') {
+      return;
+    }
+    if (getTimestampMs(data.createdAt || null) < effectiveSinceMillis) {
+      return;
+    }
+    total += Math.max(0, Number(data.amount || 0));
+  });
+
+  return total;
+}
+
+export async function getPlayerGameRedeemLimitSummary(
+  playerUid: string,
+  gameName: string
+): Promise<PlayerGameRedeemLimitSummary> {
+  const cleanGameName = String(gameName || '').trim();
+  const usedAmount = await fetchRolling24hRedeemUsageForPlayerGame(
+    playerUid,
+    cleanGameName
+  );
+  const remainingAmount = Math.max(
+    0,
+    PLAYER_GAME_REDEEM_MAX_PER_24H - usedAmount
+  );
+  const resetRecord = await fetchRedeemLimitResetForPlayerGame(
+    playerUid,
+    cleanGameName
+  );
+  const resetAtMs = getTimestampMs(resetRecord?.resetAt || null);
+
+  return {
+    gameName: cleanGameName,
+    usedAmount: Math.round(usedAmount),
+    remainingAmount: Math.round(remainingAmount),
+    onLimit: remainingAmount <= 0,
+    windowStartedAtMs: Math.max(
+      Date.now() - PLAYER_GAME_REDEEM_ROLLING_WINDOW_MS,
+      resetAtMs
+    ),
+    resetAtMs,
+  };
+}
+
+export async function resetPlayerGameRedeemLimitForCoadmin(
+  playerUid: string,
+  gameName: string
+) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+
+  const cleanPlayerUid = String(playerUid || '').trim();
+  const cleanGameName = String(gameName || '').trim();
+  if (!cleanPlayerUid || !cleanGameName) {
+    throw new Error('Player and game are required.');
+  }
+
+  const coadminUid = await getCurrentUserCoadminUid();
+  if (!coadminUid.trim()) {
+    throw new Error('Coadmin scope not found.');
+  }
+
+  const playerSnap = await getDoc(doc(db, 'users', cleanPlayerUid));
+  if (!playerSnap.exists()) {
+    throw new Error('Player profile not found.');
+  }
+
+  const playerData = playerSnap.data() as CoadminScopedRecord;
+  if (!belongsToCoadmin(playerData, coadminUid)) {
+    throw new Error('This player is outside your coadmin scope.');
+  }
+
+  await setDoc(
+    doc(
+      db,
+      'playerGameRedeemLimitResets',
+      getRedeemLimitResetDocId(cleanPlayerUid, cleanGameName)
+    ),
+    {
+      playerUid: cleanPlayerUid,
+      gameName: cleanGameName,
+      resetAt: Timestamp.now(),
+      resetByUid: currentUser.uid,
+      coadminUid,
+    } satisfies PlayerGameRedeemLimitReset
+  );
 }
 
 async function getRequestsByStatuses(
@@ -193,56 +426,29 @@ export async function createPlayerGameRequest(values: {
   if (!Number.isFinite(requestAmount) || requestAmount <= 0) {
     throw new Error('Enter a valid amount.');
   }
-
-  const coadminUid = await getCurrentUserCoadminUid();
-
+  const cleanGameName = values.gameName.trim();
   if (values.type === 'recharge') {
-    const playerRef = doc(db, 'users', currentUser.uid);
-    const newRequestRef = doc(collection(db, 'playerGameRequests'));
-    const payload = {
-      playerUid: currentUser.uid,
-      gameName: values.gameName.trim(),
-      amount: requestAmount,
-      baseAmount:
-        values.baseAmount !== undefined && values.baseAmount !== null
-          ? Number(values.baseAmount)
-          : null,
-      bonusPercentage:
-        values.bonusPercentage !== undefined && values.bonusPercentage !== null
-          ? Number(values.bonusPercentage)
-          : null,
-      bonusEventId: values.bonusEventId?.trim() || null,
-      type: 'recharge' as const,
-      status: 'pending' as const,
-      createdBy: coadminUid,
-      coadminUid,
-      createdAt: serverTimestamp(),
-      completedAt: null,
-      pokedAt: null,
-      pokeMessage: null,
-      coinDeductedOnRequest: true,
-    };
-
-    await runTransaction(db, async (transaction) => {
-      const playerMoneySnap = await transaction.get(playerRef);
-      if (!playerMoneySnap.exists()) {
-        throw new Error('Player profile not found.');
-      }
-      const currentCoin = Number(
-        (playerMoneySnap.data() as { coin?: number }).coin || 0
-      );
-      if (currentCoin < requestAmount) {
-        throw new Error(
-          'Not enough coin to request this recharge. Use a lower amount or add coin first.'
-        );
-      }
-      transaction.set(newRequestRef, payload);
-      transaction.update(playerRef, {
-        coin: currentCoin - requestAmount,
-      });
+    const response = await fetch('/api/player/game-requests/recharge', {
+      method: 'POST',
+      headers: await getAuthHeaders(),
+      body: JSON.stringify({
+        gameName: cleanGameName,
+        amount: requestAmount,
+        baseAmount: values.baseAmount,
+        bonusPercentage: values.bonusPercentage,
+        bonusEventId: values.bonusEventId,
+      }),
     });
+    const payload = (await response.json().catch(() => ({}))) as { error?: string; requestId?: string };
+    if (!response.ok) {
+      throw new Error(readApiError('Failed to create recharge request.', payload));
+    }
 
-    const createdSnap = await getDoc(newRequestRef);
+    const createdRequestId = String(payload.requestId || '').trim();
+    if (!createdRequestId) {
+      throw new Error('Recharge request was created but request ID was missing.');
+    }
+    const createdSnap = await getDoc(doc(db, 'playerGameRequests', createdRequestId));
     if (createdSnap.exists()) {
       await upsertLinkedCarerTaskForRequest(
         mapRequestDoc(
@@ -254,15 +460,45 @@ export async function createPlayerGameRequest(values: {
     return;
   }
 
-  if (requestAmount < MIN_REDEEM_AMOUNT || requestAmount > MAX_REDEEM_AMOUNT) {
+  if (requestAmount > MAX_REDEEM_AMOUNT) {
+    throw new Error(
+      `Redeem amount must not be more than ${MAX_REDEEM_AMOUNT}.`
+    );
+  }
+
+  if (requestAmount < MIN_REDEEM_AMOUNT) {
     throw new Error(
       `Redeem amount must be between ${MIN_REDEEM_AMOUNT} and ${MAX_REDEEM_AMOUNT}.`
     );
   }
 
+  const rollingRedeemUsed = await fetchRolling24hRedeemUsageForPlayerGame(
+    currentUser.uid,
+    cleanGameName
+  );
+  const redeemRemaining = Math.max(
+    0,
+    PLAYER_GAME_REDEEM_MAX_PER_24H - rollingRedeemUsed
+  );
+
+  if (redeemRemaining <= 0) {
+    throw new Error(
+      `Redeem limit for ${cleanGameName} is ${PLAYER_GAME_REDEEM_MAX_PER_24H} per rolling 24 hours. Wait until older redeems expire from this game window before redeeming again.`
+    );
+  }
+
+  if (requestAmount > redeemRemaining) {
+    throw new Error(
+      `Only ${redeemRemaining} redeem is left for ${cleanGameName} in this rolling 24-hour window.`
+    );
+  }
+
   const redeemRef = await addDoc(collection(db, 'playerGameRequests'), {
+    // Redeem keeps client write because protected money fields are not changed here.
     playerUid: currentUser.uid,
-    gameName: values.gameName.trim(),
+    gameName: cleanGameName,
+    currentUsername: assignedGameUsername,
+    gameAccountUsername: assignedGameUsername,
     amount: requestAmount,
     baseAmount:
       values.baseAmount !== undefined && values.baseAmount !== null
@@ -370,6 +606,7 @@ export async function markPlayerGameRequestDone(requestId: string) {
   await updateDoc(doc(db, 'playerGameRequests', requestId), {
     status: 'completed',
     completedAt: serverTimestamp(),
+    ttlExpiresAt: completedPlayerGameRequestTtl(),
     pokedAt: null,
     pokeMessage: null,
   });
@@ -418,6 +655,7 @@ export async function dismissPlayerRedeemRequest(requestId: string) {
     transaction.update(requestRef, {
       status: 'dismissed',
       completedAt: serverTimestamp(),
+      ttlExpiresAt: completedPlayerGameRequestTtl(),
       pokedAt: null,
       pokeMessage: null,
     });
@@ -486,6 +724,7 @@ export async function dismissPendingRedeemAsCarer(requestId: string) {
     }
 
     const playerData = playerSnap.data() as CoadminScopedRecord;
+    const playerCoin = Number((playerData as { coin?: number }).coin || 0);
 
     if (!belongsToCoadmin(playerData, carerCoadminUid)) {
       throw new Error('This request is outside your coadmin scope.');
@@ -494,6 +733,7 @@ export async function dismissPendingRedeemAsCarer(requestId: string) {
     transaction.update(requestRef, {
       status: 'dismissed',
       completedAt: serverTimestamp(),
+      ttlExpiresAt: completedPlayerGameRequestTtl(),
       pokedAt: null,
       pokeMessage: null,
     });
@@ -502,4 +742,40 @@ export async function dismissPendingRedeemAsCarer(requestId: string) {
       transaction.delete(taskRef);
     }
   });
+}
+
+/**
+ * Carers may dismiss a pending recharge manually when they decide to remove it.
+ * Marks the request dismissed and removes the linked carer task.
+ */
+export async function dismissPendingRechargeAsCarer(requestId: string) {
+  const currentUser = auth.currentUser;
+
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+
+  const carerSnap = await getDoc(doc(db, 'users', currentUser.uid));
+
+  if (!carerSnap.exists()) {
+    throw new Error('Profile not found.');
+  }
+
+  const carerRole = String(
+    (carerSnap.data() as { role?: string }).role || ''
+  ).toLowerCase();
+
+  if (carerRole !== 'carer') {
+    throw new Error('Only carers can dismiss pending recharge tasks this way.');
+  }
+
+  const response = await fetch('/api/carer/game-requests/dismiss-recharge', {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({ requestId }),
+  });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to dismiss recharge request.', payload));
+  }
 }

@@ -6,7 +6,6 @@ import {
   getDocs,
   onSnapshot,
   query,
-  runTransaction,
   serverTimestamp,
   Timestamp,
   updateDoc,
@@ -14,7 +13,6 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
-import { belongsToCoadmin, resolveCoadminUid, type CoadminScopedRecord } from '@/lib/coadmin/scope';
 
 export type ShiftRole = 'staff' | 'carer';
 
@@ -146,64 +144,21 @@ export async function cutWorkerReward(values: {
   if (!currentUser) {
     throw new Error('Not authenticated.');
   }
-
-  const currentSnap = await getDoc(doc(db, 'users', currentUser.uid));
-  if (!currentSnap.exists()) {
-    throw new Error('Current user profile not found.');
-  }
-  const currentData = currentSnap.data() as CoadminScopedRecord;
-  if (String(currentData.role || '').toLowerCase() !== 'coadmin') {
-    throw new Error('Only coadmin can cut rewards.');
-  }
-  const currentCoadminUid = resolveCoadminUid({
-    uid: currentUser.uid,
-    ...currentData,
+  const token = await currentUser.getIdToken();
+  const response = await fetch('/api/coadmin/workers/cut-reward', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(values),
   });
-  if (!currentCoadminUid) {
-    throw new Error('No coadmin scope found.');
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    updatedCashBox?: number;
+  };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to cut reward.');
   }
-
-  const targetRef = doc(db, 'users', values.workerUid);
-  let updatedCashBox = 0;
-  await runTransaction(db, async (transaction) => {
-    const targetSnap = await transaction.get(targetRef);
-    if (!targetSnap.exists()) {
-      throw new Error('Worker account not found.');
-    }
-    const targetData = targetSnap.data() as CoadminScopedRecord & {
-      cashBoxNpr?: number;
-      username?: string;
-      role?: string;
-    };
-    if (!belongsToCoadmin(targetData, currentCoadminUid)) {
-      throw new Error('Worker is outside your coadmin scope.');
-    }
-    const role = String(targetData.role || '').toLowerCase();
-    if (role !== values.workerRole) {
-      throw new Error('Worker role mismatch.');
-    }
-    const oldCash = Math.max(0, Number(targetData.cashBoxNpr || 0));
-    const cutAmount = Math.max(0, Math.round(Number(values.amountNpr || 0)));
-    if (cutAmount <= 0) {
-      throw new Error('Cut amount must be greater than 0.');
-    }
-    updatedCashBox = Math.max(0, oldCash - cutAmount);
-    transaction.update(targetRef, {
-      cashBoxNpr: updatedCashBox,
-      lastRewardCutAt: serverTimestamp(),
-    });
-  });
-
-  await addDoc(collection(db, 'rewardCuts'), {
-    coadminUid: currentCoadminUid,
-    workerUid: values.workerUid,
-    workerRole: values.workerRole,
-    workerUsername: values.workerUsername || 'Worker',
-    amountNpr: Math.max(0, Math.round(Number(values.amountNpr || 0))),
-    reason: values.reason.trim() || 'Manual adjustment',
-    createdAt: serverTimestamp(),
-    createdByUid: currentUser.uid,
-  });
-
-  return { updatedCashBox };
+  return { updatedCashBox: Number(payload.updatedCashBox || 0) };
 }

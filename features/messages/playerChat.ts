@@ -25,6 +25,7 @@ import {
 import { computeRewardCoinsAfterFee } from '@/lib/rewardCoinTransferFee';
 import { auth, db } from '@/lib/firebase/client';
 import { uploadImageToCloudinary } from '@/lib/cloudinary/uploadImage';
+import { chatMessageTtl } from '@/lib/firestore/ttl';
 
 const DIRECT_CONVERSATIONS = 'playerConversations';
 const GROUP_CONVERSATIONS = 'playerGroupConversations';
@@ -179,6 +180,7 @@ export async function sendDirectTextMessage(
     seenBy: [senderUid],
     deletedFor: [],
     createdAt: serverTimestamp(),
+    ttlExpiresAt: chatMessageTtl(),
   });
 }
 
@@ -232,6 +234,7 @@ export async function sendDirectImageMessage(
     seenBy: [senderUid],
     deletedFor: [],
     createdAt: serverTimestamp(),
+    ttlExpiresAt: chatMessageTtl(),
   });
 }
 
@@ -431,6 +434,7 @@ export async function sendGlobalGroupTextMessage(text: string) {
     type: 'text',
     searchTokens: tokenizeText(body),
     createdAt: serverTimestamp(),
+    ttlExpiresAt: chatMessageTtl(),
   });
   await setDoc(
     doc(db, GROUP_CONVERSATIONS, GLOBAL_GROUP_ID),

@@ -2,13 +2,17 @@ import { NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 import {
   REFERRAL_REWARD_COINS,
-  SIGNUP_BONUS_COINS,
 } from '@/lib/economy/policy';
 import {
   buildUniqueReferralCodeCandidates,
   findFreeReferralCodeInTransaction,
   setReferralCodeIndexInTransaction,
 } from '@/lib/referral/referralCodeAdmin';
+import {
+  apiError,
+  requireApiUser,
+  scopedCoadminUid,
+} from '@/lib/firebase/apiAuth';
 
 type CreatableRole = 'staff' | 'carer' | 'player';
 
@@ -34,23 +38,19 @@ function parseReferralCodeInput(value: unknown) {
 export async function POST(request: Request) {
   let createdAuthUid: string | null = null;
   try {
+    const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff']);
+    if ('response' in auth) return auth.response;
+
     const body = await request.json();
 
     const username = String(body.username || '').trim().toLowerCase();
     const password = String(body.password || '');
-    const createdBy = body.createdBy ? String(body.createdBy).trim() : null;
-    const creatorUid = body.creatorUid ? String(body.creatorUid).trim() : null;
-    const coadminUid = body.coadminUid ? String(body.coadminUid).trim() : null;
     const role = String(body.role || 'staff').trim().toLowerCase();
-    const ownerCoadminUid = coadminUid || createdBy;
-    let creatorRole = '';
-    if (creatorUid) {
-      const creatorSnap = await adminDb.collection('users').doc(creatorUid).get();
-      if (creatorSnap.exists) {
-        creatorRole = String((creatorSnap.data() as { role?: string }).role || '').toLowerCase();
-      }
-    }
-    const createdByStaffId = role === 'player' && creatorRole === 'staff' ? creatorUid : null;
+    const requestedOwnerUid = String(body.coadminUid || body.createdBy || '').trim();
+    const callerScopeUid = scopedCoadminUid(auth.user);
+    const ownerCoadminUid =
+      auth.user.role === 'admin' ? requestedOwnerUid : String(callerScopeUid || '').trim();
+    const createdByStaffId = role === 'player' && auth.user.role === 'staff' ? auth.user.uid : null;
 
     let referralCodeInput = '';
     try {
@@ -79,6 +79,19 @@ export async function POST(request: Request) {
         { error: 'coadminUid is required.' },
         { status: 400 }
       );
+    }
+
+    if (auth.user.role !== 'admin' && role !== 'player' && auth.user.role === 'staff') {
+      return apiError('Staff can only create scoped player accounts.', 403);
+    }
+
+    if (auth.user.role !== 'admin' && requestedOwnerUid && requestedOwnerUid !== ownerCoadminUid) {
+      return apiError('Cannot create users outside your coadmin scope.', 403);
+    }
+
+    const ownerSnap = await adminDb.collection('users').doc(ownerCoadminUid).get();
+    if (!ownerSnap.exists || String(ownerSnap.data()?.role || '').toLowerCase() !== 'coadmin') {
+      return apiError('Owner coadmin scope is invalid.', 403);
     }
 
     const usernameSnap = await adminDb
@@ -172,9 +185,9 @@ export async function POST(request: Request) {
           coadminUid: ownerCoadminUid,
           createdAt: now,
           status: 'active',
-          coin: SIGNUP_BONUS_COINS,
+          coin: 0,
           cash: 0,
-          promoLockedCoins: SIGNUP_BONUS_COINS,
+          promoLockedCoins: 0,
           referralCode: nextReferralCode,
           referredByUid,
           referredByCode,

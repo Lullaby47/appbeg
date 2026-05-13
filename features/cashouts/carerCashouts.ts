@@ -1,10 +1,12 @@
 import {
   Timestamp,
   getDocs,
+  limit,
   writeBatch,
   collection,
   doc,
   onSnapshot,
+  orderBy,
   query,
   runTransaction,
   serverTimestamp,
@@ -13,6 +15,33 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
+
+const CARER_CASHOUT_PENDING_LISTENER_LIMIT = 100;
+const CARER_CASHOUT_HISTORY_LISTENER_LIMIT = 50;
+
+async function getAuthHeaders() {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await currentUser.getIdToken();
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+  };
+}
+
+function readApiError(messageFallback: string, payload: unknown) {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    'error' in payload &&
+    typeof (payload as { error?: unknown }).error === 'string'
+  ) {
+    return String((payload as { error: string }).error || messageFallback);
+  }
+  return messageFallback;
+}
 
 export type CarerCashoutRequest = {
   id: string;
@@ -74,32 +103,21 @@ export async function createCarerCashoutRequest(values: {
     throw new Error('Only the current carer can create a cashout request.');
   }
 
-  const cashoutRef = doc(collection(db, 'carerCashouts'));
-  const userRef = doc(db, 'users', values.carerUid);
-
-  await runTransaction(db, async (transaction) => {
-    transaction.set(cashoutRef, {
-      coadminUid: values.coadminUid,
-      carerUid: values.carerUid,
-      carerUsername: values.carerUsername || 'Carer',
+  const response = await fetch('/api/carer/cashouts', {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      action: 'create',
       amountNpr,
-      paymentQrUrl: values.paymentQrUrl?.trim() || null,
-      paymentQrPublicId: values.paymentQrPublicId?.trim() || null,
-      paymentDetails: values.paymentDetails?.trim() || null,
-      status: 'pending',
-      createdAt: serverTimestamp(),
-      completedAt: null,
-    });
-
-    // Claim Pay should immediately clear the sender's cash box.
-    transaction.set(
-      userRef,
-      {
-        cashBoxNpr: 0,
-      },
-      { merge: true }
-    );
+      paymentQrUrl: values.paymentQrUrl,
+      paymentQrPublicId: values.paymentQrPublicId,
+      paymentDetails: values.paymentDetails,
+    }),
   });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to create claim pay request.', payload));
+  }
 }
 
 export function listenPendingCashoutsByCoadmin(
@@ -110,7 +128,9 @@ export function listenPendingCashoutsByCoadmin(
   const cashoutQuery = query(
     collection(db, 'carerCashouts'),
     where('coadminUid', '==', coadminUid),
-    where('status', '==', 'pending')
+    where('status', '==', 'pending'),
+    orderBy('createdAt', 'desc'),
+    limit(CARER_CASHOUT_PENDING_LISTENER_LIMIT)
   );
 
   return onSnapshot(
@@ -140,7 +160,9 @@ export function listenCarerCashoutsByCarerUid(
 ) {
   const cashoutsQuery = query(
     collection(db, 'carerCashouts'),
-    where('carerUid', '==', carerUid)
+    where('carerUid', '==', carerUid),
+    orderBy('createdAt', 'desc'),
+    limit(CARER_CASHOUT_HISTORY_LISTENER_LIMIT)
   );
 
   return onSnapshot(
@@ -169,107 +191,32 @@ export function listenCarerCashoutsByCarerUid(
 }
 
 export async function completeCarerCashoutRequest(cashoutId: string, doneAmountNpr?: number) {
-  const cashoutRef = doc(db, 'carerCashouts', cashoutId);
-
-  const cashout = await runTransaction(db, async (transaction) => {
-    const cashoutSnap = await transaction.get(cashoutRef);
-
-    if (!cashoutSnap.exists()) {
-      throw new Error('Cashout request not found.');
-    }
-
-    const cashoutData = cashoutSnap.data() as Omit<CarerCashoutRequest, 'id'>;
-
-    if (cashoutData.status !== 'pending') {
-      throw new Error('Cashout request is already completed.');
-    }
-
-    return cashoutData;
+  const response = await fetch('/api/carer/cashouts', {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      action: 'complete',
+      cashoutId,
+      amountNpr: doneAmountNpr,
+    }),
   });
-
-  const resolvedDoneAmount = Math.max(
-    0,
-    Math.round(Number((doneAmountNpr ?? cashout.amountNpr) || 0))
-  );
-  const requestedAmount = Math.max(0, Math.round(Number(cashout.amountNpr || 0)));
-
-  if (resolvedDoneAmount > requestedAmount) {
-    throw new Error('Done amount cannot be greater than claim amount.');
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to complete claim pay request.', payload));
   }
-
-  const remainingAmountNpr = Math.max(0, requestedAmount - resolvedDoneAmount);
-
-  const pendingForCarerQuery = query(
-    collection(db, 'carerCashouts'),
-    where('carerUid', '==', cashout.carerUid),
-    where('status', '==', 'pending')
-  );
-  const pendingSnapshot = await getDocs(pendingForCarerQuery);
-  const batch = writeBatch(db);
-
-  pendingSnapshot.docs.forEach((docSnap) => {
-    if (docSnap.id === cashoutId) {
-      batch.update(docSnap.ref, {
-        status: 'completed',
-        completedAt: serverTimestamp(),
-        completedAmountNpr: resolvedDoneAmount,
-        remainingAmountNpr,
-      });
-      return;
-    }
-
-    batch.update(docSnap.ref, {
-      status: 'completed',
-      completedAt: serverTimestamp(),
-    });
-  });
-
-  batch.set(
-    doc(db, 'users', cashout.carerUid),
-    {
-      cashBoxNpr: remainingAmountNpr,
-    },
-    { merge: true }
-  );
-
-  await batch.commit();
 }
 
 export async function declineCarerCashoutRequest(cashoutId: string) {
-  const cashoutRef = doc(db, 'carerCashouts', cashoutId);
-
-  await runTransaction(db, async (transaction) => {
-    const cashoutSnap = await transaction.get(cashoutRef);
-
-    if (!cashoutSnap.exists()) {
-      throw new Error('Cashout request not found.');
-    }
-
-    const cashoutData = cashoutSnap.data() as Omit<CarerCashoutRequest, 'id'>;
-
-    if (cashoutData.status !== 'pending') {
-      throw new Error('Only pending cashout requests can be declined.');
-    }
-
-    const amountNpr = Math.max(0, Math.round(Number(cashoutData.amountNpr || 0)));
-    const userRef = doc(db, 'users', cashoutData.carerUid);
-    const userSnap = await transaction.get(userRef);
-    const currentCashBox = userSnap.exists()
-      ? Math.max(0, Number((userSnap.data() as { cashBoxNpr?: number }).cashBoxNpr || 0))
-      : 0;
-
-    transaction.update(cashoutRef, {
-      status: 'declined',
-      completedAt: serverTimestamp(),
-      completedAmountNpr: 0,
-      remainingAmountNpr: amountNpr,
-    });
-    transaction.set(
-      userRef,
-      {
-        cashBoxNpr: currentCashBox + amountNpr,
-      },
-      { merge: true }
-    );
+  const response = await fetch('/api/carer/cashouts', {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      action: 'decline',
+      cashoutId,
+    }),
   });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to decline claim pay request.', payload));
+  }
 }

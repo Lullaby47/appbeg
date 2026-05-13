@@ -2,6 +2,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import { requireApiUser } from '@/lib/firebase/apiAuth';
 import {
   findUniqueReferralCodeWithQueries,
   isReferralCodeReusableByPlayer,
@@ -33,8 +34,11 @@ function defaultPasswordFor(username: string) {
   return `${clean || 'player'}@12345`;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const auth = await requireApiUser(request, ['admin']);
+    if ('response' in auth) return auth.response;
+
     const snapshot = await adminDb
       .collection('deletedPlayers')
       .where('role', '==', 'player')
@@ -45,9 +49,9 @@ export async function GET() {
       .sort((a, b) => (b.deletedAt || '').localeCompare(a.deletedAt || ''));
 
     return NextResponse.json({ success: true, players });
-  } catch (error: any) {
+  } catch (error: unknown) {
     return NextResponse.json(
-      { error: error.message || 'Failed to load deleted players.' },
+      { error: error instanceof Error ? error.message : 'Failed to load deleted players.' },
       { status: 500 }
     );
   }
@@ -55,6 +59,9 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
+    const auth = await requireApiUser(request, ['admin']);
+    if ('response' in auth) return auth.response;
+
     const body = await request.json();
     const uid = String(body.uid || '').trim();
 
@@ -104,15 +111,16 @@ export async function POST(request: Request) {
         displayName: username,
         disabled: false,
       });
-    } catch (error: any) {
-      if (error?.code === 'auth/email-already-exists') {
+    } catch (error: unknown) {
+      const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
+      if (code === 'auth/email-already-exists') {
         return NextResponse.json(
           { error: 'Email is already in use. Contact admin for manual restore.' },
           { status: 409 }
         );
       }
 
-      if (error?.code === 'auth/uid-already-exists') {
+      if (code === 'auth/uid-already-exists') {
         await adminAuth.updateUser(uid, {
           email,
           password: defaultPassword,
@@ -158,9 +166,9 @@ export async function POST(request: Request) {
       message: 'Player recreated successfully.',
       temporaryPassword: defaultPassword,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     return NextResponse.json(
-      { error: error.message || 'Failed to recreate player.' },
+      { error: error instanceof Error ? error.message : 'Failed to recreate player.' },
       { status: 500 }
     );
   }
@@ -168,6 +176,9 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
+    const auth = await requireApiUser(request, ['admin']);
+    if ('response' in auth) return auth.response;
+
     const body = await request.json();
     const uid = String(body.uid || '').trim();
 
@@ -181,9 +192,9 @@ export async function DELETE(request: Request) {
       success: true,
       message: 'Deleted player archive removed permanently.',
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     return NextResponse.json(
-      { error: error.message || 'Failed to delete player archive.' },
+      { error: error instanceof Error ? error.message : 'Failed to delete player archive.' },
       { status: 500 }
     );
   }

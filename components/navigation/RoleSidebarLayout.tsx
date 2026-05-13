@@ -114,24 +114,26 @@ export default function RoleSidebarLayout({
               animate={{ x: 0 }}
               exit={{ x: '-105%' }}
               transition={{ type: 'spring', damping: 26, stiffness: 280 }}
-              className="fixed bottom-0 left-0 top-0 z-50 flex w-[min(22rem,88vw)] flex-col overflow-y-auto border-r border-white/10 bg-slate-950/78 p-4 shadow-2xl backdrop-blur-xl lg:hidden"
+              className="fixed bottom-0 left-0 top-0 z-50 flex w-[min(22rem,88vw)] flex-col border-r border-white/10 bg-slate-950/78 p-4 shadow-2xl backdrop-blur-xl lg:hidden"
             >
-              <div className="mb-6 rounded-2xl border border-white/10 bg-white/8 p-4 backdrop-blur-md">
+              <div className="mb-6 shrink-0 rounded-2xl border border-white/10 bg-white/8 p-4 backdrop-blur-md">
                 <h1 className="text-xl font-bold text-white">{title}</h1>
                 {subtitle ? <p className="mt-1 text-sm text-neutral-400">{subtitle}</p> : null}
               </div>
-              <div className="flex-1">{renderNav(true)}</div>
-              <div className="mt-6 border-t border-white/10 pt-4">{footer}</div>
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">{renderNav(true)}</div>
+              <div className="shrink-0 border-t border-white/10 pt-4">{footer}</div>
             </motion.aside>
           </>
         ) : null}
       </AnimatePresence>
 
-      <aside className="hidden w-72 shrink-0 border-r border-white/10 bg-slate-950/48 p-4 backdrop-blur-xl lg:block">
-        <h1 className="mb-2 text-xl font-bold lg:text-2xl">{title}</h1>
-        {subtitle ? <p className="mb-4 text-sm text-neutral-400 lg:mb-6">{subtitle}</p> : null}
-        {renderNav()}
-        <div className="mt-8">{footer}</div>
+      <aside className="sticky top-0 hidden h-[100dvh] w-72 shrink-0 flex-col border-r border-white/10 bg-slate-950/48 p-4 backdrop-blur-xl lg:flex">
+        <div className="shrink-0">
+          <h1 className="mb-2 text-xl font-bold lg:text-2xl">{title}</h1>
+          {subtitle ? <p className="mb-4 text-sm text-neutral-400 lg:mb-6">{subtitle}</p> : null}
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">{renderNav()}</div>
+        <div className="shrink-0 border-t border-white/10 pt-4">{footer}</div>
       </aside>
 
       <section className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">

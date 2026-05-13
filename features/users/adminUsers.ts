@@ -197,8 +197,15 @@ async function backfillPlayerReferralCodesIfNeeded() {
 
   playerReferralBackfillAttempted = true;
   try {
+    const token = await auth.currentUser?.getIdToken();
+    if (!token) {
+      return;
+    }
     console.info('[player-referral-backfill] backfill started');
-    await fetch('/api/admin/backfill-player-referrals', { method: 'POST' });
+    await fetch('/api/admin/backfill-player-referrals', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
   } catch {
     // Non-blocking best-effort backfill.
   }
@@ -218,12 +225,18 @@ async function createManagedUser(
   }
 
   const coadminUid = await getCurrentUserCoadminUid();
-  const creatorUid = auth.currentUser?.uid || null;
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const creatorUid = currentUser.uid;
+  const token = await currentUser.getIdToken();
 
   const response = await fetch('/api/admin/create-staff', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({
       username: cleanUsername,
@@ -249,14 +262,18 @@ async function createManagedUser(
 
 async function deleteManagedUser(user: ManagedUser) {
   const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/delete-user', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({
       uid: user.uid,
-      deletedByUid: currentUser?.uid || null,
     }),
   });
 
@@ -284,8 +301,16 @@ export type DeletedPlayerRecord = {
 };
 
 export async function getDeletedPlayers(): Promise<DeletedPlayerRecord[]> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/player-archive', {
     method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
   });
 
   const data = await parseApiResponse(response);
@@ -298,10 +323,16 @@ export async function getDeletedPlayers(): Promise<DeletedPlayerRecord[]> {
 }
 
 export async function recreateDeletedPlayer(uid: string) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/player-archive', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({ uid }),
   });
@@ -316,10 +347,16 @@ export async function recreateDeletedPlayer(uid: string) {
 }
 
 export async function deletePlayerForever(uid: string) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/player-archive', {
     method: 'DELETE',
     headers: {
       'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({ uid }),
   });
@@ -337,10 +374,16 @@ async function setManagedUserStatus(
   uid: string,
   status: 'active' | 'disabled'
 ) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/set-user-status', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({
       uid,
@@ -556,7 +599,10 @@ export async function createCoadmin(username: string, password: string) {
 
   const response = await fetch('/api/admin/create-coadmin', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${await currentUser.getIdToken()}`,
+    },
     body: JSON.stringify({
       username: cleanUsername,
       password,
@@ -574,9 +620,17 @@ export async function createCoadmin(username: string, password: string) {
 }
 
 export async function deleteCoadmin(coadmin: CoadminUser) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/delete-user', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
     body: JSON.stringify({
       uid: coadmin.uid,
     }),

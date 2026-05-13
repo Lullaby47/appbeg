@@ -6,7 +6,9 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
+  orderBy,
   query,
   serverTimestamp,
   updateDoc,
@@ -62,6 +64,7 @@ import {
   getMyGameLogins,
   updateGameLogin,
 } from '@/features/games/gameLogins';
+import { getPlayerGameLoginsByPlayer } from '@/features/games/playerGameLogins';
 import {
   CarerEscalationAlert,
   CarerRechargeRedeemTotals,
@@ -88,6 +91,12 @@ import {
   PlayerCashoutTask,
   startPlayerCashoutTask,
 } from '@/features/cashouts/playerCashoutTasks';
+import {
+  PLAYER_GAME_REDEEM_MAX_PER_24H,
+  getPlayerGameRedeemLimitSummary,
+  resetPlayerGameRedeemLimitForCoadmin,
+  type PlayerGameRedeemLimitSummary,
+} from '@/features/games/playerGameRequests';
 import {
   BonusEvent,
   COADMIN_AUTO_BONUS_PERCENT_MAX,
@@ -121,6 +130,9 @@ import {
   uploadCoadminPaymentDetailPhoto,
 } from '@/features/coinLoad/coinLoadSession';
 import ImageUploadField from '@/components/common/ImageUploadField';
+
+const SELECTED_PLAYER_RECORD_QUERY_LIMIT = 100;
+const SELECTED_PLAYER_CASHOUT_QUERY_LIMIT = 50;
 import {
   cutWorkerReward,
   listenShiftSessionsByCoadmin,
@@ -209,6 +221,20 @@ type StaffBehaviourRow = {
   };
 };
 
+type PlayerRecordTab = 'coin-recharge' | 'cashout' | 'coin-recharge-ingame' | 'redeem';
+
+type PlayerRecordRow = {
+  id: string;
+  dateLabel: string;
+  amountValue: number;
+  amountUnit: 'coin' | 'cash';
+  amountLabel: string;
+  statusLabel: string;
+  sourceLabel: string;
+  detailLabel: string;
+  sortMs: number;
+};
+
 const AED_TO_USD = 0.2723;
 const NPR_TO_USD = 0.0075;
 const NPR_TO_AED = NPR_TO_USD / AED_TO_USD;
@@ -235,6 +261,11 @@ function formatDateTime(value?: { toDate?: () => Date } | null) {
 
 function formatHours(value: number) {
   return `${value.toFixed(2)} h`;
+}
+
+function formatPlayerRecordAmount(value: number, unit: 'coin' | 'cash') {
+  const rounded = Math.max(0, Math.floor(Number(value || 0))).toLocaleString();
+  return unit === 'cash' ? formatUsdFromNprDisplay(Number(value || 0)) : `${rounded} coin`;
 }
 
 function trendBadge(today: number, yesterday: number) {
@@ -333,6 +364,32 @@ export default function CoadminPage() {
   const [selectedPlayerCoadminAddedCoinTotal, setSelectedPlayerCoadminAddedCoinTotal] = useState(0);
   const [selectedPlayerCashoutTotalAmount, setSelectedPlayerCashoutTotalAmount] = useState(0);
   const [selectedPlayerTotalsLoading, setSelectedPlayerTotalsLoading] = useState(false);
+  const [selectedPlayerRedeemLimitSummaries, setSelectedPlayerRedeemLimitSummaries] = useState<
+    PlayerGameRedeemLimitSummary[]
+  >([]);
+  const [selectedPlayerRedeemLimitLoading, setSelectedPlayerRedeemLimitLoading] = useState(false);
+  const [redeemLimitResetBusyGameName, setRedeemLimitResetBusyGameName] = useState<string | null>(
+    null
+  );
+  const [selectedPlayerRecordTab, setSelectedPlayerRecordTab] =
+    useState<PlayerRecordTab>('coin-recharge');
+  const [selectedPlayerRecordLoading, setSelectedPlayerRecordLoading] = useState(false);
+  const [selectedPlayerRecordPages, setSelectedPlayerRecordPages] = useState<
+    Record<PlayerRecordTab, number>
+  >({
+    'coin-recharge': 1,
+    cashout: 1,
+    'coin-recharge-ingame': 1,
+    redeem: 1,
+  });
+  const [selectedPlayerRecordRows, setSelectedPlayerRecordRows] = useState<
+    Record<PlayerRecordTab, PlayerRecordRow[]>
+  >({
+    'coin-recharge': [],
+    cashout: [],
+    'coin-recharge-ingame': [],
+    redeem: [],
+  });
 
   const [gameName, setGameName] = useState('');
   const [gameUsername, setGameUsername] = useState('');
@@ -630,28 +687,111 @@ export default function CoadminPage() {
     setPlayerCoinAmountInput('');
   }, [selectedPlayer?.uid]);
 
+  async function loadSelectedPlayerRedeemLimitSummaries(playerUid: string) {
+    const cleanPlayerUid = String(playerUid || '').trim();
+    if (!cleanPlayerUid) {
+      setSelectedPlayerRedeemLimitSummaries([]);
+      setSelectedPlayerRedeemLimitLoading(false);
+      return;
+    }
+
+    setSelectedPlayerRedeemLimitLoading(true);
+
+    try {
+      const [playerGameLogins, redeemRequestsSnap] = await Promise.all([
+        getPlayerGameLoginsByPlayer(cleanPlayerUid),
+        getDocs(
+          query(
+            collection(db, 'playerGameRequests'),
+            where('playerUid', '==', cleanPlayerUid),
+            where('type', '==', 'redeem'),
+            orderBy('createdAt', 'desc'),
+            limit(SELECTED_PLAYER_RECORD_QUERY_LIMIT)
+          )
+        ),
+      ]);
+
+      const gameNames = Array.from(
+        new Set(
+          [
+            ...playerGameLogins.map((login) => String(login.gameName || '').trim()),
+            ...redeemRequestsSnap.docs.map((docSnap) =>
+              String((docSnap.data() as { gameName?: string }).gameName || '').trim()
+            ),
+          ].filter(Boolean)
+        )
+      ).sort((left, right) => left.localeCompare(right));
+
+      const summaries = await Promise.all(
+        gameNames.map((name) => getPlayerGameRedeemLimitSummary(cleanPlayerUid, name))
+      );
+      setSelectedPlayerRedeemLimitSummaries(summaries);
+    } catch (error) {
+      setSelectedPlayerRedeemLimitSummaries([]);
+      setMessage(
+        error instanceof Error ? error.message : 'Failed to load redeem limit details.'
+      );
+    } finally {
+      setSelectedPlayerRedeemLimitLoading(false);
+    }
+  }
+
   useEffect(() => {
     const playerUid = selectedPlayer?.uid;
     if (!playerUid) {
       setSelectedPlayerCoadminAddedCoinTotal(0);
       setSelectedPlayerCashoutTotalAmount(0);
       setSelectedPlayerTotalsLoading(false);
+      setSelectedPlayerRecordLoading(false);
+      setSelectedPlayerRecordPages({
+        'coin-recharge': 1,
+        cashout: 1,
+        'coin-recharge-ingame': 1,
+        redeem: 1,
+      });
+      setSelectedPlayerRecordRows({
+        'coin-recharge': [],
+        cashout: [],
+        'coin-recharge-ingame': [],
+        redeem: [],
+      });
+      setSelectedPlayerRedeemLimitSummaries([]);
+      setSelectedPlayerRedeemLimitLoading(false);
+      setRedeemLimitResetBusyGameName(null);
       return;
     }
 
     let cancelled = false;
     setSelectedPlayerTotalsLoading(true);
+    setSelectedPlayerRecordLoading(true);
 
     void (async () => {
       try {
         const coadminUid = auth.currentUser?.uid || '';
-        const [financialEventsSnap, completedCashoutSnap] = await Promise.all([
-          getDocs(query(collection(db, 'financialEvents'), where('playerUid', '==', playerUid))),
+        const [financialEventsSnap, completedCashoutSnap, playerGameRequestsSnap] = await Promise.all([
+          getDocs(
+            query(
+              collection(db, 'financialEvents'),
+              where('playerUid', '==', playerUid),
+              orderBy('createdAt', 'desc'),
+              limit(SELECTED_PLAYER_RECORD_QUERY_LIMIT)
+            )
+          ),
           getDocs(
             query(
               collection(db, 'playerCashoutTasks'),
               where('playerUid', '==', playerUid),
-              where('status', '==', 'completed')
+              where('status', '==', 'completed'),
+              orderBy('completedAt', 'desc'),
+              limit(SELECTED_PLAYER_CASHOUT_QUERY_LIMIT)
+            )
+          ),
+          getDocs(
+            query(
+              collection(db, 'playerGameRequests'),
+              where('playerUid', '==', playerUid),
+              orderBy('createdAt', 'desc'),
+              limit(SELECTED_PLAYER_RECORD_QUERY_LIMIT)
             )
           ),
         ]);
@@ -679,19 +819,152 @@ export default function CoadminPage() {
           return total + Math.max(0, Number(task.amountNpr || 0));
         }, 0);
 
+        const coinRechargeRows = financialEventsSnap.docs
+          .map((docSnap) => {
+            const event = docSnap.data() as {
+              coadminUid?: string;
+              type?: string;
+              amountNpr?: number;
+              createdAt?: { toDate?: () => Date; toMillis?: () => number } | null;
+            };
+            const eventType = String(event.type || '').trim();
+            const eventCoadminUid = String(event.coadminUid || '').trim();
+            if (eventType !== 'coadmin_coin_add') {
+              return null;
+            }
+            if (coadminUid && eventCoadminUid && eventCoadminUid !== coadminUid) {
+              return null;
+            }
+
+            return {
+              id: `coin-recharge-${docSnap.id}`,
+              dateLabel: formatDateTime(event.createdAt || null),
+              amountValue: Number(event.amountNpr || 0),
+              amountUnit: 'coin',
+              amountLabel: formatPlayerRecordAmount(Number(event.amountNpr || 0), 'coin'),
+              statusLabel: 'Completed',
+              sourceLabel: eventCoadminUid ? 'App / Coadmin' : 'App',
+              detailLabel: 'Manual coin recharge',
+              sortMs: toMillis(event.createdAt || null),
+            } satisfies PlayerRecordRow;
+          })
+          .filter((row): row is PlayerRecordRow => Boolean(row))
+          .sort((left, right) => right.sortMs - left.sortMs);
+
+        const cashoutRows = completedCashoutSnap.docs
+          .map((docSnap) => {
+            const task = docSnap.data() as {
+              amountNpr?: number;
+              completedAt?: { toDate?: () => Date; toMillis?: () => number } | null;
+              createdAt?: { toDate?: () => Date; toMillis?: () => number } | null;
+              payoutMethod?: string | null;
+              paymentAppName?: string | null;
+            };
+            const timeValue = task.completedAt || task.createdAt || null;
+            return {
+              id: `cashout-${docSnap.id}`,
+              dateLabel: formatDateTime(timeValue),
+              amountValue: Number(task.amountNpr || 0),
+              amountUnit: 'cash',
+              amountLabel: formatPlayerRecordAmount(Number(task.amountNpr || 0), 'cash'),
+              statusLabel: 'Completed',
+              sourceLabel:
+                task.payoutMethod === 'app'
+                  ? task.paymentAppName
+                    ? `App / ${task.paymentAppName}`
+                    : 'App'
+                  : task.payoutMethod === 'qr'
+                    ? 'QR'
+                    : 'Cashout',
+              detailLabel: 'Player cashout',
+              sortMs: toMillis(timeValue),
+            } satisfies PlayerRecordRow;
+          })
+          .sort((left, right) => right.sortMs - left.sortMs);
+
+        const inGameRechargeRows: PlayerRecordRow[] = [];
+        const redeemRows: PlayerRecordRow[] = [];
+        playerGameRequestsSnap.docs.forEach((docSnap) => {
+          const request = docSnap.data() as {
+            gameName?: string;
+            amount?: number;
+            type?: string;
+            status?: string;
+            createdAt?: { toDate?: () => Date; toMillis?: () => number } | null;
+            completedAt?: { toDate?: () => Date; toMillis?: () => number } | null;
+            bonusPercentage?: number | null;
+          };
+          const type = String(request.type || '').trim();
+          const statusLabel = String(request.status || 'pending')
+            .replace(/_/g, ' ')
+            .replace(/\b\w/g, (value) => value.toUpperCase());
+          const gameName = String(request.gameName || '').trim() || 'Unknown game';
+          const timeValue = request.completedAt || request.createdAt || null;
+          const commonRow = {
+            dateLabel: formatDateTime(timeValue),
+            amountValue: Number(request.amount || 0),
+            amountUnit: 'coin' as const,
+            amountLabel: formatPlayerRecordAmount(Number(request.amount || 0), 'coin'),
+            statusLabel,
+            sourceLabel: gameName,
+            sortMs: toMillis(timeValue),
+          };
+
+          if (type === 'recharge') {
+            inGameRechargeRows.push({
+              id: `ingame-recharge-${docSnap.id}`,
+              ...commonRow,
+              detailLabel:
+                Number(request.bonusPercentage || 0) > 0
+                  ? `Bonus ${Math.round(Number(request.bonusPercentage || 0))}% applied`
+                  : 'Game recharge',
+            });
+          }
+
+          if (type === 'redeem') {
+            redeemRows.push({
+              id: `redeem-${docSnap.id}`,
+              ...commonRow,
+              detailLabel: 'Game redeem',
+            });
+          }
+        });
+
+        inGameRechargeRows.sort((left, right) => right.sortMs - left.sortMs);
+        redeemRows.sort((left, right) => right.sortMs - left.sortMs);
+
         if (!cancelled) {
           setSelectedPlayerCoadminAddedCoinTotal(Math.round(addedCoinTotal));
           setSelectedPlayerCashoutTotalAmount(Math.round(cashoutTotal));
+          setSelectedPlayerRecordPages({
+            'coin-recharge': 1,
+            cashout: 1,
+            'coin-recharge-ingame': 1,
+            redeem: 1,
+          });
+          setSelectedPlayerRecordRows({
+            'coin-recharge': coinRechargeRows,
+            cashout: cashoutRows,
+            'coin-recharge-ingame': inGameRechargeRows,
+            redeem: redeemRows,
+          });
         }
       } catch (error) {
         if (!cancelled) {
           setSelectedPlayerCoadminAddedCoinTotal(0);
           setSelectedPlayerCashoutTotalAmount(0);
+          setSelectedPlayerRecordRows({
+            'coin-recharge': [],
+            cashout: [],
+            'coin-recharge-ingame': [],
+            redeem: [],
+          });
           setMessage(error instanceof Error ? error.message : 'Failed to load player totals.');
         }
       } finally {
         if (!cancelled) {
           setSelectedPlayerTotalsLoading(false);
+          setSelectedPlayerRecordLoading(false);
         }
       }
     })();
@@ -699,6 +972,14 @@ export default function CoadminPage() {
     return () => {
       cancelled = true;
     };
+  }, [selectedPlayer?.uid]);
+
+  useEffect(() => {
+    const playerUid = selectedPlayer?.uid;
+    if (!playerUid) {
+      return;
+    }
+    void loadSelectedPlayerRedeemLimitSummaries(playerUid);
   }, [selectedPlayer?.uid]);
 
   useEffect(() => {
@@ -1941,6 +2222,27 @@ export default function CoadminPage() {
     }
   }
 
+  async function handleResetPlayerRedeemLimit(player: PlayerUser, gameName: string) {
+    const cleanGameName = String(gameName || '').trim();
+    if (!player?.uid || !cleanGameName) {
+      setMessage('Player and game are required.');
+      return;
+    }
+
+    setRedeemLimitResetBusyGameName(cleanGameName);
+    setMessage('');
+
+    try {
+      await resetPlayerGameRedeemLimitForCoadmin(player.uid, cleanGameName);
+      await loadSelectedPlayerRedeemLimitSummaries(player.uid);
+      setMessage(`Redeem limit reset for ${player.username} on ${cleanGameName}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to reset redeem limit.');
+    } finally {
+      setRedeemLimitResetBusyGameName(null);
+    }
+  }
+
   async function handleCompleteCashout(request: CarerCashoutRequest) {
     setLoading(true);
     setMessage('');
@@ -2601,6 +2903,20 @@ export default function CoadminPage() {
   const sortedStaff = sortByNewest(staffList);
   const sortedCarers = sortByNewest(carerList);
   const sortedPlayers = sortByNewest(playerList);
+  const selectedPlayerTabRows = selectedPlayerRecordRows[selectedPlayerRecordTab];
+  const selectedPlayerTabPage = selectedPlayerRecordPages[selectedPlayerRecordTab];
+  const selectedPlayerTabPageCount = Math.max(
+    1,
+    Math.ceil(selectedPlayerTabRows.length / 30)
+  );
+  const selectedPlayerTabVisibleRows = selectedPlayerTabRows.slice(
+    (selectedPlayerTabPage - 1) * 30,
+    selectedPlayerTabPage * 30
+  );
+  const selectedPlayerTabVisibleTotal = selectedPlayerTabVisibleRows.reduce(
+    (total, row) => total + Math.max(0, Number(row.amountValue || 0)),
+    0
+  );
 
   const coadminPresenceUids = useMemo(() => {
     const s = new Set<string>();
@@ -3743,7 +4059,7 @@ export default function CoadminPage() {
               onlineByUid={coadminOnlineByUid}
               nameMode="coadmin"
               renderSelectedExtras={(user) => (
-                <div className="mt-5 w-full max-w-md space-y-4">
+                <div className="mt-5 w-full max-w-6xl space-y-4">
                   <div className="rounded-2xl border border-emerald-500/20 bg-emerald-950/30 p-4">
                     <p className="text-xs font-bold uppercase tracking-wider text-emerald-200/80">
                       Coin balance
@@ -3872,6 +4188,194 @@ export default function CoadminPage() {
                       Same increments as balances elsewhere (whole numbers). Deductions cannot make cash
                       go below zero.
                     </p>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+                    <div className="flex flex-wrap gap-2">
+                      {(
+                        [
+                          ['coin-recharge', 'Coin Recharge'],
+                          ['cashout', 'Cashout'],
+                          ['coin-recharge-ingame', 'Coin Recharge In Game'],
+                          ['redeem', 'Redeem'],
+                        ] as Array<[PlayerRecordTab, string]>
+                      ).map(([tabKey, label]) => {
+                        const isActive = selectedPlayerRecordTab === tabKey;
+                        return (
+                          <button
+                            key={tabKey}
+                            type="button"
+                            onClick={() => setSelectedPlayerRecordTab(tabKey)}
+                            className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                              isActive
+                                ? 'bg-cyan-400 text-slate-950'
+                                : 'border border-white/10 bg-white/5 text-neutral-200 hover:bg-white/10'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="mt-4 overflow-hidden rounded-2xl border border-white/10 bg-black/25">
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full border-collapse text-sm">
+                          <thead className="bg-white/10 text-left text-xs uppercase tracking-[0.2em] text-neutral-300">
+                            <tr>
+                              <th className="border-b border-white/10 px-4 py-3">SN</th>
+                              <th className="border-b border-white/10 px-4 py-3">Date</th>
+                              <th className="border-b border-white/10 px-4 py-3">Amount</th>
+                              <th className="border-b border-white/10 px-4 py-3">Status</th>
+                              <th className="border-b border-white/10 px-4 py-3">Source</th>
+                              <th className="border-b border-white/10 px-4 py-3">Details</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selectedPlayerRecordLoading ? (
+                              <tr>
+                                <td
+                                  colSpan={6}
+                                  className="px-4 py-8 text-center text-sm text-neutral-400"
+                                >
+                                  Loading records...
+                                </td>
+                              </tr>
+                            ) : selectedPlayerTabVisibleRows.length === 0 ? (
+                              <tr>
+                                <td
+                                  colSpan={6}
+                                  className="px-4 py-8 text-center text-sm text-neutral-500"
+                                >
+                                  No records found in this section.
+                                </td>
+                              </tr>
+                            ) : (
+                              selectedPlayerTabVisibleRows.map((row, index) => (
+                                <tr
+                                  key={row.id}
+                                  className="border-b border-white/5 text-neutral-100 even:bg-white/[0.03]"
+                                >
+                                  <td className="px-4 py-3 text-neutral-400">
+                                    {(selectedPlayerTabPage - 1) * 30 + index + 1}
+                                  </td>
+                                  <td className="px-4 py-3 whitespace-nowrap">{row.dateLabel}</td>
+                                  <td className="px-4 py-3 font-semibold">{row.amountLabel}</td>
+                                  <td className="px-4 py-3">{row.statusLabel}</td>
+                                  <td className="px-4 py-3">{row.sourceLabel}</td>
+                                  <td className="px-4 py-3">{row.detailLabel}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                          {!selectedPlayerRecordLoading && selectedPlayerTabVisibleRows.length > 0 ? (
+                            <tfoot className="bg-emerald-950/35">
+                              <tr className="border-t border-emerald-400/20 text-emerald-100">
+                                <td className="px-4 py-3 font-bold" colSpan={2}>
+                                  Total
+                                </td>
+                                <td className="px-4 py-3 font-bold">
+                                  {formatPlayerRecordAmount(
+                                    selectedPlayerTabVisibleTotal,
+                                    selectedPlayerRecordTab === 'cashout' ? 'cash' : 'coin'
+                                  )}
+                                </td>
+                                <td className="px-4 py-3 text-sm text-emerald-200/80">
+                                  Page {selectedPlayerTabPage}
+                                </td>
+                                <td className="px-4 py-3 text-sm text-emerald-200/80">
+                                  {selectedPlayerTabVisibleRows.length} entries
+                                </td>
+                                <td className="px-4 py-3 text-sm text-emerald-200/80">
+                                  Current page only
+                                </td>
+                              </tr>
+                            </tfoot>
+                          ) : null}
+                        </table>
+                      </div>
+                    </div>
+
+                    {!selectedPlayerRecordLoading && selectedPlayerTabPageCount > 1 ? (
+                      <div className="mt-4 flex flex-wrap justify-center gap-2">
+                        {Array.from({ length: selectedPlayerTabPageCount }, (_, index) => {
+                          const pageNumber = index + 1;
+                          const isActive = selectedPlayerTabPage === pageNumber;
+                          return (
+                            <button
+                              key={pageNumber}
+                              type="button"
+                              onClick={() =>
+                                setSelectedPlayerRecordPages((current) => ({
+                                  ...current,
+                                  [selectedPlayerRecordTab]: pageNumber,
+                                }))
+                              }
+                              className={`h-10 min-w-10 rounded-lg px-3 text-sm font-bold transition ${
+                                isActive
+                                  ? 'bg-emerald-400 text-slate-950'
+                                  : 'border border-white/10 bg-white/5 text-neutral-200 hover:bg-white/10'
+                              }`}
+                            >
+                              {pageNumber}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="rounded-2xl border border-rose-500/25 bg-rose-950/25 p-4">
+                    <p className="text-xs font-bold uppercase tracking-wider text-rose-200/85">
+                      Redeem limits by game
+                    </p>
+                    <p className="mt-1 text-sm text-neutral-400">
+                      Reset is available only when this player is fully capped on a game&apos;s rolling
+                      24-hour redeem limit.
+                    </p>
+
+                    {selectedPlayerRedeemLimitLoading ? (
+                      <p className="mt-3 text-sm text-neutral-400">Loading redeem limits...</p>
+                    ) : selectedPlayerRedeemLimitSummaries.length === 0 ? (
+                      <p className="mt-3 text-sm text-neutral-400">
+                        No game redeem activity or player game logins found yet.
+                      </p>
+                    ) : (
+                      <div className="mt-3 space-y-3">
+                        {selectedPlayerRedeemLimitSummaries.map((summary) => {
+                          const isBusy = redeemLimitResetBusyGameName === summary.gameName;
+                          const canReset = summary.onLimit && !isBusy && !blocking;
+
+                          return (
+                            <div
+                              key={summary.gameName}
+                              className="rounded-xl border border-white/10 bg-black/30 p-3"
+                            >
+                              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                <div className="min-w-0">
+                                  <p className="font-semibold text-white">{summary.gameName}</p>
+                                  <p className="mt-1 text-xs text-neutral-400">
+                                    Used {summary.usedAmount} / {PLAYER_GAME_REDEEM_MAX_PER_24H} in
+                                    the current rolling 24-hour window
+                                  </p>
+                                  <p className="mt-0.5 text-xs text-neutral-500">
+                                    Remaining: {summary.remainingAmount}
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleResetPlayerRedeemLimit(user, summary.gameName)}
+                                  disabled={!canReset}
+                                  className="whitespace-nowrap rounded-xl border border-rose-400/50 bg-rose-600 px-4 py-2 text-sm font-bold text-white hover:bg-rose-500 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-neutral-500"
+                                >
+                                  {isBusy ? 'Resetting...' : 'Reset limit'}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

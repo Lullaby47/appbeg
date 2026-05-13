@@ -1,8 +1,28 @@
-import { runTransaction, doc } from 'firebase/firestore';
+import { auth } from '@/lib/firebase/client';
 
-import { db } from '@/lib/firebase/client';
-import { belongsToCoadmin, getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
-import { recordFinancialEvent } from '@/features/risk/playerRisk';
+async function getAuthHeaders() {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await currentUser.getIdToken();
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+  };
+}
+
+function readApiError(messageFallback: string, payload: unknown) {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    'error' in payload &&
+    typeof (payload as { error?: unknown }).error === 'string'
+  ) {
+    return String((payload as { error: string }).error || messageFallback);
+  }
+  return messageFallback;
+}
 
 /**
  * Add or remove whole-number coin for a player in the current user’s coadmin scope.
@@ -24,51 +44,18 @@ export async function adjustPlayerCoin({
     throw new Error('Use whole numbers only (no decimals).');
   }
 
-  const coadminUid = await getCurrentUserCoadminUid();
-  const playerRef = doc(db, 'users', playerUid);
-
-  await runTransaction(db, async (transaction) => {
-    const playerSnap = await transaction.get(playerRef);
-
-    if (!playerSnap.exists()) {
-      throw new Error('Player not found.');
-    }
-
-    const data = playerSnap.data() as {
-      role?: string;
-      coin?: number;
-      coadminUid?: string | null;
-      createdBy?: string | null;
-    };
-
-    if (String(data.role || '').toLowerCase() !== 'player') {
-      throw new Error('This account is not a player.');
-    }
-
-    if (!belongsToCoadmin(data, coadminUid)) {
-      throw new Error('This player is not in your scope.');
-    }
-
-    const current = Math.max(0, Math.floor(Number(data.coin || 0)));
-    const next = current + delta;
-
-    if (next < 0) {
-      throw new Error('Not enough coin to deduct that amount.');
-    }
-
-    transaction.update(playerRef, { coin: next });
-  });
-
-  const absAmount = Math.abs(delta);
-  try {
-    await recordFinancialEvent({
+  const response = await fetch('/api/coadmin/player-balance/adjust', {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
       playerUid,
-      coadminUid,
-      amountNpr: absAmount,
-      type: delta > 0 ? 'coadmin_coin_add' : 'coadmin_coin_deduct',
-    });
-  } catch (err) {
-    console.error('adjustPlayerCoin: balance updated but activity log / risk failed', err);
+      delta,
+      balanceType: 'coin',
+    }),
+  });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to adjust coin.', payload));
   }
 }
 
@@ -91,51 +78,18 @@ export async function adjustPlayerCash({
     throw new Error('Use whole numbers only (no decimals).');
   }
 
-  const coadminUid = await getCurrentUserCoadminUid();
-  const playerRef = doc(db, 'users', playerUid);
-
-  await runTransaction(db, async (transaction) => {
-    const playerSnap = await transaction.get(playerRef);
-
-    if (!playerSnap.exists()) {
-      throw new Error('Player not found.');
-    }
-
-    const data = playerSnap.data() as {
-      role?: string;
-      cash?: number;
-      coadminUid?: string | null;
-      createdBy?: string | null;
-    };
-
-    if (String(data.role || '').toLowerCase() !== 'player') {
-      throw new Error('This account is not a player.');
-    }
-
-    if (!belongsToCoadmin(data, coadminUid)) {
-      throw new Error('This player is not in your scope.');
-    }
-
-    const current = Math.max(0, Math.floor(Number(data.cash ?? 0)));
-    const next = current + delta;
-
-    if (next < 0) {
-      throw new Error('Not enough cash to deduct that amount.');
-    }
-
-    transaction.update(playerRef, { cash: next });
-  });
-
-  const absAmount = Math.abs(delta);
-  try {
-    await recordFinancialEvent({
+  const response = await fetch('/api/coadmin/player-balance/adjust', {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
       playerUid,
-      coadminUid,
-      amountNpr: absAmount,
-      type: delta > 0 ? 'coadmin_cash_add' : 'coadmin_cash_deduct',
-    });
-  } catch (err) {
-    console.error('adjustPlayerCash: balance updated but activity log failed', err);
+      delta,
+      balanceType: 'cash',
+    }),
+  });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to adjust cash.', payload));
   }
 }
 

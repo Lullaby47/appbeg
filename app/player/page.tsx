@@ -20,13 +20,16 @@ import { belongsToCoadmin, resolveCoadminUid } from '@/lib/coadmin/scope';
 import { getStaff } from '@/features/users/adminUsers';
 import { getGameLoginsByCoadmin } from '@/features/games/gameLogins';
 import {
-  getPlayerGameLoginsByPlayer,
-  PlayerGameLogin,
+  listenToPlayerGameLoginsByPlayer,
+  type PlayerGameLogin,
 } from '@/features/games/playerGameLogins';
 import {
   createPlayerGameRequest,
   dismissPlayerRedeemRequest,
   listenToPlayerGameRequestsByPlayer,
+  MAX_REDEEM_AMOUNT,
+  MIN_REDEEM_AMOUNT,
+  PLAYER_GAME_REDEEM_MAX_PER_24H,
   PlayerGameRequest,
 } from '@/features/games/playerGameRequests';
 import {
@@ -244,11 +247,9 @@ function buildGameBackgroundCandidates(gameName: string) {
   const compact = normalizeBackgroundKey(trimmed);
   const dashed = trimmed.trim().toLowerCase().replace(/\s+/g, '-');
   const underscored = trimmed.trim().toLowerCase().replace(/\s+/g, '_');
-  const normalizedLower = trimmed.toLowerCase();
-  const baseNames = Array.from(
-    new Set([trimmed, normalizedLower, dashed, underscored, compact].filter(Boolean))
-  );
-  const roots = ['/gamebackgroundimage', '/assets/player/gamebackgroundimage', '/assets/player'];
+  // Keep fallback probes narrow to avoid large 404 storms.
+  const baseNames = Array.from(new Set([trimmed, dashed, underscored, compact].filter(Boolean)));
+  const roots = ['/gamebackgroundimage'];
   const extensions = ['jpg', 'jpeg', 'png'];
   const candidates: string[] = [];
 
@@ -289,7 +290,7 @@ function buildCreatorDisplayLabel(data: { role?: string; username?: string } | u
 }
 
 type PlayerAlertInfo = {
-  variant: 'index' | 'permission' | 'lowCoin' | 'generic';
+  variant: 'index' | 'permission' | 'lowCoin' | 'warning' | 'success';
   title: string;
   body: string;
   raw: string;
@@ -384,8 +385,50 @@ function getPlayerAlertInfo(raw: string): PlayerAlertInfo | null {
     };
   }
 
+  if (
+    lower.includes('blocked') ||
+    lower.includes('denied') ||
+    lower.includes('failed') ||
+    lower.includes('invalid') ||
+    lower.includes('wait until') ||
+    lower.includes('limit') ||
+    lower.includes('minimum withdrawal') ||
+    lower.includes('possible bonus abuse') ||
+    lower.includes('not enough') ||
+    lower.includes('required') ||
+    lower.includes('disabled') ||
+    lower.includes('cannot') ||
+    lower.includes('outside your coadmin scope')
+  ) {
+    return {
+      variant: 'warning',
+      title: 'Warning',
+      body: text,
+      raw: text,
+    };
+  }
+
+  if (
+    lower.includes('request sent') ||
+    lower.includes('approved') ||
+    lower.includes('successful') ||
+    lower.includes('successfully') ||
+    lower.includes('uploaded successfully') ||
+    lower.includes('loaded your last used') ||
+    lower.includes('dismissed') ||
+    lower.includes('converted to coin') ||
+    lower.includes('inquiry sent')
+  ) {
+    return {
+      variant: 'success',
+      title: 'Success',
+      body: text,
+      raw: text,
+    };
+  }
+
   return {
-    variant: 'generic',
+    variant: 'success',
     title: 'Notice',
     body: text,
     raw: text,
@@ -461,6 +504,7 @@ export default function PlayerPage() {
   const [gameBackgroundImageByKey, setGameBackgroundImageByKey] = useState<Record<string, string>>(
     {}
   );
+  const attemptedBackgroundKeysRef = useRef<Set<string>>(new Set());
   const [playAmount, setPlayAmount] = useState('');
   const [requestLoading, setRequestLoading] = useState(false);
   const [playRequestSplash, setPlayRequestSplash] = useState<null | {
@@ -547,6 +591,8 @@ export default function PlayerPage() {
   const knownCompletedCashoutTaskIdsRef = useRef<Set<string>>(new Set());
   const cashoutSplashSeenIdsRef = useRef<Set<string>>(new Set());
   const knownCashoutStatusByIdRef = useRef<Record<string, string>>({});
+  const hasSeenTransferSnapshotRef = useRef(false);
+  const knownTransferStatusByIdRef = useRef<Record<string, string>>({});
   const transferResponseSeenRef = useRef<Set<string>>(new Set());
   const referralCodeEnsureInFlightRef = useRef(false);
   const lastSyncedRequestTotalsRef = useRef<string | null>(null);
@@ -587,6 +633,16 @@ export default function PlayerPage() {
   const playerHelpHintSeenRef = useRef(false);
   const playerHelpHintHideTimeoutRef = useRef<number | null>(null);
   const playerHelpHintIdleTimeoutRef = useRef<number | null>(null);
+
+  function getTransferResponseSeenStorageKey(
+    playerUidValue: string,
+    transferId: string,
+    status: string,
+    processedAtValue?: { toMillis?: () => number } | null
+  ) {
+    const processedAtMs = processedAtValue?.toMillis?.() || 0;
+    return `playerTransferResponseSeen:${playerUidValue}:${transferId}:${status}:${processedAtMs}`;
+  }
 
   function hasActiveTableSplashHistoryState() {
     const state = window.history.state as Record<string, unknown> | null;
@@ -944,9 +1000,10 @@ export default function PlayerPage() {
       for (const login of gameLogins) {
         const gameName = String(login.gameName || '');
         const key = normalizeBackgroundKey(gameName);
-        if (!key || gameBackgroundImageByKey[key]) {
+        if (!key || gameBackgroundImageByKey[key] || attemptedBackgroundKeysRef.current.has(key)) {
           continue;
         }
+        attemptedBackgroundKeysRef.current.add(key);
         const resolvedUrl = await resolveFirstExistingImage(buildGameBackgroundCandidates(gameName));
         if (resolvedUrl) {
           additions[key] = resolvedUrl;
@@ -1084,6 +1141,21 @@ export default function PlayerPage() {
   }, [gameLogins, selectedCreatorUid]);
 
   const playerAlert = useMemo(() => getPlayerAlertInfo(message), [message]);
+  const isTimedSplashAlert = Boolean(playerAlert && playerAlert.variant !== 'index');
+
+  useEffect(() => {
+    if (!isTimedSplashAlert) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setMessage('');
+    }, 1300);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [isTimedSplashAlert, message]);
 
   const chooseRandomTrack = useCallback((previousTrack?: string | null) => {
     if (CASINO_BACKGROUND_TRACKS.length <= 1) {
@@ -1391,54 +1463,47 @@ export default function PlayerPage() {
     }
   }, []);
 
-  const loadPlayerUsernames = useCallback(async (currentPlayerUid: string) => {
-    setLoadingList(true);
-    setMessage('');
-    setSelectedCreatorUid(null);
+  /** Loads carer/game metadata for credential cards (logins come from realtime listener below). */
+  const syncCredentialSidecarsForPlayer = useCallback(
+    async (currentPlayerUid: string, sortedLogins: PlayerGameLogin[]) => {
+      try {
+        const carerMapping = await getCompletedUsernameCarersByPlayer(currentPlayerUid);
+        setUsernameCarersByGame(carerMapping);
 
-    try {
-      const [list, carerMapping] = await Promise.all([
-        getPlayerGameLoginsByPlayer(currentPlayerUid),
-        getCompletedUsernameCarersByPlayer(currentPlayerUid),
-      ]);
-      const sorted = sortByNewest(list);
-      setGameLogins(sorted);
-      setUsernameCarersByGame(carerMapping);
-
-      const creatorUids = [
-        ...new Set(
-          sorted
-            .map((login) => String(login.createdBy || '').trim())
-            .filter(Boolean)
-        ),
-      ];
-      const nameEntries = await Promise.all(
-        creatorUids.map(async (uid) => {
-          try {
-            const snap = await getDoc(doc(db, 'users', uid));
-            if (!snap.exists()) {
+        const creatorUids = [
+          ...new Set(
+            sortedLogins
+              .map((login) => String(login.createdBy || '').trim())
+              .filter(Boolean)
+          ),
+        ];
+        const nameEntries = await Promise.all(
+          creatorUids.map(async (uid) => {
+            try {
+              const snap = await getDoc(doc(db, 'users', uid));
+              if (!snap.exists()) {
+                return [uid, 'Unknown Creator'] as const;
+              }
+              const userData = snap.data() as { role?: string; username?: string };
+              return [uid, buildCreatorDisplayLabel(userData)] as const;
+            } catch {
               return [uid, 'Unknown Creator'] as const;
             }
-            const userData = snap.data() as { role?: string; username?: string };
-            return [uid, buildCreatorDisplayLabel(userData)] as const;
-          } catch {
-            return [uid, 'Unknown Creator'] as const;
-          }
-        })
-      );
-      const nextCreatorNames: Record<string, string> = {};
-      for (const [uid, label] of nameEntries) {
-        nextCreatorNames[uid] = label;
+          })
+        );
+        const nextCreatorNames: Record<string, string> = {};
+        for (const [uid, label] of nameEntries) {
+          nextCreatorNames[uid] = label;
+        }
+        setCreatorNames(nextCreatorNames);
+      } catch (error) {
+        setMessage(
+          error instanceof Error ? error.message : 'Failed to load credential details.'
+        );
       }
-      setCreatorNames(nextCreatorNames);
-    } catch (error) {
-      setMessage(
-        error instanceof Error ? error.message : 'Failed to load usernames.'
-      );
-    } finally {
-      setLoadingList(false);
-    }
-  }, []);
+    },
+    []
+  );
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -1507,10 +1572,26 @@ export default function PlayerPage() {
   useEffect(() => {
     if (!playerUid) return;
 
+    setLoadingList(true);
+    setMessage('');
+
     const loaderTimeoutId = window.setTimeout(() => {
       void loadAgents();
-      void loadPlayerUsernames(playerUid);
     }, 0);
+
+    const unsubscribeLogins = listenToPlayerGameLoginsByPlayer(
+      playerUid,
+      (list) => {
+        const sorted = sortByNewest(list);
+        setGameLogins(sorted);
+        setLoadingList(false);
+        void syncCredentialSidecarsForPlayer(playerUid, sorted);
+      },
+      (error) => {
+        setLoadingList(false);
+        setMessage(error.message || 'Failed to listen for credential updates.');
+      }
+    );
 
     const unsubscribeRequests = listenToPlayerGameRequestsByPlayer(
       playerUid,
@@ -1524,9 +1605,10 @@ export default function PlayerPage() {
 
     return () => {
       window.clearTimeout(loaderTimeoutId);
+      unsubscribeLogins();
       unsubscribeRequests();
     };
-  }, [loadAgents, loadPlayerUsernames, playerUid]);
+  }, [loadAgents, playerUid, syncCredentialSidecarsForPlayer]);
 
   useEffect(() => {
     if (!playerUid) {
@@ -1705,6 +1787,8 @@ export default function PlayerPage() {
     }
 
     transferResponseSeenRef.current = new Set();
+    hasSeenTransferSnapshotRef.current = false;
+    knownTransferStatusByIdRef.current = {};
     const unsubscribe = onSnapshot(
       doc(db, 'users', playerUid),
       (snapshot) => {
@@ -1774,20 +1858,64 @@ export default function PlayerPage() {
     const unsubscribe = listenTransferRequestsByPlayer(
       playerUid,
       (requests) => {
-        const latestProcessed = requests.find((request) => request.status !== 'pending');
-        if (!latestProcessed) {
-          return;
-        }
-        if (transferResponseSeenRef.current.has(latestProcessed.id)) {
+        const nextKnownStatuses: Record<string, string> = {};
+
+        requests.forEach((request) => {
+          nextKnownStatuses[request.id] = String(request.status || '');
+        });
+
+        if (!hasSeenTransferSnapshotRef.current) {
+          hasSeenTransferSnapshotRef.current = true;
+          knownTransferStatusByIdRef.current = nextKnownStatuses;
           return;
         }
 
-        transferResponseSeenRef.current.add(latestProcessed.id);
-        if (latestProcessed.status === 'approved') {
+        const changedProcessed = requests
+          .filter((request) => {
+            const currentStatus = String(request.status || '');
+            const previousStatus = knownTransferStatusByIdRef.current[request.id];
+            return currentStatus !== 'pending' && currentStatus !== previousStatus;
+          })
+          .sort((left, right) => {
+            const leftProcessed = getTimestampMs(left.processedAt || null);
+            const rightProcessed = getTimestampMs(right.processedAt || null);
+            return rightProcessed - leftProcessed;
+          })[0];
+
+        knownTransferStatusByIdRef.current = nextKnownStatuses;
+
+        if (!changedProcessed) {
+          return;
+        }
+        if (transferResponseSeenRef.current.has(changedProcessed.id)) {
+          return;
+        }
+
+        const seenStorageKey = getTransferResponseSeenStorageKey(
+          playerUid,
+          changedProcessed.id,
+          changedProcessed.status,
+          changedProcessed.processedAt || null
+        );
+        const hasSeenInSession =
+          typeof window !== 'undefined' &&
+          window.sessionStorage.getItem(seenStorageKey) === '1';
+        if (hasSeenInSession) {
+          transferResponseSeenRef.current.add(changedProcessed.id);
+          return;
+        }
+
+        transferResponseSeenRef.current.add(changedProcessed.id);
+        if (typeof window !== 'undefined') {
+          window.sessionStorage.setItem(seenStorageKey, '1');
+        }
+        if (changedProcessed.status === 'approved') {
           setMessage('Transfer approved and converted to coin.');
           return;
         }
-        setMessage(latestProcessed.rejectionReason || 'Transfer denied due to suspected misuse.');
+        setMessage(
+          changedProcessed.rejectionReason || 'Transfer denied due to suspected misuse.'
+        );
       },
       () => {
         // Silent fail to avoid interrupting gameplay flow.
@@ -1849,22 +1977,8 @@ export default function PlayerPage() {
       }, 0);
       return () => window.clearTimeout(nextTimeoutId);
     }
-
-    if (
-      playerUid &&
-      (
-        activeView === 'usernames' ||
-        activeView === 'play' ||
-        activeView === 'dashboard' ||
-        activeView === 'bonus-events'
-      )
-    ) {
-      const nextTimeoutId = window.setTimeout(() => {
-        void loadPlayerUsernames(playerUid);
-      }, 0);
-      return () => window.clearTimeout(nextTimeoutId);
-    }
-  }, [activeView, loadAgents, loadPlayerUsernames, playerUid]);
+    return undefined;
+  }, [activeView, loadAgents, playerUid]);
 
   useEffect(() => {
     if (activeView !== 'play') {
@@ -1922,6 +2036,12 @@ export default function PlayerPage() {
         setMessage(
           'Not enough coin to send a recharge. Add coin first — for example use “Transfer all cash to coin” when you have cash, or use a lower amount.'
         );
+        return;
+      }
+    }
+    if (type === 'redeem') {
+      if (!Number.isFinite(amountNum) || amountNum < MIN_REDEEM_AMOUNT || amountNum > MAX_REDEEM_AMOUNT) {
+        setMessage(`Redeem amount must be between ${MIN_REDEEM_AMOUNT} and ${MAX_REDEEM_AMOUNT}.`);
         return;
       }
     }
@@ -2814,31 +2934,43 @@ export default function PlayerPage() {
 
               {playerAlert ? (
                 <motion.div
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className={`fire-panel fire-orange mb-4 rounded-2xl border p-4 shadow-xl backdrop-blur-md sm:p-5 ${
+                  initial={
                     playerAlert.variant === 'index'
-                      ? 'border-amber-400/50 bg-gradient-to-br from-amber-950/90 via-[#1a1008] to-black/80'
-                      : playerAlert.variant === 'permission'
-                        ? 'border-rose-400/45 bg-gradient-to-br from-rose-950/85 to-black/80'
-                        : playerAlert.variant === 'lowCoin'
-                          ? 'border-orange-400/55 bg-gradient-to-br from-orange-950/90 via-[#1a0f08] to-black/85'
-                          : 'border-violet-400/40 bg-gradient-to-br from-violet-950/80 to-black/80'
-                  }`}
+                      ? { opacity: 0, y: -10 }
+                      : { opacity: 0, scale: 0.94, y: -24 }
+                  }
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  className={
+                    playerAlert.variant === 'index'
+                      ? 'fire-panel fire-orange mb-4 rounded-2xl border border-amber-400/50 bg-gradient-to-br from-amber-950/90 via-[#1a1008] to-black/80 p-4 shadow-xl backdrop-blur-md sm:p-5'
+                      : playerAlert.variant === 'success'
+                        ? 'fixed left-1/2 top-1/2 z-[130] w-[min(92vw,32rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl border border-emerald-300/45 bg-gradient-to-br from-emerald-700/95 via-emerald-900/95 to-black/90 p-7 text-white shadow-[0_0_0_100vmax_rgba(6,95,70,0.38),0_24px_70px_-18px_rgba(6,78,59,0.92)] backdrop-blur-xl md:left-[calc(18rem+(100vw-18rem)/2)] md:w-[min(calc((100vw-18rem)*0.6),42rem)] xl:left-[calc(20rem+(100vw-20rem)/2)] xl:w-[min(calc((100vw-20rem)*0.6),46rem)]'
+                        : 'fixed left-1/2 top-1/2 z-[130] w-[min(92vw,32rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl border border-red-300/45 bg-gradient-to-br from-red-800/95 via-rose-950/95 to-black/90 p-7 text-white shadow-[0_0_0_100vmax_rgba(127,29,29,0.55),0_24px_70px_-18px_rgba(127,29,29,0.95)] backdrop-blur-xl md:left-[calc(18rem+(100vw-18rem)/2)] md:w-[min(calc((100vw-18rem)*0.6),42rem)] xl:left-[calc(20rem+(100vw-20rem)/2)] xl:w-[min(calc((100vw-20rem)*0.6),46rem)]'
+                  }
                 >
                   <div className="flex items-start justify-between gap-3">
-                    <h3 className="text-xl font-black text-white">
+                    <h3 className="text-2xl font-black text-white">
                       {playerAlert.variant === 'index'
                         ? '⚙️ '
                         : playerAlert.variant === 'lowCoin'
                           ? '🪙 '
                           : '⚠️ '}
-                      {playerAlert.title}
+                      {playerAlert.variant === 'index'
+                        ? playerAlert.title
+                        : playerAlert.variant === 'success'
+                          ? playerAlert.title
+                          : 'Warning'}
                     </h3>
                     <button
                       type="button"
                       onClick={() => setMessage('')}
-                      className="shrink-0 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-sm font-bold text-white/80 hover:bg-white/10"
+                      className={
+                        playerAlert.variant === 'index'
+                          ? 'shrink-0 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-sm font-bold text-white/80 hover:bg-white/10'
+                          : playerAlert.variant === 'success'
+                            ? 'shrink-0 rounded-xl bg-white px-4 py-2 text-sm font-black text-emerald-800 hover:bg-emerald-100'
+                            : 'shrink-0 rounded-xl bg-white px-4 py-2 text-sm font-black text-red-800 hover:bg-red-100'
+                      }
                       aria-label="Dismiss alert"
                     >
                       ✕
@@ -2846,15 +2978,16 @@ export default function PlayerPage() {
                   </div>
                   <p
                     className={`mt-2 text-base leading-relaxed sm:text-[1.05rem] ${
-                      playerAlert.variant === 'lowCoin'
-                        ? 'text-orange-50/95'
-                        : 'text-amber-50/90'
+                      playerAlert.variant === 'index'
+                        ? 'text-amber-50/90'
+                        : playerAlert.variant === 'success'
+                          ? 'text-emerald-50'
+                          : 'text-red-50'
                     }`}
                   >
                     {playerAlert.body}
                   </p>
-                  {playerAlert.variant === 'lowCoin' ? null : playerAlert.variant ===
-                    'index' ? (
+                  {playerAlert.variant === 'index' ? (
                     <div className="mt-3 rounded-xl border border-amber-400/25 bg-black/40 px-3 py-3 text-xs text-amber-100/80">
                       <p className="text-sm font-black uppercase tracking-wider text-amber-200/90">
                         Technical details
@@ -2878,16 +3011,7 @@ export default function PlayerPage() {
                         {playerAlert.raw}
                       </pre>
                     </div>
-                  ) : (
-                    <details className="mt-3 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-amber-100/65">
-                      <summary className="cursor-pointer font-bold text-amber-200/90">
-                        Technical details
-                      </summary>
-                      <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] text-amber-100/50">
-                        {playerAlert.raw}
-                      </pre>
-                    </details>
-                  )}
+                  ) : null}
                 </motion.div>
               ) : null}
 
@@ -3637,7 +3761,7 @@ export default function PlayerPage() {
                               className={`relative mt-2 flex min-h-[38px] w-full items-center justify-center rounded-xl px-2 text-sm font-black transition-all duration-300 group-hover:tracking-wide ${
                                 isSelected
                                   ? 'bg-gradient-to-r from-amber-300 via-yellow-300 to-orange-300 text-black shadow-[0_0_22px_-2px_rgba(251,191,36,0.7)]'
-                                  : 'border border-amber-300/60 bg-gradient-to-r from-amber-500/25 to-orange-500/20 text-amber-50 shadow-[0_0_18px_-6px_rgba(251,191,36,0.55)] group-hover:from-amber-400/40 group-hover:to-orange-400/35 group-hover:shadow-[0_0_26px_-4px_rgba(251,191,36,0.75)]'
+                                  : 'border border-orange-200/80 bg-orange-500 text-white shadow-[0_0_18px_-6px_rgba(249,115,22,0.75)] group-hover:bg-orange-600 group-hover:shadow-[0_0_26px_-4px_rgba(249,115,22,0.95)]'
                               }`}
                             >
                               {isSelected ? '🔥 Selected' : 'Tap to open'}
@@ -3759,7 +3883,7 @@ export default function PlayerPage() {
                                   href={downloadGameUrl}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="mt-2 inline-flex items-center rounded-xl border border-red-300/45 bg-red-500/20 px-3 py-1.5 text-xs font-black uppercase tracking-[0.12em] text-red-100 shadow-[0_0_22px_-6px_rgba(248,113,113,0.95),0_0_38px_-14px_rgba(239,68,68,0.95)] transition hover:bg-red-500/35 hover:text-white hover:shadow-[0_0_28px_-4px_rgba(252,165,165,1),0_0_46px_-12px_rgba(239,68,68,1)]"
+                                  className="mt-2 inline-flex items-center rounded-xl border border-red-200/80 bg-red-600 px-3 py-1.5 text-xs font-black uppercase tracking-[0.12em] text-white shadow-[0_0_22px_-6px_rgba(248,113,113,0.95),0_0_38px_-14px_rgba(220,38,38,0.98)] transition hover:bg-red-700 hover:text-white hover:shadow-[0_0_28px_-4px_rgba(252,165,165,1),0_0_46px_-12px_rgba(220,38,38,1)]"
                                 >
                                   Download Game
                                 </a>
@@ -3793,19 +3917,6 @@ export default function PlayerPage() {
                               <p className="mt-1.5 break-words rounded-xl border border-black/10 bg-black/30 px-3 py-1 font-mono text-[0.95rem] font-bold tracking-[0.08em] text-white shadow-inner">
                                 {displayUsername || '—'}
                               </p>
-                            </div>
-
-                            <div className="rounded-2xl border border-cyan-300/18 bg-cyan-950/18 p-3">
-                              <p className="text-[0.72rem] font-black uppercase tracking-[0.16em] text-cyan-100/82">
-                                Carer who created this
-                              </p>
-                              {gameCarers.length === 0 ? (
-                                <p className="mt-2 text-sm text-cyan-100/65">No carer info yet.</p>
-                              ) : (
-                                <p className="mt-2 text-[1rem] font-semibold leading-snug text-white">
-                                  {gameCarers.join(', ')}
-                                </p>
-                              )}
                             </div>
 
                             <div className="rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
@@ -4214,6 +4325,22 @@ export default function PlayerPage() {
                     Not enough coin. Lower the amount or add coin first.
                   </p>
                 ) : null}
+                <p className="mt-2 text-xs leading-relaxed text-rose-100/70">
+                  Redeem limit is {PLAYER_GAME_REDEEM_MAX_PER_24H} per game in a rolling 24-hour
+                  window. The timer resets as older redeems leave that game&apos;s window.
+                </p>
+                <p className="mt-2 text-xs leading-relaxed text-amber-100/70">
+                  Redeem requests must be between {MIN_REDEEM_AMOUNT} and {MAX_REDEEM_AMOUNT}.
+                </p>
+                {playAmount &&
+                Number.isFinite(Number(playAmount)) &&
+                Number(playAmount) > 0 &&
+                (Number(playAmount) < MIN_REDEEM_AMOUNT ||
+                  Number(playAmount) > MAX_REDEEM_AMOUNT) ? (
+                  <p className="mt-2 text-sm font-bold text-rose-300">
+                    Redeem amount must be between {MIN_REDEEM_AMOUNT} and {MAX_REDEEM_AMOUNT}.
+                  </p>
+                ) : null}
               </div>
 
               <div className="mt-4 flex items-start gap-2 rounded-2xl border border-white/10 bg-white/[0.06] p-3 text-sm text-amber-100/65 sm:p-4">
@@ -4247,7 +4374,10 @@ export default function PlayerPage() {
                     requestLoading ||
                     !selectedGameName ||
                     !playAmount ||
-                    isBlockedPlayer
+                    isBlockedPlayer ||
+                    !Number.isFinite(Number(playAmount)) ||
+                    Number(playAmount) < MIN_REDEEM_AMOUNT ||
+                    Number(playAmount) > MAX_REDEEM_AMOUNT
                   }
                   onClick={() => void handleGameRequest('redeem')}
                   className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-700 to-red-600 px-4 py-3 text-base font-black text-white shadow-lg shadow-rose-500/25 transition-all hover:brightness-110 disabled:opacity-50"
