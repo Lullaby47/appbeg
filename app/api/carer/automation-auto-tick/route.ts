@@ -129,6 +129,42 @@ export async function POST(request: Request) {
     throw e;
   }
 
+  const inProgressSnap = await adminDb
+    .collection('carerTasks')
+    .where('coadminUid', '==', coadminUid)
+    .where('status', '==', 'in_progress')
+    .limit(40)
+    .get();
+
+  const myInProgress = inProgressSnap.docs.filter((d) => {
+    const row = d.data() as { assignedCarerUid?: string; claimedByUid?: string };
+    const a = String(row.assignedCarerUid || '').trim();
+    const c = String(row.claimedByUid || '').trim();
+    return a === carerUid || c === carerUid;
+  });
+
+  console.info('[AUTO_TICK] pending candidates and in-progress gate', {
+    carerUid,
+    coadminUid,
+    pendingQueryLimit: 15,
+    inProgressPoolCount: inProgressSnap.docs.length,
+    myInProgressCount: myInProgress.length,
+    myInProgressTaskIds: myInProgress.map((d) => d.id),
+  });
+
+  if (myInProgress.length > 0) {
+    console.info('[AUTO_TICK] active in_progress exists for this carer, waiting', {
+      carerUid,
+      taskIds: myInProgress.map((d) => d.id),
+    });
+    return NextResponse.json({
+      ok: true,
+      claimed: false,
+      reason: 'already_in_progress',
+      myInProgressTaskIds: myInProgress.map((d) => d.id),
+    });
+  }
+
   const pendingSnap = await adminDb
     .collection('carerTasks')
     .where('coadminUid', '==', coadminUid)
@@ -137,6 +173,11 @@ export async function POST(request: Request) {
     .limit(15)
     .get();
 
+  console.info('[AUTO_TICK] pending query result', {
+    candidateCount: pendingSnap.docs.length,
+    candidateTaskIds: pendingSnap.docs.map((d) => d.id),
+  });
+
   for (const docSnap of pendingSnap.docs) {
     const task: Record<string, unknown> & { id: string } = {
       id: docSnap.id,
@@ -144,11 +185,20 @@ export async function POST(request: Request) {
     };
     const mapped = mapTaskType(resolveTaskTypeLabel(task));
     if (!isAgentSupportedAutomationType(mapped)) {
+      console.info('[AUTO_TICK] skipped task (unsupported type)', {
+        taskId: docSnap.id,
+        reason: 'unsupported_automation_type',
+        mapped,
+      });
       continue;
     }
     const gameName = String(task['gameName'] || task['game'] || '').trim();
     const playerUid = String(task['playerUid'] || '').trim();
     if (!gameName || !playerUid) {
+      console.info('[AUTO_TICK] skipped task (missing game or player)', {
+        taskId: docSnap.id,
+        reason: 'missing_game_or_player',
+      });
       continue;
     }
 
@@ -166,6 +216,12 @@ export async function POST(request: Request) {
     const userRow = userSnap.data() as { username?: string };
     const carerName = String(userRow.username || '').trim() || 'Carer';
 
+    console.info('[AUTO_TICK] attempting claim for pending task', {
+      taskId: docSnap.id,
+      gameName,
+      playerUid,
+    });
+
     try {
       const result = await claimCarerTaskAsAdmin({
         carerUid,
@@ -174,7 +230,7 @@ export async function POST(request: Request) {
         carerName,
         gameLoginDetails,
       });
-      console.info('[automation] auto tick claimed task', {
+      console.info('[AUTO_TICK] claimed pending task as in_progress', {
         taskId: result.taskId,
         jobId: result.jobId,
         carerUid,
@@ -196,6 +252,11 @@ export async function POST(request: Request) {
         message.includes('unsupported') ||
         message.includes('No automation agent')
       ) {
+        console.info('[AUTO_TICK] skipped task after claim attempt', {
+          taskId: docSnap.id,
+          reason: 'claim_rejected',
+          message,
+        });
         continue;
       }
       const lower = message.toLowerCase();
@@ -211,9 +272,13 @@ export async function POST(request: Request) {
         );
         return NextResponse.json({ ok: false, claimed: false, reason: 'quota', error: message }, { status: 429 });
       }
+      console.error('[AUTO_TICK] unexpected claim error', { taskId: docSnap.id, message });
       return NextResponse.json({ ok: false, claimed: false, error: message }, { status: 500 });
     }
   }
 
+  console.info('[AUTO_TICK] no claimable pending task after scanning candidates', {
+    candidateCount: pendingSnap.docs.length,
+  });
   return NextResponse.json({ ok: true, claimed: false, reason: 'no_claimable_task' });
 }

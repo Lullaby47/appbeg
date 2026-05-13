@@ -40,7 +40,6 @@ import {
   CarerTask,
   completeRechargeRedeemTask,
   completeUsernameTaskForPlayerGame,
-  getEffectiveCarerTaskStatus,
   isRealCompletedCarerTask,
   getCurrentUserCoadminUid,
   listenCarerRechargeRedeemTotalsByCoadmin,
@@ -487,7 +486,7 @@ export default function CarerPage() {
   const claimablePendingTasks = useMemo(
     () =>
       sortByNewest(
-        tasks.filter((task) => getEffectiveCarerTaskStatus(task) === 'pending')
+        tasks.filter((task) => String(task.status || '').trim().toLowerCase() === 'pending')
       ),
     [tasks]
   );
@@ -495,11 +494,16 @@ export default function CarerPage() {
   const myInProgressTasks = useMemo(
     () =>
       sortByNewest(
-        tasks.filter(
-          (task) =>
-            getEffectiveCarerTaskStatus(task) === 'in_progress' &&
-            task.assignedCarerUid === carerIdentity?.uid
-        )
+        tasks.filter((task) => {
+          if (String(task.status || '').trim().toLowerCase() !== 'in_progress') {
+            return false;
+          }
+          const uid = carerIdentity?.uid?.trim();
+          if (!uid) {
+            return false;
+          }
+          return task.assignedCarerUid === uid || task.claimedByUid === uid;
+        })
       ),
     [carerIdentity?.uid, tasks]
   );
