@@ -571,6 +571,7 @@ export async function claimTaskAndCreateJob(input: {
         });
         transaction.update(taskRef, {
           ...claimedTaskData,
+          status: 'in_progress',
           claimedStatus: 'running',
           claimedByUid: currentUser.uid,
           claimedByUsername: createdByName,
@@ -624,6 +625,7 @@ export async function claimTaskAndCreateJob(input: {
       });
       transaction.update(taskRef, {
         ...claimedTaskData,
+        status: 'in_progress',
         claimedStatus: 'running',
         claimedByUid: currentUser.uid,
         claimedByUsername: createdByName,
