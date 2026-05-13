@@ -2866,13 +2866,6 @@ export default function PlayerPage() {
                 >
                   💸 Cashout
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setShowLogoutConfirmSplash(true)}
-                  className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-base font-bold text-amber-100/85 transition hover:bg-white/10"
-                >
-                  Log out
-                </button>
               </div>
 
               <div className="relative z-20 mb-4 grid shrink-0 grid-cols-3 gap-2 md:hidden">
