@@ -623,6 +623,8 @@ export default function PlayerPage() {
   const [showLogoutConfirmSplash, setShowLogoutConfirmSplash] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
   const [bonusVanishedToast, setBonusVanishedToast] = useState(false);
+  const knownRechargeRequestStatusByIdRef = useRef<Record<string, PlayerGameRequest['status']>>({});
+  const seenCompletedRechargeSplashIdsRef = useRef<Set<string>>(new Set());
   const knownRedeemRequestStatusByIdRef = useRef<Record<string, PlayerGameRequest['status']>>({});
   const seenDismissedRedeemSplashIdsRef = useRef<Set<string>>(new Set());
   const bonusSwipeStartXRef = useRef<number | null>(null);
@@ -1059,14 +1061,34 @@ export default function PlayerPage() {
   );
   useEffect(() => {
     if (!playerUid) {
+      knownRechargeRequestStatusByIdRef.current = {};
+      seenCompletedRechargeSplashIdsRef.current = new Set();
       knownRedeemRequestStatusByIdRef.current = {};
       seenDismissedRedeemSplashIdsRef.current = new Set();
       return;
     }
 
+    const recentCompletionCutoffMs = Date.now() - 5 * 60 * 1000;
+    const nextRechargeStatusById: Record<string, PlayerGameRequest['status']> = {};
     const nextStatusById: Record<string, PlayerGameRequest['status']> = {};
 
     for (const request of requestHistory) {
+      if (request.type === 'recharge') {
+        nextRechargeStatusById[request.id] = request.status;
+        const previousStatus = knownRechargeRequestStatusByIdRef.current[request.id];
+        const completedAtMs = getTimestampMs(request.completedAt);
+        const recentlyCompleted = completedAtMs >= recentCompletionCutoffMs;
+        const justCompleted =
+          request.status === 'completed' &&
+          ((previousStatus !== undefined && previousStatus !== 'completed') ||
+            (previousStatus === undefined && recentlyCompleted));
+
+        if (justCompleted && !seenCompletedRechargeSplashIdsRef.current.has(request.id)) {
+          showRechargeSuccessToast();
+          seenCompletedRechargeSplashIdsRef.current.add(request.id);
+        }
+      }
+
       if (request.type !== 'redeem') {
         continue;
       }
@@ -1083,6 +1105,7 @@ export default function PlayerPage() {
       }
     }
 
+    knownRechargeRequestStatusByIdRef.current = nextRechargeStatusById;
     knownRedeemRequestStatusByIdRef.current = nextStatusById;
   }, [playerUid, requestHistory]);
 
@@ -2080,9 +2103,7 @@ export default function PlayerPage() {
         type,
       });
 
-      if (type === 'recharge') {
-        showRechargeSuccessToast();
-      } else {
+      if (type === 'redeem') {
         setMessage('Redeem request sent.');
       }
       setPlayAmount('');
