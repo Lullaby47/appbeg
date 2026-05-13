@@ -71,6 +71,11 @@ import {
   validateAutomationAgentId,
 } from '@/features/automation/carerAutomationAgent';
 import {
+  setCarerAutomationAutoEnabled,
+  subscribeCarerAutomationAutoState,
+  type CarerAutomationAutoStateDoc,
+} from '@/features/automation/automationAutoState';
+import {
   buildAutomationPayload,
   claimTaskAndCreateJob,
   listenAutomationUiStatusByTask,
@@ -105,7 +110,6 @@ type DashboardCard = {
 
 type TaskSection = 'pending' | 'mine' | 'completed';
 
-const AUTO_AUTOMATION_INTERVAL_MS = 7000;
 const CREATE_USERNAME_UI_GRACE_MS = 5 * 60 * 1000;
 const TASK_CLAIM_STALE_TIMEOUT_MS = 5 * 60 * 1000;
 function getTimestampMs(value: unknown) {
@@ -418,7 +422,9 @@ export default function CarerPage() {
   );
   const [riskActionLoading, setRiskActionLoading] = useState<string | null>(null);
   const [automationLoadingTaskId, setAutomationLoadingTaskId] = useState<string | null>(null);
-  const [autoAutomationEnabled, setAutoAutomationEnabled] = useState(false);
+  const [automationAutoStateDoc, setAutomationAutoStateDoc] =
+    useState<CarerAutomationAutoStateDoc | null>(null);
+  const autoAutomationEnabled = Boolean(automationAutoStateDoc?.enabled);
   const [automationStatusByTaskId, setAutomationStatusByTaskId] = useState<
     Record<string, AutomationUiStatus>
   >({});
@@ -435,7 +441,6 @@ export default function CarerPage() {
 
   const previousPendingCountRef = useRef(0);
   const shiftSessionIdRef = useRef<string | null>(null);
-  const lastAutoAutomationRunMsRef = useRef(0);
   const startTaskInFlightIdsRef = useRef<Set<string>>(new Set());
 
   const selectedPlayer = useMemo((): PlayerUser | null => {
@@ -700,6 +705,25 @@ export default function CarerPage() {
   }, [carerIdentity?.uid]);
 
   useEffect(() => {
+    if (!carerIdentity?.uid) {
+      setAutomationAutoStateDoc(null);
+      return;
+    }
+
+    const unsubscribe = subscribeCarerAutomationAutoState(
+      carerIdentity.uid,
+      (data) => {
+        setAutomationAutoStateDoc(data);
+      },
+      (error) => {
+        setErrorMessage(error.message || 'Failed to load persistent automation state.');
+      }
+    );
+
+    return () => unsubscribe();
+  }, [carerIdentity?.uid]);
+
+  useEffect(() => {
     if (!coadminUid) {
       setRiskSnapshots([]);
       return;
@@ -872,37 +896,6 @@ export default function CarerPage() {
       return changed ? next : current;
     });
   }, [automationStatusByTaskId, tasks]);
-
-  useEffect(() => {
-    if (!autoAutomationEnabled) {
-      return;
-    }
-
-    if (automationLoadingTaskId || !carerIdentity) {
-      return;
-    }
-
-    const nextPendingTask = claimablePendingTasks[0];
-    if (!nextPendingTask || startTaskInFlightIdsRef.current.has(nextPendingTask.id)) {
-      return;
-    }
-
-    const nowMs = Date.now();
-    const elapsedMs = nowMs - lastAutoAutomationRunMsRef.current;
-    const delayMs = Math.max(0, AUTO_AUTOMATION_INTERVAL_MS - elapsedMs);
-
-    const timeoutId = window.setTimeout(() => {
-      lastAutoAutomationRunMsRef.current = Date.now();
-      void handleStartTask(nextPendingTask);
-    }, delayMs);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [
-    autoAutomationEnabled,
-    automationLoadingTaskId,
-    carerIdentity,
-    claimablePendingTasks,
-  ]);
 
   async function initializePage(firebaseUser: User) {
     setBootstrapping(true);
@@ -1281,7 +1274,17 @@ export default function CarerPage() {
         normalized.includes('contention') ||
         normalized.includes('updated at the same time');
       if (normalized.includes('resource_exhausted') || normalized.includes('quota exceeded')) {
-        setAutoAutomationEnabled(false);
+        if (carerIdentity && coadminUid) {
+          try {
+            await setCarerAutomationAutoEnabled({
+              carerUid: carerIdentity.uid,
+              coadminUid,
+              enabled: false,
+            });
+          } catch {
+            /* ignore secondary failure while surfacing quota message */
+          }
+        }
         setErrorMessage(
           'Firestore quota exceeded. Auto automation has been paused to prevent repeated errors.'
         );
@@ -2124,12 +2127,28 @@ export default function CarerPage() {
         <div className="flex flex-wrap gap-3">
           <button
             onClick={() => {
-              setActiveView('tasks');
-              setAutoAutomationEnabled(true);
-              setNoticeMessage(
-                'Auto automation started. Pending tasks will move one by one as fast as possible.'
-              );
-              void refreshPageData();
+              if (!carerIdentity?.uid || !coadminUid) {
+                setErrorMessage('Coadmin scope is not ready yet.');
+                return;
+              }
+              void (async () => {
+                try {
+                  await setCarerAutomationAutoEnabled({
+                    carerUid: carerIdentity.uid,
+                    coadminUid,
+                    enabled: true,
+                  });
+                  setActiveView('tasks');
+                  setNoticeMessage(
+                    'Auto automation started. Pending tasks will move one by one as fast as possible.'
+                  );
+                  void refreshPageData();
+                } catch (error) {
+                  setErrorMessage(
+                    error instanceof Error ? error.message : 'Failed to start automation.'
+                  );
+                }
+              })();
             }}
             className="rounded-2xl bg-white px-4 py-3 text-sm font-bold text-black hover:bg-neutral-200"
           >
@@ -2652,15 +2671,29 @@ export default function CarerPage() {
             <button
               type="button"
               onClick={() => {
-                setAutoAutomationEnabled((previous) => {
-                  const next = !previous;
-                  setNoticeMessage(
-                    next
-                      ? 'Auto automation started. Pending tasks will move one by one as fast as possible.'
-                      : 'Auto automation stopped.'
-                  );
-                  return next;
-                });
+                if (!carerIdentity?.uid || !coadminUid) {
+                  setErrorMessage('Coadmin scope is not ready yet.');
+                  return;
+                }
+                const next = !autoAutomationEnabled;
+                void (async () => {
+                  try {
+                    await setCarerAutomationAutoEnabled({
+                      carerUid: carerIdentity.uid,
+                      coadminUid,
+                      enabled: next,
+                    });
+                    setNoticeMessage(
+                      next
+                        ? 'Auto automation started. Pending tasks will move one by one as fast as possible.'
+                        : 'Auto automation stopped.'
+                    );
+                  } catch (error) {
+                    setErrorMessage(
+                      error instanceof Error ? error.message : 'Failed to update automation.'
+                    );
+                  }
+                })();
               }}
               className="rounded-xl border border-violet-500/40 bg-violet-500/15 px-4 py-2 text-sm font-bold text-violet-100 hover:bg-violet-500/25"
             >
