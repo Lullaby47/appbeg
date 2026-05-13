@@ -597,8 +597,10 @@ export default function PlayerPage() {
   const referralCodeEnsureInFlightRef = useRef(false);
   const lastSyncedRequestTotalsRef = useRef<string | null>(null);
   const clipboardToastTimerRef = useRef<number | null>(null);
+  const rechargeSuccessSplashTimerRef = useRef<number | null>(null);
 
   const [clipboardToast, setClipboardToast] = useState<ClipboardToastState>(null);
+  const [showRechargeSuccessSplash, setShowRechargeSuccessSplash] = useState(false);
 
   const [message, setMessage] = useState('');
   const [loadingList, setLoadingList] = useState(false);
@@ -1275,8 +1277,24 @@ export default function PlayerPage() {
       if (clipboardToastTimerRef.current !== null) {
         clearTimeout(clipboardToastTimerRef.current);
       }
+      if (rechargeSuccessSplashTimerRef.current !== null) {
+        clearTimeout(rechargeSuccessSplashTimerRef.current);
+      }
     };
   }, []);
+
+  function showRechargeSuccessToast() {
+    if (rechargeSuccessSplashTimerRef.current !== null) {
+      clearTimeout(rechargeSuccessSplashTimerRef.current);
+      rechargeSuccessSplashTimerRef.current = null;
+    }
+
+    setShowRechargeSuccessSplash(true);
+    rechargeSuccessSplashTimerRef.current = window.setTimeout(() => {
+      setShowRechargeSuccessSplash(false);
+      rechargeSuccessSplashTimerRef.current = null;
+    }, 1000);
+  }
 
   function showClipboardToast(
     text: string,
@@ -2062,7 +2080,11 @@ export default function PlayerPage() {
         type,
       });
 
-      setMessage(`${type === 'recharge' ? 'Recharge' : 'Redeem'} request sent.`);
+      if (type === 'recharge') {
+        showRechargeSuccessToast();
+      } else {
+        setMessage('Redeem request sent.');
+      }
       setPlayAmount('');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Request failed.');
@@ -4196,6 +4218,38 @@ export default function PlayerPage() {
           {clipboardToast.text}
         </motion.div>
       ) : null}
+
+      <AnimatePresence>
+        {showRechargeSuccessSplash ? (
+          <motion.div
+            className="pointer-events-none fixed inset-0 z-[210] flex items-center justify-center px-4"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.14 }}
+            role="status"
+            aria-live="polite"
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 12, scale: 0.92 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -8, scale: 0.96 }}
+              transition={{ duration: 0.18, ease: 'easeOut' }}
+              className="w-[min(92vw,23rem)] overflow-hidden rounded-3xl border border-emerald-200/55 bg-gradient-to-br from-emerald-400/95 via-green-600/95 to-emerald-950/95 px-5 py-4 text-center text-white shadow-[0_0_44px_-8px_rgba(16,185,129,0.95),0_22px_60px_-24px_rgba(6,78,59,0.95)] backdrop-blur-xl sm:px-6 sm:py-5"
+            >
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-white/35 bg-white/20 text-3xl shadow-[0_0_24px_rgba(187,247,208,0.55)]">
+                ✓
+              </div>
+              <p className="mt-3 text-lg font-black leading-tight text-white sm:text-xl">
+                ✅ Recharge Successful
+              </p>
+              <p className="mt-1 text-sm font-semibold text-emerald-50/85">
+                Coins added to your Game
+              </p>
+            </motion.div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
       {credentialResetModal ? (
         <div

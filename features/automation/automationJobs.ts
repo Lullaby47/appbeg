@@ -150,6 +150,16 @@ function sanitizeStatus(value: unknown): CarerTaskStatus {
   return 'pending';
 }
 
+function taskDebugFields(task: Record<string, unknown> | null | undefined) {
+  return {
+    status: String(task?.['status'] || '').trim() || null,
+    assignedCarerUid: String(task?.['assignedCarerUid'] || '').trim() || null,
+    assignedCarerUsername: String(task?.['assignedCarerUsername'] || task?.['assignedCarer'] || '').trim() || null,
+    claimedByUid: String(task?.['claimedByUid'] || '').trim() || null,
+    automationJobId: String(task?.['automationJobId'] || '').trim() || null,
+  };
+}
+
 export async function claimTaskAndCreateJob(input: {
   taskId: string;
   currentUsername?: string | null;
@@ -218,6 +228,12 @@ export async function claimTaskAndCreateJob(input: {
       const freshTask = taskSnap.data() as Record<string, unknown>;
       const createdByName =
         input.carerName?.trim() || userData.username?.trim() || 'Carer';
+      console.info('[AUTO_CLAIM_UI] before task status fields', {
+        taskId: taskSnap.id,
+        carerUid: currentUser.uid,
+        carerUsername: createdByName,
+        fields: taskDebugFields(freshTask),
+      });
       const currentStatus = sanitizeStatus(freshTask.status);
       const rawTaskStatus = String(freshTask.status || '').trim().toLowerCase() || 'pending';
       const automationStatus = normalizeAutomationStatus(freshTask.automationStatus);
@@ -571,6 +587,7 @@ export async function claimTaskAndCreateJob(input: {
           taskId: taskSnap.id,
           assignedCarerUid: currentUser.uid,
           jobId: reusableActiveJob.ref.id,
+          originalTaskUpdatedToInProgress: true,
         });
         console.info('[automation] start-task:decision', {
           taskId: taskSnap.id,
@@ -623,6 +640,7 @@ export async function claimTaskAndCreateJob(input: {
         taskId: taskSnap.id,
         assignedCarerUid: currentUser.uid,
         jobId: jobRef.id,
+        originalTaskUpdatedToInProgress: true,
       });
 
       const jobData = {
@@ -734,6 +752,21 @@ export async function claimTaskAndCreateJob(input: {
   if (!result) {
     throw (lastError instanceof Error ? lastError : new Error('Failed to queue the task.'));
   }
+
+  const afterTaskSnap = await getDoc(taskRef);
+  const afterTask = afterTaskSnap.exists() ? (afterTaskSnap.data() as Record<string, unknown>) : null;
+  console.info('[AUTO_CLAIM_UI] after task status fields', {
+    taskId: input.taskId,
+    jobId: result.jobId,
+    carerUid: currentUser.uid,
+    reusedExistingJob: result.reusedExistingJob,
+    automationJobCreated: !result.reusedExistingJob,
+    originalTaskUpdatedToInProgress:
+      Boolean(afterTask) &&
+      String(afterTask?.['status'] || '').trim().toLowerCase() === 'in_progress' &&
+      String(afterTask?.['assignedCarerUid'] || '').trim() === currentUser.uid,
+    fields: taskDebugFields(afterTask),
+  });
 
   return Promise.resolve(result).then((result) => {
     if (!result.reusedExistingJob) {

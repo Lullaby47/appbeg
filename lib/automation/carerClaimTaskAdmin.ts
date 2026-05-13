@@ -114,6 +114,16 @@ function sanitizeStatus(value: unknown): string {
   return 'pending';
 }
 
+function taskDebugFields(task: Record<string, unknown> | null | undefined) {
+  return {
+    status: String(task?.['status'] || '').trim() || null,
+    assignedCarerUid: String(task?.['assignedCarerUid'] || '').trim() || null,
+    assignedCarerUsername: String(task?.['assignedCarerUsername'] || task?.['assignedCarer'] || '').trim() || null,
+    claimedByUid: String(task?.['claimedByUid'] || '').trim() || null,
+    automationJobId: String(task?.['automationJobId'] || '').trim() || null,
+  };
+}
+
 function isAgentSupportedAutomationType(value: string) {
   return (
     value === 'CREATE_USERNAME' ||
@@ -190,6 +200,12 @@ export async function claimCarerTaskAsAdmin(input: {
 
       const freshTask = taskSnap.data() as Record<string, unknown>;
       const createdByName = input.carerName?.trim() || userData.username?.trim() || 'Carer';
+      console.info('[AUTO_CLAIM_ADMIN] before task status fields', {
+        taskId: taskSnap.id,
+        carerUid: input.carerUid,
+        carerUsername: createdByName,
+        fields: taskDebugFields(freshTask),
+      });
       const currentStatus = sanitizeStatus(freshTask.status);
       const rawTaskStatus = String(freshTask.status || '').trim().toLowerCase() || 'pending';
       const automationStatus = normalizeAutomationStatus(freshTask.automationStatus);
@@ -541,6 +557,7 @@ export async function claimCarerTaskAsAdmin(input: {
           taskId: taskSnap.id,
           assignedCarerUid: currentUserUid,
           jobId: reusableActiveJob.ref.id,
+          originalTaskUpdatedToInProgress: true,
         });
         console.info('[automation] start-task:decision', {
           taskId: taskSnap.id,
@@ -593,6 +610,7 @@ export async function claimCarerTaskAsAdmin(input: {
         taskId: taskSnap.id,
         assignedCarerUid: currentUserUid,
         jobId: jobRef.id,
+        originalTaskUpdatedToInProgress: true,
       });
 
       const jobData = {
@@ -691,6 +709,21 @@ export async function claimCarerTaskAsAdmin(input: {
   if (!result) {
     throw lastError instanceof Error ? lastError : new Error('Failed to queue the task.');
   }
+
+  const afterTaskSnap = await adminDb.collection('carerTasks').doc(input.taskId).get();
+  const afterTask = afterTaskSnap.exists ? (afterTaskSnap.data() as Record<string, unknown>) : null;
+  console.info('[AUTO_CLAIM_ADMIN] after task status fields', {
+    taskId: input.taskId,
+    jobId: result.jobId,
+    carerUid: input.carerUid,
+    reusedExistingJob: result.reusedExistingJob,
+    automationJobCreated: !result.reusedExistingJob,
+    originalTaskUpdatedToInProgress:
+      Boolean(afterTask) &&
+      String(afterTask?.['status'] || '').trim().toLowerCase() === 'in_progress' &&
+      String(afterTask?.['assignedCarerUid'] || '').trim() === input.carerUid,
+    fields: taskDebugFields(afterTask),
+  });
 
   return result;
 }

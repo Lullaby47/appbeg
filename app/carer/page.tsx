@@ -440,6 +440,9 @@ export default function CarerPage() {
   const previousPendingCountRef = useRef(0);
   const shiftSessionIdRef = useRef<string | null>(null);
   const startTaskInFlightIdsRef = useRef<Set<string>>(new Set());
+  const automationAutoTickInstanceIdRef = useRef(
+    `carer-ui-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  );
 
   const selectedPlayer = useMemo((): PlayerUser | null => {
     if (!selectedPlayerUid.trim()) {
@@ -634,6 +637,54 @@ export default function CarerPage() {
   }, [players, tasks]);
   const carerPlayerOnlineByUid = usePresenceOnlineMap(carerPlayerPresenceUids);
 
+  async function fireAutomationAutoTick(reason: string) {
+    const currentUser = auth.currentUser;
+    const linkedAgentId =
+      String(carerIdentity?.automationAgentId || '').trim() ||
+      String(agentInputDraft || '').trim();
+    if (!currentUser || !carerIdentity?.uid || !linkedAgentId) {
+      console.log('[AUTO_UI] auto-tick request not fired', {
+        reason,
+        hasCurrentUser: Boolean(currentUser),
+        carerUid: carerIdentity?.uid || null,
+        hasAgentId: Boolean(linkedAgentId),
+      });
+      return null;
+    }
+
+    const token = await currentUser.getIdToken();
+    const body = {
+      carerUid: carerIdentity.uid,
+      agentId: linkedAgentId,
+      instanceId: automationAutoTickInstanceIdRef.current,
+    };
+    console.log('[AUTO_UI] firing auto-tick request', {
+      reason,
+      carerUid: body.carerUid,
+      agentId: body.agentId,
+      instanceId: body.instanceId,
+    });
+    const response = await fetch('/api/carer/automation-auto-tick', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+    console.log('[AUTO_UI] auto-tick response', {
+      reason,
+      ok: response.ok,
+      status: response.status,
+      payload,
+    });
+    if (!response.ok) {
+      throw new Error(String(payload?.['error'] || 'Auto-tick request failed.'));
+    }
+    return payload;
+  }
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (!firebaseUser) {
@@ -725,6 +776,50 @@ export default function CarerPage() {
 
     return () => unsubscribe();
   }, [carerIdentity?.uid]);
+
+  useEffect(() => {
+    if (!autoAutomationEnabled || !carerIdentity?.uid || !coadminUid) {
+      return;
+    }
+    const linkedAgentId =
+      String(carerIdentity.automationAgentId || '').trim() ||
+      String(agentInputDraft || '').trim();
+    if (!linkedAgentId) {
+      console.log('[AUTO_UI] auto-tick interval not started', {
+        reason: 'missing_agent_id',
+        carerUid: carerIdentity.uid,
+      });
+      return;
+    }
+
+    console.log('[AUTO_UI] auto-tick interval started', {
+      carerUid: carerIdentity.uid,
+      coadminUid,
+      intervalMs: 15000,
+      localAgentCanAlsoTickWhenTabClosed: true,
+    });
+    void fireAutomationAutoTick('enabled_state_effect');
+    const intervalId = window.setInterval(() => {
+      void fireAutomationAutoTick('tab_interval').catch((error) => {
+        console.log('[AUTO_UI] auto-tick interval error', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, 15000);
+
+    return () => {
+      window.clearInterval(intervalId);
+      console.log('[AUTO_UI] auto-tick interval stopped', {
+        carerUid: carerIdentity.uid,
+      });
+    };
+  }, [
+    autoAutomationEnabled,
+    carerIdentity?.uid,
+    carerIdentity?.automationAgentId,
+    agentInputDraft,
+    coadminUid,
+  ]);
 
   useEffect(() => {
     if (!coadminUid) {
@@ -2131,17 +2226,46 @@ export default function CarerPage() {
         <div className="flex flex-wrap gap-3">
           <button
             onClick={() => {
+              console.log('[AUTO_UI] Start Automation click received', {
+                source: 'dashboard',
+                hasCarerUid: Boolean(carerIdentity?.uid),
+                carerUid: carerIdentity?.uid || null,
+                carerUsername: carerIdentity?.username || null,
+                coadminUid: coadminUid || null,
+              });
               if (!carerIdentity?.uid || !coadminUid) {
+                console.log('[AUTO_UI] Start Automation click blocked', {
+                  source: 'dashboard',
+                  reason: 'missing_carer_or_coadmin',
+                  hasCarerUid: Boolean(carerIdentity?.uid),
+                  coadminUid: coadminUid || null,
+                });
                 setErrorMessage('Coadmin scope is not ready yet.');
                 return;
               }
               void (async () => {
                 try {
+                  console.info('[AUTO_UI] Start Automation clicked', {
+                    source: 'dashboard',
+                    carerUid: carerIdentity.uid,
+                    carerUsername: carerIdentity.username || null,
+                    coadminUid,
+                    nextEnabled: true,
+                    autoTickRequestFiredByUi: false,
+                  });
                   await setCarerAutomationAutoEnabled({
                     carerUid: carerIdentity.uid,
                     coadminUid,
                     enabled: true,
                   });
+                  console.info('[AUTO_UI] Start Automation persisted', {
+                    source: 'dashboard',
+                    carerUid: carerIdentity.uid,
+                    coadminUid,
+                    enabled: true,
+                    autoTickRequestFiredByUi: true,
+                  });
+                  await fireAutomationAutoTick('dashboard_start_button');
                   setActiveView('tasks');
                   setNoticeMessage(
                     'Auto automation started. Pending tasks will move one by one as fast as possible.'
@@ -2675,18 +2799,51 @@ export default function CarerPage() {
             <button
               type="button"
               onClick={() => {
+                console.log('[AUTO_UI] Start Automation click received', {
+                  source: 'tasks_header',
+                  hasCarerUid: Boolean(carerIdentity?.uid),
+                  carerUid: carerIdentity?.uid || null,
+                  carerUsername: carerIdentity?.username || null,
+                  coadminUid: coadminUid || null,
+                  previousEnabled: autoAutomationEnabled,
+                });
                 if (!carerIdentity?.uid || !coadminUid) {
+                  console.log('[AUTO_UI] Start Automation click blocked', {
+                    source: 'tasks_header',
+                    reason: 'missing_carer_or_coadmin',
+                    hasCarerUid: Boolean(carerIdentity?.uid),
+                    coadminUid: coadminUid || null,
+                  });
                   setErrorMessage('Coadmin scope is not ready yet.');
                   return;
                 }
                 const next = !autoAutomationEnabled;
                 void (async () => {
                   try {
+                    console.info('[AUTO_UI] Start Automation clicked', {
+                      source: 'tasks_header',
+                      carerUid: carerIdentity.uid,
+                      carerUsername: carerIdentity.username || null,
+                      coadminUid,
+                      previousEnabled: autoAutomationEnabled,
+                      nextEnabled: next,
+                      autoTickRequestFiredByUi: false,
+                    });
                     await setCarerAutomationAutoEnabled({
                       carerUid: carerIdentity.uid,
                       coadminUid,
                       enabled: next,
                     });
+                    console.info('[AUTO_UI] Start Automation persisted', {
+                      source: 'tasks_header',
+                      carerUid: carerIdentity.uid,
+                      coadminUid,
+                      enabled: next,
+                      autoTickRequestFiredByUi: next,
+                    });
+                    if (next) {
+                      await fireAutomationAutoTick('tasks_header_start_button');
+                    }
                     setNoticeMessage(
                       next
                         ? 'Auto automation started. Pending tasks will move one by one as fast as possible.'

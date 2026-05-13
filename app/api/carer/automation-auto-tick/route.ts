@@ -9,7 +9,7 @@ import {
   resolveGameLoginDetailsForCoadminGame,
 } from '@/lib/automation/carerClaimTaskAdmin';
 import { AUTOMATION_AUTO_STATE_COLLECTION } from '@/features/automation/automationAutoState';
-import { apiError } from '@/lib/firebase/apiAuth';
+import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
 
 const LEASE_TTL_MS = 70_000;
 
@@ -36,15 +36,30 @@ function validateAutomationAgentId(agentId: string): {
   return { valid: true, normalized: trimmed };
 }
 
-export async function POST(request: Request) {
-  const expected = String(process.env.CARER_AUTOMATION_TICK_SECRET || '').trim();
-  if (!expected) {
-    return apiError('Server is not configured for automation auto-tick.', 503);
-  }
+function taskDebugFields(task: Record<string, unknown>) {
+  return {
+    status: String(task['status'] || '').trim() || null,
+    assignedCarerUid: String(task['assignedCarerUid'] || '').trim() || null,
+    assignedCarerUsername: String(task['assignedCarerUsername'] || task['assignedCarer'] || '').trim() || null,
+    claimedByUid: String(task['claimedByUid'] || '').trim() || null,
+    automationJobId: String(task['automationJobId'] || '').trim() || null,
+  };
+}
 
+export async function POST(request: Request) {
+  console.info('[AUTO_TICK] route called', {
+    hasSecretHeader: Boolean(String(request.headers.get('x-carer-automation-tick-secret') || '').trim()),
+    hasAuthorization: Boolean(String(request.headers.get('Authorization') || '').trim()),
+  });
+
+  const expected = String(process.env.CARER_AUTOMATION_TICK_SECRET || '').trim();
   const provided = String(request.headers.get('x-carer-automation-tick-secret') || '').trim();
-  if (!provided || provided !== expected) {
-    return apiError('Unauthorized.', 401);
+  const hasValidSecret = Boolean(expected && provided && provided === expected);
+  const auth = hasValidSecret
+    ? null
+    : await requireApiUser(request, ['carer', 'staff', 'coadmin', 'admin']);
+  if (auth && 'response' in auth) {
+    return auth.response;
   }
 
   let body: { carerUid?: unknown; agentId?: unknown; instanceId?: unknown };
@@ -60,12 +75,21 @@ export async function POST(request: Request) {
   if (!carerUid || !agentId || !instanceId) {
     return apiError('carerUid, agentId, and instanceId are required.', 400);
   }
+  if (auth && 'user' in auth && auth.user.role === 'carer' && auth.user.uid !== carerUid) {
+    return apiError('Forbidden: cannot tick automation for another carer.', 403);
+  }
 
   const userSnap = await adminDb.collection('users').doc(carerUid).get();
   if (!userSnap.exists) {
     return apiError('User not found.', 404);
   }
-  const userData = userSnap.data() as { automationAgentId?: string | null };
+  const userData = userSnap.data() as { automationAgentId?: string | null; username?: string | null };
+  console.info('[AUTO_TICK] request received', {
+    carerUid,
+    carerUsername: String(userData.username || '').trim() || null,
+    agentId,
+    instanceId,
+  });
   const linked = validateAutomationAgentId(String(userData.automationAgentId || '').trim());
   const bodyAgent = validateAutomationAgentId(agentId);
   if (
@@ -81,11 +105,26 @@ export async function POST(request: Request) {
   const stateRef = adminDb.collection(AUTOMATION_AUTO_STATE_COLLECTION).doc(carerUid);
   const stateSnap = await stateRef.get();
   const state = stateSnap.exists ? (stateSnap.data() as { enabled?: boolean; coadminUid?: string }) : null;
+  console.info('[AUTO_TICK] automation enabled state', {
+    carerUid,
+    carerUsername: String(userData.username || '').trim() || null,
+    stateExists: stateSnap.exists,
+    enabled: Boolean(state?.enabled),
+    coadminUid: String(state?.coadminUid || '').trim() || null,
+  });
   if (!state?.enabled) {
+    console.info('[AUTO_TICK] skipped auto tick', {
+      carerUid,
+      reason: 'automation_disabled',
+    });
     return NextResponse.json({ ok: true, claimed: false, reason: 'disabled' });
   }
   const coadminUid = String(state.coadminUid || '').trim();
   if (!coadminUid) {
+    console.info('[AUTO_TICK] skipped auto tick', {
+      carerUid,
+      reason: 'missing_coadmin_uid',
+    });
     return NextResponse.json({ ok: true, claimed: false, reason: 'missing_coadmin_uid' });
   }
 
@@ -121,9 +160,18 @@ export async function POST(request: Request) {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (msg === 'LEASE_HELD') {
+      console.info('[AUTO_TICK] skipped auto tick', {
+        carerUid,
+        reason: 'lease_held',
+        instanceId,
+      });
       return NextResponse.json({ ok: true, claimed: false, reason: 'lease_held' });
     }
     if (msg === 'DISABLED' || msg === 'STATE_GONE') {
+      console.info('[AUTO_TICK] skipped auto tick', {
+        carerUid,
+        reason: msg === 'STATE_GONE' ? 'state_gone' : 'disabled_during_lease',
+      });
       return NextResponse.json({ ok: true, claimed: false, reason: 'disabled' });
     }
     throw e;
@@ -145,6 +193,7 @@ export async function POST(request: Request) {
 
   console.info('[AUTO_TICK] pending candidates and in-progress gate', {
     carerUid,
+    carerUsername: String(userData.username || '').trim() || null,
     coadminUid,
     pendingQueryLimit: 15,
     inProgressPoolCount: inProgressSnap.docs.length,
@@ -174,6 +223,8 @@ export async function POST(request: Request) {
     .get();
 
   console.info('[AUTO_TICK] pending query result', {
+    carerUid,
+    coadminUid,
     candidateCount: pendingSnap.docs.length,
     candidateTaskIds: pendingSnap.docs.map((d) => d.id),
   });
@@ -183,6 +234,10 @@ export async function POST(request: Request) {
       id: docSnap.id,
       ...(docSnap.data() as Record<string, unknown>),
     };
+    console.info('[AUTO_TICK] pending task from query', {
+      taskId: docSnap.id,
+      fields: taskDebugFields(task),
+    });
     const mapped = mapTaskType(resolveTaskTypeLabel(task));
     if (!isAgentSupportedAutomationType(mapped)) {
       console.info('[AUTO_TICK] skipped task (unsupported type)', {
@@ -218,8 +273,10 @@ export async function POST(request: Request) {
 
     console.info('[AUTO_TICK] attempting claim for pending task', {
       taskId: docSnap.id,
+      selectedTaskId: docSnap.id,
       gameName,
       playerUid,
+      beforeFields: taskDebugFields(task),
     });
 
     try {
@@ -230,11 +287,19 @@ export async function POST(request: Request) {
         carerName,
         gameLoginDetails,
       });
+      const afterTaskSnap = await adminDb.collection('carerTasks').doc(result.taskId).get();
+      const afterTask = afterTaskSnap.exists ? (afterTaskSnap.data() as Record<string, unknown>) : null;
       console.info('[AUTO_TICK] claimed pending task as in_progress', {
         taskId: result.taskId,
         jobId: result.jobId,
         carerUid,
         reusedExistingJob: result.reusedExistingJob,
+        automationJobCreated: !result.reusedExistingJob,
+        originalTaskUpdatedToInProgress:
+          Boolean(afterTask) &&
+          String(afterTask?.['status'] || '').trim().toLowerCase() === 'in_progress' &&
+          String(afterTask?.['assignedCarerUid'] || '').trim() === carerUid,
+        afterFields: afterTask ? taskDebugFields(afterTask) : null,
       });
       return NextResponse.json({
         ok: true,
@@ -252,10 +317,13 @@ export async function POST(request: Request) {
         message.includes('unsupported') ||
         message.includes('No automation agent')
       ) {
+        const latestTaskSnap = await adminDb.collection('carerTasks').doc(docSnap.id).get();
+        const latestTask = latestTaskSnap.exists ? (latestTaskSnap.data() as Record<string, unknown>) : null;
         console.info('[AUTO_TICK] skipped task after claim attempt', {
           taskId: docSnap.id,
           reason: 'claim_rejected',
           message,
+          latestFields: latestTask ? taskDebugFields(latestTask) : null,
         });
         continue;
       }

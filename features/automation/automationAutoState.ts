@@ -50,6 +50,11 @@ export async function setCarerAutomationAutoEnabled(input: {
   const db = getClientDb('setCarerAutomationAutoEnabled');
   const ref = doc(db, AUTOMATION_AUTO_STATE_COLLECTION, input.carerUid);
 
+  console.info('[AUTO_UI] writing automation enabled state', {
+    carerUid: input.carerUid,
+    coadminUid: coadmin,
+    enabled: input.enabled,
+  });
   await setDoc(
     ref,
     {
@@ -68,4 +73,11 @@ export async function setCarerAutomationAutoEnabled(input: {
     },
     { merge: true }
   );
+  console.info('[AUTO_UI] backend state written', {
+    carerUid: input.carerUid,
+    coadminUid: coadmin,
+    enabled: input.enabled,
+    autoTickRequestFiredByUi: false,
+    reason: 'persistent automation is polled by the local automation agent',
+  });
 }
