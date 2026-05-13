@@ -2613,7 +2613,7 @@ export default function PlayerPage() {
     <ProtectedRoute allowedRoles={['player']}>
       <main
         ref={pageScrollRef}
-        className="player-fire-page relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white md:flex-row md:pb-0"
+        className="player-fire-page relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white md:flex-row md:items-start md:pb-0"
       >
         <div className="ember-overlay" aria-hidden="true" />
         {showPlayerHelpHint && (
@@ -2623,34 +2623,38 @@ export default function PlayerPage() {
         )}
 
         <header className="fire-panel fire-orange sticky top-0 z-30 shrink-0 border-b border-amber-500/20 bg-black/65 px-3 py-2.5 backdrop-blur-2xl md:hidden">
-          <div className="flex items-center justify-between gap-2">
-          <button
-            type="button"
-            onClick={() => setMobileMenuOpen(true)}
-            className="flex min-h-[44px] min-w-[72px] items-center justify-center rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 text-sm font-black uppercase tracking-wide text-amber-100"
-            aria-label="Open menu"
-          >
-            ☰ Menu
-          </button>
-          <div className="rounded-xl border border-amber-400/30 bg-black/35 px-3 py-1.5 text-center shadow-[0_0_20px_-10px_rgba(251,191,36,0.75)]">
-            <p className="text-[10px] font-black uppercase tracking-[0.32em] text-amber-300/95">
-              Royal VIP
-            </p>
-            <p className="mt-0.5 bg-gradient-to-r from-white via-amber-100 to-amber-300 bg-clip-text text-base font-black leading-tight text-transparent drop-shadow-[0_0_10px_rgba(251,191,36,0.35)]">
-              Casino
-            </p>
-          </div>
-          <div className="max-w-[42%] text-right text-sm leading-tight">
-            <p className="font-bold text-amber-200">
-              🪙 {formatWalletAmount(wallet.coin)}
-            </p>
-            <p className="font-bold text-emerald-300">
-              💵 {formatWalletAmount(wallet.cash)}
-            </p>
-          </div>
+          <div className="grid grid-cols-3 items-center gap-2">
+            <div className="flex min-h-[44px] min-w-0 items-center justify-start">
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen(true)}
+                className="flex min-h-[44px] min-w-[72px] shrink-0 items-center justify-center rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 text-sm font-black uppercase tracking-wide text-amber-100"
+                aria-label="Open menu"
+              >
+                ☰ Menu
+              </button>
+            </div>
+            <div className="flex min-w-0 justify-center">
+              <div className="w-full rounded-xl border border-amber-400/30 bg-black/35 px-2 py-1.5 text-center shadow-[0_0_20px_-10px_rgba(251,191,36,0.75)]">
+                <p className="text-[10px] font-black uppercase tracking-[0.32em] text-amber-300/95">
+                  Royal VIP
+                </p>
+                <p className="mt-0.5 bg-gradient-to-r from-white via-amber-100 to-amber-300 bg-clip-text text-base font-black leading-tight text-transparent drop-shadow-[0_0_10px_rgba(251,191,36,0.35)]">
+                  Casino
+                </p>
+              </div>
+            </div>
+            <div className="min-w-0 justify-self-end text-right text-sm leading-tight">
+              <p className="font-bold text-amber-200">
+                🪙 {formatWalletAmount(wallet.coin)}
+              </p>
+              <p className="font-bold text-emerald-300">
+                💵 {formatWalletAmount(wallet.cash)}
+              </p>
+            </div>
           </div>
 
-          <div className="mt-2 grid grid-cols-3 gap-2">
+          <div className="mt-2 grid w-full grid-cols-3 gap-2">
             <button
               type="button"
               onClick={() => handleChangeView('play')}
@@ -2798,7 +2802,7 @@ export default function PlayerPage() {
           </div>
         </aside>
 
-        <section className="relative z-10 flex min-h-0 flex-1 flex-col md:min-h-screen">
+        <section className="relative z-10 flex min-h-0 w-full min-w-0 flex-1 flex-col md:min-h-0">
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_0%,rgba(250,204,21,0.09),transparent_40%),radial-gradient(circle_at_90%_15%,rgba(168,85,247,0.12),transparent_35%),radial-gradient(circle_at_50%_100%,rgba(220,38,38,0.06),transparent_45%)]" />
           <div className="pointer-events-none absolute top-0 right-0 h-72 w-72 rounded-full bg-amber-500/10 blur-3xl" />
 
@@ -2806,8 +2810,8 @@ export default function PlayerPage() {
             <div className="flex min-h-0 flex-1 flex-col overflow-x-hidden px-3 pb-4 pt-4 md:px-7 md:pb-8 md:pt-6">
               {activeView === 'dashboard' ? (
               <>
-              <div className="relative z-20 mb-4 hidden shrink-0 flex-wrap items-stretch justify-end gap-3 md:flex">
-                <div className="fire-panel fire-orange rounded-2xl border border-amber-300/60 bg-gradient-to-br from-amber-400/35 to-yellow-500/20 px-5 py-3 text-right shadow-lg shadow-amber-400/25">
+              <div className="player-lobby-action-grid relative z-20 mb-4 hidden shrink-0 gap-2 md:grid md:gap-2.5 lg:gap-3">
+                <div className="fire-panel fire-orange rounded-2xl border border-amber-300/60 bg-gradient-to-br from-amber-400/35 to-yellow-500/20 px-4 py-3 text-right shadow-lg shadow-amber-400/25 md:px-4 md:py-3 lg:px-5">
                   <div className="flex items-center justify-between gap-3">
                     <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-amber-200/40 bg-amber-200/15 text-2xl shadow-[0_0_18px_rgba(251,191,36,0.35)]">
                       🪙
@@ -2828,7 +2832,7 @@ export default function PlayerPage() {
                     setShowCoinConfirmSplash(true);
                   }}
                   disabled={coinLoading}
-                  className="fire-button fire-purple rounded-2xl border border-fuchsia-300/45 bg-gradient-to-r from-fuchsia-600 via-violet-500 to-purple-600 px-5 py-3 text-base font-black text-white shadow-[0_0_26px_-10px_rgba(192,38,211,0.9)] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="fire-button fire-purple rounded-2xl border border-fuchsia-300/45 bg-gradient-to-r from-fuchsia-600 via-violet-500 to-purple-600 px-3 py-3 text-xs font-black leading-tight text-white shadow-[0_0_26px_-10px_rgba(192,38,211,0.9)] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60 md:px-4 lg:px-5 lg:text-base"
                 >
                   {coinLoading ? '⏳ Transferring…' : '⇄ Transfer Cash → Coin'}
                 </button>
@@ -2840,12 +2844,12 @@ export default function PlayerPage() {
                     setMessage('');
                   }}
                   disabled={isBlockedPlayer}
-                  className="fire-button fire-orange rounded-2xl border border-amber-400/45 bg-amber-500/20 px-5 py-3 text-base font-black text-amber-50 shadow-md transition-all hover:bg-amber-500/35 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="fire-button fire-orange rounded-2xl border border-amber-400/45 bg-amber-500/20 px-3 py-3 text-sm font-black text-amber-50 shadow-md transition-all hover:bg-amber-500/35 disabled:cursor-not-allowed disabled:opacity-60 lg:px-5 lg:text-base"
                 >
                   ⬇ Load coin
                 </button>
 
-                <div className="fire-panel fire-green rounded-2xl border border-emerald-300/60 bg-gradient-to-br from-emerald-400/35 to-emerald-700/25 px-5 py-3 text-right shadow-lg shadow-emerald-400/25">
+                <div className="fire-panel fire-green rounded-2xl border border-emerald-300/60 bg-gradient-to-br from-emerald-400/35 to-emerald-700/25 px-4 py-3 text-right shadow-lg shadow-emerald-400/25 md:px-4 lg:px-5">
                   <div className="flex items-center justify-between gap-3">
                     <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-200/40 bg-emerald-200/15 text-2xl shadow-[0_0_18px_rgba(74,222,128,0.35)]">
                       💵
@@ -2862,9 +2866,16 @@ export default function PlayerPage() {
                   type="button"
                   onClick={() => setShowCashoutModal(true)}
                   disabled={wallet.cash <= 0 || isBlockedPlayer}
-                  className="fire-button fire-orange rounded-2xl border border-amber-400/45 bg-amber-500/20 px-5 py-3 text-base font-black text-amber-50 shadow-md transition-all hover:bg-amber-500/35 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="fire-button fire-orange rounded-2xl border border-amber-400/45 bg-amber-500/20 px-3 py-3 text-sm font-black text-amber-50 shadow-md transition-all hover:bg-amber-500/35 disabled:cursor-not-allowed disabled:opacity-60 lg:px-5 lg:text-base"
                 >
                   💸 Cashout
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('play')}
+                  className="fire-button fire-orange rounded-2xl border border-red-200/70 bg-gradient-to-r from-red-500 via-red-400 to-rose-500 px-3 py-3 text-sm font-black text-white shadow-[0_0_26px_-10px_rgba(239,68,68,0.9)] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60 lg:px-5 lg:text-base"
+                >
+                  🎰 Play
                 </button>
               </div>
 
@@ -2920,6 +2931,13 @@ export default function PlayerPage() {
                   className="fire-button fire-orange min-h-[44px] rounded-2xl border border-amber-400/45 bg-amber-500/20 px-2 py-2 text-xs font-black text-amber-50 active:scale-[0.99] disabled:opacity-60"
                 >
                   💸 Cashout
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('play')}
+                  className="fire-button fire-orange min-h-[44px] rounded-2xl border border-red-200/70 bg-gradient-to-r from-red-500 via-red-400 to-rose-500 px-2 py-2 text-xs font-black text-white shadow-[0_0_24px_-12px_rgba(239,68,68,0.95)] active:scale-[0.99] hover:brightness-110 disabled:opacity-60"
+                >
+                  🎰 Play
                 </button>
               </div>
               </>
@@ -3021,73 +3039,70 @@ export default function PlayerPage() {
             
             {/* DASHBOARD VIEW */}
             {activeView === 'dashboard' && (
-              <div className="space-y-5 sm:space-y-6">
+              <div className="space-y-3 sm:space-y-4">
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.45 }}
-                  className="player-dashboard-hero fire-panel fire-orange fire-hero relative z-0 grid h-auto min-h-0 w-full max-w-full content-center items-center overflow-hidden rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/20 via-rose-600/10 to-purple-900/35 text-left shadow-[0_0_50px_-12px_rgba(234,179,8,0.45)]"
+                  className="player-dashboard-hero fire-panel fire-orange fire-hero relative z-0 flex h-auto min-h-0 w-full max-w-full flex-col items-center overflow-hidden rounded-2xl border border-amber-400/35 bg-gradient-to-br from-amber-500/20 via-rose-600/10 to-purple-900/35 text-center shadow-[0_0_50px_-12px_rgba(234,179,8,0.45)]"
                 >
-                  <div className="pointer-events-none absolute -right-8 top-1 text-7xl opacity-[0.04] sm:-right-10 sm:-top-10 sm:text-8xl sm:opacity-[0.07]">
-                    🎰
-                  </div>
                   <div className="pointer-events-none absolute bottom-0 left-1/4 h-32 w-32 rounded-full bg-red-500/12 blur-3xl sm:h-40 sm:w-40 sm:bg-red-500/15" />
                   <div className="pointer-events-none absolute right-8 top-4 h-20 w-20 rounded-full bg-amber-400/12 blur-2xl sm:right-10 sm:top-10 sm:h-32 sm:w-32 sm:bg-amber-400/20" />
 
-                  <div className="player-dashboard-hero__content relative row-start-1 w-full min-w-0 self-center pt-0">
-                    <div className="player-dashboard-hero__intro min-w-0 w-full text-left">
-                      <p className="flex items-center gap-2 text-base font-black uppercase tracking-[0.3em] text-amber-200/90 sm:text-lg">
-                        <span className="text-lg">👑</span> VIP welcome
+                  <div className="player-dashboard-hero__content relative flex w-full min-w-0 flex-col items-center justify-center self-center pt-0">
+                    <div className="player-dashboard-hero__intro min-w-0 w-full max-w-xl text-center">
+                      <p className="flex items-center justify-center gap-1.5 text-sm font-black uppercase tracking-[0.26em] text-amber-200/90 sm:text-base">
+                        <span className="text-base">👑</span> VIP welcome
                       </p>
-                      <h2 className="mt-2 text-[clamp(2.625rem,5vw,4.5rem)] font-black leading-[0.98] bg-gradient-to-r from-white via-amber-100 to-amber-300 bg-clip-text text-transparent">
+                      <h2 className="mt-1 text-[clamp(2rem,4vw,3.35rem)] font-black leading-[0.92] bg-gradient-to-r from-white via-amber-100 to-amber-300 bg-clip-text text-transparent">
                         Jackpot floor is open
                       </h2>
-                      <p className="mt-2.5 max-w-xl text-[1.05rem] leading-relaxed text-amber-100/80 sm:mt-3 sm:text-[1.18rem]">
+                      <p className="mt-1.5 max-w-xl text-[0.95rem] leading-snug text-amber-100/80 sm:mx-auto sm:text-[1.05rem]">
                         💎 Luxury tables, 🔥 live agents, 🪙 instant balance — tap Play to hit the
                         reels and send recharge or redeem requests.
                       </p>
                     </div>
 
-                    <div className="player-dashboard-hero__main flex min-w-0 w-full flex-col gap-3.5 sm:gap-4">
-                      <div className="grid max-w-lg grid-cols-2 gap-2.5">
-                        <div className="fire-panel fire-orange rounded-2xl border border-amber-300/60 bg-black/35 px-3 py-3 text-center backdrop-blur-md shadow-[0_0_20px_-8px_rgba(251,191,36,0.55)]">
-                          <span className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-xl border border-amber-200/40 bg-amber-200/15 text-2xl">
+                    <div className="player-dashboard-hero__main flex w-full min-w-0 flex-col items-center gap-2">
+                      <div className="mx-auto grid w-full max-w-lg grid-cols-2 items-stretch gap-2">
+                        <div className="fire-panel fire-orange flex min-h-[6.75rem] flex-col items-center justify-center gap-1 rounded-2xl border border-amber-300/60 bg-black/35 px-3 py-3 text-center backdrop-blur-md shadow-[0_0_20px_-8px_rgba(251,191,36,0.55)] sm:min-h-[7.25rem]">
+                          <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-amber-200/40 bg-amber-200/15 text-xl">
                             🪙
                           </span>
-                          <p className="mt-1 text-sm font-black uppercase tracking-wider text-amber-100/90 sm:text-[0.95rem]">
+                          <p className="text-xs font-black uppercase tracking-wider text-amber-100/90 sm:text-sm">
                             Coin
                           </p>
-                          <p className="mt-1 text-2xl font-black tabular-nums text-white sm:text-[2rem]">
+                          <p className="text-xl font-black tabular-nums text-white sm:text-[1.65rem]">
                             {formatWalletAmount(wallet.coin)}
                           </p>
                         </div>
-                        <div className="fire-panel fire-green rounded-2xl border border-emerald-300/60 bg-black/35 px-3 py-3 text-center backdrop-blur-md shadow-[0_0_20px_-8px_rgba(74,222,128,0.55)]">
-                          <span className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-200/40 bg-emerald-200/15 text-2xl">
+                        <div className="fire-panel fire-green flex min-h-[6.75rem] flex-col items-center justify-center gap-1 rounded-2xl border border-emerald-300/60 bg-black/35 px-3 py-3 text-center backdrop-blur-md shadow-[0_0_20px_-8px_rgba(74,222,128,0.55)] sm:min-h-[7.25rem]">
+                          <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-emerald-200/40 bg-emerald-200/15 text-xl">
                             💵
                           </span>
-                          <p className="mt-1 text-sm font-black uppercase tracking-wider text-emerald-100/90 sm:text-[0.95rem]">
+                          <p className="text-xs font-black uppercase tracking-wider text-emerald-100/90 sm:text-sm">
                             Cash
                           </p>
-                          <p className="mt-1 text-2xl font-black tabular-nums text-white sm:text-[2rem]">
+                          <p className="text-xl font-black tabular-nums text-white sm:text-[1.65rem]">
                             {formatWalletAmount(wallet.cash)}
                           </p>
                         </div>
                       </div>
-                      <div className="fire-panel fire-orange flex flex-wrap items-center gap-2 rounded-2xl border border-cyan-400/30 bg-black/35 px-3 py-3 sm:max-w-lg">
-                        <p className="text-sm font-black uppercase tracking-wide text-cyan-200/85 sm:text-base">
+                      <div className="fire-panel fire-orange mx-auto flex w-full max-w-lg flex-wrap items-center justify-center gap-2 rounded-2xl border border-cyan-400/30 bg-black/35 px-3 py-2">
+                        <p className="text-xs font-black uppercase tracking-wide text-cyan-200/85 sm:text-sm">
                           Your Referral Code:{' '}
-                          <span className="text-base text-white sm:text-lg">{referralCode || 'Not available'}</span>
+                          <span className="text-sm text-white sm:text-base">{referralCode || 'Not available'}</span>
                         </p>
                         <button
                           type="button"
                           onClick={(e) => void handleCopyReferralCode(e)}
                           disabled={!referralCode}
-                          className="fire-button fire-orange rounded-xl bg-cyan-400 px-3 py-2 text-sm font-black text-black hover:bg-cyan-300 disabled:opacity-50 sm:text-base"
+                          className="fire-button fire-orange rounded-xl bg-cyan-400 px-3 py-1.5 text-xs font-black text-black hover:bg-cyan-300 disabled:opacity-50 sm:text-sm"
                         >
                           Copy Referral Code
                         </button>
                       </div>
-                      <div className="sm:max-w-lg">
+                      <div className="mx-auto w-full max-w-lg">
                         <button
                           type="button"
                           onClick={() => {
@@ -3095,18 +3110,18 @@ export default function PlayerPage() {
                             setMessage('');
                           }}
                           disabled={isBlockedPlayer}
-                          className="fire-button fire-purple w-full min-h-[52px] rounded-2xl border border-violet-400/50 bg-violet-500/20 py-3 text-base font-black text-violet-50 transition hover:bg-violet-500/30 disabled:cursor-not-allowed disabled:opacity-60 sm:text-lg"
+                          className="fire-button fire-purple h-11 w-full rounded-2xl border border-violet-400/50 bg-violet-500/20 py-2 text-sm font-black text-violet-50 transition hover:bg-violet-500/30 disabled:cursor-not-allowed disabled:opacity-60 sm:h-12 sm:text-base"
                         >
                           ⬇ Load coin — payment reference
                         </button>
                       </div>
                     </div>
 
-                    <div className="player-dashboard-hero__cta mx-auto flex w-full min-w-0 min-h-0 max-w-md flex-col items-stretch justify-center gap-3 self-stretch sm:max-w-lg md:mx-0 md:min-w-0 md:max-w-[min(19rem,36vw)]">
+                    <div className="player-dashboard-hero__cta mx-auto flex w-full min-h-0 min-w-0 max-w-lg flex-col items-center justify-center gap-2">
                       <button
                         type="button"
                         onClick={() => setActiveView('play')}
-                        className="fire-button fire-orange relative min-h-[56px] overflow-hidden rounded-2xl border border-red-200/70 bg-gradient-to-r from-red-500 via-red-400 to-rose-500 px-8 py-4 text-xl font-black text-white shadow-[0_0_30px_6px_rgba(239,68,68,0.45)] shadow-red-900/40 transition-all hover:scale-[1.02] hover:brightness-110 hover:shadow-[0_0_42px_8px_rgba(239,68,68,0.55)] sm:min-h-[60px] sm:text-[1.35rem]"
+                        className="fire-button fire-orange relative h-12 w-full min-w-0 overflow-hidden rounded-2xl border border-red-200/70 bg-gradient-to-r from-red-500 via-red-400 to-rose-500 px-6 py-2 text-lg font-black text-white shadow-[0_0_30px_6px_rgba(239,68,68,0.45)] shadow-red-900/40 transition-all hover:scale-[1.02] hover:brightness-110 hover:shadow-[0_0_42px_8px_rgba(239,68,68,0.55)] sm:h-12 sm:text-xl"
                       >
                         <span className="relative z-10 flex items-center justify-center gap-2">
                           🎰 Play now
@@ -3118,7 +3133,7 @@ export default function PlayerPage() {
                         <button
                           type="button"
                           onClick={handleOpenFirstUnreadAgent}
-                          className="fire-button fire-orange flex min-h-[48px] items-center justify-center gap-2 rounded-2xl border border-rose-400/40 bg-rose-500/20 px-4 py-3 text-base font-black text-rose-100 shadow-lg transition-all hover:bg-rose-500/30 sm:text-lg"
+                          className="fire-button fire-orange flex h-11 w-full min-w-0 items-center justify-center gap-2 rounded-2xl border border-rose-400/40 bg-rose-500/20 px-4 py-2 text-sm font-black text-rose-100 shadow-lg transition-all hover:bg-rose-500/30 sm:text-base"
                         >
                           💬 Unread messages ({totalUnread})
                         </button>
@@ -3381,7 +3396,7 @@ export default function PlayerPage() {
             )}
 
             {activeView === 'bonus-events' && (
-              <div className="-mb-[200px] space-y-5 pb-0 sm:space-y-6">
+              <div className="space-y-5 sm:space-y-6">
                 <AnimatePresence>
                   {showBonusPanelHint ? (
                     <motion.div
@@ -3416,7 +3431,7 @@ export default function PlayerPage() {
                   ) : null}
                 </AnimatePresence>
                 <div
-                  className="fire-panel fire-purple group/bonus relative flex flex-col justify-start overflow-hidden rounded-3xl border border-violet-400/35 bg-gradient-to-br from-violet-950/70 via-black/55 to-fuchsia-950/30 px-4 pb-4 pt-0 shadow-[0_0_40px_-12px_rgba(139,92,246,0.35)] backdrop-blur-xl sm:px-6 sm:pb-6 sm:pt-0"
+                  className="player-bonus-drops-panel fire-panel fire-purple group/bonus relative flex min-h-[min(19rem,44svh)] flex-col items-center justify-center rounded-3xl border border-violet-400/35 bg-gradient-to-br from-violet-950/70 via-black/55 to-fuchsia-950/30 px-4 py-8 shadow-[0_0_40px_-12px_rgba(139,92,246,0.35)] backdrop-blur-xl sm:min-h-[min(21rem,40svh)] sm:px-8 sm:py-10"
                   onPointerEnter={() => setBonusStripPaused(true)}
                   onPointerLeave={() => setBonusStripPaused(false)}
                 >
@@ -3425,7 +3440,7 @@ export default function PlayerPage() {
                     aria-hidden
                   />
                   {playerBonusEvents.length === 0 ? (
-                    <div className="rounded-3xl border border-dashed border-violet-400/25 bg-black/25 px-5 py-12 text-center">
+                    <div className="mx-auto flex w-full max-w-md flex-col items-center justify-center rounded-3xl border border-dashed border-violet-400/25 bg-black/25 px-5 py-12 text-center">
                       <p className="text-4xl" aria-hidden>
                         🎁
                       </p>
@@ -3434,7 +3449,7 @@ export default function PlayerPage() {
                       </p>
                     </div>
                   ) : (
-                    <div className="relative -mt-40 min-h-0 sm:-mt-44">
+                    <div className="relative z-10 flex w-full min-w-0 max-w-2xl flex-col items-center justify-center">
                       <AnimatePresence initial={false} mode="wait">
                         <motion.div
                           key={playerBonusEvents[activeBonusCarouselIndex]?.id || 'bonus-events-card'}
@@ -3442,7 +3457,7 @@ export default function PlayerPage() {
                           animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
                           exit={{ opacity: 0, y: -12, filter: 'blur(8px)' }}
                           transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
-                          className="rounded-3xl border border-fuchsia-400/25 bg-gradient-to-br from-white/[0.08] via-violet-950/45 to-black/70 p-5 shadow-[0_0_36px_-12px_rgba(244,114,182,0.45)] sm:p-6"
+                          className="mx-auto w-full rounded-3xl border border-fuchsia-400/25 bg-gradient-to-br from-white/[0.08] via-violet-950/45 to-black/70 p-5 text-center shadow-[0_0_36px_-12px_rgba(244,114,182,0.45)] sm:p-6"
                           onTouchStart={(event) => {
                             bonusSwipeStartXRef.current = event.touches[0]?.clientX ?? null;
                           }}
@@ -3495,20 +3510,20 @@ export default function PlayerPage() {
                                   </p>
                                 ) : null}
 
-                                <div className="mt-5 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
-                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
+                                <div className="mx-auto mt-5 grid w-full max-w-xl grid-cols-2 gap-3 text-sm sm:grid-cols-3 sm:max-w-2xl">
+                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3 text-center">
                                     <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
                                       Game Name
                                     </p>
                                     <p className="mt-1 font-bold text-white">{event.gameName}</p>
                                   </div>
-                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
+                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3 text-center">
                                     <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
                                       Bonus Name
                                     </p>
                                     <p className="mt-1 font-bold text-white">{event.bonusName}</p>
                                   </div>
-                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
+                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3 text-center">
                                     <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
                                       You Pay
                                     </p>
@@ -3516,7 +3531,7 @@ export default function PlayerPage() {
                                       ${Math.round(event.amountNpr || 0).toLocaleString('en-US')}
                                     </p>
                                   </div>
-                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3">
+                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3 text-center">
                                     <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
                                       You Get
                                     </p>
@@ -3535,7 +3550,7 @@ export default function PlayerPage() {
                                       ).toLocaleString('en-US')}
                                     </p>
                                   </div>
-                                  <div className="rounded-2xl border border-fuchsia-400/25 bg-fuchsia-500/10 p-3">
+                                  <div className="rounded-2xl border border-fuchsia-400/25 bg-fuchsia-500/10 p-3 text-center">
                                     <p className="text-[10px] font-black uppercase tracking-wider text-fuchsia-200/70">
                                       Status
                                     </p>

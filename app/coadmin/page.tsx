@@ -848,7 +848,7 @@ export default function CoadminPage() {
               sortMs: toMillis(event.createdAt || null),
             } satisfies PlayerRecordRow;
           })
-          .filter((row): row is PlayerRecordRow => Boolean(row))
+          .filter((row) => row !== null)
           .sort((left, right) => right.sortMs - left.sortMs);
 
         const cashoutRows = completedCashoutSnap.docs

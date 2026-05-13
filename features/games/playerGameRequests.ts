@@ -493,6 +493,11 @@ export async function createPlayerGameRequest(values: {
     );
   }
 
+  const [assignedGameUsername, coadminUid] = await Promise.all([
+    resolveAssignedGameUsername(currentUser.uid, cleanGameName),
+    getCurrentUserCoadminUid(),
+  ]);
+
   const redeemRef = await addDoc(collection(db, 'playerGameRequests'), {
     // Redeem keeps client write because protected money fields are not changed here.
     playerUid: currentUser.uid,
