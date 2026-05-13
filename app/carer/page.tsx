@@ -81,7 +81,6 @@ import {
   listenAutomationUiStatusByTask,
   mapTaskType,
   returnTaskToPendingAndCancelAutomation,
-  startAutomationForTask,
   type AutomationUiStatus,
 } from '@/features/automation/automationJobs';
 
@@ -1565,15 +1564,10 @@ export default function CarerPage() {
           normalizeGameName(game.gameName || '') === normalizeGameName(task.gameName || '')
       ) || null;
     try {
-      await startAutomationForTask({
+      const claimResult = await claimTaskAndCreateJob({
         taskId: task.id,
-        taskLabel: getTaskTypeLabel(task),
-        coadminUid: String(task.coadminUid || coadminUid || '').trim(),
-        player: task.playerUsername || 'Unknown player',
-        game: task.gameName || 'Unknown Game',
         currentUsername: resolvedCurrentUsername,
-        amount: task.amount ?? null,
-        originalTask: task as Record<string, unknown>,
+        carerName: carerIdentity?.username || null,
         gameLoginDetails: relatedCoadminGame
           ? {
               username: relatedCoadminGame.username,
@@ -1592,7 +1586,7 @@ export default function CarerPage() {
       });
       setAutomationStatusByTaskId((previous) => ({
         ...previous,
-        [task.id]: 'waiting',
+        [task.id]: claimResult.status === 'running' ? 'running' : 'waiting',
       }));
       if (isUsernameWorkflowTask(task)) {
         setLocalAutomationProcessingByTaskId((previous) => ({
@@ -1600,7 +1594,13 @@ export default function CarerPage() {
           [task.id]: Date.now() + CREATE_USERNAME_UI_GRACE_MS,
         }));
       }
-      setNoticeMessage('Automation job queued. Waiting for local agent.');
+      setNoticeMessage(
+        claimResult.reusedExistingJob
+          ? claimResult.status === 'running'
+            ? 'Your existing automation job was resumed and is already running.'
+            : 'Your existing automation job was resumed.'
+          : 'Automation job queued. Waiting for local agent.'
+      );
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : 'Failed to start automation.'
