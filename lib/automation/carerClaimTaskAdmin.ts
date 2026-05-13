@@ -473,6 +473,12 @@ export async function claimCarerTaskAsAdmin(input: {
         !staleOrFailedJob &&
         hasFreshLock
       ) {
+        console.info('[automation] task claimed', {
+          taskId: taskSnap.id,
+          carerUid: currentUserUid,
+          reusedExistingJob: true,
+          jobId: reusableActiveJob.ref.id,
+        });
         transaction.update(taskRef, {
           ...claimedTaskData,
           claimedStatus: 'running',
@@ -486,6 +492,11 @@ export async function claimCarerTaskAsAdmin(input: {
           automationError: null,
           automationUpdatedAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
+        });
+        console.info('[automation] task moved to in_progress', {
+          taskId: taskSnap.id,
+          assignedCarerUid: currentUserUid,
+          jobId: reusableActiveJob.ref.id,
         });
         console.info('[automation] start-task:decision', {
           taskId: taskSnap.id,
@@ -512,6 +523,12 @@ export async function claimCarerTaskAsAdmin(input: {
 
       const jobRef = adminDb.collection('automation_jobs').doc();
 
+      console.info('[automation] task claimed', {
+        taskId: taskSnap.id,
+        carerUid: currentUserUid,
+        reusedExistingJob: false,
+        jobId: jobRef.id,
+      });
       transaction.update(taskRef, {
         ...claimedTaskData,
         claimedStatus: 'running',
@@ -525,6 +542,11 @@ export async function claimCarerTaskAsAdmin(input: {
         automationError: null,
         automationUpdatedAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
+      });
+      console.info('[automation] task moved to in_progress', {
+        taskId: taskSnap.id,
+        assignedCarerUid: currentUserUid,
+        jobId: jobRef.id,
       });
 
       const jobData = {
@@ -551,6 +573,11 @@ export async function claimCarerTaskAsAdmin(input: {
         taskId: taskSnap.id,
         decision: 'new automation job created',
         jobId: jobRef.id,
+      });
+      console.info('[automation] automation job created', {
+        taskId: taskSnap.id,
+        jobId: jobRef.id,
+        carerUid: currentUserUid,
       });
 
       return {

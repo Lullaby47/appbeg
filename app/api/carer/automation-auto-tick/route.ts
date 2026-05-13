@@ -174,6 +174,12 @@ export async function POST(request: Request) {
         carerName,
         gameLoginDetails,
       });
+      console.info('[automation] auto tick claimed task', {
+        taskId: result.taskId,
+        jobId: result.jobId,
+        carerUid,
+        reusedExistingJob: result.reusedExistingJob,
+      });
       return NextResponse.json({
         ok: true,
         claimed: true,

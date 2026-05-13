@@ -506,6 +506,12 @@ export async function claimTaskAndCreateJob(input: {
         !staleOrFailedJob &&
         hasFreshLock
       ) {
+        console.info('[automation] task claimed', {
+          taskId: taskSnap.id,
+          carerUid: currentUser.uid,
+          reusedExistingJob: true,
+          jobId: reusableActiveJob.ref.id,
+        });
         transaction.update(taskRef, {
           ...claimedTaskData,
           claimedStatus: 'running',
@@ -519,6 +525,11 @@ export async function claimTaskAndCreateJob(input: {
           automationError: null,
           automationUpdatedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
+        });
+        console.info('[automation] task moved to in_progress', {
+          taskId: taskSnap.id,
+          assignedCarerUid: currentUser.uid,
+          jobId: reusableActiveJob.ref.id,
         });
         console.info('[automation] start-task:decision', {
           taskId: taskSnap.id,
@@ -545,6 +556,12 @@ export async function claimTaskAndCreateJob(input: {
 
       const jobRef = doc(collection(firestoreDb, 'automation_jobs'));
 
+      console.info('[automation] task claimed', {
+        taskId: taskSnap.id,
+        carerUid: currentUser.uid,
+        reusedExistingJob: false,
+        jobId: jobRef.id,
+      });
       transaction.update(taskRef, {
         ...claimedTaskData,
         claimedStatus: 'running',
@@ -558,6 +575,11 @@ export async function claimTaskAndCreateJob(input: {
         automationError: null,
         automationUpdatedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
+      });
+      console.info('[automation] task moved to in_progress', {
+        taskId: taskSnap.id,
+        assignedCarerUid: currentUser.uid,
+        jobId: jobRef.id,
       });
 
       const jobData = {
@@ -584,6 +606,11 @@ export async function claimTaskAndCreateJob(input: {
         taskId: taskSnap.id,
         decision: 'new automation job created',
         jobId: jobRef.id,
+      });
+      console.info('[automation] automation job created', {
+        taskId: taskSnap.id,
+        jobId: jobRef.id,
+        carerUid: currentUser.uid,
       });
       console.info('[CARER_UI] automation job created', {
         taskId: taskSnap.id,
@@ -793,17 +820,46 @@ export async function startAutomationForTask(input: {
       lastHeartbeatAt: null,
     });
 
+    console.info('[automation] task claimed', {
+      taskId: input.taskId,
+      carerUid: currentUser.uid,
+      reusedExistingJob: false,
+      jobId: jobRef.id,
+    });
     transaction.update(taskRef, {
+      status: 'in_progress',
+      assignedCarerUid: currentUser.uid,
+      assignedCarerUsername: createdByName,
+      assignedCarer: createdByName,
+      currentUsername: input.currentUsername ?? taskData.currentUsername ?? null,
+      gameCredentialUsername: resolvedAccess.gameCredentialUsername,
+      gameCredentialPassword: resolvedAccess.gameCredentialPassword,
+      loginUrl: resolvedAccess.loginUrl,
+      gameLoginUrl: resolvedAccess.gameLoginUrl,
+      baseUrl: resolvedAccess.baseUrl,
+      siteUrl: resolvedAccess.siteUrl,
+      lobbyUrl: resolvedAccess.lobbyUrl,
       claimedStatus: 'running',
       claimedByUid: currentUser.uid,
       claimedByUsername: createdByName,
       claimedAt: serverTimestamp(),
+      startedAt: serverTimestamp(),
       lastHeartbeatAt: serverTimestamp(),
       automationStatus: 'waiting',
       automationJobId: jobRef.id,
       automationError: null,
       automationUpdatedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
+    });
+    console.info('[automation] task moved to in_progress', {
+      taskId: input.taskId,
+      assignedCarerUid: currentUser.uid,
+      jobId: jobRef.id,
+    });
+    console.info('[automation] automation job created', {
+      taskId: input.taskId,
+      jobId: jobRef.id,
+      carerUid: currentUser.uid,
     });
 
     return {

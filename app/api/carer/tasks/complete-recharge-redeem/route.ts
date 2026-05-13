@@ -154,6 +154,11 @@ export async function POST(request: Request) {
         completedByCarerUid: caller.uid,
         completedByCarerUsername: caller.username || 'Handler',
       });
+      console.info('[automation] task completed', {
+        taskId,
+        taskType: requestType === 'redeem' ? 'redeem' : 'recharge',
+        completedByCarerUid: caller.uid,
+      });
       transaction.update(requestRef, {
         status: 'completed',
         completedAt: FieldValue.serverTimestamp(),

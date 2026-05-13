@@ -83,6 +83,11 @@ export async function POST(request: Request) {
           completedByCarerUid: auth.user.uid,
           completedByCarerUsername: auth.user.username || 'Carer',
         });
+        console.info('[automation] task completed', {
+          taskId: taskSnap.ref.id,
+          taskType: 'username',
+          completedByCarerUid: auth.user.uid,
+        });
         completedTaskCount += 1;
         totalAwardNpr += calculateReward();
       }
