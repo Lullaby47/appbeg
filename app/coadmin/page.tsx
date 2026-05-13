@@ -61,6 +61,7 @@ import {
 import {
   GameLogin,
   createGameLogin,
+  deleteGameLoginAndRelatedData,
   getMyGameLogins,
   updateGameLogin,
 } from '@/features/games/gameLogins';
@@ -398,6 +399,7 @@ export default function CoadminPage() {
   const [gameFrontendUrl, setGameFrontendUrl] = useState('');
   const [gameLogins, setGameLogins] = useState<GameLogin[]>([]);
   const [editingGame, setEditingGame] = useState<GameLogin | null>(null);
+  const [gameListDeletingId, setGameListDeletingId] = useState<string | null>(null);
   const [bonusName, setBonusName] = useState('');
   const [bonusGameName, setBonusGameName] = useState('');
   const [bonusAmount, setBonusAmount] = useState('');
@@ -1896,6 +1898,44 @@ export default function CoadminPage() {
       setMessage(err.message || 'Failed to update game.');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleDeleteGame(game: GameLogin) {
+    const lines = [
+      `Permanently delete "${game.gameName}" and everything tied to it under your coadmin?`,
+      '',
+      'This will remove:',
+      '• The game from your list',
+      '• All player game accounts for this game',
+      '• Recharge and redeem requests for this game',
+      '• Carer tasks for this game',
+      '• Bonus events for this game',
+      '',
+      'This cannot be undone.',
+    ];
+    if (!window.confirm(lines.join('\n'))) {
+      return;
+    }
+
+    setGameListDeletingId(game.id);
+    setMessage('');
+
+    try {
+      const result = await deleteGameLoginAndRelatedData(game.id);
+      if (editingGame?.id === game.id) {
+        setEditingGame(null);
+      }
+      const d = result.deleted;
+      setMessage(
+        `Deleted "${game.gameName}". Removed ${d.playerGameLogins} player game login(s), ` +
+          `${d.playerGameRequests} request(s), ${d.carerTasks} carer task(s), ${d.bonusEvents} bonus event(s).`
+      );
+      await loadGameLogins();
+    } catch (err: unknown) {
+      setMessage(err instanceof Error ? err.message : 'Failed to delete game.');
+    } finally {
+      setGameListDeletingId(null);
     }
   }
 
@@ -4589,12 +4629,24 @@ export default function CoadminPage() {
                             </div>
                           </div>
 
+                        <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-start">
                           <button
+                            type="button"
                             onClick={() => setEditingGame(game)}
-                            className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200"
+                            disabled={Boolean(gameListDeletingId)}
+                            className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-50"
                           >
                             Edit
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteGame(game)}
+                            disabled={Boolean(gameListDeletingId)}
+                            className="rounded-xl border border-rose-500/50 bg-rose-500/15 px-4 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/25 disabled:opacity-50"
+                          >
+                            {gameListDeletingId === game.id ? 'Deleting…' : 'Delete game'}
+                          </button>
+                        </div>
                         </div>
                       )}
                     </div>
