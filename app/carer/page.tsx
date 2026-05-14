@@ -195,8 +195,22 @@ function getStartTaskDisabledReason(task: CarerTask, options: {
   hasFreshTaskClaim: boolean;
   hasFreshRunnableJob: boolean;
 }) {
+  const isPendingCleanTask =
+    String(task.status || '').trim().toLowerCase() === 'pending' &&
+    !String(task.claimedByUid || '').trim() &&
+    !String(task.assignedCarerUid || '').trim() &&
+    !String(task.automationJobId || '').trim();
   if (options.isLoading) {
     return 'queueing';
+  }
+  if (isPendingCleanTask) {
+    if (options.automationStatus && options.hasFreshRunnableJob) {
+      console.info('[CARER_UI] pending clean task claim allowed despite stale job', {
+        taskId: task.id,
+        automationStatus: options.automationStatus,
+      });
+    }
+    return null;
   }
   if (options.automationStatus === 'waiting' && options.hasFreshRunnableJob) {
     return 'already_queued_same_task';
@@ -339,6 +353,9 @@ function getRiskCardTone(level: string, score: number) {
 
 /** Rolling window for Work details recharge / redeem sums. */
 const WORK_DETAILS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const BROWSER_AUTO_TICK_INSTANCE_ID = `carer-ui-${Date.now()}-${Math.random()
+  .toString(36)
+  .slice(2)}`;
 
 function getNepalClockLabel() {
   return new Intl.DateTimeFormat('en-US', {
@@ -633,6 +650,147 @@ export default function CarerPage() {
     return [...uids];
   }, [players, tasks]);
   const carerPlayerOnlineByUid = usePresenceOnlineMap(carerPlayerPresenceUids);
+  const autoTickRequestInFlightRef = useRef(false);
+  const autoTickBrowserTokenRef = useRef<{ token: string; expiresAt: number } | null>(null);
+
+  async function refreshAutoTickBrowserToken(agentId: string) {
+    const currentUser = auth.currentUser;
+    if (!currentUser || !agentId) {
+      autoTickBrowserTokenRef.current = null;
+      return null;
+    }
+    const existing = autoTickBrowserTokenRef.current;
+    if (existing && existing.expiresAt > Date.now() + 15_000) {
+      return existing.token;
+    }
+    try {
+      const token = await currentUser.getIdToken();
+      const response = await fetch('/api/carer/automation-auto-tick-token', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ agentId }),
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        token?: string;
+        expiresAt?: number;
+      } | null;
+      if (!response.ok || !payload?.token || !payload.expiresAt) {
+        console.info('[AUTO_UI] browser auto tick token skipped', {
+          status: response.status,
+          reason: 'token_request_failed',
+        });
+        autoTickBrowserTokenRef.current = null;
+        return null;
+      }
+      autoTickBrowserTokenRef.current = {
+        token: payload.token,
+        expiresAt: payload.expiresAt,
+      };
+      return payload.token;
+    } catch (error) {
+      console.info('[AUTO_UI] browser auto tick token skipped', {
+        reason: 'network_error',
+        error: error instanceof Error ? error.message : String(error),
+      });
+      autoTickBrowserTokenRef.current = null;
+      return null;
+    }
+  }
+
+  async function fireAutomationAutoTick(source: 'immediate' | 'interval') {
+    const currentUser = auth.currentUser;
+    const linkedAgentId =
+      String(carerIdentity?.automationAgentId || '').trim() ||
+      String(agentInputDraft || '').trim();
+    const logPrefix =
+      source === 'immediate'
+        ? '[AUTO_UI] immediate auto tick'
+        : '[AUTO_UI] interval auto tick';
+
+    if (!currentUser || !carerIdentity?.uid || !linkedAgentId) {
+      console.info(`${logPrefix} skipped`, {
+        reason: 'missing_auth_carer_or_agent',
+        hasCurrentUser: Boolean(currentUser),
+        carerUid: carerIdentity?.uid || null,
+        hasAgentId: Boolean(linkedAgentId),
+      });
+      return null;
+    }
+    if (autoTickRequestInFlightRef.current) {
+      console.info(`${logPrefix} skipped`, {
+        reason: 'request_in_flight',
+        carerUid: carerIdentity.uid,
+        hasAgentId: Boolean(linkedAgentId),
+      });
+      return null;
+    }
+    autoTickRequestInFlightRef.current = true;
+    if (source === 'immediate') {
+      setNoticeMessage('Claiming pending task...');
+    }
+
+    const body = {
+      carerUid: carerIdentity.uid,
+      agentId: linkedAgentId,
+      instanceId: BROWSER_AUTO_TICK_INSTANCE_ID,
+    };
+
+    console.info(`${logPrefix} request`, {
+      carerUid: body.carerUid,
+      agentId: body.agentId,
+      instanceId: body.instanceId,
+    });
+
+    let payload: Record<string, unknown> | null = null;
+    let response: Response;
+    try {
+      const browserTickToken = await refreshAutoTickBrowserToken(linkedAgentId);
+      const token = browserTickToken ? null : await currentUser.getIdToken();
+      response = await fetch('/api/carer/automation-auto-tick', {
+        method: 'POST',
+        headers: {
+          ...(browserTickToken
+            ? { 'x-carer-auto-tick-token': browserTickToken }
+            : { Authorization: `Bearer ${token}` }),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+    } catch (error) {
+      console.warn(`${logPrefix} response`, {
+        ok: false,
+        status: null,
+        reason: 'network_error',
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    } finally {
+      autoTickRequestInFlightRef.current = false;
+    }
+
+    const reason = String(payload?.['reason'] || '').trim() || null;
+    const logPayload = {
+      ok: response.ok,
+      status: response.status,
+      reason,
+      payload,
+    };
+    if (response.status === 401 || response.status === 403) {
+      console.warn(`${logPrefix} response`, logPayload);
+      return payload;
+    }
+    if (!response.ok) {
+      console.warn(`${logPrefix} response`, logPayload);
+      return payload;
+    }
+
+    console.info(`${logPrefix} response`, logPayload);
+    return payload;
+  }
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -725,6 +883,49 @@ export default function CarerPage() {
 
     return () => unsubscribe();
   }, [carerIdentity?.uid]);
+
+  useEffect(() => {
+    if (!autoAutomationEnabled || !carerIdentity?.uid || !coadminUid) {
+      return;
+    }
+    const linkedAgentId =
+      String(carerIdentity.automationAgentId || '').trim() ||
+      String(agentInputDraft || '').trim();
+    if (!linkedAgentId) {
+      console.info('[AUTO_UI] interval auto tick skipped', {
+        reason: 'missing_agent_id',
+        carerUid: carerIdentity.uid,
+      });
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void fireAutomationAutoTick('interval');
+    }, 15_000);
+
+    return () => window.clearInterval(intervalId);
+  }, [
+    autoAutomationEnabled,
+    carerIdentity?.uid,
+    carerIdentity?.automationAgentId,
+    agentInputDraft,
+    coadminUid,
+  ]);
+
+  useEffect(() => {
+    if (!carerIdentity?.uid) {
+      autoTickBrowserTokenRef.current = null;
+      return;
+    }
+    const linkedAgentId =
+      String(carerIdentity.automationAgentId || '').trim() ||
+      String(agentInputDraft || '').trim();
+    if (!linkedAgentId) {
+      autoTickBrowserTokenRef.current = null;
+      return;
+    }
+    void refreshAutoTickBrowserToken(linkedAgentId);
+  }, [carerIdentity?.uid, carerIdentity?.automationAgentId, agentInputDraft]);
 
   useEffect(() => {
     if (!coadminUid) {
@@ -2156,7 +2357,7 @@ export default function CarerPage() {
                     carerUsername: carerIdentity.username || null,
                     coadminUid,
                     nextEnabled: true,
-                    autoTickRequestFiredByUi: false,
+                    autoTickRequestFiredByUi: true,
                   });
                   await setCarerAutomationAutoEnabled({
                     carerUid: carerIdentity.uid,
@@ -2168,13 +2369,12 @@ export default function CarerPage() {
                     carerUid: carerIdentity.uid,
                     coadminUid,
                     enabled: true,
-                    autoTickRequestFiredByUi: false,
-                    claimLoopOwner: 'python_carer_agent',
+                    autoTickRequestFiredByUi: true,
+                    claimLoopOwner: 'browser_and_python_carer_agent',
                   });
+                  void fireAutomationAutoTick('immediate');
                   setActiveView('tasks');
-                  setNoticeMessage(
-                    'Auto automation started. The local Python agent will claim pending tasks even if this panel is closed.'
-                  );
+                  setNoticeMessage('Claiming pending task...');
                   void refreshPageData();
                 } catch (error) {
                   setErrorMessage(
@@ -2732,7 +2932,7 @@ export default function CarerPage() {
                       coadminUid,
                       previousEnabled: autoAutomationEnabled,
                       nextEnabled: next,
-                      autoTickRequestFiredByUi: false,
+                      autoTickRequestFiredByUi: next,
                     });
                     await setCarerAutomationAutoEnabled({
                       carerUid: carerIdentity.uid,
@@ -2744,12 +2944,15 @@ export default function CarerPage() {
                       carerUid: carerIdentity.uid,
                       coadminUid,
                       enabled: next,
-                      autoTickRequestFiredByUi: false,
-                      claimLoopOwner: 'python_carer_agent',
+                      autoTickRequestFiredByUi: next,
+                      claimLoopOwner: next ? 'browser_and_python_carer_agent' : null,
                     });
+                    if (next) {
+                      void fireAutomationAutoTick('immediate');
+                    }
                     setNoticeMessage(
                       next
-                        ? 'Auto automation started. The local Python agent will claim pending tasks even if this panel is closed.'
+                        ? 'Claiming pending task...'
                         : 'Auto automation stopped.'
                     );
                   } catch (error) {

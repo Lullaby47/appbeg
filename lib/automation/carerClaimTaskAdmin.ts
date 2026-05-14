@@ -25,6 +25,13 @@ const STALE_TASK_CLAIM_TIMEOUT_MS = 5 * 60 * 1000;
 
 const AGENT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
+function logAutoClaimTiming(step: string, startedAt: number, details: Record<string, unknown> = {}) {
+  console.info(`[AUTO_CLAIM_TIMING] ${step}`, {
+    durationMs: Date.now() - startedAt,
+    ...details,
+  });
+}
+
 function validateAutomationAgentId(agentId: string): {
   valid: boolean;
   error?: string;
@@ -75,6 +82,10 @@ function isFreshAutomationJobSignal(job: {
   heartbeatMs?: number;
   data?: Record<string, unknown> | null;
 }) {
+  const error = String(job.data?.error || '').trim().toLowerCase();
+  if (error.includes('timed out') || error.includes('returned to the queue')) {
+    return false;
+  }
   const status = normalizeAutomationStatus(job.status);
   const signalMs = Math.max(
     Number(job.heartbeatMs || 0),
@@ -158,33 +169,71 @@ export async function claimCarerTaskAsAdmin(input: {
   currentUsername?: string | null;
   carerName?: string | null;
   gameLoginDetails?: GameLoginDetailsInput;
+  trustedUser?: {
+    username?: string | null;
+    automationAgentId?: string | null;
+  };
 }): Promise<ClaimCarerTaskAdminResult> {
+  const totalStartedAt = Date.now();
   const taskRef = adminDb.collection('carerTasks').doc(input.taskId);
-  const userRef = adminDb.collection('users').doc(input.carerUid);
 
-  const loadSameTaskJobRefs = async () => {
+  const loadSameTaskJobRefs = async (options: { isPendingCleanTask: boolean }) => {
+    const startedAt = Date.now();
+    if (options.isPendingCleanTask) {
+      logAutoClaimTiming('same_task_jobs_query', startedAt, {
+        taskId: input.taskId,
+        resultCount: 0,
+        skipped: true,
+        reason: 'pending_clean_task',
+      });
+      return [];
+    }
     const sameTaskJobsSnap = await adminDb
       .collection('automation_jobs')
       .where('taskId', '==', input.taskId)
-      .limit(20)
+      .where('status', 'in', ['queued', 'waiting', 'running', 'in_progress', 'cancelled_requested'])
+      .limit(10)
       .get();
+    logAutoClaimTiming('same_task_jobs_query', startedAt, {
+      taskId: input.taskId,
+      resultCount: sameTaskJobsSnap.docs.length,
+      activeOnly: true,
+    });
     return sameTaskJobsSnap.docs.map((jobSnap) => jobSnap.ref);
   };
 
   const runClaimTransaction = async () => {
-    const sameTaskJobRefs = await loadSameTaskJobRefs();
-    return adminDb.runTransaction(async (transaction) => {
-      const [userSnap, taskSnap] = await Promise.all([
-        transaction.get(userRef),
-        transaction.get(taskRef),
-      ]);
-      if (!userSnap.exists) {
-        throw new Error('Current user profile not found.');
-      }
-      const userData = userSnap.data() as {
+    const transactionStartedAt = Date.now();
+    try {
+      return await adminDb.runTransaction(async (transaction) => {
+      const taskReadStartedAt = Date.now();
+      const taskSnap = await transaction.get(taskRef);
+      logAutoClaimTiming('task_read', taskReadStartedAt, {
+        taskId: input.taskId,
+        carerUid: input.carerUid,
+        userReadSkipped: Boolean(input.trustedUser),
+        taskExists: taskSnap.exists,
+      });
+      let userData = input.trustedUser as {
         username?: string;
         automationAgentId?: string | null;
-      };
+      } | undefined;
+      if (!userData) {
+        const userReadStartedAt = Date.now();
+        const userSnap = await transaction.get(adminDb.collection('users').doc(input.carerUid));
+        logAutoClaimTiming('user_read', userReadStartedAt, {
+          taskId: input.taskId,
+          carerUid: input.carerUid,
+          userExists: userSnap.exists,
+        });
+        if (!userSnap.exists) {
+          throw new Error('Current user profile not found.');
+        }
+        userData = userSnap.data() as {
+          username?: string;
+          automationAgentId?: string | null;
+        };
+      }
       const linkedAgentRaw = String(userData.automationAgentId || '').trim();
       const agentCheck = validateAutomationAgentId(linkedAgentRaw);
       if (!agentCheck.valid || !agentCheck.normalized) {
@@ -229,9 +278,15 @@ export async function claimCarerTaskAsAdmin(input: {
           createdByName &&
           assignedCarerName.toLowerCase() === createdByName.toLowerCase());
       const linkedJobId = String(freshTask.automationJobId || '').trim();
+      const isPendingCleanTask =
+        rawTaskStatus === 'pending' &&
+        !claimedByUid &&
+        !assignedCarerUid &&
+        !linkedJobId;
+      const sameTaskJobRefs = await loadSameTaskJobRefs({ isPendingCleanTask });
       const legacyJobId = automationJobDocId(currentUserUid, taskSnap.id);
       const candidateJobIds = Array.from(
-        new Set([linkedJobId, legacyJobId].filter((value) => Boolean(value)))
+        new Set((isPendingCleanTask ? [] : [linkedJobId, legacyJobId]).filter((value) => Boolean(value)))
       );
       const candidateJobRefs = candidateJobIds.map((jobId) =>
         adminDb.collection('automation_jobs').doc(jobId)
@@ -300,10 +355,11 @@ export async function claimCarerTaskAsAdmin(input: {
       );
       const jobOwnerUid = (job: (typeof activeSameTaskJobs)[number]) =>
         String(job.data?.carerUid || job.data?.createdByUid || '').trim();
-      const myFreshJobs = freshActiveSameTaskJobs.filter(
+      const freshJobsAllowedToBlock = isPendingCleanTask ? [] : freshActiveSameTaskJobs;
+      const myFreshJobs = freshJobsAllowedToBlock.filter(
         (job) => jobOwnerUid(job) === currentUserUid
       );
-      const blockingFreshOtherCarer = freshActiveSameTaskJobs.filter(
+      const blockingFreshOtherCarer = freshJobsAllowedToBlock.filter(
         (job) => jobOwnerUid(job) !== currentUserUid
       );
       if (blockingFreshOtherCarer.length > 0) {
@@ -406,6 +462,7 @@ export async function claimCarerTaskAsAdmin(input: {
         })),
         lastHeartbeatAt: freshTask.lastHeartbeatAt || freshTask.claimedAt || null,
         automationError,
+        isPendingCleanTask,
       });
 
       if (orphanedClaimFields) {
@@ -421,12 +478,15 @@ export async function claimCarerTaskAsAdmin(input: {
       }
 
       let skipSingleStaleJobCleanup = false;
-      if (rawTaskStatus === 'pending' && !reusableActiveJob) {
-        const freshIds = new Set(freshActiveSameTaskJobs.map((j) => j.ref.id));
+      const cleanupStartedAt = Date.now();
+      let cleanupCount = 0;
+      if (rawTaskStatus === 'pending' && (!reusableActiveJob || isPendingCleanTask)) {
+        const freshIds = new Set(isPendingCleanTask ? [] : freshActiveSameTaskJobs.map((j) => j.ref.id));
         for (const job of activeSameTaskJobs) {
           if (freshIds.has(job.ref.id)) {
             continue;
           }
+          cleanupCount += 1;
           transaction.update(job.ref, {
             status: 'cancelled',
             completedAt: FieldValue.serverTimestamp(),
@@ -434,12 +494,24 @@ export async function claimCarerTaskAsAdmin(input: {
             updatedAt: FieldValue.serverTimestamp(),
             lastHeartbeatAt: FieldValue.serverTimestamp(),
             error: 'Stale automation job cleared while reclaiming pending task.',
-            cancelledReason: 'pending_reclaim_stale_job',
+            cancelledReason: isPendingCleanTask ? 'stale_returned_to_pending' : 'pending_reclaim_stale_job',
+          });
+          console.info('[RETURN_TO_PENDING] stale active job cancelled', {
+            taskId: taskSnap.id,
+            jobId: job.ref.id,
+            previousStatus: job.status || null,
+            reason: isPendingCleanTask ? 'pending_clean_claim' : 'pending_reclaim_stale_job',
           });
           console.info('[CARER_ADMIN] stale automation job cancelled for pending reclaim', {
             taskId: taskSnap.id,
             jobId: job.ref.id,
             jobStatus: job.status || null,
+          });
+        }
+        if (isPendingCleanTask && activeSameTaskJobs.length > 0) {
+          console.info('[AUTO_TICK] pending clean task claim allowed despite stale job', {
+            taskId: taskSnap.id,
+            staleJobIds: activeSameTaskJobs.map((job) => job.ref.id),
           });
         }
         skipSingleStaleJobCleanup = true;
@@ -450,6 +522,11 @@ export async function claimCarerTaskAsAdmin(input: {
           hadAutomationJobId: Boolean(linkedJobId),
         });
       }
+      logAutoClaimTiming('old_job_cleanup', cleanupStartedAt, {
+        taskId: taskSnap.id,
+        cleanupCount,
+        activeSameTaskJobCount: activeSameTaskJobs.length,
+      });
 
       if (rawTaskStatus !== 'pending') {
         if (
@@ -565,6 +642,13 @@ export async function claimCarerTaskAsAdmin(input: {
           reusedExistingJob: true,
           jobId: reusableActiveJob.ref.id,
         });
+        logAutoClaimTiming('create_job', Date.now(), {
+          taskId: taskSnap.id,
+          jobId: reusableActiveJob.ref.id,
+          queued: false,
+          skipped: true,
+          reason: 'reused_existing_job',
+        });
 
         return {
           jobId: reusableActiveJob.ref.id,
@@ -586,6 +670,7 @@ export async function claimCarerTaskAsAdmin(input: {
 
       const jobRef = adminDb.collection('automation_jobs').doc();
 
+      const createJobStartedAt = Date.now();
       console.info('[automation] task claimed', {
         taskId: taskSnap.id,
         carerUid: currentUserUid,
@@ -633,6 +718,11 @@ export async function claimCarerTaskAsAdmin(input: {
         lastHeartbeatAt: null,
       };
       transaction.set(jobRef, jobData);
+      logAutoClaimTiming('create_job', createJobStartedAt, {
+        taskId: taskSnap.id,
+        jobId: jobRef.id,
+        queued: true,
+      });
       console.info('[automation] start-task:decision', {
         taskId: taskSnap.id,
         decision: 'new automation job created',
@@ -650,7 +740,13 @@ export async function claimCarerTaskAsAdmin(input: {
         status: 'queued' as const,
         reusedExistingJob: false as const,
       };
-    });
+      });
+    } finally {
+      logAutoClaimTiming('transaction', transactionStartedAt, {
+        taskId: input.taskId,
+        carerUid: input.carerUid,
+      });
+    }
   };
 
   let result: ClaimCarerTaskAdminResult | null = null;
@@ -710,21 +806,22 @@ export async function claimCarerTaskAsAdmin(input: {
     throw lastError instanceof Error ? lastError : new Error('Failed to queue the task.');
   }
 
-  const afterTaskSnap = await adminDb.collection('carerTasks').doc(input.taskId).get();
-  const afterTask = afterTaskSnap.exists ? (afterTaskSnap.data() as Record<string, unknown>) : null;
   console.info('[AUTO_CLAIM_ADMIN] after task status fields', {
     taskId: input.taskId,
     jobId: result.jobId,
     carerUid: input.carerUid,
     reusedExistingJob: result.reusedExistingJob,
     automationJobCreated: !result.reusedExistingJob,
-    originalTaskUpdatedToInProgress:
-      Boolean(afterTask) &&
-      String(afterTask?.['status'] || '').trim().toLowerCase() === 'in_progress' &&
-      String(afterTask?.['assignedCarerUid'] || '').trim() === input.carerUid,
-    fields: taskDebugFields(afterTask),
+    originalTaskUpdatedToInProgress: true,
   });
 
+  logAutoClaimTiming('total', totalStartedAt, {
+    taskId: input.taskId,
+    carerUid: input.carerUid,
+    ok: true,
+    jobId: result.jobId,
+    reusedExistingJob: result.reusedExistingJob,
+  });
   return result;
 }
 

@@ -10,6 +10,7 @@ export type ApiUser = {
   username: string;
   coadminUid: string | null;
   createdBy: string | null;
+  automationAgentId?: string | null;
 };
 
 function bearerToken(request: Request) {
@@ -53,6 +54,7 @@ export async function requireApiUser(
       username: String(data.username || ''),
       coadminUid: String(data.coadminUid || data.createdBy || '').trim() || null,
       createdBy: String(data.createdBy || '').trim() || null,
+      automationAgentId: String(data.automationAgentId || '').trim() || null,
     },
   };
 }

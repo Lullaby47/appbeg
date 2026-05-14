@@ -78,6 +78,10 @@ function isFreshAutomationJobSignal(job: {
   heartbeatMs?: number;
   data?: Record<string, unknown> | null;
 }) {
+  const error = String(job.data?.error || '').trim().toLowerCase();
+  if (error.includes('timed out') || error.includes('returned to the queue')) {
+    return false;
+  }
   const status = normalizeAutomationStatus(job.status);
   const signalMs = Math.max(
     Number(job.heartbeatMs || 0),
@@ -110,7 +114,7 @@ function normalizeClaimedStatus(value: unknown) {
 function buildTaskClaimReleaseFields(
   automationError: string | null,
   status: 'pending' | 'failed' = 'pending',
-  automationStatus: 'waiting' | 'failed' | 'pending_review' | null = 'waiting'
+  automationStatus: 'waiting' | 'failed' | 'pending_review' | null = null
 ) {
   return {
     status,
@@ -256,6 +260,11 @@ export async function claimTaskAndCreateJob(input: {
             createdByName &&
             assignedCarerName.toLowerCase() === createdByName.toLowerCase()));
       const linkedJobId = String(freshTask.automationJobId || '').trim();
+      const isPendingCleanTask =
+        rawTaskStatus === 'pending' &&
+        !claimedByUid &&
+        !assignedCarerUid &&
+        !linkedJobId;
       const legacyJobId = automationJobDocId(currentUser.uid, taskSnap.id);
       const candidateJobIds = Array.from(
         new Set([linkedJobId, legacyJobId].filter((value) => Boolean(value)))
@@ -328,10 +337,11 @@ export async function claimTaskAndCreateJob(input: {
       );
       const jobOwnerUid = (job: (typeof activeSameTaskJobs)[number]) =>
         String(job.data?.carerUid || job.data?.createdByUid || '').trim();
-      const myFreshJobs = freshActiveSameTaskJobs.filter(
+      const freshJobsAllowedToBlock = isPendingCleanTask ? [] : freshActiveSameTaskJobs;
+      const myFreshJobs = freshJobsAllowedToBlock.filter(
         (job) => jobOwnerUid(job) === currentUser.uid
       );
-      const blockingFreshOtherCarer = freshActiveSameTaskJobs.filter(
+      const blockingFreshOtherCarer = freshJobsAllowedToBlock.filter(
         (job) => jobOwnerUid(job) !== currentUser.uid
       );
       if (blockingFreshOtherCarer.length > 0) {
@@ -438,6 +448,7 @@ export async function claimTaskAndCreateJob(input: {
         })),
         lastHeartbeatAt: freshTask.lastHeartbeatAt || freshTask.claimedAt || null,
         automationError,
+        isPendingCleanTask,
       });
 
       if (orphanedClaimFields) {
@@ -453,8 +464,8 @@ export async function claimTaskAndCreateJob(input: {
       }
 
       let skipSingleStaleJobCleanup = false;
-      if (rawTaskStatus === 'pending' && !reusableActiveJob) {
-        const freshIds = new Set(freshActiveSameTaskJobs.map((j) => j.ref.id));
+      if (rawTaskStatus === 'pending' && (!reusableActiveJob || isPendingCleanTask)) {
+        const freshIds = new Set(isPendingCleanTask ? [] : freshActiveSameTaskJobs.map((j) => j.ref.id));
         for (const job of activeSameTaskJobs) {
           if (freshIds.has(job.ref.id)) {
             continue;
@@ -466,12 +477,24 @@ export async function claimTaskAndCreateJob(input: {
             updatedAt: serverTimestamp(),
             lastHeartbeatAt: serverTimestamp(),
             error: 'Stale automation job cleared while reclaiming pending task.',
-            cancelledReason: 'pending_reclaim_stale_job',
+            cancelledReason: isPendingCleanTask ? 'stale_returned_to_pending' : 'pending_reclaim_stale_job',
+          });
+          console.info('[RETURN_TO_PENDING] stale active job cancelled', {
+            taskId: taskSnap.id,
+            jobId: job.ref.id,
+            previousStatus: job.status || null,
+            reason: isPendingCleanTask ? 'pending_clean_claim' : 'pending_reclaim_stale_job',
           });
           console.info('[CARER_UI] stale automation job cancelled for pending reclaim', {
             taskId: taskSnap.id,
             jobId: job.ref.id,
             jobStatus: job.status || null,
+          });
+        }
+        if (isPendingCleanTask && activeSameTaskJobs.length > 0) {
+          console.info('[CARER_UI] pending clean task claim allowed despite stale job', {
+            taskId: taskSnap.id,
+            staleJobIds: activeSameTaskJobs.map((job) => job.ref.id),
           });
         }
         skipSingleStaleJobCleanup = true;
@@ -1066,7 +1089,13 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
       if (job.taskId && job.taskId !== taskId) {
         return;
       }
-      if (job.status === 'queued' || job.status === 'running' || job.status === 'cancelled_requested') {
+      if (
+        job.status === 'queued' ||
+        job.status === 'waiting' ||
+        job.status === 'running' ||
+        job.status === 'in_progress' ||
+        job.status === 'cancelled_requested'
+      ) {
         batch.update(job.ref, {
           status: 'cancelled',
           claimedStatus: 'cancelled',
@@ -1077,6 +1106,12 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
           completedAt: serverTimestamp(),
           ttlExpiresAt: automationJobTtl(),
           error: 'Cancelled by carer (returned_to_pending).',
+        });
+        console.info('[RETURN_TO_PENDING] stale active job cancelled', {
+          taskId,
+          jobId: job.ref.id,
+          previousStatus: job.status,
+          reason: 'returned_to_pending',
         });
         console.info('[carer] linked job cancelled', {
           taskId,

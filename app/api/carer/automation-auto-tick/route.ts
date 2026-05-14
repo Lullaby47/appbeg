@@ -2,18 +2,30 @@ import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
-import { mapTaskType, resolveTaskTypeLabel } from '@/lib/automation/automationClaimPayload';
+import {
+  mapTaskType,
+  resolveAutomationAccessFields,
+  resolveTaskTypeLabel,
+} from '@/lib/automation/automationClaimPayload';
 import {
   claimCarerTaskAsAdmin,
   resolveCurrentUsernameForTask,
   resolveGameLoginDetailsForCoadminGame,
 } from '@/lib/automation/carerClaimTaskAdmin';
 import { AUTOMATION_AUTO_STATE_COLLECTION } from '@/features/automation/automationAutoState';
+import { verifyAutoTickBrowserToken } from '@/lib/automation/autoTickBrowserToken';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
 
 const LEASE_TTL_MS = 70_000;
 const MAX_CLAIMS_PER_TICK = 5;
 const PENDING_QUERY_LIMIT = 15;
+
+function logAutoTickTiming(step: string, startedAt: number, details: Record<string, unknown> = {}) {
+  console.info(`[AUTO_TICK_TIMING] ${step}`, {
+    durationMs: Date.now() - startedAt,
+    ...details,
+  });
+}
 
 function isAgentSupportedAutomationType(value: string) {
   return (
@@ -49,20 +61,11 @@ function taskDebugFields(task: Record<string, unknown>) {
 }
 
 export async function POST(request: Request) {
+  const routeStartedAt = Date.now();
   console.info('[AUTO_TICK] route called', {
     hasSecretHeader: Boolean(String(request.headers.get('x-carer-automation-tick-secret') || '').trim()),
     hasAuthorization: Boolean(String(request.headers.get('Authorization') || '').trim()),
   });
-
-  const expected = String(process.env.CARER_AUTOMATION_TICK_SECRET || '').trim();
-  const provided = String(request.headers.get('x-carer-automation-tick-secret') || '').trim();
-  const hasValidSecret = Boolean(expected && provided && provided === expected);
-  const auth = hasValidSecret
-    ? null
-    : await requireApiUser(request, ['carer', 'staff', 'coadmin', 'admin']);
-  if (auth && 'response' in auth) {
-    return auth.response;
-  }
 
   let body: { carerUid?: unknown; agentId?: unknown; instanceId?: unknown };
   try {
@@ -77,15 +80,69 @@ export async function POST(request: Request) {
   if (!carerUid || !agentId || !instanceId) {
     return apiError('carerUid, agentId, and instanceId are required.', 400);
   }
+
+  const expected = String(process.env.CARER_AUTOMATION_TICK_SECRET || '').trim();
+  const provided = String(request.headers.get('x-carer-automation-tick-secret') || '').trim();
+  const browserToken = String(request.headers.get('x-carer-auto-tick-token') || '').trim();
+  const hasValidSecret = Boolean(expected && provided && provided === expected);
+  const authStartedAt = Date.now();
+  const tokenCheck = !hasValidSecret && browserToken ? verifyAutoTickBrowserToken(browserToken) : null;
+  const hasValidBrowserToken =
+    Boolean(tokenCheck?.ok) &&
+    tokenCheck?.ok === true &&
+    tokenCheck.payload.carerUid === carerUid &&
+    tokenCheck.payload.automationAgentId === agentId;
+  const auth = hasValidSecret || hasValidBrowserToken
+    ? null
+    : await requireApiUser(request, ['carer', 'staff', 'coadmin', 'admin']);
+  logAutoTickTiming('auth', authStartedAt, {
+    authMode: hasValidSecret ? 'secret' : hasValidBrowserToken ? 'browser_token' : 'firebase',
+    ok: !(auth && 'response' in auth),
+    tokenReason: tokenCheck && !tokenCheck.ok ? tokenCheck.reason : null,
+  });
+  if (auth && 'response' in auth) {
+    return auth.response;
+  }
   if (auth && 'user' in auth && auth.user.role === 'carer' && auth.user.uid !== carerUid) {
     return apiError('Forbidden: cannot tick automation for another carer.', 403);
   }
 
-  const userSnap = await adminDb.collection('users').doc(carerUid).get();
-  if (!userSnap.exists) {
-    return apiError('User not found.', 404);
+  const userReadStartedAt = Date.now();
+  const authUser = auth && 'user' in auth ? auth.user : null;
+  let userData: { automationAgentId?: string | null; username?: string | null };
+  if (hasValidBrowserToken && tokenCheck?.ok === true) {
+    userData = {
+      automationAgentId: tokenCheck.payload.automationAgentId,
+      username: tokenCheck.payload.username || null,
+    };
+    logAutoTickTiming('user_read', userReadStartedAt, {
+      carerUid,
+      exists: true,
+      skipped: true,
+      reason: 'browser_token_claims',
+    });
+  } else if (authUser && authUser.uid === carerUid) {
+    userData = {
+      automationAgentId: authUser.automationAgentId || null,
+      username: authUser.username || null,
+    };
+    logAutoTickTiming('user_read', userReadStartedAt, {
+      carerUid,
+      exists: true,
+      skipped: true,
+      reason: 'reused_requireApiUser_profile',
+    });
+  } else {
+    const userSnap = await adminDb.collection('users').doc(carerUid).get();
+    logAutoTickTiming('user_read', userReadStartedAt, {
+      carerUid,
+      exists: userSnap.exists,
+    });
+    if (!userSnap.exists) {
+      return apiError('User not found.', 404);
+    }
+    userData = userSnap.data() as { automationAgentId?: string | null; username?: string | null };
   }
-  const userData = userSnap.data() as { automationAgentId?: string | null; username?: string | null };
   console.info('[AUTO_TICK] request received', {
     carerUid,
     carerUsername: String(userData.username || '').trim() || null,
@@ -105,7 +162,12 @@ export async function POST(request: Request) {
   }
 
   const stateRef = adminDb.collection(AUTOMATION_AUTO_STATE_COLLECTION).doc(carerUid);
+  const stateReadStartedAt = Date.now();
   const stateSnap = await stateRef.get();
+  logAutoTickTiming('state_read', stateReadStartedAt, {
+    carerUid,
+    exists: stateSnap.exists,
+  });
   const state = stateSnap.exists ? (stateSnap.data() as { enabled?: boolean; coadminUid?: string }) : null;
   console.info('[AUTO_TICK] automation enabled state', {
     carerUid,
@@ -130,67 +192,89 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, claimed: false, reason: 'missing_coadmin_uid' });
   }
 
-  try {
-    await adminDb.runTransaction(async (tx) => {
-      const snap = await tx.get(stateRef);
-      if (!snap.exists) {
-        throw new Error('STATE_GONE');
-      }
-      const d = snap.data() as {
-        enabled?: boolean;
-        tickLeaseHolderId?: string;
-        tickLeaseExpiresAt?: { toMillis?: () => number } | null;
-      };
-      if (!d.enabled) {
-        throw new Error('DISABLED');
-      }
-      const now = Date.now();
-      const exp =
-        typeof d.tickLeaseExpiresAt?.toMillis === 'function'
-          ? d.tickLeaseExpiresAt.toMillis()
-          : 0;
-      const holder = String(d.tickLeaseHolderId || '');
-      if (holder && holder !== instanceId && exp > now) {
-        throw new Error('LEASE_HELD');
-      }
-      tx.update(stateRef, {
-        tickLeaseHolderId: instanceId,
-        tickLeaseExpiresAt: Timestamp.fromMillis(now + LEASE_TTL_MS),
-        automationTickLastAt: FieldValue.serverTimestamp(),
-      });
+  const leaseStartedAt = Date.now();
+  const isBrowserAutoTick = !hasValidSecret && instanceId.startsWith('carer-ui-');
+  if (isBrowserAutoTick) {
+    logAutoTickTiming('lease_transaction', leaseStartedAt, {
+      carerUid,
+      coadminUid,
+      instanceId,
+      acquired: true,
+      skipped: true,
+      mode: 'browser_claim_transaction_guard',
     });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg === 'LEASE_HELD') {
-      console.info('[AUTO_TICK] skipped auto tick', {
+  } else {
+    try {
+      await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(stateRef);
+        if (!snap.exists) {
+          throw new Error('STATE_GONE');
+        }
+        const d = snap.data() as {
+          enabled?: boolean;
+          tickLeaseHolderId?: string;
+          tickLeaseExpiresAt?: { toMillis?: () => number } | null;
+        };
+        if (!d.enabled) {
+          throw new Error('DISABLED');
+        }
+        const now = Date.now();
+        const exp =
+          typeof d.tickLeaseExpiresAt?.toMillis === 'function'
+            ? d.tickLeaseExpiresAt.toMillis()
+            : 0;
+        const holder = String(d.tickLeaseHolderId || '');
+        if (holder && holder !== instanceId && exp > now) {
+          throw new Error('LEASE_HELD');
+        }
+        tx.update(stateRef, {
+          tickLeaseHolderId: instanceId,
+          tickLeaseExpiresAt: Timestamp.fromMillis(now + LEASE_TTL_MS),
+          automationTickLastAt: FieldValue.serverTimestamp(),
+        });
+      });
+      logAutoTickTiming('lease_transaction', leaseStartedAt, {
         carerUid,
-        reason: 'lease_held',
+        coadminUid,
         instanceId,
+        acquired: true,
+        mode: 'transaction',
       });
-      return NextResponse.json({ ok: true, claimed: false, reason: 'lease_held' });
-    }
-    if (msg === 'DISABLED' || msg === 'STATE_GONE') {
-      console.info('[AUTO_TICK] skipped auto tick', {
+    } catch (e) {
+      logAutoTickTiming('lease_transaction', leaseStartedAt, {
         carerUid,
-        reason: msg === 'STATE_GONE' ? 'state_gone' : 'disabled_during_lease',
+        coadminUid,
+        instanceId,
+        acquired: false,
+        error: e instanceof Error ? e.message : String(e),
       });
-      return NextResponse.json({ ok: true, claimed: false, reason: 'disabled' });
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg === 'LEASE_HELD') {
+        console.info('[AUTO_TICK] skipped auto tick', {
+          carerUid,
+          reason: 'lease_held',
+          instanceId,
+        });
+        return NextResponse.json({ ok: true, claimed: false, reason: 'lease_held' });
+      }
+      if (msg === 'DISABLED' || msg === 'STATE_GONE') {
+        console.info('[AUTO_TICK] skipped auto tick', {
+          carerUid,
+          reason: msg === 'STATE_GONE' ? 'state_gone' : 'disabled_during_lease',
+        });
+        return NextResponse.json({ ok: true, claimed: false, reason: 'disabled' });
+      }
+      throw e;
     }
-    throw e;
   }
 
-  const inProgressSnap = await adminDb
-    .collection('carerTasks')
-    .where('coadminUid', '==', coadminUid)
-    .where('status', '==', 'in_progress')
-    .limit(40)
-    .get();
-
-  const myInProgress = inProgressSnap.docs.filter((d) => {
-    const row = d.data() as { assignedCarerUid?: string; claimedByUid?: string };
-    const a = String(row.assignedCarerUid || '').trim();
-    const c = String(row.claimedByUid || '').trim();
-    return a === carerUid || c === carerUid;
+  const inProgressStartedAt = Date.now();
+  logAutoTickTiming('in_progress_query', inProgressStartedAt, {
+    carerUid,
+    coadminUid,
+    resultCount: 0,
+    skipped: true,
+    reason: 'diagnostic_only_not_required_for_claim',
   });
 
   console.info('[AUTO_TICK] pending candidates and in-progress snapshot', {
@@ -199,11 +283,13 @@ export async function POST(request: Request) {
     coadminUid,
     maxClaimsPerTick: MAX_CLAIMS_PER_TICK,
     pendingQueryLimit: PENDING_QUERY_LIMIT,
-    inProgressPoolCount: inProgressSnap.docs.length,
-    myInProgressCount: myInProgress.length,
-    myInProgressTaskIds: myInProgress.map((d) => d.id),
+    inProgressPoolCount: null,
+    myInProgressCount: null,
+    myInProgressTaskIds: [],
+    inProgressSnapshotSkipped: true,
   });
 
+  const pendingStartedAt = Date.now();
   const pendingSnap = await adminDb
     .collection('carerTasks')
     .where('coadminUid', '==', coadminUid)
@@ -211,6 +297,11 @@ export async function POST(request: Request) {
     .orderBy('createdAt', 'desc')
     .limit(PENDING_QUERY_LIMIT)
     .get();
+  logAutoTickTiming('pending_query', pendingStartedAt, {
+    carerUid,
+    coadminUid,
+    resultCount: pendingSnap.docs.length,
+  });
 
   console.info('[AUTO_TICK] pending query result', {
     carerUid,
@@ -278,19 +369,49 @@ export async function POST(request: Request) {
       continue;
     }
 
-    const gameLoginDetails = await resolveGameLoginDetailsForCoadminGame(coadminUid, gameName);
-    const fromLogin = await resolveCurrentUsernameForTask(coadminUid, playerUid, gameName);
-    const currentUsername =
-      fromLogin ||
-      (String(
+    const taskAccess = resolveAutomationAccessFields(task);
+    const hasEmbeddedGameLoginDetails = Boolean(
+      taskAccess.loginUrl &&
+        taskAccess.gameCredentialUsername &&
+        taskAccess.gameCredentialPassword
+    );
+    const gameLoginStartedAt = Date.now();
+    const gameLoginDetails = hasEmbeddedGameLoginDetails
+      ? null
+      : await resolveGameLoginDetailsForCoadminGame(coadminUid, gameName);
+    logAutoTickTiming('resolve_game_login_details', gameLoginStartedAt, {
+      taskId: docSnap.id,
+      coadminUid,
+      gameName,
+      found: Boolean(gameLoginDetails),
+      skipped: hasEmbeddedGameLoginDetails,
+      reason: hasEmbeddedGameLoginDetails ? 'task_already_has_access_fields' : null,
+    });
+    const embeddedCurrentUsername =
+      String(
         (typeof task['currentUsername'] === 'string' ? task['currentUsername'] : '') ||
           (typeof task['gameAccountUsername'] === 'string' ? task['gameAccountUsername'] : '') ||
           ''
-      ).trim() ||
-        null);
+      ).trim() || null;
+    const usernameStartedAt = Date.now();
+    const fromLogin = embeddedCurrentUsername
+      ? null
+      : await resolveCurrentUsernameForTask(coadminUid, playerUid, gameName);
+    logAutoTickTiming('resolve_current_username', usernameStartedAt, {
+      taskId: docSnap.id,
+      coadminUid,
+      playerUid,
+      gameName,
+      found: Boolean(fromLogin || embeddedCurrentUsername),
+      skipped: Boolean(embeddedCurrentUsername),
+      reason: embeddedCurrentUsername ? 'task_already_has_current_username' : null,
+    });
+    const currentUsername =
+      embeddedCurrentUsername ||
+      fromLogin ||
+      null;
 
-    const userRow = userSnap.data() as { username?: string };
-    const carerName = String(userRow.username || '').trim() || 'Carer';
+    const carerName = String(userData.username || '').trim() || 'Carer';
 
     console.info('[AUTO_TICK] attempting claim for pending task', {
       taskId: docSnap.id,
@@ -300,6 +421,7 @@ export async function POST(request: Request) {
       beforeFields: taskDebugFields(task),
     });
 
+    const claimStartedAt = Date.now();
     try {
       const result = await claimCarerTaskAsAdmin({
         carerUid,
@@ -307,20 +429,25 @@ export async function POST(request: Request) {
         currentUsername,
         carerName,
         gameLoginDetails,
+        trustedUser: {
+          username: String(userData.username || '').trim() || null,
+          automationAgentId: linked.normalized,
+        },
       });
-      const afterTaskSnap = await adminDb.collection('carerTasks').doc(result.taskId).get();
-      const afterTask = afterTaskSnap.exists ? (afterTaskSnap.data() as Record<string, unknown>) : null;
+      logAutoTickTiming('claimCarerTaskAsAdmin_total', claimStartedAt, {
+        taskId: docSnap.id,
+        carerUid,
+        ok: true,
+        jobId: result.jobId,
+        reusedExistingJob: result.reusedExistingJob,
+      });
       console.info('[AUTO_TICK] claimed pending task as in_progress', {
         taskId: result.taskId,
         jobId: result.jobId,
         carerUid,
         reusedExistingJob: result.reusedExistingJob,
         automationJobCreated: !result.reusedExistingJob,
-        originalTaskUpdatedToInProgress:
-          Boolean(afterTask) &&
-          String(afterTask?.['status'] || '').trim().toLowerCase() === 'in_progress' &&
-          String(afterTask?.['assignedCarerUid'] || '').trim() === carerUid,
-        afterFields: afterTask ? taskDebugFields(afterTask) : null,
+        originalTaskUpdatedToInProgress: true,
       });
       claimedJobs.push({
         taskId: result.taskId,
@@ -328,6 +455,12 @@ export async function POST(request: Request) {
         reusedExistingJob: result.reusedExistingJob,
       });
     } catch (err) {
+      logAutoTickTiming('claimCarerTaskAsAdmin_total', claimStartedAt, {
+        taskId: docSnap.id,
+        carerUid,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
       const message = err instanceof Error ? err.message : String(err);
       if (
         message.includes('Automation job already exists') ||
@@ -379,6 +512,13 @@ export async function POST(request: Request) {
       skippedCount: skippedTasks.length,
       skippedTasks,
     });
+    logAutoTickTiming('total', routeStartedAt, {
+      carerUid,
+      coadminUid,
+      claimed: true,
+      claimedCount: claimedJobs.length,
+      skippedCount: skippedTasks.length,
+    });
     return NextResponse.json({
       ok: true,
       claimed: true,
@@ -398,6 +538,14 @@ export async function POST(request: Request) {
     candidateCount: pendingSnap.docs.length,
     skippedCount: skippedTasks.length,
     skippedTasks,
+  });
+  logAutoTickTiming('total', routeStartedAt, {
+    carerUid,
+    coadminUid,
+    claimed: false,
+    claimedCount: 0,
+    skippedCount: skippedTasks.length,
+    reason: 'no_claimable_task',
   });
   return NextResponse.json({
     ok: true,
