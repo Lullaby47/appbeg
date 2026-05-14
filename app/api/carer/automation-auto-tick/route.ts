@@ -12,6 +12,8 @@ import { AUTOMATION_AUTO_STATE_COLLECTION } from '@/features/automation/automati
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
 
 const LEASE_TTL_MS = 70_000;
+const MAX_CLAIMS_PER_TICK = 5;
+const PENDING_QUERY_LIMIT = 15;
 
 function isAgentSupportedAutomationType(value: string) {
   return (
@@ -191,35 +193,23 @@ export async function POST(request: Request) {
     return a === carerUid || c === carerUid;
   });
 
-  console.info('[AUTO_TICK] pending candidates and in-progress gate', {
+  console.info('[AUTO_TICK] pending candidates and in-progress snapshot', {
     carerUid,
     carerUsername: String(userData.username || '').trim() || null,
     coadminUid,
-    pendingQueryLimit: 15,
+    maxClaimsPerTick: MAX_CLAIMS_PER_TICK,
+    pendingQueryLimit: PENDING_QUERY_LIMIT,
     inProgressPoolCount: inProgressSnap.docs.length,
     myInProgressCount: myInProgress.length,
     myInProgressTaskIds: myInProgress.map((d) => d.id),
   });
-
-  if (myInProgress.length > 0) {
-    console.info('[AUTO_TICK] active in_progress exists for this carer, waiting', {
-      carerUid,
-      taskIds: myInProgress.map((d) => d.id),
-    });
-    return NextResponse.json({
-      ok: true,
-      claimed: false,
-      reason: 'already_in_progress',
-      myInProgressTaskIds: myInProgress.map((d) => d.id),
-    });
-  }
 
   const pendingSnap = await adminDb
     .collection('carerTasks')
     .where('coadminUid', '==', coadminUid)
     .where('status', '==', 'pending')
     .orderBy('createdAt', 'desc')
-    .limit(15)
+    .limit(PENDING_QUERY_LIMIT)
     .get();
 
   console.info('[AUTO_TICK] pending query result', {
@@ -229,7 +219,29 @@ export async function POST(request: Request) {
     candidateTaskIds: pendingSnap.docs.map((d) => d.id),
   });
 
+  const claimedJobs: Array<{
+    taskId: string;
+    jobId: string;
+    reusedExistingJob: boolean;
+  }> = [];
+  const skippedTasks: Array<{
+    taskId: string;
+    reason: string;
+    message?: string;
+    mapped?: string;
+  }> = [];
+
   for (const docSnap of pendingSnap.docs) {
+    if (claimedJobs.length >= MAX_CLAIMS_PER_TICK) {
+      console.info('[AUTO_TICK] claim batch limit reached', {
+        carerUid,
+        coadminUid,
+        claimedCount: claimedJobs.length,
+        maxClaimsPerTick: MAX_CLAIMS_PER_TICK,
+      });
+      break;
+    }
+
     const task: Record<string, unknown> & { id: string } = {
       id: docSnap.id,
       ...(docSnap.data() as Record<string, unknown>),
@@ -245,12 +257,21 @@ export async function POST(request: Request) {
         reason: 'unsupported_automation_type',
         mapped,
       });
+      skippedTasks.push({
+        taskId: docSnap.id,
+        reason: 'unsupported_automation_type',
+        mapped,
+      });
       continue;
     }
     const gameName = String(task['gameName'] || task['game'] || '').trim();
     const playerUid = String(task['playerUid'] || '').trim();
     if (!gameName || !playerUid) {
       console.info('[AUTO_TICK] skipped task (missing game or player)', {
+        taskId: docSnap.id,
+        reason: 'missing_game_or_player',
+      });
+      skippedTasks.push({
         taskId: docSnap.id,
         reason: 'missing_game_or_player',
       });
@@ -301,9 +322,7 @@ export async function POST(request: Request) {
           String(afterTask?.['assignedCarerUid'] || '').trim() === carerUid,
         afterFields: afterTask ? taskDebugFields(afterTask) : null,
       });
-      return NextResponse.json({
-        ok: true,
-        claimed: true,
+      claimedJobs.push({
         taskId: result.taskId,
         jobId: result.jobId,
         reusedExistingJob: result.reusedExistingJob,
@@ -325,6 +344,11 @@ export async function POST(request: Request) {
           message,
           latestFields: latestTask ? taskDebugFields(latestTask) : null,
         });
+        skippedTasks.push({
+          taskId: docSnap.id,
+          reason: 'claim_rejected',
+          message,
+        });
         continue;
       }
       const lower = message.toLowerCase();
@@ -345,8 +369,45 @@ export async function POST(request: Request) {
     }
   }
 
+  if (claimedJobs.length > 0) {
+    console.info('[AUTO_TICK] claim batch complete', {
+      carerUid,
+      coadminUid,
+      claimedCount: claimedJobs.length,
+      claimedTaskIds: claimedJobs.map((job) => job.taskId),
+      claimedJobIds: claimedJobs.map((job) => job.jobId),
+      skippedCount: skippedTasks.length,
+      skippedTasks,
+    });
+    return NextResponse.json({
+      ok: true,
+      claimed: true,
+      claimedCount: claimedJobs.length,
+      claimedJobs,
+      claimedTaskIds: claimedJobs.map((job) => job.taskId),
+      claimedJobIds: claimedJobs.map((job) => job.jobId),
+      skippedCount: skippedTasks.length,
+      skippedTasks,
+      taskId: claimedJobs[0]?.taskId || null,
+      jobId: claimedJobs[0]?.jobId || null,
+      reusedExistingJob: claimedJobs[0]?.reusedExistingJob || false,
+    });
+  }
+
   console.info('[AUTO_TICK] no claimable pending task after scanning candidates', {
     candidateCount: pendingSnap.docs.length,
+    skippedCount: skippedTasks.length,
+    skippedTasks,
   });
-  return NextResponse.json({ ok: true, claimed: false, reason: 'no_claimable_task' });
+  return NextResponse.json({
+    ok: true,
+    claimed: false,
+    claimedCount: 0,
+    claimedJobs: [],
+    claimedTaskIds: [],
+    claimedJobIds: [],
+    skippedCount: skippedTasks.length,
+    skippedTasks,
+    reason: 'no_claimable_task',
+  });
 }
