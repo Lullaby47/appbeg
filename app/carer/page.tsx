@@ -8,6 +8,8 @@ import {
   getDoc,
   getDocs,
   limit,
+  onSnapshot,
+  orderBy,
   query,
   where,
 } from 'firebase/firestore';
@@ -353,6 +355,8 @@ function getRiskCardTone(level: string, score: number) {
 
 /** Rolling window for Work details recharge / redeem sums. */
 const WORK_DETAILS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const AUTO_PENDING_LISTENER_LIMIT = 5;
+const AUTO_LISTENER_DEBOUNCE_MS = 500;
 const BROWSER_AUTO_TICK_INSTANCE_ID = `carer-ui-${Date.now()}-${Math.random()
   .toString(36)
   .slice(2)}`;
@@ -453,6 +457,10 @@ export default function CarerPage() {
   const [agentPanelNotice, setAgentPanelNotice] = useState('');
   const [agentPanelError, setAgentPanelError] = useState('');
   const [agentSaving, setAgentSaving] = useState(false);
+  const [isTickRunning, setIsTickRunning] = useState(false);
+  const [isListenerActive, setIsListenerActive] = useState(false);
+  const [isQueueDraining, setIsQueueDraining] = useState(false);
+  const [autoDrainRequestId, setAutoDrainRequestId] = useState(0);
 
   const previousPendingCountRef = useRef(0);
   const shiftSessionIdRef = useRef<string | null>(null);
@@ -652,6 +660,12 @@ export default function CarerPage() {
   const carerPlayerOnlineByUid = usePresenceOnlineMap(carerPlayerPresenceUids);
   const autoTickRequestInFlightRef = useRef(false);
   const autoTickBrowserTokenRef = useRef<{ token: string; expiresAt: number } | null>(null);
+  const autoQueueDrainInFlightRef = useRef(false);
+  const autoAutomationEnabledRef = useRef(false);
+
+  useEffect(() => {
+    autoAutomationEnabledRef.current = autoAutomationEnabled;
+  }, [autoAutomationEnabled]);
 
   async function refreshAutoTickBrowserToken(agentId: string) {
     const currentUser = auth.currentUser;
@@ -700,7 +714,7 @@ export default function CarerPage() {
     }
   }
 
-  async function fireAutomationAutoTick(source: 'immediate' | 'interval') {
+  async function fireAutomationAutoTick(source: 'immediate' | 'listener' | 'queue') {
     const currentUser = auth.currentUser;
     const linkedAgentId =
       String(carerIdentity?.automationAgentId || '').trim() ||
@@ -708,7 +722,9 @@ export default function CarerPage() {
     const logPrefix =
       source === 'immediate'
         ? '[AUTO_UI] immediate auto tick'
-        : '[AUTO_UI] interval auto tick';
+        : source === 'listener'
+          ? '[AUTO_UI] listener auto tick'
+          : '[AUTO_UI] queue drain auto tick';
 
     if (!currentUser || !carerIdentity?.uid || !linkedAgentId) {
       console.info(`${logPrefix} skipped`, {
@@ -728,6 +744,7 @@ export default function CarerPage() {
       return null;
     }
     autoTickRequestInFlightRef.current = true;
+    setIsTickRunning(true);
     if (source === 'immediate') {
       setNoticeMessage('Claiming pending task...');
     }
@@ -770,6 +787,7 @@ export default function CarerPage() {
       return null;
     } finally {
       autoTickRequestInFlightRef.current = false;
+      setIsTickRunning(false);
     }
 
     const reason = String(payload?.['reason'] || '').trim() || null;
@@ -792,9 +810,79 @@ export default function CarerPage() {
     return payload;
   }
 
+  async function drainAutomationQueueUntilEmpty(source: 'start_button' | 'listener') {
+    if (autoQueueDrainInFlightRef.current || autoTickRequestInFlightRef.current) {
+      console.info('[AUTO_LISTENER_TRIGGER_SKIPPED_ALREADY_RUNNING]', {
+        source,
+        carerUid: carerIdentity?.uid || null,
+        coadminUid: coadminUid || null,
+      });
+      return;
+    }
+
+    autoQueueDrainInFlightRef.current = true;
+    setIsQueueDraining(true);
+    setNoticeMessage('Claiming pending task...');
+    console.info('[AUTO_QUEUE_DRAIN_STARTED]', {
+      source,
+      carerUid: carerIdentity?.uid || null,
+      coadminUid: coadminUid || null,
+    });
+
+    let finishReason = 'unknown';
+    let tickCount = 0;
+
+    try {
+      while (autoAutomationEnabledRef.current) {
+        tickCount += 1;
+        const tickSource =
+          tickCount === 1 && source === 'start_button'
+            ? 'immediate'
+            : tickCount === 1 && source === 'listener'
+              ? 'listener'
+              : 'queue';
+        const payload = await fireAutomationAutoTick(tickSource);
+        const reason = String(payload?.['reason'] || '').trim();
+        const claimed = payload?.['claimed'] === true || Number(payload?.['claimedCount'] || 0) > 0;
+
+        if (reason === 'no_claimable_task') {
+          finishReason = reason;
+          break;
+        }
+        if (!payload || !claimed) {
+          finishReason = reason || 'tick_failed_or_no_claim';
+          break;
+        }
+      }
+
+      if (!autoAutomationEnabledRef.current) {
+        finishReason = 'automation_disabled';
+      }
+    } finally {
+      autoQueueDrainInFlightRef.current = false;
+      setIsQueueDraining(false);
+      console.info('[AUTO_QUEUE_DRAIN_FINISHED]', {
+        source,
+        carerUid: carerIdentity?.uid || null,
+        coadminUid: coadminUid || null,
+        tickCount,
+        reason: finishReason,
+      });
+    }
+  }
+
+  useEffect(() => {
+    if (autoDrainRequestId === 0) {
+      return;
+    }
+    autoAutomationEnabledRef.current = true;
+    void drainAutomationQueueUntilEmpty('start_button');
+  }, [autoDrainRequestId]);
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (!firebaseUser) {
+        autoAutomationEnabledRef.current = false;
         setBootstrapping(false);
         setCarerIdentity(null);
         setCoadminUid('');
@@ -892,20 +980,110 @@ export default function CarerPage() {
       String(carerIdentity.automationAgentId || '').trim() ||
       String(agentInputDraft || '').trim();
     if (!linkedAgentId) {
-      console.info('[AUTO_UI] interval auto tick skipped', {
+      console.info('[AUTO_UI] listener auto tick skipped', {
         reason: 'missing_agent_id',
         carerUid: carerIdentity.uid,
       });
       return;
     }
 
-    const intervalId = window.setInterval(() => {
-      void fireAutomationAutoTick('interval');
-    }, 15_000);
-
-    return () => window.clearInterval(intervalId);
+    void drainAutomationQueueUntilEmpty('start_button');
   }, [
     autoAutomationEnabled,
+    carerIdentity?.uid,
+    carerIdentity?.automationAgentId,
+    agentInputDraft,
+    coadminUid,
+  ]);
+
+  useEffect(() => {
+    if (!autoAutomationEnabled || isQueueDraining || !carerIdentity?.uid || !coadminUid) {
+      return;
+    }
+    const linkedAgentId =
+      String(carerIdentity.automationAgentId || '').trim() ||
+      String(agentInputDraft || '').trim();
+    if (!linkedAgentId) {
+      return;
+    }
+
+    const pendingTasksQuery = query(
+      collection(db, 'carerTasks'),
+      where('coadminUid', '==', coadminUid),
+      where('status', '==', 'pending'),
+      orderBy('createdAt', 'desc'),
+      limit(AUTO_PENDING_LISTENER_LIMIT)
+    );
+    let sawInitialSnapshot = false;
+    let debounceId: number | null = null;
+    const activeStateId = window.setTimeout(() => {
+      setIsListenerActive(true);
+    }, 0);
+
+    console.info('[AUTO_LISTENER_STARTED]', {
+      carerUid: carerIdentity.uid,
+      coadminUid,
+      limit: AUTO_PENDING_LISTENER_LIMIT,
+    });
+
+    const unsubscribe = onSnapshot(
+      pendingTasksQuery,
+      (snapshot) => {
+        if (!sawInitialSnapshot) {
+          sawInitialSnapshot = true;
+          return;
+        }
+        const addedPendingDocs = snapshot
+          .docChanges()
+          .filter((change) => change.type === 'added');
+        if (addedPendingDocs.length === 0) {
+          return;
+        }
+        if (autoQueueDrainInFlightRef.current || autoTickRequestInFlightRef.current) {
+          console.info('[AUTO_LISTENER_TRIGGER_SKIPPED_ALREADY_RUNNING]', {
+            carerUid: carerIdentity.uid,
+            coadminUid,
+            pendingCount: snapshot.size,
+            detectedTaskIds: addedPendingDocs.map((change) => change.doc.id),
+          });
+          return;
+        }
+
+        console.info('[AUTO_LISTENER_PENDING_DETECTED]', {
+          carerUid: carerIdentity.uid,
+          coadminUid,
+          pendingCount: snapshot.size,
+          detectedTaskIds: addedPendingDocs.map((change) => change.doc.id),
+        });
+
+        if (debounceId !== null) {
+          window.clearTimeout(debounceId);
+        }
+        debounceId = window.setTimeout(() => {
+          debounceId = null;
+          void drainAutomationQueueUntilEmpty('listener');
+        }, AUTO_LISTENER_DEBOUNCE_MS);
+      },
+      (error) => {
+        setErrorMessage(error.message || 'Failed to listen for pending automation tasks.');
+      }
+    );
+
+    return () => {
+      window.clearTimeout(activeStateId);
+      if (debounceId !== null) {
+        window.clearTimeout(debounceId);
+      }
+      unsubscribe();
+      setIsListenerActive(false);
+      console.info('[AUTO_LISTENER_STOPPED]', {
+        carerUid: carerIdentity.uid,
+        coadminUid,
+      });
+    };
+  }, [
+    autoAutomationEnabled,
+    isQueueDraining,
     carerIdentity?.uid,
     carerIdentity?.automationAgentId,
     agentInputDraft,
@@ -2372,7 +2550,7 @@ export default function CarerPage() {
                     autoTickRequestFiredByUi: true,
                     claimLoopOwner: 'browser_and_python_carer_agent',
                   });
-                  void fireAutomationAutoTick('immediate');
+                  setAutoDrainRequestId((current) => current + 1);
                   setActiveView('tasks');
                   setNoticeMessage('Claiming pending task...');
                   void refreshPageData();
@@ -2383,6 +2561,8 @@ export default function CarerPage() {
                 }
               })();
             }}
+            aria-busy={isTickRunning || isQueueDraining}
+            data-listener-active={isListenerActive}
             className="rounded-2xl bg-white px-4 py-3 text-sm font-bold text-black hover:bg-neutral-200"
           >
             Start Automation
@@ -2948,7 +3128,11 @@ export default function CarerPage() {
                       claimLoopOwner: next ? 'browser_and_python_carer_agent' : null,
                     });
                     if (next) {
-                      void fireAutomationAutoTick('immediate');
+                      setAutoDrainRequestId((current) => current + 1);
+                    } else {
+                      window.setTimeout(() => {
+                        autoAutomationEnabledRef.current = false;
+                      }, 0);
                     }
                     setNoticeMessage(
                       next
@@ -2962,6 +3146,8 @@ export default function CarerPage() {
                   }
                 })();
               }}
+              aria-busy={isTickRunning || isQueueDraining}
+              data-listener-active={isListenerActive}
               className="rounded-xl border border-violet-500/40 bg-violet-500/15 px-4 py-2 text-sm font-bold text-violet-100 hover:bg-violet-500/25"
             >
               {autoAutomationEnabled ? 'Stop Automation' : 'Start Automation'}
