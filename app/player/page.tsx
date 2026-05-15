@@ -4561,10 +4561,10 @@ export default function PlayerPage() {
                       type="button"
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => selectRecentPlayAmount(amount)}
-                      className={`min-h-[36px] rounded-full border px-3 text-sm font-black text-amber-100 ${
+                      className={`min-h-[36px] rounded-full border px-3 text-sm font-black text-white shadow-[0_0_18px_-6px_rgba(249,115,22,0.9)] ${
                         index === 0
-                          ? 'border-amber-300/40 bg-amber-400/15'
-                          : 'border-white/10 bg-white/[0.08]'
+                          ? 'border-orange-100 bg-gradient-to-r from-orange-400 via-orange-500 to-amber-400'
+                          : 'border-orange-200/80 bg-orange-500'
                       }`}
                     >
                       {index === 0 ? `Last: ${amount}` : amount}
