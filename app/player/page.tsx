@@ -4480,7 +4480,7 @@ export default function PlayerPage() {
 
       {showActiveTableSplash && selectedGameName ? (
         <div
-          className="fixed inset-0 z-[74] flex items-end justify-center bg-black/82 px-3 pt-4 backdrop-blur-xl sm:px-4"
+          className="fixed inset-0 z-[74] flex items-end justify-center bg-gradient-to-b from-[#24351f]/82 via-[#1b2a19]/82 to-[#14170d]/88 px-3 pt-4 backdrop-blur-xl sm:px-4"
           style={{
             paddingBottom: `max(0.75rem, calc(env(safe-area-inset-bottom) + ${activeTableKeyboardInset}px))`,
           }}
@@ -4492,18 +4492,18 @@ export default function PlayerPage() {
           <div
             onClick={(event) => event.stopPropagation()}
             ref={activeTableSplashContentRef}
-            className="relative flex min-h-0 w-full max-w-lg flex-col overflow-hidden rounded-[28px] border border-amber-400/35 bg-gradient-to-b from-black/90 to-zinc-950/98 shadow-2xl shadow-amber-900/25 backdrop-blur-xl sm:rounded-3xl"
+            className="relative flex min-h-0 w-full max-w-lg flex-col overflow-hidden rounded-[28px] border border-amber-400/35 bg-gradient-to-b from-zinc-900/82 to-zinc-950/92 shadow-2xl shadow-amber-900/25 backdrop-blur-xl sm:rounded-3xl"
             style={{
               maxHeight: activeTableViewportHeight
                 ? `${Math.max(320, activeTableViewportHeight - 16)}px`
                 : 'calc(100dvh - 1rem)',
               ...(selectedGameBackgroundImage
                 ? {
-                    backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.22) 0%, rgba(0, 0, 0, 0.5) 100%), url("${selectedGameBackgroundImage}")`,
+                    backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.08) 0%, rgba(0, 0, 0, 0.28) 100%), url("${selectedGameBackgroundImage}")`,
                     backgroundSize: '100% 100%',
                     backgroundPosition: 'center',
                     backgroundRepeat: 'no-repeat',
-                    filter: 'brightness(1.15) saturate(1.1)',
+                    filter: 'brightness(1.35) saturate(1.18)',
                   }
                 : {}),
             }}
