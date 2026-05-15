@@ -91,6 +91,8 @@ type PlayerWallet = {
   cash: number;
 };
 
+type PlayerGameRequestType = 'recharge' | 'redeem';
+
 type GameBackgroundAsset = {
   key: string;
   imageUrl: string;
@@ -221,9 +223,22 @@ const DEFAULT_PLAYER_MUSIC_VOLUME = 0.3;
 const PLAYER_HELP_HINT_MESSAGE =
   'Press Play to get your game recharged, and click Menu to see more offers.';
 const ACTIVE_TABLE_SPLASH_HISTORY_KEY = '__playerActiveTableSplash';
+const QUICK_PLAY_AMOUNTS = ['50', '100', '200', '350'] as const;
 
 function normalizeGameKey(gameName: string) {
   return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+}
+
+function sanitizeWholeAmountText(value: string) {
+  return value.replace(/\D/g, '');
+}
+
+function getLastPlayAmountStorageKey(
+  playerUidValue: string,
+  gameIdValue: string,
+  taskType: PlayerGameRequestType
+) {
+  return `appbeg:lastAmount:${playerUidValue || 'player'}:${gameIdValue || 'game'}:${taskType}`;
 }
 
 function normalizeBackgroundKey(gameName: string) {
@@ -508,10 +523,16 @@ export default function PlayerPage() {
   const [playAmount, setPlayAmount] = useState('');
   const [requestLoading, setRequestLoading] = useState(false);
   const [playRequestSplash, setPlayRequestSplash] = useState<null | {
-    type: 'recharge' | 'redeem';
+    type: PlayerGameRequestType;
     gameName: string;
     amountText: string;
   }>(null);
+  const [lastPlayAmountByType, setLastPlayAmountByType] = useState<
+    Record<PlayerGameRequestType, { amount: string; savedAt: number } | null>
+  >({
+    recharge: null,
+    redeem: null,
+  });
   const [showActiveTableSplash, setShowActiveTableSplash] = useState(false);
   const [coinLoading, setCoinLoading] = useState(false);
   const [requestHistory, setRequestHistory] = useState<PlayerGameRequest[]>([]);
@@ -685,6 +706,37 @@ export default function PlayerPage() {
         behavior: 'smooth',
       });
     }, 120);
+  }
+
+  function updatePlayAmount(value: string) {
+    setPlayAmount(sanitizeWholeAmountText(value));
+  }
+
+  function saveLastPlayAmount(taskType: PlayerGameRequestType, amountText: string, savedAt: number) {
+    if (typeof window === 'undefined' || !lastPlayAmountGameId) {
+      return;
+    }
+
+    const amount = sanitizeWholeAmountText(amountText);
+    if (!amount) {
+      return;
+    }
+
+    const key = getLastPlayAmountStorageKey(
+      lastPlayAmountPlayerUid,
+      lastPlayAmountGameId,
+      taskType
+    );
+    try {
+      window.localStorage.setItem(key, amount);
+      window.localStorage.setItem(`${key}:savedAt`, String(savedAt));
+    } catch {
+      // Keep the successful request flow intact if browser storage is unavailable.
+    }
+    setLastPlayAmountByType((current) => ({
+      ...current,
+      [taskType]: { amount, savedAt },
+    }));
   }
 
   useEffect(() => {
@@ -903,6 +955,73 @@ export default function PlayerPage() {
     }
     return gameBackgroundImageByKey[key] || '';
   }, [gameBackgroundImageByKey, selectedGameName]);
+
+  const selectedGameLogin = useMemo(() => {
+    const selectedKey = normalizeGameKey(selectedGameName);
+    if (!selectedKey) {
+      return null;
+    }
+
+    return (
+      gameLogins.find((login) => normalizeGameKey(String(login.gameName || '')) === selectedKey) ||
+      null
+    );
+  }, [gameLogins, selectedGameName]);
+
+  const lastPlayAmountPlayerUid = playerUid || auth.currentUser?.uid || '';
+  const lastPlayAmountGameId = selectedGameLogin?.id || normalizeGameKey(selectedGameName);
+
+  const lastPlayAmountChip = useMemo(() => {
+    return lastPlayAmountByType.recharge?.amount || '';
+  }, [lastPlayAmountByType]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    if (!lastPlayAmountGameId) {
+      const timeoutId = window.setTimeout(() => {
+        setLastPlayAmountByType({ recharge: null, redeem: null });
+      }, 0);
+      return () => window.clearTimeout(timeoutId);
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      const nextAmounts: Record<PlayerGameRequestType, { amount: string; savedAt: number } | null> = {
+        recharge: null,
+        redeem: null,
+      };
+
+      (['recharge', 'redeem'] as const).forEach((taskType) => {
+        const key = getLastPlayAmountStorageKey(
+          lastPlayAmountPlayerUid,
+          lastPlayAmountGameId,
+          taskType
+        );
+        let amount = '';
+        let savedAt = 0;
+        try {
+          amount = sanitizeWholeAmountText(window.localStorage.getItem(key) || '');
+          savedAt = Number(window.localStorage.getItem(`${key}:savedAt`) || 0);
+        } catch {
+          return;
+        }
+        if (!amount) {
+          return;
+        }
+
+        nextAmounts[taskType] = {
+          amount,
+          savedAt,
+        };
+      });
+
+      setLastPlayAmountByType(nextAmounts);
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [lastPlayAmountGameId, lastPlayAmountPlayerUid]);
 
   const activeBonusCarouselIndex = useMemo(() => {
     if (playerBonusEvents.length === 0) {
@@ -2044,7 +2163,7 @@ export default function PlayerPage() {
     return () => window.clearTimeout(timeoutId);
   }, [activeView]);
 
-  async function handleGameRequest(type: 'recharge' | 'redeem') {
+  async function handleGameRequest(type: PlayerGameRequestType) {
     if (isBlockedPlayer) {
       setMessage(
         'Your account is blocked. Recharge and redeem requests are disabled.'
@@ -2052,7 +2171,8 @@ export default function PlayerPage() {
       return;
     }
 
-    const amountNum = Number(playAmount);
+    const amountText = sanitizeWholeAmountText(playAmount);
+    const amountNum = Number(amountText);
     if (type === 'recharge') {
       if (!Number.isFinite(amountNum) || amountNum <= 0) {
         setMessage('Enter a valid amount.');
@@ -2091,7 +2211,7 @@ export default function PlayerPage() {
     setPlayRequestSplash({
       type,
       gameName: selectedGameName,
-      amountText: String(playAmount),
+      amountText,
     });
     setRequestLoading(true);
     setMessage('');
@@ -2099,10 +2219,11 @@ export default function PlayerPage() {
     try {
       await createPlayerGameRequest({
         gameName: selectedGameName,
-        amount: Number(playAmount),
+        amount: amountNum,
         type,
       });
 
+      saveLastPlayAmount(type, amountText, Date.now());
       if (type === 'redeem') {
         setMessage('Redeem request sent.');
       }
@@ -4385,15 +4506,38 @@ export default function PlayerPage() {
                 <input
                   ref={activeTableAmountInputRef}
                   value={playAmount}
-                  onChange={(event) => setPlayAmount(event.target.value)}
+                  onChange={(event) => updatePlayAmount(event.target.value)}
                   onFocus={nudgeActiveTableForKeyboard}
-                  type="number"
-                  min="1"
-                  inputMode="decimal"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  enterKeyHint="done"
+                  autoComplete="off"
                   placeholder="Enter amount in USD"
                   autoFocus
                   className="min-h-[52px] w-full rounded-2xl border border-amber-400/40 bg-black/70 px-4 py-3 text-lg text-white outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-400/30"
                 />
+                <div className="mt-3 flex flex-wrap gap-2 sm:hidden">
+                  {lastPlayAmountChip ? (
+                    <button
+                      type="button"
+                      onClick={() => updatePlayAmount(lastPlayAmountChip)}
+                      className="min-h-[36px] rounded-full border border-amber-300/40 bg-amber-400/15 px-3 text-sm font-black text-amber-100"
+                    >
+                      Last recharge {lastPlayAmountChip}
+                    </button>
+                  ) : null}
+                  {QUICK_PLAY_AMOUNTS.map((amount) => (
+                    <button
+                      key={amount}
+                      type="button"
+                      onClick={() => updatePlayAmount(amount)}
+                      className="min-h-[36px] rounded-full border border-white/10 bg-white/[0.08] px-3 text-sm font-black text-amber-100"
+                    >
+                      {amount}
+                    </button>
+                  ))}
+                </div>
                 <p className="mt-2 text-xs leading-relaxed text-amber-100/60">
                   Available coin:{' '}
                   <span className="font-bold text-amber-200">{formatWalletAmount(wallet.coin)}</span>
