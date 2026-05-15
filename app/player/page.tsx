@@ -223,7 +223,8 @@ const DEFAULT_PLAYER_MUSIC_VOLUME = 0.3;
 const PLAYER_HELP_HINT_MESSAGE =
   'Press Play to get your game recharged, and click Menu to see more offers.';
 const ACTIVE_TABLE_SPLASH_HISTORY_KEY = '__playerActiveTableSplash';
-const QUICK_PLAY_AMOUNTS = ['50', '100', '200', '350'] as const;
+const RECENT_PLAY_AMOUNT_LIMIT = 5;
+const GLOBAL_RECENT_PLAY_AMOUNT_STORAGE_KEY = 'appbeg:recentAmounts:global';
 
 function normalizeGameKey(gameName: string) {
   return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
@@ -233,12 +234,32 @@ function sanitizeWholeAmountText(value: string) {
   return value.replace(/\D/g, '');
 }
 
-function getLastPlayAmountStorageKey(
+function normalizeRecentAmounts(amounts: string[]) {
+  const seen = new Set<string>();
+  const nextAmounts: string[] = [];
+  for (const amount of amounts) {
+    const cleanAmount = sanitizeWholeAmountText(amount);
+    if (!cleanAmount || seen.has(cleanAmount)) {
+      continue;
+    }
+    seen.add(cleanAmount);
+    nextAmounts.push(cleanAmount);
+    if (nextAmounts.length >= RECENT_PLAY_AMOUNT_LIMIT) {
+      break;
+    }
+  }
+  return nextAmounts;
+}
+
+function getRecentPlayAmountStorageKey(
   playerUidValue: string,
   gameIdValue: string,
-  taskType: PlayerGameRequestType
+  taskType?: PlayerGameRequestType
 ) {
-  return `appbeg:lastAmount:${playerUidValue || 'player'}:${gameIdValue || 'game'}:${taskType}`;
+  if (!playerUidValue || !gameIdValue || !taskType) {
+    return GLOBAL_RECENT_PLAY_AMOUNT_STORAGE_KEY;
+  }
+  return `appbeg:recentAmounts:${playerUidValue}:${gameIdValue}:${taskType}`;
 }
 
 function normalizeBackgroundKey(gameName: string) {
@@ -527,12 +548,8 @@ export default function PlayerPage() {
     gameName: string;
     amountText: string;
   }>(null);
-  const [lastPlayAmountByType, setLastPlayAmountByType] = useState<
-    Record<PlayerGameRequestType, { amount: string; savedAt: number } | null>
-  >({
-    recharge: null,
-    redeem: null,
-  });
+  const [recentPlayAmounts, setRecentPlayAmounts] = useState<string[]>([]);
+  const [isPlayAmountEditable, setIsPlayAmountEditable] = useState(false);
   const [showActiveTableSplash, setShowActiveTableSplash] = useState(false);
   const [coinLoading, setCoinLoading] = useState(false);
   const [requestHistory, setRequestHistory] = useState<PlayerGameRequest[]>([]);
@@ -685,6 +702,7 @@ export default function PlayerPage() {
       );
       activeTableHistoryOpenRef.current = true;
     }
+    setIsPlayAmountEditable(false);
     setShowActiveTableSplash(true);
   }
 
@@ -712,8 +730,27 @@ export default function PlayerPage() {
     setPlayAmount(sanitizeWholeAmountText(value));
   }
 
-  function saveLastPlayAmount(taskType: PlayerGameRequestType, amountText: string, savedAt: number) {
-    if (typeof window === 'undefined' || !lastPlayAmountGameId) {
+  function selectRecentPlayAmount(value: string) {
+    updatePlayAmount(value);
+    setIsPlayAmountEditable(false);
+    activeTableAmountInputRef.current?.blur();
+  }
+
+  function loadRecentPlayAmountsFromStorage(key: string) {
+    if (typeof window === 'undefined') {
+      return [] as string[];
+    }
+
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(key) || '[]');
+      return normalizeRecentAmounts(Array.isArray(parsed) ? parsed.map(String) : []);
+    } catch {
+      return [];
+    }
+  }
+
+  function saveRecentPlayAmount(taskType: PlayerGameRequestType, amountText: string) {
+    if (typeof window === 'undefined') {
       return;
     }
 
@@ -722,21 +759,58 @@ export default function PlayerPage() {
       return;
     }
 
-    const key = getLastPlayAmountStorageKey(
-      lastPlayAmountPlayerUid,
-      lastPlayAmountGameId,
-      taskType
-    );
+    const scopedKey = getRecentPlayAmountStorageKey(recentPlayAmountPlayerUid, recentPlayAmountGameId, taskType);
+    const displayKey = getRecentPlayAmountStorageKey(recentPlayAmountPlayerUid, recentPlayAmountGameId);
+    const nextScopedAmounts = normalizeRecentAmounts([
+      amount,
+      ...loadRecentPlayAmountsFromStorage(scopedKey),
+    ]);
+    const nextDisplayAmounts =
+      displayKey === scopedKey
+        ? nextScopedAmounts
+        : normalizeRecentAmounts([amount, ...loadRecentPlayAmountsFromStorage(displayKey)]);
+
     try {
-      window.localStorage.setItem(key, amount);
-      window.localStorage.setItem(`${key}:savedAt`, String(savedAt));
+      window.localStorage.setItem(scopedKey, JSON.stringify(nextScopedAmounts));
+      if (displayKey !== scopedKey) {
+        window.localStorage.setItem(displayKey, JSON.stringify(nextDisplayAmounts));
+      }
     } catch {
       // Keep the successful request flow intact if browser storage is unavailable.
     }
-    setLastPlayAmountByType((current) => ({
-      ...current,
-      [taskType]: { amount, savedAt },
-    }));
+    setRecentPlayAmounts(nextDisplayAmounts);
+  }
+
+  function clearRecentPlayAmounts() {
+    if (typeof window !== 'undefined') {
+      const displayKey = getRecentPlayAmountStorageKey(recentPlayAmountPlayerUid, recentPlayAmountGameId);
+      const rechargeKey = getRecentPlayAmountStorageKey(
+        recentPlayAmountPlayerUid,
+        recentPlayAmountGameId,
+        'recharge'
+      );
+      const redeemKey = getRecentPlayAmountStorageKey(
+        recentPlayAmountPlayerUid,
+        recentPlayAmountGameId,
+        'redeem'
+      );
+      try {
+        [displayKey, rechargeKey, redeemKey].forEach((key) => window.localStorage.removeItem(key));
+      } catch {
+        // Clearing the input should still work if browser storage is unavailable.
+      }
+    }
+    setRecentPlayAmounts([]);
+    setPlayAmount('');
+    setIsPlayAmountEditable(false);
+  }
+
+  function enableCustomPlayAmount() {
+    setIsPlayAmountEditable(true);
+    window.setTimeout(() => {
+      activeTableAmountInputRef.current?.focus();
+      nudgeActiveTableForKeyboard();
+    }, 0);
   }
 
   useEffect(() => {
@@ -968,60 +1042,24 @@ export default function PlayerPage() {
     );
   }, [gameLogins, selectedGameName]);
 
-  const lastPlayAmountPlayerUid = playerUid || auth.currentUser?.uid || '';
-  const lastPlayAmountGameId = selectedGameLogin?.id || normalizeGameKey(selectedGameName);
-
-  const lastPlayAmountChip = useMemo(() => {
-    return lastPlayAmountByType.recharge?.amount || '';
-  }, [lastPlayAmountByType]);
+  const recentPlayAmountPlayerUid = playerUid || auth.currentUser?.uid || '';
+  const recentPlayAmountGameId = selectedGameLogin?.id || normalizeGameKey(selectedGameName);
+  const recentPlayAmountStorageKey = getRecentPlayAmountStorageKey(
+    recentPlayAmountPlayerUid,
+    recentPlayAmountGameId
+  );
 
   useEffect(() => {
     if (typeof window === 'undefined') {
       return;
     }
 
-    if (!lastPlayAmountGameId) {
-      const timeoutId = window.setTimeout(() => {
-        setLastPlayAmountByType({ recharge: null, redeem: null });
-      }, 0);
-      return () => window.clearTimeout(timeoutId);
-    }
-
     const timeoutId = window.setTimeout(() => {
-      const nextAmounts: Record<PlayerGameRequestType, { amount: string; savedAt: number } | null> = {
-        recharge: null,
-        redeem: null,
-      };
-
-      (['recharge', 'redeem'] as const).forEach((taskType) => {
-        const key = getLastPlayAmountStorageKey(
-          lastPlayAmountPlayerUid,
-          lastPlayAmountGameId,
-          taskType
-        );
-        let amount = '';
-        let savedAt = 0;
-        try {
-          amount = sanitizeWholeAmountText(window.localStorage.getItem(key) || '');
-          savedAt = Number(window.localStorage.getItem(`${key}:savedAt`) || 0);
-        } catch {
-          return;
-        }
-        if (!amount) {
-          return;
-        }
-
-        nextAmounts[taskType] = {
-          amount,
-          savedAt,
-        };
-      });
-
-      setLastPlayAmountByType(nextAmounts);
+      setRecentPlayAmounts(loadRecentPlayAmountsFromStorage(recentPlayAmountStorageKey));
     }, 0);
 
     return () => window.clearTimeout(timeoutId);
-  }, [lastPlayAmountGameId, lastPlayAmountPlayerUid]);
+  }, [recentPlayAmountStorageKey]);
 
   const activeBonusCarouselIndex = useMemo(() => {
     if (playerBonusEvents.length === 0) {
@@ -2223,7 +2261,7 @@ export default function PlayerPage() {
         type,
       });
 
-      saveLastPlayAmount(type, amountText, Date.now());
+      saveRecentPlayAmount(type, amountText);
       if (type === 'redeem') {
         setMessage('Redeem request sent.');
       }
@@ -4507,36 +4545,53 @@ export default function PlayerPage() {
                   ref={activeTableAmountInputRef}
                   value={playAmount}
                   onChange={(event) => updatePlayAmount(event.target.value)}
-                  onFocus={nudgeActiveTableForKeyboard}
+                  onFocus={() => {
+                    if (isPlayAmountEditable) {
+                      nudgeActiveTableForKeyboard();
+                    }
+                  }}
                   type="text"
                   inputMode="numeric"
                   pattern="[0-9]*"
                   enterKeyHint="done"
                   autoComplete="off"
+                  readOnly={!isPlayAmountEditable}
                   placeholder="Enter amount in USD"
-                  autoFocus
                   className="min-h-[52px] w-full rounded-2xl border border-amber-400/40 bg-black/70 px-4 py-3 text-lg text-white outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-400/30"
                 />
                 <div className="mt-3 flex flex-wrap gap-2 sm:hidden">
-                  {lastPlayAmountChip ? (
-                    <button
-                      type="button"
-                      onClick={() => updatePlayAmount(lastPlayAmountChip)}
-                      className="min-h-[36px] rounded-full border border-amber-300/40 bg-amber-400/15 px-3 text-sm font-black text-amber-100"
-                    >
-                      Last recharge {lastPlayAmountChip}
-                    </button>
-                  ) : null}
-                  {QUICK_PLAY_AMOUNTS.map((amount) => (
+                  {recentPlayAmounts.map((amount, index) => (
                     <button
                       key={amount}
                       type="button"
-                      onClick={() => updatePlayAmount(amount)}
-                      className="min-h-[36px] rounded-full border border-white/10 bg-white/[0.08] px-3 text-sm font-black text-amber-100"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => selectRecentPlayAmount(amount)}
+                      className={`min-h-[36px] rounded-full border px-3 text-sm font-black text-amber-100 ${
+                        index === 0
+                          ? 'border-amber-300/40 bg-amber-400/15'
+                          : 'border-white/10 bg-white/[0.08]'
+                      }`}
                     >
-                      {amount}
+                      {index === 0 ? `Last: ${amount}` : amount}
                     </button>
                   ))}
+                  {recentPlayAmounts.length > 0 ? (
+                    <button
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={clearRecentPlayAmounts}
+                      className="min-h-[36px] rounded-full border border-rose-300/35 bg-rose-500/15 px-3 text-sm font-black text-rose-100"
+                    >
+                      Clear
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={enableCustomPlayAmount}
+                    className="min-h-[36px] rounded-full border border-white/10 bg-white/[0.08] px-3 text-sm font-black text-amber-100"
+                  >
+                    Custom Amount
+                  </button>
                 </div>
                 <p className="mt-2 text-xs leading-relaxed text-amber-100/60">
                   Available coin:{' '}

@@ -67,7 +67,7 @@ export default function ProtectedRoute({
   return (
     <>
       <UserPresenceSync />
-      <IdleLogoutSync />
+      {!allowedRoles.includes('carer') ? <IdleLogoutSync /> : null}
       {children}
     </>
   );
