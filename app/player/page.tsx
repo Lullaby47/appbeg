@@ -805,14 +805,6 @@ export default function PlayerPage() {
     setIsPlayAmountEditable(false);
   }
 
-  function enableCustomPlayAmount() {
-    setIsPlayAmountEditable(true);
-    window.setTimeout(() => {
-      activeTableAmountInputRef.current?.focus();
-      nudgeActiveTableForKeyboard();
-    }, 0);
-  }
-
   useEffect(() => {
     showActiveTableSplashRef.current = showActiveTableSplash;
   }, [showActiveTableSplash]);
@@ -4545,10 +4537,13 @@ export default function PlayerPage() {
                   ref={activeTableAmountInputRef}
                   value={playAmount}
                   onChange={(event) => updatePlayAmount(event.target.value)}
+                  onPointerDown={(event) => {
+                    event.currentTarget.readOnly = false;
+                    setIsPlayAmountEditable(true);
+                  }}
                   onFocus={() => {
-                    if (isPlayAmountEditable) {
-                      nudgeActiveTableForKeyboard();
-                    }
+                    setIsPlayAmountEditable(true);
+                    nudgeActiveTableForKeyboard();
                   }}
                   type="text"
                   inputMode="numeric"
@@ -4585,13 +4580,6 @@ export default function PlayerPage() {
                       Clear
                     </button>
                   ) : null}
-                  <button
-                    type="button"
-                    onClick={enableCustomPlayAmount}
-                    className="min-h-[36px] rounded-full border border-white/10 bg-white/[0.08] px-3 text-sm font-black text-amber-100"
-                  >
-                    Custom Amount
-                  </button>
                 </div>
                 <p className="mt-2 text-xs leading-relaxed text-amber-100/60">
                   Available coin:{' '}
