@@ -22,10 +22,12 @@ export default function ProtectedRoute({
 }: ProtectedRouteProps) {
   const router = useRouter();
   const [checking, setChecking] = useState(true);
+  const [currentRole, setCurrentRole] = useState<UserRole | null>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (!firebaseUser) {
+        setCurrentRole(null);
         router.replace('/login');
         return;
       }
@@ -34,17 +36,21 @@ export default function ProtectedRoute({
       const userSnap = await getDoc(userRef);
 
       if (!userSnap.exists()) {
+        setCurrentRole(null);
         router.replace('/login');
         return;
       }
 
       const userData = userSnap.data();
-      const role = userData.role;
+      const role = userData.role as UserRole;
 
       if (!allowedRoles.includes(role)) {
+        setCurrentRole(null);
         router.replace('/login');
         return;
       }
+
+      setCurrentRole(role);
 
       if (role === 'player' || role === 'carer') {
         recordDevActiveSession(role, firebaseUser.uid);
@@ -67,7 +73,7 @@ export default function ProtectedRoute({
   return (
     <>
       <UserPresenceSync />
-      {!allowedRoles.includes('carer') ? <IdleLogoutSync /> : null}
+      {currentRole !== 'player' && currentRole !== 'carer' ? <IdleLogoutSync /> : null}
       {children}
     </>
   );
