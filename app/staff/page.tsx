@@ -51,16 +51,12 @@ import {
 } from '@/features/cashouts/playerCashoutTasks';
 import { createCarerCashoutRequest } from '@/features/cashouts/carerCashouts';
 import {
-  approveTransferRequest,
   getPlayerRiskSnapshot,
-  listenPendingTransferRequestsByCoadminOrGlobal,
   listenPlayerRiskSnapshotsByCoadmin,
   markRiskReviewed,
   PlayerRiskSnapshot,
-  rejectTransferRequest,
   setPlayerBonusBlock,
   setPlayerTransferBlock,
-  TransferRequest,
 } from '@/features/risk/playerRisk';
 import {
   heartbeatShiftSession,
@@ -196,7 +192,6 @@ export default function StaffPage() {
   );
   const [staffAuthUid, setStaffAuthUid] = useState('');
   const [countdownTick, setCountdownTick] = useState(0);
-  const [pendingTransferRequests, setPendingTransferRequests] = useState<TransferRequest[]>([]);
   const [riskSnapshots, setRiskSnapshots] = useState<PlayerRiskSnapshot[]>([]);
   const [selectedRiskSnapshot, setSelectedRiskSnapshot] = useState<PlayerRiskSnapshot | null>(null);
   const [showRiskPanel, setShowRiskPanel] = useState(false);
@@ -617,46 +612,8 @@ export default function StaffPage() {
     let unsubscribe: (() => void) | undefined;
 
     async function startTransferRequestListener() {
-      try {
-        if (creatorRole === 'admin') {
-          unsubscribe = listenPendingTransferRequestsByCoadminOrGlobal(
-            '',
-            (requests) => {
-              if (!isCancelled) {
-                setPendingTransferRequests(requests);
-              }
-            },
-            (error) => {
-              if (!isCancelled) {
-                setMessage(error.message || 'Failed to load transfer requests.');
-              }
-            }
-          );
-          return;
-        }
-
-        const coadminUid = await getCurrentUserCoadminUid();
-        if (isCancelled) {
-          return;
-        }
-        unsubscribe = listenPendingTransferRequestsByCoadminOrGlobal(
-          coadminUid,
-          (requests) => {
-            if (!isCancelled) {
-              setPendingTransferRequests(requests);
-            }
-          },
-          (error) => {
-            if (!isCancelled) {
-              setMessage(error.message || 'Failed to load transfer requests.');
-            }
-          }
-        );
-      } catch (error: any) {
-        if (!isCancelled) {
-          setMessage(error.message || 'Failed to start transfer requests listener.');
-        }
-      }
+      // Pending transfer request approval flow is disabled. Staff can view player risk and cashout ledger only.
+      return;
     }
 
     void startTransferRequestListener();
@@ -947,34 +904,6 @@ export default function StaffPage() {
       setMessage(error.message || 'Failed to decline player cashout task.');
     } finally {
       setPlayerCashoutTaskLoadingId(null);
-    }
-  }
-
-  async function handleApproveTransferRequest(requestId: string) {
-    setRiskActionLoading(`approve-${requestId}`);
-    setMessage('');
-    try {
-      await approveTransferRequest(requestId);
-      setMessage(
-        'Transfer approved and converted to coin. Most profit comes from cashouts. Repeated cash-to-coin transfers may reduce long-term gains.'
-      );
-    } catch (error: any) {
-      setMessage(error.message || 'Failed to approve transfer request.');
-    } finally {
-      setRiskActionLoading(null);
-    }
-  }
-
-  async function handleRejectTransferRequest(requestId: string) {
-    setRiskActionLoading(`reject-${requestId}`);
-    setMessage('');
-    try {
-      await rejectTransferRequest(requestId, 'Transfer denied due to suspected misuse.');
-      setMessage('Transfer request rejected.');
-    } catch (error: any) {
-      setMessage(error.message || 'Failed to reject transfer request.');
-    } finally {
-      setRiskActionLoading(null);
     }
   }
 
@@ -1440,62 +1369,6 @@ export default function StaffPage() {
                 </div>
               )}
 
-              {pendingTransferRequests.length > 0 && (
-                <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-5">
-                  <h3 className="text-lg font-bold text-amber-200">
-                    Cash → Coin Transfer Requests ({pendingTransferRequests.length})
-                  </h3>
-                  <p className="mt-1 text-xs text-amber-100/80">
-                    Check if player is abusing bonus or recycling funds.
-                  </p>
-                  <div className="mt-3 space-y-3">
-                    {pendingTransferRequests.map((request) => (
-                      <div
-                        key={request.id}
-                        className="rounded-xl border border-amber-300/25 bg-black/30 p-4"
-                      >
-                        <p className="text-sm font-semibold text-white">
-                          Player: {request.playerUsername}
-                        </p>
-                        <p className="mt-1 text-xs text-amber-100/85">
-                          Cash balance: {formatUsdFromNpr(request.cashBalanceSnapshot || request.amountNpr || 0)}
-                        </p>
-                        <p className="mt-1 text-xs text-amber-100/70">
-                          Requested transfer: {formatUsdFromNpr(request.amountNpr || 0)}
-                        </p>
-                        <p className="mt-1 text-xs text-amber-100/70">
-                          Requested at: {request.requestedAt?.toDate?.().toLocaleString?.() || 'Now'}
-                        </p>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => void handleOpenRiskPanel(request.playerUid)}
-                            className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/25"
-                          >
-                            View Player Risk Data
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void handleApproveTransferRequest(request.id)}
-                            disabled={riskActionLoading === `approve-${request.id}`}
-                            className="rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-black hover:bg-emerald-400 disabled:opacity-60"
-                          >
-                            {riskActionLoading === `approve-${request.id}` ? 'Saving...' : 'Approve'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void handleRejectTransferRequest(request.id)}
-                            disabled={riskActionLoading === `reject-${request.id}`}
-                            className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-400 disabled:opacity-60"
-                          >
-                            {riskActionLoading === `reject-${request.id}` ? 'Saving...' : 'Reject'}
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
 
               {riskyPlayers.length > 0 && (
                 <div className="rounded-2xl border border-orange-500/35 bg-orange-500/10 p-5">
@@ -2125,29 +1998,6 @@ export default function StaffPage() {
             </div>
 
             <div className="mt-4 flex flex-wrap gap-2">
-              {pendingTransferRequests
-                .filter((request) => request.playerUid === selectedRiskSnapshot.playerUid)
-                .slice(0, 1)
-                .map((request) => (
-                  <div key={request.id} className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void handleApproveTransferRequest(request.id)}
-                      disabled={riskActionLoading === `approve-${request.id}`}
-                      className="rounded-lg bg-emerald-500 px-3 py-2 text-xs font-semibold text-black hover:bg-emerald-400 disabled:opacity-60"
-                    >
-                      Approve transfer
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleRejectTransferRequest(request.id)}
-                      disabled={riskActionLoading === `reject-${request.id}`}
-                      className="rounded-lg bg-rose-500 px-3 py-2 text-xs font-semibold text-white hover:bg-rose-400 disabled:opacity-60"
-                    >
-                      Reject transfer
-                    </button>
-                  </div>
-                ))}
               <button
                 type="button"
                 onClick={() => void handleStaffRiskAction('review')}

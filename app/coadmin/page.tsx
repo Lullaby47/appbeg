@@ -109,13 +109,6 @@ import {
   setCoadminAutoBonusPercentRange,
 } from '../../features/bonusEvents/bonusEvents';
 import {
-  approveTransferRequest,
-  listenPendingTransferRequestsByCoadminOrGlobal,
-  rejectTransferRequest,
-  TransferRequest,
-} from '@/features/risk/playerRisk';
-
-import {
   listenToUnreadCounts,
   markConversationAsRead,
   sendChatMessage,
@@ -462,8 +455,6 @@ export default function CoadminPage() {
     null
   );
   const [countdownTick, setCountdownTick] = useState(0);
-  const [pendingTransferRequests, setPendingTransferRequests] = useState<TransferRequest[]>([]);
-  const [transferRequestBusyId, setTransferRequestBusyId] = useState<string | null>(null);
   const [staffBehaviours, setStaffBehaviours] = useState<StaffBehaviourRow[]>([]);
   const [behavioursLoading, setBehavioursLoading] = useState(false);
   const [selectedBehaviourStaffId, setSelectedBehaviourStaffId] = useState<string | null>(null);
@@ -1356,29 +1347,8 @@ export default function CoadminPage() {
     let unsubscribe: (() => void) | undefined;
 
     async function startTransferRequestListener() {
-      try {
-        const coadminUid = await getCurrentUserCoadminUid();
-        if (isCancelled) {
-          return;
-        }
-        unsubscribe = listenPendingTransferRequestsByCoadminOrGlobal(
-          coadminUid,
-          (requests) => {
-            if (!isCancelled) {
-              setPendingTransferRequests(requests);
-            }
-          },
-          (error) => {
-            if (!isCancelled) {
-              setMessage(error.message || 'Failed to load cash-to-coin transfer requests.');
-            }
-          }
-        );
-      } catch (error: any) {
-        if (!isCancelled) {
-          setMessage(error?.message || 'Failed to start transfer request listener.');
-        }
-      }
+      // Pending cash-to-coin request approval flow is disabled for coadmin.
+      return;
     }
 
     void startTransferRequestListener();
@@ -2414,34 +2384,6 @@ export default function CoadminPage() {
     }
   }
 
-  async function handleApproveTransferRequest(requestId: string) {
-    setTransferRequestBusyId(requestId);
-    setMessage('');
-    try {
-      await approveTransferRequest(requestId);
-      setMessage(
-        'Transfer approved and converted to coin. Most profit comes from cashouts. Repeated cash-to-coin transfers may reduce long-term gains.'
-      );
-    } catch (error: any) {
-      setMessage(error.message || 'Failed to approve transfer request.');
-    } finally {
-      setTransferRequestBusyId(null);
-    }
-  }
-
-  async function handleRejectTransferRequest(requestId: string) {
-    setTransferRequestBusyId(requestId);
-    setMessage('');
-    try {
-      await rejectTransferRequest(requestId, 'Transfer denied due to suspected misuse.');
-      setMessage('Transfer request rejected.');
-    } catch (error: any) {
-      setMessage(error.message || 'Failed to reject transfer request.');
-    } finally {
-      setTransferRequestBusyId(null);
-    }
-  }
-
   async function handleCreateBonusEvent(event: React.FormEvent) {
     event.preventDefault();
     setLoading(true);
@@ -3370,61 +3312,6 @@ export default function CoadminPage() {
                 </div>
               )}
 
-              {pendingTransferRequests.length > 0 && (
-                <div className="mt-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-5">
-                  <h3 className="text-lg font-bold text-amber-200">
-                    Cash → Coin Transfer Requests ({pendingTransferRequests.length})
-                  </h3>
-                  <p className="mt-1 text-xs text-amber-100/80">
-                    Approve to move the player&apos;s full cash into coin. Reject to leave balances
-                    unchanged. See profit / abuse notes below before approving.
-                  </p>
-                  <div className="mt-3 space-y-3">
-                    {pendingTransferRequests.map((request) => (
-                      <div
-                        key={request.id}
-                        className="rounded-xl border border-amber-300/25 bg-black/30 p-4"
-                      >
-                        <p className="text-sm font-semibold text-white">
-                          Player: {request.playerUsername}
-                        </p>
-                        <p className="mt-1 text-xs text-amber-100/85">
-                          Cash at request: {formatUsdFromNprDisplay(request.cashBalanceSnapshot || 0)}
-                        </p>
-                        <p className="mt-1 text-xs text-amber-100/70">
-                          Transfer amount: {formatUsdFromNprDisplay(request.amountNpr || 0)}
-                        </p>
-                        <p className="mt-1 text-xs text-amber-100/70">
-                          Requested:{' '}
-                          {request.requestedAt?.toDate?.().toLocaleString?.() || '—'}
-                        </p>
-                        <p className="mt-2 text-xs text-amber-200/90">
-                          Most profit comes from cashouts. Repeated cash-to-coin transfers may reduce
-                          long-term gains — approve only when appropriate.
-                        </p>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => void handleApproveTransferRequest(request.id)}
-                            disabled={transferRequestBusyId === request.id}
-                            className="rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-black hover:bg-emerald-400 disabled:opacity-60"
-                          >
-                            {transferRequestBusyId === request.id ? 'Saving…' : 'Approve'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void handleRejectTransferRequest(request.id)}
-                            disabled={transferRequestBusyId === request.id}
-                            className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-400 disabled:opacity-60"
-                          >
-                            {transferRequestBusyId === request.id ? 'Saving…' : 'Reject'}
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
 
               {totalUnread > 0 && (
                 <button

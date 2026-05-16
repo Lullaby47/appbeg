@@ -535,7 +535,7 @@ export async function createCashToCoinTransferRequest(playerUid: string, request
   const actor = await getCurrentActorIdentity();
 
   if (actor.uid !== playerUid) {
-    throw new Error('Only the active player can request transfer.');
+    throw new Error('Only the active player can transfer cash to coin.');
   }
 
   const playerRef = doc(db, 'users', playerUid);
@@ -549,6 +549,7 @@ export async function createCashToCoinTransferRequest(playerUid: string, request
     role?: string;
     username?: string;
     cash?: number;
+    coin?: number;
     transferBlockedUntil?: Timestamp | null;
     coadminUid?: string | null;
     createdBy?: string | null;
@@ -581,6 +582,7 @@ export async function createCashToCoinTransferRequest(playerUid: string, request
   if (cashAmount <= 0) {
     throw new Error('No cash available to transfer.');
   }
+
   const transferAmount =
     requestedAmountNpr != null ? Math.max(0, Number(requestedAmountNpr || 0)) : cashAmount;
   if (transferAmount <= 0) {
@@ -590,80 +592,43 @@ export async function createCashToCoinTransferRequest(playerUid: string, request
     throw new Error('Transfer amount cannot exceed current cash.');
   }
 
-  const pendingSnapshot = await getDocs(
-    query(
-      collection(db, 'transferRequests'),
-      where('playerUid', '==', playerUid),
-      where('status', '==', 'pending')
-    )
-  );
-  const hasRecentPending = pendingSnapshot.docs.some((docSnap) => {
-    const value = docSnap.data() as { requestedAt?: Timestamp | null };
-    return toMs(value.requestedAt || null) >= Date.now() - TRANSFER_COOLDOWN_MS;
-  });
+  await runTransaction(db, async (transaction) => {
+    const playerTxSnap = await transaction.get(playerRef);
+    if (!playerTxSnap.exists()) {
+      throw new Error('Player profile not found.');
+    }
 
-  if (hasRecentPending) {
-    throw new Error('Please wait before sending another transfer request.');
-  }
+    const playerTxData = playerTxSnap.data() as { cash?: number; coin?: number };
+    const cashNow = Number(playerTxData.cash || 0);
+    if (cashNow < transferAmount) {
+      throw new Error('Not enough cash available for transfer.');
+    }
 
-  const todayStart = Timestamp.fromMillis(getDayStartMs());
-  const approvedTodaySnapshot = await getDocs(
-    query(
-      collection(db, 'transferRequests'),
-      where('playerUid', '==', playerUid),
-      where('status', '==', 'approved'),
-      where('requestedAt', '>=', todayStart)
-    )
-  );
-  const approvedTodayCount = approvedTodaySnapshot.size;
-  const shouldAutoApprove =
-    AUTO_APPROVE_DAILY_TRANSFER_COUNT > 0 &&
-    approvedTodayCount < AUTO_APPROVE_DAILY_TRANSFER_COUNT;
+    transaction.update(playerRef, {
+      coin: Number(playerTxData.coin || 0) + transferAmount,
+      cash: cashNow - transferAmount,
+    });
 
-  const transferRef = await addDoc(collection(db, 'transferRequests'), {
-    playerUid,
-    playerUsername: playerData.username?.trim() || 'Player',
-    coadminUid: coadminUidForRequest,
-    amountNpr: transferAmount,
-    cashBalanceSnapshot: cashAmount,
-    status: 'pending',
-    requestedByUid: actor.uid,
-    requestedByUsername: actor.username,
-    requestedAt: serverTimestamp(),
-    approvedByUid: null,
-    approvedByUsername: null,
-    approvedAt: null,
-    rejectedByUid: null,
-    rejectedByUsername: null,
-    rejectedAt: null,
-    rejectionReason: null,
-    reviewed: false,
-    autoApproved: shouldAutoApprove,
-    processedAt: null,
+    const eventRef = doc(collection(db, 'financialEvents'));
+    transaction.set(eventRef, {
+      playerUid,
+      coadminUid: coadminUidForRequest,
+      amountNpr: transferAmount,
+      type: 'transfer',
+      createdAt: serverTimestamp(),
+    });
   });
 
   await createRiskAction({
     playerUid,
     playerUsername: playerData.username?.trim() || 'Player',
     coadminUid: coadminUidForRequest,
-    action: 'transfer_request_created',
-    details: `Requested NPR ${transferAmount} cash to coin`,
+    action: 'transfer_to_coin',
+    details: `Converted NPR ${transferAmount} cash to coin`,
   });
 
-  if (shouldAutoApprove) {
-    await approveTransferRequest(transferRef.id);
-    return {
-      requestId: transferRef.id,
-      status: 'approved' as const,
-      message:
-        'Most profit comes from cashouts. Repeated cash-to-coin transfers may reduce long-term gains. Use this mainly for gameplay retention.',
-    };
-  }
-
   return {
-    requestId: transferRef.id,
-    status: 'pending' as const,
-    message: 'Request sent to staff for approval',
+    message: 'Cash transferred to coin.',
   };
 }
 

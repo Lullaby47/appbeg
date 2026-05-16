@@ -65,10 +65,7 @@ import {
   listenBonusEventsByCoadmin,
   MAX_PLAYER_BONUS_EVENTS_DISPLAY,
 } from '../../features/bonusEvents/bonusEvents';
-import {
-  createCashToCoinTransferRequest,
-  listenTransferRequestsByPlayer,
-} from '@/features/risk/playerRisk';
+import { createCashToCoinTransferRequest } from '@/features/risk/playerRisk';
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 import {
   claimMyReferralReward,
@@ -629,9 +626,6 @@ export default function PlayerPage() {
   const knownCompletedCashoutTaskIdsRef = useRef<Set<string>>(new Set());
   const cashoutSplashSeenIdsRef = useRef<Set<string>>(new Set());
   const knownCashoutStatusByIdRef = useRef<Record<string, string>>({});
-  const hasSeenTransferSnapshotRef = useRef(false);
-  const knownTransferStatusByIdRef = useRef<Record<string, string>>({});
-  const transferResponseSeenRef = useRef<Set<string>>(new Set());
   const referralCodeEnsureInFlightRef = useRef(false);
   const lastSyncedRequestTotalsRef = useRef<string | null>(null);
   const clipboardToastTimerRef = useRef<number | null>(null);
@@ -675,16 +669,6 @@ export default function PlayerPage() {
   const playerHelpHintSeenRef = useRef(false);
   const playerHelpHintHideTimeoutRef = useRef<number | null>(null);
   const playerHelpHintIdleTimeoutRef = useRef<number | null>(null);
-
-  function getTransferResponseSeenStorageKey(
-    playerUidValue: string,
-    transferId: string,
-    status: string,
-    processedAtValue?: { toMillis?: () => number } | null
-  ) {
-    const processedAtMs = processedAtValue?.toMillis?.() || 0;
-    return `playerTransferResponseSeen:${playerUidValue}:${transferId}:${status}:${processedAtMs}`;
-  }
 
   function hasActiveTableSplashHistoryState() {
     const state = window.history.state as Record<string, unknown> | null;
@@ -1976,9 +1960,6 @@ export default function PlayerPage() {
       return;
     }
 
-    transferResponseSeenRef.current = new Set();
-    hasSeenTransferSnapshotRef.current = false;
-    knownTransferStatusByIdRef.current = {};
     const unsubscribe = onSnapshot(
       doc(db, 'users', playerUid),
       (snapshot) => {
@@ -2034,81 +2015,6 @@ export default function PlayerPage() {
         setReferralCode('');
         setReferredByPlayerName('');
         setReferredByPlayerUid('');
-      }
-    );
-
-    return () => unsubscribe();
-  }, [playerUid]);
-
-  useEffect(() => {
-    if (!playerUid) {
-      return;
-    }
-
-    const unsubscribe = listenTransferRequestsByPlayer(
-      playerUid,
-      (requests) => {
-        const nextKnownStatuses: Record<string, string> = {};
-
-        requests.forEach((request) => {
-          nextKnownStatuses[request.id] = String(request.status || '');
-        });
-
-        if (!hasSeenTransferSnapshotRef.current) {
-          hasSeenTransferSnapshotRef.current = true;
-          knownTransferStatusByIdRef.current = nextKnownStatuses;
-          return;
-        }
-
-        const changedProcessed = requests
-          .filter((request) => {
-            const currentStatus = String(request.status || '');
-            const previousStatus = knownTransferStatusByIdRef.current[request.id];
-            return currentStatus !== 'pending' && currentStatus !== previousStatus;
-          })
-          .sort((left, right) => {
-            const leftProcessed = getTimestampMs(left.processedAt || null);
-            const rightProcessed = getTimestampMs(right.processedAt || null);
-            return rightProcessed - leftProcessed;
-          })[0];
-
-        knownTransferStatusByIdRef.current = nextKnownStatuses;
-
-        if (!changedProcessed) {
-          return;
-        }
-        if (transferResponseSeenRef.current.has(changedProcessed.id)) {
-          return;
-        }
-
-        const seenStorageKey = getTransferResponseSeenStorageKey(
-          playerUid,
-          changedProcessed.id,
-          changedProcessed.status,
-          changedProcessed.processedAt || null
-        );
-        const hasSeenInSession =
-          typeof window !== 'undefined' &&
-          window.sessionStorage.getItem(seenStorageKey) === '1';
-        if (hasSeenInSession) {
-          transferResponseSeenRef.current.add(changedProcessed.id);
-          return;
-        }
-
-        transferResponseSeenRef.current.add(changedProcessed.id);
-        if (typeof window !== 'undefined') {
-          window.sessionStorage.setItem(seenStorageKey, '1');
-        }
-        if (changedProcessed.status === 'approved') {
-          setMessage('Transfer approved and converted to coin.');
-          return;
-        }
-        setMessage(
-          changedProcessed.rejectionReason || 'Transfer denied due to suspected misuse.'
-        );
-      },
-      () => {
-        // Silent fail to avoid interrupting gameplay flow.
       }
     );
 
@@ -2451,7 +2357,7 @@ export default function PlayerPage() {
       setMessage(result.message);
     } catch (error) {
       setMessage(
-        error instanceof Error ? error.message : 'Failed to submit transfer request.'
+        error instanceof Error ? error.message : 'Failed to transfer cash to coin.'
       );
     } finally {
       setCoinLoading(false);
