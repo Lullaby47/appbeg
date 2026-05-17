@@ -668,11 +668,12 @@ export async function claimCarerTaskAsAdmin(input: {
       }
 
       if (
+        rawTaskStatus !== 'pending' &&
         reusableActiveJob &&
         isActiveAutomationJobStatus(reusableActiveJob.status) &&
         isFreshAutomationJobSignal(reusableActiveJob) &&
         !staleOrFailedJob &&
-        (hasFreshLock || rawTaskStatus === 'pending')
+        hasFreshLock
       ) {
         console.info('[TASK_START] reusing existing job=%s taskId=%s existingStatus=%s linkedJobId=%s updatedAt=%o createdAt=%o',
           reusableActiveJob.ref.id,

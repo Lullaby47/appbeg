@@ -96,6 +96,55 @@ export type CarerTask = {
   gameCredentialPassword?: string | null;
 };
 
+function buildPendingTaskResetFields(): Record<string, unknown> {
+  return {
+    status: 'pending',
+    assignedCarerUid: null,
+    assignedCarer: null,
+    assignedCarerUsername: null,
+    claimedStatus: null,
+    claimedAt: null,
+    claimedByUid: null,
+    claimedByUsername: null,
+    startedAt: null,
+    runningAt: null,
+    expiresAt: null,
+    completedAt: null,
+    cancelledAt: null,
+    failedAt: null,
+    ttlExpiresAt: null,
+    completedByCarerUid: null,
+    completedByCarerUsername: null,
+    automationStatus: null,
+    automationJobId: null,
+    linkedJobId: null,
+    currentJobId: null,
+    activeJobId: null,
+    assignedJobStatus: null,
+    automationError: null,
+    error: null,
+    failureReason: null,
+    lastHeartbeatAt: null,
+    queuedAt: null,
+    automationUpdatedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+}
+
+function logTaskResetPending(details: {
+  taskId: string;
+  oldStatus?: string | null;
+  oldAutomationJobId?: string | null;
+  oldLinkedJobId?: string | null;
+}) {
+  console.info('[TASK_RESET_PENDING] taskId=%s', details.taskId);
+  console.info('[TASK_RESET_PENDING] oldStatus=%s', details.oldStatus || null);
+  console.info('[TASK_RESET_PENDING] oldAutomationJobId=%s', details.oldAutomationJobId || null);
+  console.info('[TASK_RESET_PENDING] oldLinkedJobId=%s', details.oldLinkedJobId || null);
+  console.info('[TASK_RESET_PENDING] cleared stale automation fields');
+  console.info('[TASK_RESET_PENDING] status=pending updatedAt=serverTimestamp');
+}
+
 const CARER_TASK_LIVE_LISTENER_LIMIT = 150;
 const CARER_TASK_COMPLETED_LISTENER_LIMIT = 50;
 const CARER_TOTALS_HISTORY_LIMIT_PER_TYPE = 500;
@@ -561,7 +610,7 @@ export function computeRequestLinkedCarerTaskWrite(
             ? existingTask?.assignedCarerUid ||
               existingCompletedByUid ||
               null
-            : existingTask?.assignedCarerUid ?? null,
+            : null,
     assignedCarerUsername:
       nextStatus === 'in_progress'
         ? existingTask?.assignedCarerUsername ?? null
@@ -573,7 +622,7 @@ export function computeRequestLinkedCarerTaskWrite(
             ? existingTask?.assignedCarerUsername ||
               existingCompletedByUsername ||
               null
-            : existingTask?.assignedCarerUsername ?? null,
+            : null,
     startedAt:
       nextStatus === 'in_progress'
         ? existingTask?.startedAt || serverTimestamp()
@@ -598,12 +647,14 @@ export function computeRequestLinkedCarerTaskWrite(
       nextStatus === 'completed'
         ? 'completed'
         : nextStatus === 'pending'
-          ? existingTask?.automationStatus ?? null
+          ? null
           : existingTask?.automationStatus ?? null,
     automationUpdatedAt:
       nextStatus === 'completed'
         ? serverTimestamp()
-        : existingTask?.automationUpdatedAt ?? null,
+        : nextStatus === 'pending'
+          ? serverTimestamp()
+          : existingTask?.automationUpdatedAt ?? null,
     createdAt: request.createdAt || existingTask?.createdAt || serverTimestamp(),
     isPoked: false,
     pokedAt: null,
@@ -616,6 +667,7 @@ export function computeRequestLinkedCarerTaskWrite(
       nextStatus === 'completed' || nextStatus === 'urgent'
         ? existingCompletedByUsername
         : null,
+    ...(nextStatus === 'pending' ? buildPendingTaskResetFields() : {}),
   };
 }
 
@@ -871,20 +923,17 @@ export async function syncCarerTasks({
         batch.update(taskRef, {
           playerUsername: player.username || 'Player',
           gameName: game.gameName || 'Unknown Game',
-          status: 'pending',
-          automationStatus: null,
-          automationUpdatedAt: serverTimestamp(),
-          assignedCarerUid: null,
-          assignedCarerUsername: null,
-          startedAt: null,
-          expiresAt: null,
-          completedAt: null,
+          ...buildPendingTaskResetFields(),
           isPoked: false,
           pokedAt: null,
           pokeMessage: null,
-          completedByCarerUid: null,
-          completedByCarerUsername: null,
           ...access,
+        });
+        logTaskResetPending({
+          taskId,
+          oldStatus: existingTask.status,
+          oldAutomationJobId: existingTask.automationJobId || null,
+          oldLinkedJobId: null,
         });
         changed = true;
         continue;
@@ -1243,34 +1292,25 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
 
       if (retryable) {
         transaction.update(jobRef, {
-          status: 'queued',
+          status: 'failed',
           startedAt: null,
-          completedAt: null,
+          completedAt: serverTimestamp(),
+          ttlExpiresAt: automationJobTtl(),
           updatedAt: serverTimestamp(),
           error: timeoutMessage,
           result: null,
+          cancelledReason: 'returned_to_pending_timeout',
         });
 
         if (taskSnap.exists()) {
           transaction.update(taskRef, {
-            status: 'pending',
-            assignedCarerUid: null,
-            assignedCarer: null,
-            assignedCarerUsername: null,
-            claimedStatus: null,
-            claimedAt: null,
-            claimedByUid: null,
-            claimedByUsername: null,
-            startedAt: null,
-            expiresAt: null,
-            completedAt: null,
-            completedByCarerUid: null,
-            completedByCarerUsername: null,
-            automationStatus: 'waiting',
-            automationJobId: null,
-            lastHeartbeatAt: null,
-            automationError: timeoutMessage,
-            automationUpdatedAt: serverTimestamp(),
+            ...buildPendingTaskResetFields(),
+          });
+          logTaskResetPending({
+            taskId,
+            oldStatus: taskData?.status || null,
+            oldAutomationJobId: taskData?.automationJobId || job.id,
+            oldLinkedJobId: null,
           });
         }
 
@@ -1280,6 +1320,7 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
             transaction.update(requestRef, {
               status: 'pending',
               completedAt: null,
+              ttlExpiresAt: null,
               pokedAt: null,
               pokeMessage: null,
             });
@@ -1365,24 +1406,13 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
       });
 
       transaction.update(taskRef, {
-        status: 'pending',
-        assignedCarerUid: null,
-        assignedCarer: null,
-        assignedCarerUsername: null,
-        claimedStatus: null,
-        claimedAt: null,
-        claimedByUid: null,
-        claimedByUsername: null,
-        startedAt: null,
-        expiresAt: null,
-        completedAt: null,
-        completedByCarerUid: null,
-        completedByCarerUsername: null,
-        automationStatus: null,
-        automationJobId: null,
-        lastHeartbeatAt: null,
-        automationError: null,
-        automationUpdatedAt: serverTimestamp(),
+        ...buildPendingTaskResetFields(),
+      });
+      logTaskResetPending({
+        taskId: task.id,
+        oldStatus: currentTask.status,
+        oldAutomationJobId: currentTask.automationJobId || null,
+        oldLinkedJobId: null,
       });
 
       if (requestRef && requestSnap?.exists()) {
@@ -1391,6 +1421,7 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
           transaction.update(requestRef, {
             status: 'pending',
             completedAt: null,
+            ttlExpiresAt: null,
             pokedAt: null,
             pokeMessage: null,
           });
@@ -1596,17 +1627,10 @@ export async function createPlayerCredentialTask(values: {
       gameName: values.gameName.trim(),
       amount: null,
       requestId: null,
-      status: 'pending',
-      assignedCarerUid: null,
-      assignedCarerUsername: null,
-      startedAt: null,
-      expiresAt: null,
-      completedAt: null,
+      ...buildPendingTaskResetFields(),
       isPoked: false,
       pokedAt: null,
       pokeMessage: null,
-      completedByCarerUid: null,
-      completedByCarerUsername: null,
       createdAt: serverTimestamp(),
     },
     { merge: true }

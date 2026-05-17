@@ -142,13 +142,41 @@ function buildTaskClaimReleaseFields(
     claimedByUid: null,
     claimedByUsername: null,
     startedAt: null,
+    runningAt: null,
+    expiresAt: null,
+    completedAt: null,
+    cancelledAt: null,
+    failedAt: null,
+    ttlExpiresAt: null,
+    completedByCarerUid: null,
+    completedByCarerUsername: null,
     lastHeartbeatAt: null,
     automationStatus,
     automationJobId: null,
+    linkedJobId: null,
+    currentJobId: null,
+    activeJobId: null,
+    assignedJobStatus: null,
     automationError,
+    error: null,
+    failureReason: null,
     automationUpdatedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
+}
+
+function logTaskResetPending(details: {
+  taskId: string;
+  oldStatus?: string | null;
+  oldAutomationJobId?: string | null;
+  oldLinkedJobId?: string | null;
+}) {
+  console.info('[TASK_RESET_PENDING] taskId=%s', details.taskId);
+  console.info('[TASK_RESET_PENDING] oldStatus=%s', details.oldStatus || null);
+  console.info('[TASK_RESET_PENDING] oldAutomationJobId=%s', details.oldAutomationJobId || null);
+  console.info('[TASK_RESET_PENDING] oldLinkedJobId=%s', details.oldLinkedJobId || null);
+  console.info('[TASK_RESET_PENDING] cleared stale automation fields');
+  console.info('[TASK_RESET_PENDING] status=pending updatedAt=serverTimestamp');
 }
 
 function isAgentSupportedAutomationType(value: QueuedAutomationType) {
@@ -642,11 +670,12 @@ export async function claimTaskAndCreateJob(input: {
       }
 
       if (
+        rawTaskStatus !== 'pending' &&
         reusableActiveJob &&
         isActiveAutomationJobStatus(reusableActiveJob.status) &&
         isFreshAutomationJobSignal(reusableActiveJob) &&
         !staleOrFailedJob &&
-        (hasFreshLock || rawTaskStatus === 'pending')
+        hasFreshLock
       ) {
         console.info('[TASK_START] reusing existing job=%s taskId=%s existingStatus=%s linkedJobId=%s updatedAt=%o createdAt=%o',
           reusableActiveJob.ref.id,
@@ -1304,6 +1333,12 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
       queuedAt: null,
     });
     await batch.commit();
+    logTaskResetPending({
+      taskId,
+      oldStatus: oldTaskStatus,
+      oldAutomationJobId: linkedJobId || null,
+      oldLinkedJobId: String(taskData.linkedJobId || '').trim() || null,
+    });
     console.info('[TASK_START] task status transition taskId=%s from=%s to=pending automationJobId=null writeTimestamps=serverTimestamp',
       taskId,
       oldTaskStatus || null
