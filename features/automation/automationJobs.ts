@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromServer,
   getDocs,
   limit,
   onSnapshot,
@@ -177,6 +178,12 @@ function logTaskResetPending(details: {
   console.info('[TASK_RESET_PENDING] oldLinkedJobId=%s', details.oldLinkedJobId || null);
   console.info('[TASK_RESET_PENDING] cleared stale automation fields');
   console.info('[TASK_RESET_PENDING] status=pending updatedAt=serverTimestamp');
+}
+
+async function forceRefreshTaskFromServer(taskId: string, taskRef = doc(db, 'carerTasks', taskId)) {
+  const snapshot = await getDocFromServer(taskRef);
+  console.info('[FIRESTORE] forced server refresh taskId=%s', taskId);
+  return snapshot;
 }
 
 function isAgentSupportedAutomationType(value: QueuedAutomationType) {
@@ -854,13 +861,13 @@ export async function claimTaskAndCreateJob(input: {
         code: String((error as { code?: string } | null | undefined)?.code || ''),
         message: String((error as { message?: string } | null | undefined)?.message || ''),
       });
-      await getDoc(taskRef);
+      await forceRefreshTaskFromServer(input.taskId, taskRef);
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
   }
 
   if (!result && isRetryableConcurrencyError(lastError)) {
-    const latestTaskSnap = await getDoc(taskRef);
+    const latestTaskSnap = await forceRefreshTaskFromServer(input.taskId, taskRef);
     if (latestTaskSnap.exists()) {
       const latestTask = latestTaskSnap.data() as Record<string, unknown>;
       const latestStatus = sanitizeStatus(latestTask.status);
@@ -869,7 +876,7 @@ export async function claimTaskAndCreateJob(input: {
       ).trim();
       const latestLinkedJobId = String(latestTask.automationJobId || '').trim();
       const latestJobSnap = latestLinkedJobId
-        ? await getDoc(doc(firestoreDb, 'automation_jobs', latestLinkedJobId))
+        ? await getDocFromServer(doc(firestoreDb, 'automation_jobs', latestLinkedJobId))
         : null;
       const latestJobStatus =
         latestJobSnap?.exists()
@@ -898,7 +905,7 @@ export async function claimTaskAndCreateJob(input: {
     throw (lastError instanceof Error ? lastError : new Error('Failed to queue the task.'));
   }
 
-  const afterTaskSnap = await getDoc(taskRef);
+  const afterTaskSnap = await forceRefreshTaskFromServer(input.taskId, taskRef);
   const afterTask = afterTaskSnap.exists() ? (afterTaskSnap.data() as Record<string, unknown>) : null;
   console.info('[AUTO_CLAIM_UI] after task status fields', {
     taskId: input.taskId,
@@ -1147,7 +1154,8 @@ export async function startAutomationForTask(input: {
         status: 'queued' as AutomationJobStatus,
       },
     };
-  }).then((result) => {
+  }).then(async (result) => {
+    await forceRefreshTaskFromServer(input.taskId, doc(db, 'carerTasks', input.taskId));
     recordDevUsageEstimate({
       automationJobsCreated: 1,
       estReads: 6,
@@ -1380,7 +1388,7 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
         break;
       }
       // Explicit fresh read before one retry to avoid stale write races.
-      await getDoc(taskRef);
+      await forceRefreshTaskFromServer(taskId, taskRef);
       console.info('[carer] returnToPending retrying after concurrency error', {
         taskId,
         retryCount: attempt,
@@ -1390,7 +1398,7 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
     }
   }
 
-  const latestTaskSnap = await getDoc(taskRef);
+  const latestTaskSnap = await forceRefreshTaskFromServer(taskId, taskRef);
   if (latestTaskSnap.exists()) {
     const latestTask = latestTaskSnap.data() as Record<string, unknown>;
     const latestStatus = String(latestTask.status || '').trim().toLowerCase();
@@ -1439,7 +1447,9 @@ export function listenAutomationUiStatusByTask(
 
   return onSnapshot(
     jobsQuery,
+    { includeMetadataChanges: true },
     (snapshot) => {
+      console.info('[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s', snapshot.metadata.fromCache, snapshot.metadata.hasPendingWrites);
       const statusByTaskId: Record<string, AutomationUiStatus> = {};
       const seenTaskIds = new Set<string>();
 

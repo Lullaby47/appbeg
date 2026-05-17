@@ -6,7 +6,8 @@ import {
   collection,
   doc,
   getDoc,
-  getDocs,
+  getDocFromServer,
+  getDocsFromServer,
   limit,
   onSnapshot,
   orderBy,
@@ -1030,7 +1031,9 @@ export default function CarerPage() {
 
     const unsubscribe = onSnapshot(
       pendingTasksQuery,
+      { includeMetadataChanges: true },
       (snapshot) => {
+        console.info('[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s', snapshot.metadata.fromCache, snapshot.metadata.hasPendingWrites);
         if (!sawInitialSnapshot) {
           sawInitialSnapshot = true;
           return;
@@ -1679,12 +1682,13 @@ export default function CarerPage() {
         await refreshPageData(false);
         setErrorMessage('Task was already changed. Please refresh and try again.');
       } else if (fallback === 'Task already claimed') {
-        const latestTaskSnap = await getDoc(doc(db, 'carerTasks', task.id));
+        const latestTaskSnap = await getDocFromServer(doc(db, 'carerTasks', task.id));
+        console.info('[FIRESTORE] forced server refresh taskId=%s', task.id);
         const latestTask = latestTaskSnap.exists()
           ? (latestTaskSnap.data() as Record<string, unknown>)
           : null;
         const latestAutomationJobId = String(latestTask?.automationJobId || '').trim();
-        const latestJobSnaps = await getDocs(
+        const latestJobSnaps = await getDocsFromServer(
           query(collection(db, 'automation_jobs'), where('taskId', '==', task.id), limit(10))
         );
         const latestJobs = latestJobSnaps.docs.map((jobSnap) => {

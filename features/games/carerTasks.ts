@@ -6,6 +6,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocFromServer,
   getDocs,
   limit,
   onSnapshot,
@@ -143,6 +144,29 @@ function logTaskResetPending(details: {
   console.info('[TASK_RESET_PENDING] oldLinkedJobId=%s', details.oldLinkedJobId || null);
   console.info('[TASK_RESET_PENDING] cleared stale automation fields');
   console.info('[TASK_RESET_PENDING] status=pending updatedAt=serverTimestamp');
+}
+
+async function forceRefreshTaskFromServer(taskId: string, taskRef = doc(db, 'carerTasks', taskId)) {
+  const snapshot = await getDocFromServer(taskRef);
+  console.info('[FIRESTORE] forced server refresh taskId=%s', taskId);
+  return snapshot;
+}
+
+function pendingTaskHasStaleAutomationState(task: CarerTask | undefined) {
+  if (!task || task.status !== 'pending') {
+    return false;
+  }
+  return Boolean(
+    task.automationJobId ||
+      task.automationStatus ||
+      task.automationError ||
+      task.claimedAt ||
+      task.claimedByUid ||
+      task.claimedStatus ||
+      task.startedAt ||
+      task.completedAt ||
+      task.lastHeartbeatAt
+  );
 }
 
 const CARER_TASK_LIVE_LISTENER_LIMIT = 150;
@@ -865,6 +889,7 @@ export async function syncCarerTasks({
 
   const batch = writeBatch(db);
   let changed = false;
+  const resetTaskIdsToRefresh = new Set<string>();
 
   for (const player of players) {
     for (const game of games) {
@@ -935,6 +960,7 @@ export async function syncCarerTasks({
           oldAutomationJobId: existingTask.automationJobId || null,
           oldLinkedJobId: null,
         });
+        resetTaskIdsToRefresh.add(taskId);
         changed = true;
         continue;
       }
@@ -977,6 +1003,9 @@ export async function syncCarerTasks({
     );
 
     batch.set(taskRef, payload, { merge: true });
+    if (pendingTaskHasStaleAutomationState(existingTask) && String(payload.status || '') === 'pending') {
+      resetTaskIdsToRefresh.add(taskId);
+    }
     changed = true;
   }
 
@@ -1047,6 +1076,11 @@ export async function syncCarerTasks({
 
   if (changed) {
     await batch.commit();
+    await Promise.all(
+      Array.from(resetTaskIdsToRefresh).map((taskId) =>
+        forceRefreshTaskFromServer(taskId, doc(db, 'carerTasks', taskId))
+      )
+    );
   }
 }
 
@@ -1162,7 +1196,9 @@ export function listenToAvailableCarerTasks(
 
   const unsubscribeActive = onSnapshot(
     activeTasksQuery,
+    { includeMetadataChanges: true },
     (snapshot) => {
+      console.info('[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s', snapshot.metadata.fromCache, snapshot.metadata.hasPendingWrites);
       activeTasks = mapVisibleTasks(snapshot.docs);
       emit();
     },
@@ -1172,7 +1208,9 @@ export function listenToAvailableCarerTasks(
   );
   const unsubscribeCompleted = onSnapshot(
     completedTasksQuery,
+    { includeMetadataChanges: true },
     (snapshot) => {
+      console.info('[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s', snapshot.metadata.fromCache, snapshot.metadata.hasPendingWrites);
       completedTasks = mapVisibleTasks(snapshot.docs);
       emit();
     },
@@ -1361,6 +1399,7 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
         }
       }
     });
+    await forceRefreshTaskFromServer(taskId, taskRef);
   }
 
   for (const docSnap of stuckTaskSnap.docs) {
@@ -1428,6 +1467,7 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
         }
       }
     });
+    await forceRefreshTaskFromServer(task.id, taskRef);
   }
 }
 
@@ -1635,6 +1675,7 @@ export async function createPlayerCredentialTask(values: {
     },
     { merge: true }
   );
+  await forceRefreshTaskFromServer(taskId, taskRef);
 }
 
 export async function sendCarerEscalationAlert(task: CarerTask) {
