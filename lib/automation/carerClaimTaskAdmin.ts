@@ -191,6 +191,7 @@ export async function claimCarerTaskAsAdmin(input: {
   };
 }): Promise<ClaimCarerTaskAdminResult> {
   const totalStartedAt = Date.now();
+  console.info('[START_TIMING] server claim start at=%s taskId=%s source=admin_claimCarerTaskAsAdmin', new Date(totalStartedAt).toISOString(), input.taskId);
   const taskRef = adminDb.collection('carerTasks').doc(input.taskId);
 
   const loadSameTaskJobRefs = async (options: { isPendingCleanTask: boolean }) => {
@@ -747,9 +748,9 @@ export async function claimCarerTaskAsAdmin(input: {
         }
       }
 
-      const jobRef = adminDb.collection('automation_jobs').doc();
-
       const createJobStartedAt = Date.now();
+      console.info('[START_TIMING] automation job create start at=%s taskId=%s', new Date(createJobStartedAt).toISOString(), taskSnap.id);
+      const jobRef = adminDb.collection('automation_jobs').doc();
       console.info('[TASK_START] creating fresh automation job=%s taskId=%s previousLinkedJobId=%s type=%s',
         jobRef.id,
         taskSnap.id,
@@ -806,6 +807,13 @@ export async function claimCarerTaskAsAdmin(input: {
         lastHeartbeatAt: null,
       };
       transaction.set(jobRef, jobData);
+      console.info(
+        '[START_TIMING] automation job create done at=%s jobId=%s durationMs=%s taskId=%s',
+        new Date().toISOString(),
+        jobRef.id,
+        Date.now() - createJobStartedAt,
+        taskSnap.id
+      );
       console.info('[TASK_START] task status transition taskId=%s from=%s to=in_progress automationJobId=%s automationStatus=waiting writeTimestamps=serverTimestamp',
         taskSnap.id,
         rawTaskStatus,
@@ -908,6 +916,14 @@ export async function claimCarerTaskAsAdmin(input: {
   if (!result) {
     throw lastError instanceof Error ? lastError : new Error('Failed to queue the task.');
   }
+  console.info(
+    '[START_TIMING] server write completed at=%s durationMs=%s taskId=%s jobId=%s status=%s source=admin_claimCarerTaskAsAdmin',
+    new Date().toISOString(),
+    Date.now() - totalStartedAt,
+    input.taskId,
+    result.jobId,
+    result.status
+  );
 
   console.info('[AUTO_CLAIM_ADMIN] after task status fields', {
     taskId: input.taskId,

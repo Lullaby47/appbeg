@@ -239,6 +239,21 @@ function isActiveAutomationUiStatus(status: string | null | undefined) {
   );
 }
 
+function logTaskTabFilter(task: CarerTask, includedIn: TaskSection | null, excludedReason: string | null) {
+  console.info(
+    '[TAB_FILTER] taskId=%s status=%s automationStatus=%s linkedJobId=%s automationJobId=%s assignedCarer=%s assignedCarerUid=%s includedIn=%s reason=%s',
+    task.id,
+    String(task.status || '').trim() || null,
+    String(task.automationStatus || '').trim() || null,
+    String((task as { linkedJobId?: string | null }).linkedJobId || '').trim() || null,
+    String(task.automationJobId || '').trim() || null,
+    String(task.assignedCarerUsername || task.assignedCarer || '').trim() || null,
+    String(task.assignedCarerUid || '').trim() || null,
+    includedIn,
+    excludedReason
+  );
+}
+
 function normalizeSiteUrl(siteUrl?: string | null) {
   const trimmed = String(siteUrl || '').trim();
 
@@ -512,35 +527,57 @@ export default function CarerPage() {
   }, [allPlayerLogins, gameName, selectedPlayerUid]);
 
   const claimablePendingTasks = useMemo(
-    () =>
-      sortByNewest(
-        tasks.filter((task) => String(task.status || '').trim().toLowerCase() === 'pending')
-      ),
+    () => {
+      const filtered = tasks.filter((task) => {
+        const status = String(task.status || '').trim().toLowerCase();
+        const included = status === 'pending';
+        logTaskTabFilter(task, included ? 'pending' : null, included ? null : `status_${status || 'missing'}`);
+        return included;
+      });
+      return sortByNewest(filtered);
+    },
     [tasks]
   );
 
   const myInProgressTasks = useMemo(
-    () =>
-      sortByNewest(
-        tasks.filter((task) => {
-          if (String(task.status || '').trim().toLowerCase() !== 'in_progress') {
-            return false;
-          }
-          const uid = carerIdentity?.uid?.trim();
-          if (!uid) {
-            return false;
-          }
-          return task.assignedCarerUid === uid || task.claimedByUid === uid;
-        })
-      ),
+    () => {
+      const filtered = tasks.filter((task) => {
+        const status = String(task.status || '').trim().toLowerCase();
+        const uid = carerIdentity?.uid?.trim();
+        if (status !== 'in_progress') {
+          logTaskTabFilter(task, null, `status_${status || 'missing'}`);
+          return false;
+        }
+        if (!uid) {
+          logTaskTabFilter(task, null, 'missing_carer_uid');
+          return false;
+        }
+        const included = task.assignedCarerUid === uid || task.claimedByUid === uid;
+        logTaskTabFilter(
+          task,
+          included ? 'mine' : null,
+          included ? null : `assigned_carer_mismatch_current_${uid}`
+        );
+        return included;
+      });
+      return sortByNewest(filtered);
+    },
     [carerIdentity?.uid, tasks]
   );
 
   const completedTasks = useMemo(
-    () =>
-      sortByNewest(
-        tasks.filter((task) => isRealCompletedCarerTask(task))
-      ).slice(0, 30),
+    () => {
+      const filtered = tasks.filter((task) => {
+        const included = isRealCompletedCarerTask(task);
+        logTaskTabFilter(
+          task,
+          included ? 'completed' : null,
+          included ? null : `not_real_completed_status_${String(task.status || '').trim() || 'missing'}`
+        );
+        return included;
+      });
+      return sortByNewest(filtered).slice(0, 30);
+    },
     [tasks]
   );
 
@@ -681,6 +718,8 @@ export default function CarerPage() {
       return existing.token;
     }
     try {
+      const tokenRequestStartedAt = Date.now();
+      console.info('[START_TIMING] auto tick token request start at=%s', new Date(tokenRequestStartedAt).toISOString());
       const token = await currentUser.getIdToken();
       const response = await fetch('/api/carer/automation-auto-tick-token', {
         method: 'POST',
@@ -694,6 +733,7 @@ export default function CarerPage() {
         token?: string;
         expiresAt?: number;
       } | null;
+      console.info('[START_TIMING] auto tick token response status=%s durationMs=%s', response.status, Date.now() - tokenRequestStartedAt);
       if (!response.ok || !payload?.token || !payload.expiresAt) {
         console.info('[AUTO_UI] browser auto tick token skipped', {
           status: response.status,
@@ -769,6 +809,8 @@ export default function CarerPage() {
     try {
       const browserTickToken = await refreshAutoTickBrowserToken(linkedAgentId);
       const token = browserTickToken ? null : await currentUser.getIdToken();
+      const autoTickStartedAt = Date.now();
+      console.info('[START_TIMING] auto tick request start at=%s', new Date(autoTickStartedAt).toISOString());
       response = await fetch('/api/carer/automation-auto-tick', {
         method: 'POST',
         headers: {
@@ -780,6 +822,7 @@ export default function CarerPage() {
         body: JSON.stringify(body),
       });
       payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+      console.info('[START_TIMING] auto tick request response status=%s durationMs=%s', response.status, Date.now() - autoTickStartedAt);
     } catch (error) {
       console.warn(`${logPrefix} response`, {
         ok: false,
@@ -910,6 +953,31 @@ export default function CarerPage() {
       coadminUid,
       carerIdentity.uid,
       (incomingTasks) => {
+        for (const task of incomingTasks) {
+          const status = String(task.status || '').trim().toLowerCase();
+          const uid = carerIdentity.uid;
+          const eligible =
+            status === 'in_progress' &&
+            (task.assignedCarerUid === uid || task.claimedByUid === uid);
+          const reason =
+            status !== 'in_progress'
+              ? `status_${status || 'missing'}`
+              : task.assignedCarerUid !== uid && task.claimedByUid !== uid
+                ? `assigned_carer_mismatch_current_${uid}`
+                : null;
+          console.info(
+            '[START_TIMING] appears in progress eligible=%s reason=%s taskId=%s status=%s automationStatus=%s assignedCarerUid=%s claimedByUid=%s automationJobId=%s linkedJobId=%s',
+            eligible,
+            reason,
+            task.id,
+            status || null,
+            String(task.automationStatus || '').trim() || null,
+            task.assignedCarerUid || null,
+            task.claimedByUid || null,
+            task.automationJobId || null,
+            String((task as { linkedJobId?: string | null }).linkedJobId || '').trim() || null
+          );
+        }
         setTasks(sortByNewest(incomingTasks));
       },
       (error) => {
@@ -1033,14 +1101,20 @@ export default function CarerPage() {
       pendingTasksQuery,
       { includeMetadataChanges: true },
       (snapshot) => {
-        console.info('[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s', snapshot.metadata.fromCache, snapshot.metadata.hasPendingWrites);
+        const docChanges = snapshot.docChanges();
+        console.info(
+          '[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s docCount=%s docChanges=%s at=%s',
+          snapshot.metadata.fromCache,
+          snapshot.metadata.hasPendingWrites,
+          snapshot.size,
+          docChanges.length,
+          new Date().toISOString()
+        );
         if (!sawInitialSnapshot) {
           sawInitialSnapshot = true;
           return;
         }
-        const addedPendingDocs = snapshot
-          .docChanges()
-          .filter((change) => change.type === 'added');
+        const addedPendingDocs = docChanges.filter((change) => change.type === 'added');
         if (addedPendingDocs.length === 0) {
           return;
         }
@@ -1071,6 +1145,22 @@ export default function CarerPage() {
       },
       (error) => {
         setErrorMessage(error.message || 'Failed to listen for pending automation tasks.');
+        try {
+          const normalized = String(error?.message || '').toLowerCase();
+          if (normalized.includes('bloom')) {
+            // Try a manual server refetch of the pending tasks list to verify server state
+            (async () => {
+              try {
+                const serverSnap = await getDocsFromServer(pendingTasksQuery);
+                console.info('[SERVER_REFETCH] pendingTasks docCount=%s ids=%o', serverSnap.size, serverSnap.docs.map((d) => d.id));
+              } catch (err) {
+                console.error('[SERVER_REFETCH] failed to refetch pendingTasks', err);
+              }
+            })();
+          }
+        } catch (err) {
+          /* ignore */
+        }
       }
     );
 
@@ -1542,7 +1632,10 @@ export default function CarerPage() {
   }
 
   async function handleStartTask(task: CarerTask) {
+    const clickStartedAt = Date.now();
+    console.info('[START_TIMING] clickStart at=%s taskId=%s', new Date(clickStartedAt).toISOString(), task.id);
     const isTaskLoading = automationLoadingTaskId === task.id;
+    console.info('[START_TASK] before task visible status=%s', task.status || null);
     const disabledReason = getStartTaskDisabledReason(task, {
       isLoading: isTaskLoading,
       automationStatus: automationStatusByTaskId[task.id] || null,
@@ -1611,6 +1704,8 @@ export default function CarerPage() {
             normalizeGameName(game.gameName || '') === normalizeGameName(task.gameName || '')
         ) || null;
 
+      const claimStartedAt = Date.now();
+      console.info('[START_TIMING] server claim start at=%s taskId=%s', new Date(claimStartedAt).toISOString(), task.id);
       const claimResult = await claimTaskAndCreateJob({
         taskId: task.id,
         currentUsername: resolvedCurrentUsername,
@@ -1625,6 +1720,15 @@ export default function CarerPage() {
             }
           : null,
       });
+      console.info(
+        '[START_TIMING] server write completed at=%s durationMs=%s taskId=%s status=%s jobId=%s',
+        new Date().toISOString(),
+        Date.now() - claimStartedAt,
+        task.id,
+        claimResult.status,
+        claimResult.jobId
+      );
+      console.info('[START_TASK] commit success jobId=%s', claimResult.jobId || null);
       setPendingAutomationResetTaskIds((previous) => {
         if (!previous[task.id]) return previous;
         const next = { ...previous };
@@ -1636,6 +1740,7 @@ export default function CarerPage() {
         ...previous,
         [task.id]: claimResult.status === 'running' ? 'running' : 'waiting',
       }));
+      console.info('[START_TIMING] ui local state updated status=%s taskId=%s automationStatus=%s durationSinceClickMs=%s', 'in_progress', task.id, claimResult.status === 'running' ? 'running' : 'waiting', Date.now() - clickStartedAt);
       if (isUsernameWorkflowTask(task)) {
         setLocalAutomationProcessingByTaskId((previous) => ({
           ...previous,
@@ -1689,7 +1794,16 @@ export default function CarerPage() {
         return;
       }
       if (isConcurrencyIssue) {
+        console.error('[START_TASK] commit failed code=%s', String((error as { code?: string } | null | undefined)?.code || 'failed-precondition'));
+        console.info('[START_TASK] refetch after failed-precondition');
         await refreshPageData(false);
+        try {
+          const latestSnap = await getDocFromServer(doc(db, 'carerTasks', task.id));
+          console.info('[SERVER_REFETCH] taskId=%s exists=%s status=%s', task.id, latestSnap.exists(), latestSnap.exists() ? String((latestSnap.data() as any).status || '') : null);
+        } catch (err) {
+          console.error('[SERVER_REFETCH] failed for taskId=%s err=%o', task.id, err);
+        }
+        console.info('[START_TASK] restoring UI taskId=%s', task.id);
         setErrorMessage('Task was already changed. Please refresh and try again.');
       } else if (fallback === 'Task already claimed') {
         const latestTaskSnap = await getDocFromServer(doc(db, 'carerTasks', task.id));

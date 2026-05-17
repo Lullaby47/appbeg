@@ -20,6 +20,8 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 
+import { jobCompleteGuard } from '@/lib/automation/jobCompleteGuard';
+
 import { auth, db } from '@/lib/firebase/client';
 import {
   getCurrentUserCoadminUid as getScopedCurrentUserCoadminUid,
@@ -970,29 +972,65 @@ export async function syncCarerTasks({
 
       if (hasLogin && existingTask.status !== 'completed') {
         const access = resolveTaskGameAccess(game);
-        batch.update(taskRef, {
-          playerUsername: player.username || 'Player',
-          gameName: game.gameName || 'Unknown Game',
-          status: 'completed',
-          automationStatus: 'completed',
-          automationUpdatedAt: serverTimestamp(),
-          assignedCarerUid: existingTask.assignedCarerUid ?? null,
-          assignedCarerUsername: existingTask.assignedCarerUsername ?? null,
-          startedAt: existingTask.startedAt ?? null,
-          expiresAt: null,
-          completedAt: serverTimestamp(),
-          ttlExpiresAt: completedCarerTaskTtl(),
-          isPoked: false,
-          pokedAt: null,
-          pokeMessage: null,
-          completedByCarerUid:
-            existingTask.completedByCarerUid || existingTask.assignedCarerUid || null,
-          completedByCarerUsername:
-            existingTask.completedByCarerUsername ||
-            existingTask.assignedCarerUsername ||
-            null,
-          ...access,
-        });
+        // Guard: skip marking completed if server currently reports pending (reset-to-pending race)
+        try {
+          const serverSnap = await getDocFromServer(taskRef);
+          if (serverSnap.exists()) {
+            const latest = serverSnap.data() as Record<string, any>;
+            if (String(latest.status || '').trim().toLowerCase() === 'pending') {
+              console.info('[JOB_COMPLETE_GUARD] skip sync mark completed due to pending reset taskId=%s', taskRef.id);
+            } else {
+              batch.update(taskRef, {
+                playerUsername: player.username || 'Player',
+                gameName: game.gameName || 'Unknown Game',
+                status: 'completed',
+                automationStatus: 'completed',
+                automationUpdatedAt: serverTimestamp(),
+                assignedCarerUid: existingTask.assignedCarerUid ?? null,
+                assignedCarerUsername: existingTask.assignedCarerUsername ?? null,
+                startedAt: existingTask.startedAt ?? null,
+                expiresAt: null,
+                completedAt: serverTimestamp(),
+                ttlExpiresAt: completedCarerTaskTtl(),
+                isPoked: false,
+                pokedAt: null,
+                pokeMessage: null,
+                completedByCarerUid:
+                  existingTask.completedByCarerUid || existingTask.assignedCarerUid || null,
+                completedByCarerUsername:
+                  existingTask.completedByCarerUsername ||
+                  existingTask.assignedCarerUsername ||
+                  null,
+                ...access,
+              });
+            }
+          }
+        } catch (err) {
+          // If server read fails, fall back to applying the update to avoid silent drift
+          batch.update(taskRef, {
+            playerUsername: player.username || 'Player',
+            gameName: game.gameName || 'Unknown Game',
+            status: 'completed',
+            automationStatus: 'completed',
+            automationUpdatedAt: serverTimestamp(),
+            assignedCarerUid: existingTask.assignedCarerUid ?? null,
+            assignedCarerUsername: existingTask.assignedCarerUsername ?? null,
+            startedAt: existingTask.startedAt ?? null,
+            expiresAt: null,
+            completedAt: serverTimestamp(),
+            ttlExpiresAt: completedCarerTaskTtl(),
+            isPoked: false,
+            pokedAt: null,
+            pokeMessage: null,
+            completedByCarerUid:
+              existingTask.completedByCarerUid || existingTask.assignedCarerUid || null,
+            completedByCarerUsername:
+              existingTask.completedByCarerUsername ||
+              existingTask.assignedCarerUsername ||
+              null,
+            ...access,
+          });
+        }
         changed = true;
         continue;
       }
@@ -1069,27 +1107,60 @@ export async function syncCarerTasks({
         continue;
       }
 
-      batch.update(doc(db, 'carerTasks', existingTask.id), {
-        status: 'completed',
-        automationStatus: 'completed',
-        automationUpdatedAt: serverTimestamp(),
-        assignedCarerUid: existingTask.assignedCarerUid ?? null,
-        assignedCarerUsername: existingTask.assignedCarerUsername ?? null,
-        startedAt: null,
-        expiresAt: null,
-        completedAt: existingTask.completedAt ?? serverTimestamp(),
-        ttlExpiresAt: completedCarerTaskTtl(),
-        isPoked: false,
-        pokedAt: null,
-        pokeMessage: null,
-        completedByCarerUid:
-          existingTask.completedByCarerUid || existingTask.assignedCarerUid || null,
-        completedByCarerUsername:
-          existingTask.completedByCarerUsername ||
-          existingTask.assignedCarerUsername ||
-          null,
-      });
-      changed = true;
+      // Guard: read latest server state and skip if it was reset to pending
+      try {
+        const serverSnap = await getDocFromServer(doc(db, 'carerTasks', existingTask.id));
+        if (serverSnap.exists()) {
+          const latest = serverSnap.data() as Record<string, any>;
+          if (String(latest.status || '').trim().toLowerCase() === 'pending') {
+            console.info('[JOB_COMPLETE_GUARD] skip sync mark completed due to pending reset taskId=%s', existingTask.id);
+          } else {
+            batch.update(doc(db, 'carerTasks', existingTask.id), {
+              status: 'completed',
+              automationStatus: 'completed',
+              automationUpdatedAt: serverTimestamp(),
+              assignedCarerUid: existingTask.assignedCarerUid ?? null,
+              assignedCarerUsername: existingTask.assignedCarerUsername ?? null,
+              startedAt: null,
+              expiresAt: null,
+              completedAt: existingTask.completedAt ?? serverTimestamp(),
+              ttlExpiresAt: completedCarerTaskTtl(),
+              isPoked: false,
+              pokedAt: null,
+              pokeMessage: null,
+              completedByCarerUid:
+                existingTask.completedByCarerUid || existingTask.assignedCarerUid || null,
+              completedByCarerUsername:
+                existingTask.completedByCarerUsername ||
+                existingTask.assignedCarerUsername ||
+                null,
+            });
+            changed = true;
+          }
+        }
+      } catch (err) {
+        batch.update(doc(db, 'carerTasks', existingTask.id), {
+          status: 'completed',
+          automationStatus: 'completed',
+          automationUpdatedAt: serverTimestamp(),
+          assignedCarerUid: existingTask.assignedCarerUid ?? null,
+          assignedCarerUsername: existingTask.assignedCarerUsername ?? null,
+          startedAt: null,
+          expiresAt: null,
+          completedAt: existingTask.completedAt ?? serverTimestamp(),
+          ttlExpiresAt: completedCarerTaskTtl(),
+          isPoked: false,
+          pokedAt: null,
+          pokeMessage: null,
+          completedByCarerUid:
+            existingTask.completedByCarerUid || existingTask.assignedCarerUid || null,
+          completedByCarerUsername:
+            existingTask.completedByCarerUsername ||
+            existingTask.assignedCarerUsername ||
+            null,
+        });
+        changed = true;
+      }
       continue;
     }
 
@@ -1105,27 +1176,59 @@ export async function syncCarerTasks({
       continue;
     }
 
-    batch.update(doc(db, 'carerTasks', existingTask.id), {
-      status: 'completed',
-      automationStatus: 'completed',
-      automationUpdatedAt: serverTimestamp(),
-      assignedCarerUid: existingTask.assignedCarerUid ?? null,
-      assignedCarerUsername: existingTask.assignedCarerUsername ?? null,
-      startedAt: null,
-      expiresAt: null,
-      completedAt: serverTimestamp(),
-      ttlExpiresAt: completedCarerTaskTtl(),
-      isPoked: false,
-      pokedAt: null,
-      pokeMessage: null,
-      completedByCarerUid:
-        existingTask.completedByCarerUid || existingTask.assignedCarerUid || null,
-      completedByCarerUsername:
-        existingTask.completedByCarerUsername ||
-        existingTask.assignedCarerUsername ||
-        null,
-    });
-    changed = true;
+    try {
+      const serverSnap = await getDocFromServer(doc(db, 'carerTasks', existingTask.id));
+      if (serverSnap.exists()) {
+        const latest = serverSnap.data() as Record<string, any>;
+        if (String(latest.status || '').trim().toLowerCase() === 'pending') {
+          console.info('[JOB_COMPLETE_GUARD] skip sync mark completed due to pending reset taskId=%s', existingTask.id);
+        } else {
+          batch.update(doc(db, 'carerTasks', existingTask.id), {
+            status: 'completed',
+            automationStatus: 'completed',
+            automationUpdatedAt: serverTimestamp(),
+            assignedCarerUid: existingTask.assignedCarerUid ?? null,
+            assignedCarerUsername: existingTask.assignedCarerUsername ?? null,
+            startedAt: null,
+            expiresAt: null,
+            completedAt: serverTimestamp(),
+            ttlExpiresAt: completedCarerTaskTtl(),
+            isPoked: false,
+            pokedAt: null,
+            pokeMessage: null,
+            completedByCarerUid:
+              existingTask.completedByCarerUid || existingTask.assignedCarerUid || null,
+            completedByCarerUsername:
+              existingTask.completedByCarerUsername ||
+              existingTask.assignedCarerUsername ||
+              null,
+          });
+          changed = true;
+        }
+      }
+    } catch (err) {
+      batch.update(doc(db, 'carerTasks', existingTask.id), {
+        status: 'completed',
+        automationStatus: 'completed',
+        automationUpdatedAt: serverTimestamp(),
+        assignedCarerUid: existingTask.assignedCarerUid ?? null,
+        assignedCarerUsername: existingTask.assignedCarerUsername ?? null,
+        startedAt: null,
+        expiresAt: null,
+        completedAt: serverTimestamp(),
+        ttlExpiresAt: completedCarerTaskTtl(),
+        isPoked: false,
+        pokedAt: null,
+        pokeMessage: null,
+        completedByCarerUid:
+          existingTask.completedByCarerUid || existingTask.assignedCarerUid || null,
+        completedByCarerUsername:
+          existingTask.completedByCarerUsername ||
+          existingTask.assignedCarerUsername ||
+          null,
+      });
+      changed = true;
+    }
   }
 
   if (changed) {
@@ -1236,15 +1339,33 @@ export function listenToAvailableCarerTasks(
     callback(Array.from(byId.values()));
   };
 
-  const mapVisibleTasks = (docs: Array<{ id: string; data: () => unknown }>) =>
+  const mapVisibleTasks = (
+    docs: Array<{ id: string; data: () => unknown }>,
+    tab: 'active' | 'completed' = 'active'
+  ) =>
     docs
       .map((docSnap) => {
+        const raw = docSnap.data() as Omit<CarerTask, 'id'>;
         const task = {
           id: docSnap.id,
-          ...(docSnap.data() as Omit<CarerTask, 'id'>),
+          ...raw,
         } satisfies CarerTask;
 
-        return getVisibleTaskForCarer(task, currentCarerUid);
+        const visible = getVisibleTaskForCarer(task, currentCarerUid);
+        const included = Boolean(visible);
+        const reason = included ? 'visible' : 'filtered_out';
+        console.info(
+          '[TASK_VISIBILITY] taskId=%s existsInSnapshot=%s status=%s automationStatus=%s tab=%s included=%s reason=%s',
+          docSnap.id,
+          true,
+          String(raw.status || '').trim() || null,
+          String(raw.automationStatus || '').trim() || null,
+          tab,
+          included,
+          reason
+        );
+
+        return visible;
       })
       .filter((task): task is CarerTask => Boolean(task));
 
@@ -1252,8 +1373,33 @@ export function listenToAvailableCarerTasks(
     activeTasksQuery,
     { includeMetadataChanges: true },
     (snapshot) => {
-      console.info('[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s', snapshot.metadata.fromCache, snapshot.metadata.hasPendingWrites);
-      activeTasks = mapVisibleTasks(snapshot.docs);
+      const snapshotReceivedAt = new Date().toISOString();
+      const docChanges = snapshot.docChanges();
+      console.info(
+        '[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s docCount=%s docChanges=%s at=%s',
+        snapshot.metadata.fromCache,
+        snapshot.metadata.hasPendingWrites,
+        snapshot.size,
+        docChanges.length,
+        snapshotReceivedAt
+      );
+      snapshot.docs.forEach((docSnap) => {
+        const task = docSnap.data() as Partial<CarerTask> & { linkedJobId?: string | null };
+        console.info(
+          '[START_TIMING] snapshot received at=%s fromCache=%s hasPendingWrites=%s taskId=%s status=%s automationStatus=%s assignedCarerUid=%s claimedByUid=%s automationJobId=%s linkedJobId=%s',
+          snapshotReceivedAt,
+          snapshot.metadata.fromCache,
+          snapshot.metadata.hasPendingWrites,
+          docSnap.id,
+          String(task.status || '').trim() || null,
+          String(task.automationStatus || '').trim() || null,
+          String(task.assignedCarerUid || '').trim() || null,
+          String(task.claimedByUid || '').trim() || null,
+          String(task.automationJobId || '').trim() || null,
+          String(task.linkedJobId || '').trim() || null
+        );
+      });
+      activeTasks = mapVisibleTasks(snapshot.docs, 'active');
       emit();
     },
     (error) => {
@@ -1264,8 +1410,33 @@ export function listenToAvailableCarerTasks(
     completedTasksQuery,
     { includeMetadataChanges: true },
     (snapshot) => {
-      console.info('[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s', snapshot.metadata.fromCache, snapshot.metadata.hasPendingWrites);
-      completedTasks = mapVisibleTasks(snapshot.docs);
+      const snapshotReceivedAt = new Date().toISOString();
+      const docChanges = snapshot.docChanges();
+      console.info(
+        '[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s docCount=%s docChanges=%s at=%s',
+        snapshot.metadata.fromCache,
+        snapshot.metadata.hasPendingWrites,
+        snapshot.size,
+        docChanges.length,
+        snapshotReceivedAt
+      );
+      snapshot.docs.forEach((docSnap) => {
+        const task = docSnap.data() as Partial<CarerTask> & { linkedJobId?: string | null };
+        console.info(
+          '[START_TIMING] snapshot received at=%s fromCache=%s hasPendingWrites=%s taskId=%s status=%s automationStatus=%s assignedCarerUid=%s claimedByUid=%s automationJobId=%s linkedJobId=%s',
+          snapshotReceivedAt,
+          snapshot.metadata.fromCache,
+          snapshot.metadata.hasPendingWrites,
+          docSnap.id,
+          String(task.status || '').trim() || null,
+          String(task.automationStatus || '').trim() || null,
+          String(task.assignedCarerUid || '').trim() || null,
+          String(task.claimedByUid || '').trim() || null,
+          String(task.automationJobId || '').trim() || null,
+          String(task.linkedJobId || '').trim() || null
+        );
+      });
+      completedTasks = mapVisibleTasks(snapshot.docs, 'completed');
       emit();
     },
     (error) => {
@@ -1431,14 +1602,19 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
       });
 
       if (taskSnap.exists()) {
-        transaction.update(taskRef, {
-          status: 'failed',
-          expiresAt: null,
-          ttlExpiresAt: completedCarerTaskTtl(),
-          automationStatus: 'failed',
-          automationJobId: job.id,
-          automationUpdatedAt: serverTimestamp(),
-        });
+        const latestTask = taskSnap.data() as Omit<CarerTask, 'id'>;
+        if (jobCompleteGuard(taskId, latestTask as Record<string, any>, job.id)) {
+          transaction.update(taskRef, {
+            status: 'failed',
+            expiresAt: null,
+            ttlExpiresAt: completedCarerTaskTtl(),
+            automationStatus: 'failed',
+            automationJobId: job.id,
+            automationUpdatedAt: serverTimestamp(),
+          });
+        } else {
+          console.info('[JOB_COMPLETE_GUARD] skipped marking task failed taskId=%s jobId=%s', taskId, job.id);
+        }
       }
 
       if (requestRef && requestSnap?.exists()) {

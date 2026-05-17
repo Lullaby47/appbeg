@@ -1,6 +1,7 @@
 import {
   collection,
   doc,
+  getDoc,
   getDocFromServer,
   getDocsFromServer,
   limit,
@@ -223,6 +224,8 @@ export async function claimTaskAndCreateJob(input: {
   carerName?: string | null;
   gameLoginDetails?: GameLoginDetailsInput;
 }) {
+  const serverClaimStartedAt = Date.now();
+  console.info('[START_TIMING] server claim start at=%s taskId=%s source=client_claimTaskAndCreateJob', new Date(serverClaimStartedAt).toISOString(), input.taskId);
   const currentUser = auth.currentUser;
   if (!currentUser) {
     throw new Error('Not authenticated.');
@@ -752,6 +755,8 @@ export async function claimTaskAndCreateJob(input: {
         }
       }
 
+      const createJobStartedAt = Date.now();
+      console.info('[START_TIMING] automation job create start at=%s taskId=%s', new Date(createJobStartedAt).toISOString(), taskSnap.id);
       const jobRef = doc(collection(firestoreDb, 'automation_jobs'));
       console.info('[TASK_START] creating fresh automation job=%s taskId=%s previousLinkedJobId=%s type=%s',
         jobRef.id,
@@ -811,6 +816,13 @@ export async function claimTaskAndCreateJob(input: {
         lastHeartbeatAt: null,
       };
       transaction.set(jobRef, jobData);
+      console.info(
+        '[START_TIMING] automation job create done at=%s jobId=%s durationMs=%s taskId=%s',
+        new Date().toISOString(),
+        jobRef.id,
+        Date.now() - createJobStartedAt,
+        taskSnap.id
+      );
       console.info('[TASK_START] task status transition taskId=%s from=%s to=in_progress automationJobId=%s automationStatus=waiting writeTimestamps=serverTimestamp',
         taskSnap.id,
         rawTaskStatus,
@@ -845,6 +857,23 @@ export async function claimTaskAndCreateJob(input: {
     })
     );
   };
+  // Read fresh server doc before attempting transaction to avoid using stale cached updateTime
+  try {
+    // Attempt an explicit server read for logging purposes before transaction
+    const serverSnap = await getDocFromServer(doc(firestoreDb, 'carerTasks', input.taskId));
+    let cachedSnap = null;
+    try {
+      cachedSnap = await getDoc(doc(firestoreDb, 'carerTasks', input.taskId));
+    } catch {
+      cachedSnap = null;
+    }
+    const serverUpdateTime = (serverSnap as any)?.updateTime?.toDate?.().toISOString?.() || null;
+    const cachedUpdateTime = (cachedSnap as any)?.updateTime?.toDate?.().toISOString?.() || null;
+    console.info('[START_TASK] serverFreshRead updateTime=%s', serverUpdateTime);
+    console.info('[START_TASK] cachedUpdateTime=%s', cachedUpdateTime);
+  } catch (err) {
+    // ignore logging failures
+  }
 
   let result:
     | {
@@ -865,15 +894,22 @@ export async function claimTaskAndCreateJob(input: {
       if (!isRetryableConcurrencyError(error) || attempt >= 2) {
         break;
       }
-      console.info('START_TASK_RETRY_AFTER_PRECONDITION', {
-        taskId: input.taskId,
-        attempt,
-        nextAttempt: attempt + 1,
-        code: String((error as { code?: string } | null | undefined)?.code || ''),
-        message: String((error as { message?: string } | null | undefined)?.message || ''),
-      });
-      await forceRefreshTaskFromServer(input.taskId, taskRef);
-      await new Promise((resolve) => setTimeout(resolve, 200));
+        const errCode = String((error as { code?: string } | null | undefined)?.code || '');
+        const errMsg = String((error as { message?: string } | null | undefined)?.message || '');
+        console.error('[START_TASK] commit failed code=%s message=%s', errCode, errMsg);
+        console.info('START_TASK_RETRY_AFTER_PRECONDITION', {
+          taskId: input.taskId,
+          attempt,
+          nextAttempt: attempt + 1,
+          code: errCode,
+          message: errMsg,
+        });
+        // refetch fresh server doc for next attempt
+        const refreshed = await forceRefreshTaskFromServer(input.taskId, taskRef);
+        const refreshedUpdateTime = (refreshed as any)?.updateTime?.toDate?.().toISOString?.() || null;
+        console.info('[START_TASK] refetch after failed-precondition status=%s', refreshed.exists() ? String((refreshed.data() as any)?.status || '') : 'missing');
+        console.info('[START_TASK] retrying with fresh updateTime=%s', refreshedUpdateTime);
+        await new Promise((resolve) => setTimeout(resolve, 200));
     }
   }
 
@@ -915,6 +951,14 @@ export async function claimTaskAndCreateJob(input: {
   if (!result) {
     throw (lastError instanceof Error ? lastError : new Error('Failed to queue the task.'));
   }
+  console.info(
+    '[START_TIMING] server write completed at=%s durationMs=%s taskId=%s jobId=%s status=%s',
+    new Date().toISOString(),
+    Date.now() - serverClaimStartedAt,
+    input.taskId,
+    result.jobId,
+    result.status
+  );
 
   const afterTaskSnap = await forceRefreshTaskFromServer(input.taskId, taskRef);
   const afterTask = afterTaskSnap.exists() ? (afterTaskSnap.data() as Record<string, unknown>) : null;
@@ -1464,7 +1508,13 @@ export function listenAutomationUiStatusByTask(
     jobsQuery,
     { includeMetadataChanges: true },
     (snapshot) => {
-      console.info('[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s', snapshot.metadata.fromCache, snapshot.metadata.hasPendingWrites);
+      console.info(
+        '[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s docChanges=%s at=%s',
+        snapshot.metadata.fromCache,
+        snapshot.metadata.hasPendingWrites,
+        snapshot.docChanges().length,
+        new Date().toISOString()
+      );
       const statusByTaskId: Record<string, AutomationUiStatus> = {};
       const seenTaskIds = new Set<string>();
 
