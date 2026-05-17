@@ -230,9 +230,11 @@ function isActiveAutomationUiStatus(status: string | null | undefined) {
   const normalized = String(status || '').trim().toLowerCase();
   return (
     normalized === 'queued' ||
+    normalized === 'claimed' ||
     normalized === 'waiting' ||
     normalized === 'running' ||
-    normalized === 'in_progress'
+    normalized === 'in_progress' ||
+    normalized === 'processing'
   );
 }
 
@@ -1633,6 +1635,7 @@ export default function CarerPage() {
         reusedExistingJob: claimResult.reusedExistingJob,
         createdAutomationJobId: claimResult.jobId,
       });
+      await refreshPageData(false);
       setNoticeMessage(
         claimResult.reusedExistingJob
           ? claimResult.status === 'running'
@@ -1696,7 +1699,7 @@ export default function CarerPage() {
           };
         });
         const activeJobs = latestJobs.filter((job) =>
-          ['queued', 'waiting', 'running', 'in_progress', 'cancelled_requested'].includes(
+          ['queued', 'waiting', 'running', 'in_progress', 'processing', 'claimed', 'cancelled_requested'].includes(
             String(job.status || '').trim().toLowerCase()
           )
         );

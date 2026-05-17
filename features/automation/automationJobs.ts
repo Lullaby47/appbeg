@@ -62,10 +62,26 @@ function isActiveAutomationJobStatus(value: unknown) {
   const normalized = String(value || '').trim().toLowerCase();
   return (
     normalized === 'queued' ||
+    normalized === 'claimed' ||
     normalized === 'running' ||
     normalized === 'waiting' ||
     normalized === 'in_progress' ||
+    normalized === 'processing' ||
     normalized === 'cancelled_requested'
+  );
+}
+
+function isTerminalAutomationJobStatus(value: unknown) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return (
+    normalized === 'completed' ||
+    normalized === 'failed' ||
+    normalized === 'cancelled' ||
+    normalized === 'canceled' ||
+    normalized === 'dismissed' ||
+    normalized === 'terminal' ||
+    normalized === 'success' ||
+    normalized === 'error'
   );
 }
 
@@ -232,6 +248,7 @@ export async function claimTaskAndCreateJob(input: {
       const freshTask = taskSnap.data() as Record<string, unknown>;
       const createdByName =
         input.carerName?.trim() || userData.username?.trim() || 'Carer';
+      console.info('[TASK_START] taskId=%s begin path=claimTaskAndCreateJob', taskSnap.id);
       console.info('[AUTO_CLAIM_UI] before task status fields', {
         taskId: taskSnap.id,
         carerUid: currentUser.uid,
@@ -260,6 +277,15 @@ export async function claimTaskAndCreateJob(input: {
             createdByName &&
             assignedCarerName.toLowerCase() === createdByName.toLowerCase()));
       const linkedJobId = String(freshTask.automationJobId || '').trim();
+      console.info('[TASK_START] existing linkedJobId=%s taskId=%s status=%s automationStatus=%s assignedCarer=%s updatedAt=%o createdAt=%o',
+        linkedJobId || null,
+        taskSnap.id,
+        rawTaskStatus,
+        automationStatus || null,
+        assignedCarerUid || assignedCarerName || null,
+        freshTask.updatedAt || null,
+        freshTask.createdAt || null
+      );
       const isPendingCleanTask =
         rawTaskStatus === 'pending' &&
         !claimedByUid &&
@@ -319,6 +345,18 @@ export async function claimTaskAndCreateJob(input: {
           ])
         ).values()
       );
+      candidateJobs.forEach((job) => {
+        console.info('[TASK_START] existing job status=%s jobId=%s taskId=%s linked=%s exists=%s createdAt=%o updatedAt=%o heartbeatMs=%s',
+          job.status || null,
+          job.ref.id,
+          String(job.data?.taskId || '').trim() || null,
+          job.ref.id === linkedJobId,
+          job.snap.exists(),
+          job.data?.createdAt || null,
+          job.data?.updatedAt || null,
+          job.heartbeatMs || 0
+        );
+      });
       const activeSameTaskJobs = candidateJobs.filter((job) =>
         isActiveAutomationJobStatus(job.status)
       );
@@ -326,10 +364,11 @@ export async function claimTaskAndCreateJob(input: {
         job.snap.exists() && !isActiveAutomationJobStatus(job.status)
       );
       oldSameTaskJobs.forEach((job) => {
-        console.info('START_TASK_IGNORED_OLD_COMPLETED_JOB', {
+        console.info('START_TASK_CLEARING_OLD_COMPLETED_JOB_AND_CREATING_NEW', {
           taskId: taskSnap.id,
           jobId: job.ref.id,
           status: job.status || null,
+          linked: job.ref.id === linkedJobId,
         });
       });
       const freshActiveSameTaskJobs = activeSameTaskJobs.filter((job) =>
@@ -377,9 +416,29 @@ export async function claimTaskAndCreateJob(input: {
       const linkedAutomationJob = linkedJobId
         ? candidateJobs.find((job) => job.ref.id === linkedJobId) || null
         : null;
+      const linkedAutomationJobIsTerminal = Boolean(
+        linkedAutomationJob &&
+          linkedAutomationJob.snap.exists() &&
+          isTerminalAutomationJobStatus(linkedAutomationJob.status)
+      );
+      if (linkedAutomationJobIsTerminal) {
+        console.info('[TASK_START] linked job terminal; clearing stale link', {
+          taskId: taskSnap.id,
+          linkedJobId,
+          linkedJobStatus: linkedAutomationJob?.status || null,
+        });
+      }
       const hasLinkedAutomationJob = Boolean(
         linkedAutomationJob && isActiveAutomationJobStatus(linkedAutomationJob.status)
       );
+      console.info('[TASK_START] terminalCheck=%o', {
+        taskId: taskSnap.id,
+        linkedJobId: linkedJobId || null,
+        linkedJobStatus: linkedAutomationJob?.status || null,
+        hasLinkedAutomationJob,
+        activeSameTaskJobCount: activeSameTaskJobs.length,
+        freshActiveSameTaskJobCount: freshActiveSameTaskJobs.length,
+      });
       const orphanedClaimFields =
         rawTaskStatus === 'pending' &&
         !claimedByUid &&
@@ -390,6 +449,7 @@ export async function claimTaskAndCreateJob(input: {
       const restartableTask =
         rawTaskStatus === 'pending' ||
         rawTaskStatus === 'waiting' ||
+        linkedAutomationJobIsTerminal ||
         automationStatus === 'waiting' ||
         automationStatus === 'failed' ||
         automationStatus === 'pending_review' ||
@@ -404,12 +464,14 @@ export async function claimTaskAndCreateJob(input: {
       const staleClaim =
         claimedStatus === 'running' &&
         (
+          linkedAutomationJobIsTerminal ||
           orphanedClaimFields ||
           !hasFreshLock ||
           (activeExistingJob?.status === 'running' && !activeExistingJob.heartbeatMs)
         );
       const hasFreshActiveClaim =
         claimedStatus === 'running' &&
+        !linkedAutomationJobIsTerminal &&
         hasFreshLock &&
         !orphanedClaimFields;
 
@@ -586,6 +648,14 @@ export async function claimTaskAndCreateJob(input: {
         !staleOrFailedJob &&
         (hasFreshLock || rawTaskStatus === 'pending')
       ) {
+        console.info('[TASK_START] reusing existing job=%s taskId=%s existingStatus=%s linkedJobId=%s updatedAt=%o createdAt=%o',
+          reusableActiveJob.ref.id,
+          taskSnap.id,
+          reusableActiveJob.status || null,
+          linkedJobId || null,
+          reusableActiveJob.data?.updatedAt || null,
+          reusableActiveJob.data?.createdAt || null
+        );
         console.info('[automation] task claimed', {
           taskId: taskSnap.id,
           carerUid: currentUser.uid,
@@ -639,6 +709,12 @@ export async function claimTaskAndCreateJob(input: {
       }
 
       const jobRef = doc(collection(firestoreDb, 'automation_jobs'));
+      console.info('[TASK_START] creating fresh automation job=%s taskId=%s previousLinkedJobId=%s type=%s',
+        jobRef.id,
+        taskSnap.id,
+        linkedJobId || null,
+        mappedType
+      );
 
       console.info('[automation] task claimed', {
         taskId: taskSnap.id,
@@ -688,6 +764,16 @@ export async function claimTaskAndCreateJob(input: {
         lastHeartbeatAt: null,
       };
       transaction.set(jobRef, jobData);
+      console.info('[TASK_START] task status transition taskId=%s from=%s to=in_progress automationJobId=%s automationStatus=waiting writeTimestamps=serverTimestamp',
+        taskSnap.id,
+        rawTaskStatus,
+        jobRef.id
+      );
+      console.info('[TASK_START] task linked to fresh automation job=%s taskId=%s previousLinkedJobId=%s',
+        jobRef.id,
+        taskSnap.id,
+        linkedJobId || null
+      );
       console.info('[automation] start-task:decision', {
         taskId: taskSnap.id,
         decision: 'new automation job created',
@@ -764,6 +850,11 @@ export async function claimTaskAndCreateJob(input: {
           : '';
 
       if (latestStatus === 'in_progress' && latestAssignedCarerUid === currentUser.uid) {
+        console.info('[TASK_START] reusing existing job=%s taskId=%s reason=concurrency_retry_latest_state existingStatus=%s',
+          latestLinkedJobId || automationJobDocId(currentUser.uid, input.taskId),
+          input.taskId,
+          latestJobStatus || 'queued'
+        );
         result = {
           jobId: latestLinkedJobId || automationJobDocId(currentUser.uid, input.taskId),
           taskId: input.taskId,
@@ -843,8 +934,36 @@ export async function startAutomationForTask(input: {
     }
     const taskData = taskSnap.data() as Record<string, unknown>;
     const linkedJobId = String(taskData.automationJobId || '').trim();
+    console.info('[TASK_START] taskId=%s begin path=startAutomationForTask', input.taskId);
+    console.info('[TASK_START] existing linkedJobId=%s taskId=%s status=%s automationStatus=%s assignedCarer=%s updatedAt=%o createdAt=%o',
+      linkedJobId || null,
+      input.taskId,
+      String(taskData.status || '').trim().toLowerCase() || null,
+      String(taskData.automationStatus || '').trim().toLowerCase() || null,
+      String(taskData.assignedCarerUid || taskData.assignedCarer || '').trim() || null,
+      taskData.updatedAt || null,
+      taskData.createdAt || null
+    );
     if (linkedJobId) {
       const linkedJobSnap = await transaction.get(doc(db, 'automation_jobs', linkedJobId));
+      const linkedJobData = linkedJobSnap.exists()
+        ? (linkedJobSnap.data() as Record<string, unknown>)
+        : null;
+      const linkedJobStatus = String(linkedJobData?.status || '').trim().toLowerCase();
+      console.info('[TASK_START] existing job status=%s jobId=%s taskId=%s linked=true exists=%s createdAt=%o updatedAt=%o',
+        linkedJobStatus || null,
+        linkedJobId,
+        String(linkedJobData?.taskId || '').trim() || null,
+        linkedJobSnap.exists(),
+        linkedJobData?.createdAt || null,
+        linkedJobData?.updatedAt || null
+      );
+      console.info('[TASK_START] terminalCheck=%o', {
+        taskId: input.taskId,
+        linkedJobId,
+        linkedJobStatus: linkedJobStatus || null,
+        active: linkedJobSnap.exists() && isActiveAutomationJobStatus(linkedJobStatus),
+      });
       if (
         linkedJobSnap.exists() &&
         isActiveAutomationJobStatus((linkedJobSnap.data() as { status?: string }).status)
@@ -852,6 +971,19 @@ export async function startAutomationForTask(input: {
         throw new Error(
           'Automation job already exists for this task. The manual part is also available.'
         );
+      }
+      if (linkedJobSnap.exists() && isTerminalAutomationJobStatus(linkedJobStatus)) {
+        console.info('[TASK_START] linked job terminal; clearing stale link', {
+          taskId: input.taskId,
+          linkedJobId,
+          linkedJobStatus: linkedJobStatus || null,
+        });
+        console.info('START_TASK_CLEARING_OLD_COMPLETED_JOB_AND_CREATING_NEW', {
+          taskId: input.taskId,
+          jobId: linkedJobId,
+          status: linkedJobStatus || null,
+          linked: true,
+        });
       }
     }
     const status = sanitizeStatus(taskData.status);
@@ -894,6 +1026,12 @@ export async function startAutomationForTask(input: {
       currentCarerName: createdByName,
       currentUsername: input.currentUsername ?? null,
     });
+    console.info('[TASK_START] creating fresh automation job=%s taskId=%s previousLinkedJobId=%s type=%s',
+      jobRef.id,
+      input.taskId,
+      linkedJobId || null,
+      mappedType
+    );
 
     transaction.set(jobRef, {
       carerUid: currentUser.uid,
@@ -920,6 +1058,16 @@ export async function startAutomationForTask(input: {
       attempts: 0,
       lastHeartbeatAt: null,
     });
+    console.info('[TASK_START] task status transition taskId=%s from=%s to=in_progress automationJobId=%s automationStatus=waiting writeTimestamps=serverTimestamp',
+      input.taskId,
+      String(taskData.status || '').trim().toLowerCase() || null,
+      jobRef.id
+    );
+    console.info('[TASK_START] task linked to fresh automation job=%s taskId=%s previousLinkedJobId=%s',
+      jobRef.id,
+      input.taskId,
+      linkedJobId || null
+    );
 
     console.info('[automation] task claimed', {
       taskId: input.taskId,
@@ -1067,6 +1215,19 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
       linkedJobId: linkedJobId || deterministicJobRef.id,
       attempt,
     });
+    console.info('[TASK_START] terminalCheck=%o', {
+      taskId,
+      path: 'returnTaskToPendingAndCancelAutomation',
+      linkedJobId: linkedJobId || null,
+      deterministicJobId: deterministicJobRef.id,
+      linkedJobStatus: linkedJobState?.status || null,
+      jobStates: jobStates.map((job) => ({
+        jobId: job.ref.id,
+        exists: job.exists,
+        status: job.status || null,
+        taskId: job.taskId || null,
+      })),
+    });
     console.info('[carer] returnToPendingTransactionState', {
       taskId,
       oldTaskStatus,
@@ -1119,13 +1280,23 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
           previousStatus: job.status,
           nextStatus: 'cancelled',
         });
+        console.info('[TASK_START] terminalCheck=active_cancelled taskId=%s linkedJobId=%s previousStatus=%s nextStatus=cancelled writeTimestamps=serverTimestamp',
+          taskId,
+          job.ref.id,
+          job.status
+        );
         return;
       }
-      console.info('[carer] linked job already terminal; cancel skipped', {
+      console.info('[carer] linked job already terminal; stale link cleared on task', {
         taskId,
         linkedJobId: job.ref.id,
         previousStatus: job.status || null,
       });
+      console.info('[TASK_START] terminalCheck=terminal_stale_link_cleared taskId=%s linkedJobId=%s previousStatus=%s',
+        taskId,
+        job.ref.id,
+        job.status || null
+      );
     });
 
     batch.update(taskRef, {
@@ -1133,6 +1304,10 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
       queuedAt: null,
     });
     await batch.commit();
+    console.info('[TASK_START] task status transition taskId=%s from=%s to=pending automationJobId=null writeTimestamps=serverTimestamp',
+      taskId,
+      oldTaskStatus || null
+    );
     console.info('[carer] task reset complete', {
       taskId,
       attempt,
