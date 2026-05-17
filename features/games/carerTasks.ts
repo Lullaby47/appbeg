@@ -125,11 +125,65 @@ function buildPendingTaskResetFields(): Record<string, unknown> {
     automationError: null,
     error: null,
     failureReason: null,
+    retryPending: true,
+    resetToPendingAt: serverTimestamp(),
+    pendingSince: serverTimestamp(),
     lastHeartbeatAt: null,
     queuedAt: null,
     automationUpdatedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
+}
+
+function logCleanupCandidate(
+  taskId: string,
+  task: { status?: unknown; automationStatus?: unknown; failedAt?: unknown },
+  reason: string
+) {
+  console.info(
+    '[CLEANUP] candidate taskId=%s status=%s automationStatus=%s failedAt=%o reason=%s',
+    taskId,
+    String(task.status || '').trim() || null,
+    String(task.automationStatus || '').trim() || null,
+    task.failedAt || null,
+    reason
+  );
+}
+
+function shouldSkipTaskCleanup(
+  taskId: string,
+  task: {
+    status?: unknown;
+    assignedCarerUid?: unknown;
+    assignedCarerUsername?: unknown;
+    assignedCarer?: unknown;
+    claimedByUid?: unknown;
+    retryPending?: unknown;
+    resetToPendingAt?: unknown;
+    pendingSince?: unknown;
+  },
+  reason: string
+) {
+  logCleanupCandidate(taskId, task, reason);
+  const status = String(task.status || '').trim().toLowerCase();
+  if (status === 'pending') {
+    console.info('[CLEANUP] skip pending taskId=%s', taskId);
+    return true;
+  }
+  if (
+    String(task.assignedCarerUid || '').trim() ||
+    String(task.assignedCarerUsername || task.assignedCarer || '').trim() ||
+    String(task.claimedByUid || '').trim()
+  ) {
+    console.info('[CLEANUP] skip assigned/visible taskId=%s', taskId);
+    return true;
+  }
+  if (task.retryPending === true || task.resetToPendingAt || task.pendingSince) {
+    console.info('[CLEANUP] skip retry-pending taskId=%s', taskId);
+    return true;
+  }
+  console.info('[CLEANUP] deleting terminal taskId=%s reason=%s', taskId, reason);
+  return false;
 }
 
 function logTaskResetPending(details: {
@@ -1518,13 +1572,23 @@ export async function startCarerTask(taskId: string) {
 
     if (task.type === 'recharge') {
       if (!rechargeRequestRef || !rechargeRequestSnap?.exists()) {
-        transaction.delete(taskRef);
+        console.info('[CLEANUP] latest status before delete=%s', task.status || null);
+        if (shouldSkipTaskCleanup(taskId, task, 'linked_request_not_found')) {
+          console.info('[CLEANUP] abort delete because latest status is pending');
+        } else {
+          transaction.delete(taskRef);
+        }
         throw new Error('Recharge task dismissed: linked request not found.');
       }
 
       if (!rechargePlayerRef || !rechargePlayerSnap?.exists()) {
-        transaction.delete(taskRef);
-        transaction.delete(rechargeRequestRef);
+        console.info('[CLEANUP] latest status before delete=%s', task.status || null);
+        if (shouldSkipTaskCleanup(taskId, task, 'player_profile_not_found')) {
+          console.info('[CLEANUP] abort delete because latest status is pending');
+        } else {
+          transaction.delete(taskRef);
+          transaction.delete(rechargeRequestRef);
+        }
         throw new Error('Recharge task dismissed: player profile not found.');
       }
 
@@ -1541,8 +1605,13 @@ export async function startCarerTask(taskId: string) {
         !coinAlreadyHeld &&
         currentCoin < rechargeAmount
       ) {
-        transaction.delete(taskRef);
-        transaction.delete(rechargeRequestRef);
+        console.info('[CLEANUP] latest status before delete=%s', task.status || null);
+        if (shouldSkipTaskCleanup(taskId, task, 'insufficient_coin_balance')) {
+          console.info('[CLEANUP] abort delete because latest status is pending');
+        } else {
+          transaction.delete(taskRef);
+          transaction.delete(rechargeRequestRef);
+        }
         throw new Error('Recharge task dismissed: player has insufficient coin balance.');
       }
     }
@@ -1567,8 +1636,12 @@ export async function startCarerTask(taskId: string) {
         effectiveStatus === 'urgent'
           ? task.completedByCarerUsername || task.assignedCarerUsername || null
           : task.completedByCarerUsername || null,
+      retryPending: false,
+      resetToPendingAt: null,
+      pendingSince: null,
     });
   });
+  await forceRefreshTaskFromServer(taskId, taskRef);
 }
 
 export async function completeCarerTask(taskId: string) {
@@ -1598,6 +1671,7 @@ export async function completeCarerTask(taskId: string) {
       carerUsername,
     }));
   });
+  await forceRefreshTaskFromServer(taskId, taskRef);
 }
 
 export async function completeUsernameTaskForPlayerGame(
@@ -1623,6 +1697,8 @@ export async function completeUsernameTaskForPlayerGame(
   if (!response.ok) {
     throw new Error(readApiError('Failed to complete username task.', payload));
   }
+  const taskId = usernameTaskId(coadminUid, playerUid, gameName);
+  await forceRefreshTaskFromServer(taskId, doc(db, 'carerTasks', taskId));
   return {
     completedTaskCount: Number(payload.completedTaskCount || 0),
     totalAwardNpr: Number(payload.totalAwardNpr || 0),
@@ -1852,6 +1928,7 @@ export async function completeRechargeRedeemTask(task: CarerTask) {
   if (!response.ok) {
     throw new Error(readApiError('Failed to complete task.', payload));
   }
+  await forceRefreshTaskFromServer(task.id, doc(db, 'carerTasks', task.id));
 
   return {
     completedTaskCount: Number(payload.completedTaskCount || 0),

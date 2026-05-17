@@ -1549,11 +1549,13 @@ export default function CarerPage() {
       hasFreshTaskClaim: isFreshActiveTaskClaim(task),
       hasFreshRunnableJob: isActiveAutomationUiStatus(automationStatusByTaskId[task.id] || null),
     });
-    const canStart = !disabledReason && !startTaskInFlightIdsRef.current.has(task.id);
+    const isStartInFlight = startTaskInFlightIdsRef.current.has(task.id);
+    const canStart = !isTaskLoading && !isStartInFlight;
     console.info('[CARER_UI] start clicked taskId', {
       taskId: task.id,
       canStart,
-      disabledReason: disabledReason || (startTaskInFlightIdsRef.current.has(task.id) ? 'in_flight' : null),
+      cachedDisabledReason: disabledReason || null,
+      disabledReason: isStartInFlight ? 'in_flight' : isTaskLoading ? 'queueing' : null,
       existingAutomationJobId: task.automationJobId || null,
       claimedByUid: task.claimedByUid || null,
       claimedStatus: task.claimedStatus || null,
@@ -1561,6 +1563,14 @@ export default function CarerPage() {
     });
     if (!canStart) {
       return;
+    }
+    if (disabledReason) {
+      console.info('[CARER_UI] cached start block ignored pending server verification', {
+        taskId: task.id,
+        cachedDisabledReason: disabledReason,
+        cachedAutomationJobId: task.automationJobId || null,
+        cachedAutomationStatus: task.automationStatus || automationStatusByTaskId[task.id] || null,
+      });
     }
     startTaskInFlightIdsRef.current.add(task.id);
     if (!carerIdentity) {
@@ -2852,7 +2862,8 @@ export default function CarerPage() {
       hasFreshTaskClaim,
       hasFreshRunnableJob: hasActiveLinkedAutomationJob,
     });
-    const canStartTask = !startTaskDisabledReason;
+    const canStartTask =
+      automationLoadingTaskId !== task.id && startTaskDisabledReason !== 'queueing';
 
     return (
       <div
@@ -2974,7 +2985,7 @@ export default function CarerPage() {
               </button>
               <button
                 onClick={() => void handleStartAutomation(task)}
-                disabled={automationLoadingTaskId === task.id || isAutomationQueued}
+                disabled={automationLoadingTaskId === task.id}
                 className="rounded-xl border border-violet-400/40 bg-violet-500/15 px-4 py-2 text-sm font-bold text-violet-100 hover:bg-violet-500/25 disabled:opacity-60"
               >
                 {automationLoadingTaskId === task.id
@@ -3042,7 +3053,7 @@ export default function CarerPage() {
               )}
               <button
                 onClick={() => void handleStartAutomation(task)}
-                disabled={automationLoadingTaskId === task.id || isAutomationQueued}
+                disabled={automationLoadingTaskId === task.id}
                 className="rounded-xl border border-violet-400/40 bg-violet-500/15 px-4 py-2 text-sm font-bold text-violet-100 hover:bg-violet-500/25 disabled:opacity-60"
               >
                 {automationLoadingTaskId === task.id

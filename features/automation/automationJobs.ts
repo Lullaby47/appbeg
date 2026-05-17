@@ -1,9 +1,8 @@
 import {
   collection,
   doc,
-  getDoc,
   getDocFromServer,
-  getDocs,
+  getDocsFromServer,
   limit,
   onSnapshot,
   orderBy,
@@ -161,6 +160,9 @@ function buildTaskClaimReleaseFields(
     automationError,
     error: null,
     failureReason: null,
+    retryPending: status === 'pending',
+    resetToPendingAt: status === 'pending' ? serverTimestamp() : null,
+    pendingSince: status === 'pending' ? serverTimestamp() : null,
     automationUpdatedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
@@ -246,7 +248,7 @@ export async function claimTaskAndCreateJob(input: {
   };
 
   const loadSameTaskJobRefs = async () => {
-    const sameTaskJobsSnap = await getDocs(
+    const sameTaskJobsSnap = await getDocsFromServer(
       query(collection(firestoreDb, 'automation_jobs'), where('taskId', '==', input.taskId), limit(20))
     );
     return sameTaskJobsSnap.docs.map((jobSnap) => jobSnap.ref);
@@ -632,6 +634,9 @@ export async function claimTaskAndCreateJob(input: {
         baseUrl: resolvedAccess.baseUrl,
         siteUrl: resolvedAccess.siteUrl,
         lobbyUrl: resolvedAccess.lobbyUrl,
+        retryPending: false,
+        resetToPendingAt: null,
+        pendingSince: null,
       } as Record<string, unknown>;
       const mappedType = mapTaskType(resolveTaskTypeLabel(claimedTaskData));
       if (!isAgentSupportedAutomationType(mappedType)) {
@@ -710,6 +715,9 @@ export async function claimTaskAndCreateJob(input: {
           automationStatus: reusableActiveJob.status === 'running' ? 'running' : 'waiting',
           automationJobId: reusableActiveJob.ref.id,
           automationError: null,
+          retryPending: false,
+          resetToPendingAt: null,
+          pendingSince: null,
           automationUpdatedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
@@ -770,6 +778,9 @@ export async function claimTaskAndCreateJob(input: {
         automationStatus: 'waiting',
         automationJobId: jobRef.id,
         automationError: null,
+        retryPending: false,
+        resetToPendingAt: null,
+        pendingSince: null,
         automationUpdatedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -1133,6 +1144,9 @@ export async function startAutomationForTask(input: {
       automationStatus: 'waiting',
       automationJobId: jobRef.id,
       automationError: null,
+      retryPending: false,
+      resetToPendingAt: null,
+      pendingSince: null,
       automationUpdatedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -1186,7 +1200,7 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
   const taskRef = doc(db, 'carerTasks', taskId);
   const deterministicJobRef = doc(db, 'automation_jobs', automationJobDocId(currentUser.uid, taskId));
   const loadSameTaskJobRefs = async () => {
-    const sameTaskJobsSnap = await getDocs(
+    const sameTaskJobsSnap = await getDocsFromServer(
       query(collection(db, 'automation_jobs'), where('taskId', '==', taskId), limit(20))
     );
     return sameTaskJobsSnap.docs.map((jobSnap) => jobSnap.ref);
@@ -1215,7 +1229,7 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
       retryCount: attempt - 1,
       sameTaskJobIds: sameTaskJobRefs.map((jobRef) => jobRef.id),
     });
-    const taskSnap = await getDoc(taskRef);
+    const taskSnap = await forceRefreshTaskFromServer(taskId, taskRef);
     if (!taskSnap.exists()) {
       throw new Error('Task not found.');
     }
@@ -1231,7 +1245,7 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
         ].map((jobRef) => [jobRef.id, jobRef])
       ).values()
     );
-    const jobSnaps = await Promise.all(jobRefs.map((jobRef) => getDoc(jobRef)));
+    const jobSnaps = await Promise.all(jobRefs.map((jobRef) => getDocFromServer(jobRef)));
     const jobStates = jobRefs.map((jobRef, index) => {
       const jobSnap = jobSnaps[index];
       const jobData = jobSnap.exists() ? (jobSnap.data() as Record<string, unknown>) : null;
@@ -1375,6 +1389,7 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
       ],
       retryCount: attempt - 1,
     });
+    await forceRefreshTaskFromServer(taskId, taskRef);
   };
 
   let lastError: unknown = null;

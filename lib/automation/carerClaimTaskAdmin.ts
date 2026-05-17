@@ -621,6 +621,9 @@ export async function claimCarerTaskAsAdmin(input: {
         baseUrl: resolvedAccess.baseUrl,
         siteUrl: resolvedAccess.siteUrl,
         lobbyUrl: resolvedAccess.lobbyUrl,
+        retryPending: false,
+        resetToPendingAt: null,
+        pendingSince: null,
       } as Record<string, unknown>;
       const mappedType = mapTaskType(resolveTaskTypeLabel(claimedTaskData));
       if (!isAgentSupportedAutomationType(mappedType)) {
@@ -700,6 +703,9 @@ export async function claimCarerTaskAsAdmin(input: {
           automationStatus: reusableActiveJob.status === 'running' ? 'running' : 'waiting',
           automationJobId: reusableActiveJob.ref.id,
           automationError: null,
+          retryPending: false,
+          resetToPendingAt: null,
+          pendingSince: null,
           automationUpdatedAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
         });
@@ -767,6 +773,9 @@ export async function claimCarerTaskAsAdmin(input: {
         automationStatus: 'waiting',
         automationJobId: jobRef.id,
         automationError: null,
+        retryPending: false,
+        resetToPendingAt: null,
+        pendingSince: null,
         automationUpdatedAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       });
