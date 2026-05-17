@@ -531,104 +531,43 @@ export async function recordFinancialEventAndRefreshRisk(values: {
   await computeAndStorePlayerRiskSnapshot(values.playerUid);
 }
 
-export async function createCashToCoinTransferRequest(playerUid: string, requestedAmountNpr?: number) {
-  const actor = await getCurrentActorIdentity();
-
-  if (actor.uid !== playerUid) {
-    throw new Error('Only the active player can transfer cash to coin.');
+export async function createCashToCoinTransferRequest(requestedAmountNpr?: number) {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) {
+    throw new Error('Not authenticated.');
   }
 
-  const playerRef = doc(db, 'users', playerUid);
-  const playerSnap = await getDoc(playerRef);
-
-  if (!playerSnap.exists()) {
-    throw new Error('Player profile not found.');
-  }
-
-  const playerData = playerSnap.data() as {
-    role?: string;
-    username?: string;
-    cash?: number;
-    coin?: number;
-    transferBlockedUntil?: Timestamp | null;
-    coadminUid?: string | null;
-    createdBy?: string | null;
-  };
-  const role = String(playerData.role || '').toLowerCase();
-
-  if (role !== 'player') {
-    throw new Error('Only players can transfer cash to coin.');
-  }
-
-  const coadminUidForRequest = String(
-    resolveCoadminUid({
-      uid: playerUid,
-      ...playerData,
-    }) || ''
-  ).trim();
-
-  if (!coadminUidForRequest) {
-    throw new Error(
-      'This player is not linked to a co-admin account. Contact support to fix the profile.'
-    );
-  }
-
-  const transferBlockedUntilMs = toMs(playerData.transferBlockedUntil || null);
-  if (transferBlockedUntilMs > Date.now()) {
-    throw new Error('Transfer is temporarily blocked. Contact staff.');
-  }
-
-  const cashAmount = Number(playerData.cash || 0);
-  if (cashAmount <= 0) {
-    throw new Error('No cash available to transfer.');
-  }
-
-  const transferAmount =
-    requestedAmountNpr != null ? Math.max(0, Number(requestedAmountNpr || 0)) : cashAmount;
-  if (transferAmount <= 0) {
-    throw new Error('Transfer amount must be greater than zero.');
-  }
-  if (transferAmount > cashAmount) {
-    throw new Error('Transfer amount cannot exceed current cash.');
-  }
-
-  await runTransaction(db, async (transaction) => {
-    const playerTxSnap = await transaction.get(playerRef);
-    if (!playerTxSnap.exists()) {
-      throw new Error('Player profile not found.');
-    }
-
-    const playerTxData = playerTxSnap.data() as { cash?: number; coin?: number };
-    const cashNow = Number(playerTxData.cash || 0);
-    if (cashNow < transferAmount) {
-      throw new Error('Not enough cash available for transfer.');
-    }
-
-    transaction.update(playerRef, {
-      coin: Number(playerTxData.coin || 0) + transferAmount,
-      cash: cashNow - transferAmount,
-    });
-
-    const eventRef = doc(collection(db, 'financialEvents'));
-    transaction.set(eventRef, {
-      playerUid,
-      coadminUid: coadminUidForRequest,
-      amountNpr: transferAmount,
-      type: 'transfer',
-      createdAt: serverTimestamp(),
-    });
+  const response = await fetch('/api/player/transfer/cash-to-coin', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ amountNpr: requestedAmountNpr ?? 0 }),
   });
 
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    cash?: number;
+    coin?: number;
+  };
+
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to transfer cash to coin.');
+  }
+
   await createRiskAction({
-    playerUid,
-    playerUsername: playerData.username?.trim() || 'Player',
-    coadminUid: coadminUidForRequest,
+    playerUid: auth.currentUser?.uid || '',
+    playerUsername: auth.currentUser?.displayName || 'Player',
+    coadminUid: '',
     action: 'transfer_to_coin',
-    details: `Converted NPR ${transferAmount} cash to coin`,
+    details: `Converted NPR ${requestedAmountNpr ?? 0} cash to coin`,
   });
 
   return {
     message: 'Cash transferred to coin.',
+    cash: payload.cash ?? 0,
+    coin: payload.coin ?? 0,
   };
 }
 

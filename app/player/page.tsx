@@ -2353,7 +2353,7 @@ export default function PlayerPage() {
     setMessage('');
 
     try {
-      const result = await createCashToCoinTransferRequest(playerUid, parsedAmount);
+      const result = await createCashToCoinTransferRequest(parsedAmount);
       setMessage(result.message);
     } catch (error) {
       setMessage(
