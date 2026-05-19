@@ -52,7 +52,16 @@ Install the Python SDK if needed:
 python -m pip install firebase-admin
 ```
 
-Set required environment variables in PowerShell:
+The tool automatically loads local secrets from `C:\Shared\secrets\.adminsEnv` if the file exists:
+
+```text
+APPBEG_SERVICE_ACCOUNT_PATH=C:\Shared\secrets\appbeg.service-account.json
+APPBEG_ADMIN_MASTER_SECRET=choose-a-long-local-secret
+```
+
+Real shell environment variables still work and take precedence over values from `.adminsEnv`.
+
+Or set the required environment variables in PowerShell:
 
 ```powershell
 $env:APPBEG_SERVICE_ACCOUNT_PATH = "C:\secure\appbeg.service-account.json"

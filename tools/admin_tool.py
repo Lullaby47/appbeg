@@ -17,6 +17,11 @@ ACTIONS = (
     "demote_admin",
     "disable_user",
 )
+LOCAL_ENV_PATH = Path(r"C:\Shared\secrets\.adminsEnv")
+LOCAL_ENV_KEYS = {
+    "APPBEG_SERVICE_ACCOUNT_PATH",
+    "APPBEG_ADMIN_MASTER_SECRET",
+}
 
 
 def log(message: str) -> None:
@@ -26,6 +31,34 @@ def log(message: str) -> None:
 def fail(message: str) -> None:
     print(f"[admin-tool] ERROR: {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def load_local_env() -> None:
+    if not LOCAL_ENV_PATH.is_file():
+        return
+
+    loaded_keys: list[str] = []
+    try:
+        lines = LOCAL_ENV_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        fail(f"Could not read local env file {LOCAL_ENV_PATH}: {exc}")
+
+    for line_number, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        key, separator, value = line.partition("=")
+        key = key.strip()
+        if not separator or key not in LOCAL_ENV_KEYS:
+            fail(f"Invalid local env entry at {LOCAL_ENV_PATH}:{line_number}.")
+
+        if key not in os.environ:
+            os.environ[key] = value.strip().strip('"').strip("'")
+            loaded_keys.append(key)
+
+    if loaded_keys:
+        log(f"Loaded local env values from {LOCAL_ENV_PATH}: {', '.join(loaded_keys)}")
 
 
 def require_master_secret() -> None:
@@ -215,6 +248,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    load_local_env()
 
     # Admin bootstrap must be done by local Firebase Admin SDK tool, not browser.
     require_master_secret()
