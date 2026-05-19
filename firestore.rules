@@ -84,11 +84,24 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if signedIn() && (request.auth.uid == uid || isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)));
 
-      // Users may maintain only harmless own-profile fields. Balance, role,
-      // scope, and identity fields must move through trusted server/admin paths.
+      // Users may maintain only explicitly harmless own-profile fields.
+      // Balance, role, scope, identity, and app-control fields must move
+      // through trusted server/admin paths.
       allow update: if signedIn()
         && request.auth.uid == uid
-        && !protectedUserFieldsChanged();
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'displayName',
+          'name',
+          'usernameDisplay',
+          'photoURL',
+          'avatarUrl',
+          'phone',
+          'notificationPreferences',
+          'updatedAt',
+          'lastSeenAt',
+          'theme',
+          'preferences'
+        ]);
 
       // Existing admin/coadmin screens still perform some scoped profile updates
       // directly. Keep those functional, but never allow direct role changes.
