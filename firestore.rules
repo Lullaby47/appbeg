@@ -40,6 +40,10 @@ service cloud.firestore {
       return role() == 'player';
     }
 
+    function isScopedWorker() {
+      return isCoadmin() || isStaff() || isCarer();
+    }
+
     function callerCoadminUid() {
       let data = userDoc(request.auth.uid).data;
       return isCoadmin() ? request.auth.uid : (data.coadminUid != null ? data.coadminUid : data.createdBy);
@@ -78,7 +82,7 @@ service cloud.firestore {
     }
 
     match /users/{uid} {
-      allow read: if signedIn() && (request.auth.uid == uid || isAdmin() || scopedToCaller(resource.data));
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)));
 
       // Users may maintain only harmless own-profile fields. Balance, role,
       // scope, and identity fields must move through trusted server/admin paths.
@@ -99,7 +103,7 @@ service cloud.firestore {
       allow read: if signedIn() && (
         isAdmin() ||
         resource.data.playerUid == request.auth.uid ||
-        scopedToCaller(resource.data)
+        (isScopedWorker() && scopedToCaller(resource.data))
       );
       allow create: if signedIn()
         && isPlayer()
@@ -108,7 +112,7 @@ service cloud.firestore {
         && !maintenanceEnabledFor(request.resource.data.coadminUid);
       allow update: if signedIn() && (
         isAdmin() ||
-        scopedToCaller(resource.data) ||
+        (isScopedWorker() && scopedToCaller(resource.data)) ||
         (
           isPlayer() &&
           resource.data.playerUid == request.auth.uid &&
@@ -121,18 +125,18 @@ service cloud.firestore {
           ])
         )
       );
-      allow delete: if isAdmin() || scopedToCaller(resource.data);
+      allow delete: if isAdmin() || (isScopedWorker() && scopedToCaller(resource.data));
     }
 
     match /carerTasks/{taskId} {
-      allow read: if signedIn() && (isAdmin() || scopedToCaller(resource.data));
-      allow create: if signedIn() && (isAdmin() || scopedToCaller(request.resource.data));
+      allow read: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)));
+      allow create: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(request.resource.data)));
       allow update: if signedIn() && (
         isAdmin() ||
         isCoadmin() ||
         (
           (isCarer() || isStaff()) &&
-          scopedToCaller(resource.data) &&
+            scopedToCaller(resource.data) &&
           (
             resource.data.assignedCarerUid == request.auth.uid ||
             resource.data.assignedHandlerUid == request.auth.uid ||
@@ -147,18 +151,18 @@ service cloud.firestore {
       allow read: if signedIn() && (
         isAdmin() ||
         resource.data.playerUid == request.auth.uid ||
-        scopedToCaller(resource.data)
+        (isScopedWorker() && scopedToCaller(resource.data))
       );
       allow create: if signedIn()
         && isPlayer()
         && request.resource.data.playerUid == request.auth.uid
         && !maintenanceEnabledFor(request.resource.data.coadminUid);
-      allow update: if signedIn() && (isAdmin() || scopedToCaller(resource.data));
+      allow update: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)));
       allow delete: if isAdmin() || (isCoadmin() && scopedToCaller(resource.data));
     }
 
     match /financialEvents/{eventId} {
-      allow read: if signedIn() && (isAdmin() || scopedToCaller(resource.data) || resource.data.playerUid == request.auth.uid);
+      allow read: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)) || resource.data.playerUid == request.auth.uid);
       // TODO: move all financial event creation to server routes. Until then,
       // allow scoped workers/admins to keep current transaction-based workflows.
       allow create: if signedIn() && (isAdmin() || isCoadmin() || isStaff() || isCarer());
@@ -166,43 +170,43 @@ service cloud.firestore {
     }
 
     match /gameLogins/{docId} {
-      allow read, update, delete: if signedIn() && (isAdmin() || scopedToCaller(resource.data));
-      allow create: if signedIn() && (isAdmin() || scopedToCaller(request.resource.data));
+      allow read, update, delete: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)));
+      allow create: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(request.resource.data)));
     }
 
     match /playerGameLogins/{docId} {
       allow read: if signedIn() && (
         isAdmin() ||
         resource.data.playerUid == request.auth.uid ||
-        scopedToCaller(resource.data)
+        (isScopedWorker() && scopedToCaller(resource.data))
       );
       allow create, update: if signedIn() && (
         isAdmin() ||
         request.resource.data.playerUid == request.auth.uid ||
-        scopedToCaller(request.resource.data) ||
-        scopedToCaller(resource.data)
+        (isScopedWorker() && scopedToCaller(request.resource.data)) ||
+        (isScopedWorker() && scopedToCaller(resource.data))
       );
-      allow delete: if isAdmin() || scopedToCaller(resource.data);
+      allow delete: if isAdmin() || (isScopedWorker() && scopedToCaller(resource.data));
     }
 
     match /bonusEvents/{docId} {
-      allow read: if signedIn() && (isAdmin() || isPlayer() || scopedToCaller(resource.data));
-      allow create: if signedIn() && (isAdmin() || scopedToCaller(request.resource.data));
-      allow update, delete: if signedIn() && (isAdmin() || scopedToCaller(resource.data));
+      allow read: if signedIn() && (isAdmin() || isPlayer() || (isScopedWorker() && scopedToCaller(resource.data)));
+      allow create: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(request.resource.data)));
+      allow update, delete: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)));
     }
 
     match /carerCashouts/{docId} {
       allow read: if signedIn() && (
         isAdmin() ||
         resource.data.carerUid == request.auth.uid ||
-        scopedToCaller(resource.data)
+        (isScopedWorker() && scopedToCaller(resource.data))
       );
       allow create: if signedIn() && (
         isAdmin() ||
         request.resource.data.carerUid == request.auth.uid ||
-        scopedToCaller(request.resource.data)
+        (isScopedWorker() && scopedToCaller(request.resource.data))
       );
-      allow update: if signedIn() && (isAdmin() || scopedToCaller(resource.data));
+      allow update: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)));
       allow delete: if false;
     }
 
@@ -210,20 +214,20 @@ service cloud.firestore {
       allow read: if signedIn() && (
         isAdmin() ||
         resource.data.playerUid == request.auth.uid ||
-        scopedToCaller(resource.data)
+        (isScopedWorker() && scopedToCaller(resource.data))
       );
       allow create: if signedIn() && isPlayer() && request.resource.data.playerUid == request.auth.uid;
-      allow update: if signedIn() && (isAdmin() || scopedToCaller(resource.data));
+      allow update: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)));
       allow delete: if false;
     }
 
     match /shiftSessions/{docId} {
-      allow read: if signedIn() && (isAdmin() || scopedToCaller(resource.data) || resource.data.userUid == request.auth.uid);
+      allow read: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)) || resource.data.userUid == request.auth.uid);
       allow create: if signedIn() && request.resource.data.userUid == request.auth.uid;
       allow update: if signedIn() && (
         isAdmin() ||
         resource.data.userUid == request.auth.uid ||
-        scopedToCaller(resource.data)
+        (isScopedWorker() && scopedToCaller(resource.data))
       );
       allow delete: if false;
     }
@@ -232,7 +236,7 @@ service cloud.firestore {
       allow read: if signedIn() && (
         isAdmin() ||
         resource.data.playerUid == request.auth.uid ||
-        scopedToCaller(resource.data)
+        (isScopedWorker() && scopedToCaller(resource.data))
       );
       allow create, update: if signedIn() && (
         isAdmin() ||
@@ -240,8 +244,8 @@ service cloud.firestore {
           request.resource.data.playerUid == request.auth.uid &&
           (!isPlayer() || !maintenanceEnabledFor(request.resource.data.coadminUid))
         ) ||
-        scopedToCaller(request.resource.data) ||
-        scopedToCaller(resource.data)
+        (isScopedWorker() && scopedToCaller(request.resource.data)) ||
+        (isScopedWorker() && scopedToCaller(resource.data))
       );
       allow delete: if false;
     }
@@ -281,7 +285,7 @@ service cloud.firestore {
     match /riskActions/{docId} {
       allow read: if signedIn() && (
         isAdmin() ||
-        scopedToCaller(resource.data) ||
+        (isScopedWorker() && scopedToCaller(resource.data)) ||
         resource.data.playerUid == request.auth.uid
       );
       allow create: if signedIn() && (
@@ -294,7 +298,7 @@ service cloud.firestore {
     match /playerRiskSnapshots/{playerUid} {
       allow read: if signedIn() && (
         isAdmin() ||
-        scopedToCaller(resource.data) ||
+        (isScopedWorker() && scopedToCaller(resource.data)) ||
         playerUid == request.auth.uid
       );
       allow create: if signedIn() && (
@@ -314,12 +318,12 @@ service cloud.firestore {
     match /carerEscalationAlerts/{alertId} {
       allow read: if signedIn() && (
         isAdmin() ||
-        scopedToCaller(resource.data) ||
+        (isScopedWorker() && scopedToCaller(resource.data)) ||
         resource.data.playerUid == request.auth.uid
       );
       allow create: if signedIn() && (
         isAdmin() ||
-        scopedToCaller(request.resource.data) ||
+        (isScopedWorker() && scopedToCaller(request.resource.data)) ||
         request.resource.data.playerUid == request.auth.uid
       );
       allow update: if signedIn() && (
@@ -348,7 +352,7 @@ service cloud.firestore {
     match /playerGameRedeemLimitResets/{docId} {
       allow read: if signedIn() && (
         isAdmin() ||
-        scopedToCaller(resource.data) ||
+        (isScopedWorker() && scopedToCaller(resource.data)) ||
         resource.data.playerUid == request.auth.uid
       );
       allow create: if signedIn() && (
@@ -423,13 +427,13 @@ service cloud.firestore {
       allow read: if signedIn() && (
         isAdmin() ||
         resource.data.carerUid == request.auth.uid ||
-        scopedToCaller(resource.data)
+        (isScopedWorker() && scopedToCaller(resource.data))
       );
       allow create, update: if signedIn() && (
         isAdmin() ||
         request.resource.data.carerUid == request.auth.uid ||
         resource.data.carerUid == request.auth.uid ||
-        scopedToCaller(request.resource.data)
+        (isScopedWorker() && scopedToCaller(request.resource.data))
       );
       allow delete: if false;
     }
