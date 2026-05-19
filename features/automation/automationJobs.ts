@@ -161,10 +161,42 @@ function buildTaskClaimReleaseFields(
     automationError,
     error: null,
     failureReason: null,
+    lastFailureReason: null,
     retryPending: status === 'pending',
     resetToPendingAt: status === 'pending' ? serverTimestamp() : null,
+    returnedToPendingAt: status === 'pending' ? serverTimestamp() : null,
     pendingSince: status === 'pending' ? serverTimestamp() : null,
     automationUpdatedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+}
+
+function buildLinkedRequestPendingResetFields() {
+  return {
+    status: 'pending',
+    automationStatus: null,
+    automationJobId: null,
+    linkedJobId: null,
+    completedAt: null,
+    dismissedAt: null,
+    failedAt: null,
+    ttlExpiresAt: null,
+    pokedAt: null,
+    pokeMessage: null,
+    fakeRedeem: null,
+    fakeRedeemReason: null,
+    dismissType: null,
+    dismissedByAutomation: null,
+    dismissReasonCode: null,
+    dismissReasonMessage: null,
+    dismissMeta: null,
+    automationError: null,
+    resetToPendingAt: serverTimestamp(),
+    returnedToPendingAt: serverTimestamp(),
+    error: null,
+    failureReason: null,
+    lastFailureReason: null,
+    retryPending: true,
     updatedAt: serverTimestamp(),
   };
 }
@@ -639,6 +671,7 @@ export async function claimTaskAndCreateJob(input: {
         lobbyUrl: resolvedAccess.lobbyUrl,
         retryPending: false,
         resetToPendingAt: null,
+        returnedToPendingAt: null,
         pendingSince: null,
       } as Record<string, unknown>;
       const mappedType = mapTaskType(resolveTaskTypeLabel(claimedTaskData));
@@ -720,6 +753,7 @@ export async function claimTaskAndCreateJob(input: {
           automationError: null,
           retryPending: false,
           resetToPendingAt: null,
+          returnedToPendingAt: null,
           pendingSince: null,
           automationUpdatedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
@@ -785,6 +819,7 @@ export async function claimTaskAndCreateJob(input: {
         automationError: null,
         retryPending: false,
         resetToPendingAt: null,
+        returnedToPendingAt: null,
         pendingSince: null,
         automationUpdatedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -933,17 +968,35 @@ export async function claimTaskAndCreateJob(input: {
           : '';
 
       if (latestStatus === 'in_progress' && latestAssignedCarerUid === currentUser.uid) {
-        console.info('[TASK_START] reusing existing job=%s taskId=%s reason=concurrency_retry_latest_state existingStatus=%s',
-          latestLinkedJobId || automationJobDocId(currentUser.uid, input.taskId),
-          input.taskId,
-          latestJobStatus || 'queued'
-        );
-        result = {
-          jobId: latestLinkedJobId || automationJobDocId(currentUser.uid, input.taskId),
-          taskId: input.taskId,
-          status: latestJobStatus || 'queued',
-          reusedExistingJob: true,
-        };
+        if (
+          !latestLinkedJobId ||
+          !latestJobSnap?.exists() ||
+          !isActiveAutomationJobStatus(latestJobStatus)
+        ) {
+          console.warn('[TASK_START] fallback refused missing automation job', {
+            taskId: input.taskId,
+            status: latestStatus,
+            assignedCarerUid: latestAssignedCarerUid,
+            automationJobId: latestLinkedJobId || null,
+            jobExists: Boolean(latestJobSnap?.exists()),
+            jobStatus: latestJobStatus || null,
+          });
+          lastError = new Error(
+            'Task is in progress but no runnable automation job exists. Move it back to Pending and start again.'
+          );
+        } else {
+          console.info('[TASK_START] reusing existing job=%s taskId=%s reason=concurrency_retry_latest_state existingStatus=%s',
+            latestLinkedJobId,
+            input.taskId,
+            latestJobStatus || 'missing'
+          );
+          result = {
+            jobId: latestLinkedJobId,
+            taskId: input.taskId,
+            status: latestJobStatus || 'queued',
+            reusedExistingJob: true,
+          };
+        }
       }
     }
   }
@@ -1190,6 +1243,7 @@ export async function startAutomationForTask(input: {
       automationError: null,
       retryPending: false,
       resetToPendingAt: null,
+      returnedToPendingAt: null,
       pendingSince: null,
       automationUpdatedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -1277,10 +1331,11 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
     if (!taskSnap.exists()) {
       throw new Error('Task not found.');
     }
-    const taskData = taskSnap.data() as Record<string, unknown>;
-    const linkedJobId = String(taskData.automationJobId || '').trim();
-    const oldTaskStatus = String(taskData.status || '').trim().toLowerCase() || null;
-    const jobRefs = Array.from(
+      const taskData = taskSnap.data() as Record<string, unknown>;
+      const linkedJobId = String(taskData.automationJobId || '').trim();
+      const requestId = String(taskData.requestId || '').trim();
+      const oldTaskStatus = String(taskData.status || '').trim().toLowerCase() || null;
+      const jobRefs = Array.from(
       new Map(
         [
           deterministicJobRef,
@@ -1304,6 +1359,11 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
       jobStates.find((job) => job.ref.id === linkedJobId) ||
       jobStates.find((job) => job.ref.id === deterministicJobRef.id) ||
       null;
+    const requestRef = requestId ? doc(db, 'playerGameRequests', requestId) : null;
+    const requestSnap = requestRef ? await getDocFromServer(requestRef) : null;
+    const requestData = requestSnap?.exists()
+      ? (requestSnap.data() as Record<string, unknown>)
+      : null;
 
     console.info('[carer] back-to-pending clicked', {
       taskId,
@@ -1328,6 +1388,9 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
       oldTaskStatus,
       oldAutomationJobId: linkedJobId || null,
       oldJobStatus: linkedJobState?.status || null,
+      linkedRequestId: requestId || null,
+      linkedRequestStatus: String(requestData?.status || '').trim() || null,
+      linkedRequestAutomationStatus: String(requestData?.automationStatus || '').trim() || null,
       retryCount: attempt - 1,
       jobStates: jobStates.map((job) => ({
         jobId: job.ref.id,
@@ -1398,6 +1461,37 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
       ...buildTaskClaimReleaseFields(null, 'pending', null),
       queuedAt: null,
     });
+    console.info('[RETRY_RESET] task returned to pending after automation failure', {
+      taskId,
+      source: 'back_to_pending',
+      oldStatus: oldTaskStatus,
+      oldAutomationJobId: linkedJobId || null,
+    });
+    console.info('[RETRY_RESET] retryable failure forced task pending', {
+      taskId,
+      source: 'back_to_pending',
+    });
+    if (requestRef && requestSnap?.exists()) {
+      batch.update(requestRef, buildLinkedRequestPendingResetFields());
+      console.info('[RETRY_RESET] linked request returned to pending', {
+        taskId,
+        requestId,
+        source: 'back_to_pending',
+      });
+      console.info('[RETRY_RESET] retryable failure forced request pending', {
+        taskId,
+        requestId,
+        source: 'back_to_pending',
+      });
+      console.info('[carer] linked request reset to pending', {
+        taskId,
+        requestId,
+        oldStatus: String(requestData?.status || '').trim() || null,
+        oldAutomationStatus: String(requestData?.automationStatus || '').trim() || null,
+        oldAutomationJobId: String(requestData?.automationJobId || '').trim() || null,
+        oldLinkedJobId: String(requestData?.linkedJobId || '').trim() || null,
+      });
+    }
     await batch.commit();
     logTaskResetPending({
       taskId,

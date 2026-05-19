@@ -43,6 +43,7 @@ import {
   CarerTask,
   completeRechargeRedeemTask,
   completeUsernameTaskForPlayerGame,
+  deletePendingCarerTask,
   isRealCompletedCarerTask,
   getCurrentUserCoadminUid,
   listenCarerRechargeRedeemTotalsByCoadmin,
@@ -111,6 +112,7 @@ type DashboardCard = {
 
 type TaskSection = 'pending' | 'mine' | 'completed';
 
+const DEBUG_TAB_FILTER_LOGS = false;
 const CREATE_USERNAME_UI_GRACE_MS = 5 * 60 * 1000;
 const TASK_CLAIM_STALE_TIMEOUT_MS = 5 * 60 * 1000;
 function getTimestampMs(value: unknown) {
@@ -240,6 +242,9 @@ function isActiveAutomationUiStatus(status: string | null | undefined) {
 }
 
 function logTaskTabFilter(task: CarerTask, includedIn: TaskSection | null, excludedReason: string | null) {
+  if (!DEBUG_TAB_FILTER_LOGS) {
+    return;
+  }
   console.info(
     '[TAB_FILTER] taskId=%s status=%s automationStatus=%s linkedJobId=%s automationJobId=%s assignedCarer=%s assignedCarerUid=%s includedIn=%s reason=%s',
     task.id,
@@ -431,6 +436,7 @@ export default function CarerPage() {
   const [dismissRechargeRequestId, setDismissRechargeRequestId] = useState<
     string | null
   >(null);
+  const [deletingPendingTaskId, setDeletingPendingTaskId] = useState<string | null>(null);
   const [showRevTotals, setShowRevTotals] = useState(false);
   const [carerRechargeRedeemTotals, setCarerRechargeRedeemTotals] = useState<
     Record<string, CarerRechargeRedeemTotals>
@@ -1948,6 +1954,70 @@ export default function CarerPage() {
     }
   }
 
+  async function handleDeletePendingTask(task: CarerTask) {
+    if (String(task.status || '').trim().toLowerCase() !== 'pending') {
+      setErrorMessage('Only pending tasks can be deleted.');
+      return;
+    }
+
+    const ok = window.confirm(
+      'Delete this pending task? It will be removed from the pending queue.'
+    );
+
+    if (!ok) {
+      return;
+    }
+
+    const requestId = task.requestId?.trim() || null;
+    setDeletingPendingTaskId(task.id);
+    setErrorMessage('');
+    setNoticeMessage('');
+
+    try {
+      if (task.type === 'redeem' && requestId) {
+        setDismissRedeemRequestId(requestId);
+        await dismissPendingRedeemAsCarer(requestId);
+      } else if (task.type === 'recharge' && requestId) {
+        setDismissRechargeRequestId(requestId);
+        await dismissPendingRechargeAsCarer(requestId);
+      } else {
+        await deletePendingCarerTask(task.id);
+      }
+
+      setAutomationStatusByTaskId((previous) => {
+        if (!previous[task.id]) return previous;
+        const next = { ...previous };
+        delete next[task.id];
+        return next;
+      });
+      setLocalAutomationProcessingByTaskId((previous) => {
+        if (!previous[task.id]) return previous;
+        const next = { ...previous };
+        delete next[task.id];
+        return next;
+      });
+      setPendingAutomationResetTaskIds((previous) => {
+        if (!previous[task.id]) return previous;
+        const next = { ...previous };
+        delete next[task.id];
+        return next;
+      });
+      setPendingTaskPayloadPreview((current) => (current?.id === task.id ? null : current));
+      await refreshPageData(false);
+      setNoticeMessage('Pending task deleted.');
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Failed to delete pending task.'
+      );
+    } finally {
+      setDeletingPendingTaskId(null);
+      if (requestId) {
+        setDismissRedeemRequestId((current) => (current === requestId ? null : current));
+        setDismissRechargeRequestId((current) => (current === requestId ? null : current));
+      }
+    }
+  }
+
   async function handleCompleteRechargeRedeem(task: CarerTask) {
     setTaskLoadingId(task.id);
     setErrorMessage('');
@@ -2978,6 +3048,11 @@ export default function CarerPage() {
     });
     const canStartTask =
       automationLoadingTaskId !== task.id && startTaskDisabledReason !== 'queueing';
+    const isDeletingPendingTask =
+      deletingPendingTaskId === task.id ||
+      (Boolean(task.requestId) &&
+        (dismissRedeemRequestId === task.requestId ||
+          dismissRechargeRequestId === task.requestId));
 
     return (
       <div
@@ -3086,6 +3161,17 @@ export default function CarerPage() {
                   {taskLoadingId === task.id ? 'Resetting...' : 'Reset Automation'}
                 </button>
               )}
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void handleDeletePendingTask(task);
+                }}
+                disabled={isDeletingPendingTask || taskLoadingId === task.id}
+                className="rounded-xl border border-red-500/40 bg-red-500/15 px-4 py-2 text-sm font-bold text-red-100 hover:bg-red-500/25 disabled:opacity-60"
+              >
+                {isDeletingPendingTask ? 'Deleting...' : 'Delete'}
+              </button>
             </div>
           )}
 

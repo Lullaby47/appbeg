@@ -88,6 +88,9 @@ export type CarerTask = {
   automationJobId?: string | null;
   automationUpdatedAt?: Timestamp | null;
   automationError?: string | null;
+  resetToPendingAt?: Timestamp | null;
+  returnedToPendingAt?: Timestamp | null;
+  pendingSince?: Timestamp | null;
   currentUsername?: string | null;
   gameAccountUsername?: string | null;
   loginUrl?: string | null;
@@ -129,6 +132,7 @@ function buildPendingTaskResetFields(): Record<string, unknown> {
     failureReason: null,
     retryPending: true,
     resetToPendingAt: serverTimestamp(),
+    returnedToPendingAt: serverTimestamp(),
     pendingSince: serverTimestamp(),
     lastHeartbeatAt: null,
     queuedAt: null,
@@ -229,6 +233,7 @@ const CARER_TASK_LIVE_LISTENER_LIMIT = 150;
 const CARER_TASK_COMPLETED_LISTENER_LIMIT = 50;
 const CARER_TOTALS_HISTORY_LIMIT_PER_TYPE = 500;
 const CARER_TOTALS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const RESET_TO_PENDING_SYNC_GUARD_MS = 5 * 60 * 1000;
 
 export type CarerRewardSummary = {
   completedTaskCount: number;
@@ -388,6 +393,49 @@ function getTaskStatusFromRequestStatus(
   }
   // Includes pending plus legacy poked from the removed poke flow.
   return 'pending';
+}
+
+function hasRetryablePendingRequestMarker(request: PlayerGameRequest) {
+  const status = String(request.status || '').trim().toLowerCase();
+  if (status !== 'pending_review' && status !== 'failed') {
+    return false;
+  }
+
+  const resetFields = request as PlayerGameRequest & {
+    resetToPendingAt?: unknown;
+    returnedToPendingAt?: unknown;
+    pendingSince?: unknown;
+    retryPending?: unknown;
+    retryableFailure?: unknown;
+  };
+  const resetMs = Math.max(
+    getTimestampMs(resetFields.returnedToPendingAt),
+    getTimestampMs(resetFields.resetToPendingAt),
+    getTimestampMs(resetFields.pendingSince)
+  );
+
+  return Boolean(resetMs || resetFields.retryPending || resetFields.retryableFailure);
+}
+
+function getTaskStatusFromRequest(request: PlayerGameRequest): CarerTaskStatus {
+  if (hasRetryablePendingRequestMarker(request)) {
+    return 'pending';
+  }
+  return getTaskStatusFromRequestStatus(request.status);
+}
+
+function isRecentlyResetPendingTask(task: CarerTask | undefined) {
+  if (!task || String(task.status || '').trim().toLowerCase() !== 'pending') {
+    return false;
+  }
+
+  const resetMs = Math.max(
+    getTimestampMs(task.returnedToPendingAt),
+    getTimestampMs(task.resetToPendingAt),
+    getTimestampMs(task.pendingSince)
+  );
+
+  return Boolean(resetMs) && Date.now() - resetMs < RESET_TO_PENDING_SYNC_GUARD_MS;
 }
 
 function buildCompletedTaskUpdate(values: {
@@ -613,7 +661,7 @@ function buildRequestTask(
   currentUsername?: string | null,
   game?: GameLogin | null
 ): CarerTask {
-  const nextStatus = getTaskStatusFromRequestStatus(request.status);
+  const nextStatus = getTaskStatusFromRequest(request);
   const normalizedCurrentUsername = String(currentUsername || '').trim() || null;
   const access = resolveTaskGameAccess(game);
 
@@ -667,12 +715,17 @@ export function computeRequestLinkedCarerTaskWrite(
   const existingEffectiveStatus = existingTask
     ? getEffectiveCarerTaskStatus(existingTask)
     : null;
+  const shouldKeepRecentPendingReset =
+    isRecentlyResetPendingTask(existingTask) && desiredStatus !== 'pending';
   const shouldPreserveExistingStatus =
-    desiredStatus === 'pending' &&
-    (existingEffectiveStatus === 'in_progress' ||
-      existingEffectiveStatus === 'completed' ||
-      existingEffectiveStatus === 'failed');
-  const nextStatus = shouldPreserveExistingStatus
+    shouldKeepRecentPendingReset ||
+    (desiredStatus === 'pending' &&
+      (existingEffectiveStatus === 'in_progress' ||
+        existingEffectiveStatus === 'completed' ||
+        existingEffectiveStatus === 'failed'));
+  const nextStatus = shouldKeepRecentPendingReset
+    ? 'pending'
+    : shouldPreserveExistingStatus
     ? existingEffectiveStatus
     : desiredStatus;
 
@@ -1080,6 +1133,28 @@ export async function syncCarerTasks({
     const taskId = requestTaskId(request.id);
     const taskRef = doc(db, 'carerTasks', taskId);
     const existingTask = existingTasks.get(taskId);
+    const desiredStatus = getTaskStatusFromRequest(request);
+    if (
+      desiredStatus === 'pending' &&
+      (request.status === 'pending_review' || request.status === 'failed') &&
+      hasRetryablePendingRequestMarker(request)
+    ) {
+      console.info('[RETRY_RESET] retryable failure forced task pending', {
+        taskId,
+        requestId: request.id,
+        requestStatus: request.status,
+      });
+    }
+    if (isRecentlyResetPendingTask(existingTask) && desiredStatus !== 'pending') {
+      console.info('[carerTasks] skip terminal request overwrite after pending reset', {
+        taskId,
+        requestId: request.id,
+        requestStatus: request.status,
+        resetToPendingAt: existingTask?.resetToPendingAt || null,
+        returnedToPendingAt: existingTask?.returnedToPendingAt || null,
+      });
+      continue;
+    }
     const playerUsername = playerNameMap.get(request.playerUid) || 'Player';
     const loginUsername =
       loginUsernameByPlayerGame.get(
@@ -1814,7 +1889,72 @@ export async function startCarerTask(taskId: string) {
           : task.completedByCarerUsername || null,
       retryPending: false,
       resetToPendingAt: null,
+      returnedToPendingAt: null,
       pendingSince: null,
+    });
+  });
+  await forceRefreshTaskFromServer(taskId, taskRef);
+}
+
+export async function deletePendingCarerTask(taskId: string) {
+  const { uid: carerUid, username: carerUsername } = await getCurrentCarerIdentity();
+  const carerCoadminUid = await getCurrentUserCoadminUid();
+  const taskRef = doc(db, 'carerTasks', taskId);
+
+  await runTransaction(db, async (transaction) => {
+    const taskSnap = await transaction.get(taskRef);
+
+    if (!taskSnap.exists()) {
+      throw new Error('Task not found.');
+    }
+
+    const task = taskSnap.data() as Omit<CarerTask, 'id'>;
+    const effectiveStatus = getEffectiveCarerTaskStatus({
+      id: taskId,
+      ...task,
+    });
+
+    if (task.coadminUid !== carerCoadminUid) {
+      throw new Error('This task is outside your coadmin scope.');
+    }
+
+    if (effectiveStatus !== 'pending') {
+      throw new Error('Only pending tasks can be deleted.');
+    }
+
+    if (String(task.requestId || '').trim()) {
+      throw new Error('Request tasks must be dismissed through their linked request.');
+    }
+
+    transaction.update(taskRef, {
+      status: 'failed',
+      assignedCarerUid: null,
+      assignedCarer: null,
+      assignedCarerUsername: null,
+      claimedStatus: null,
+      claimedAt: null,
+      claimedByUid: null,
+      claimedByUsername: null,
+      startedAt: null,
+      runningAt: null,
+      expiresAt: null,
+      completedAt: serverTimestamp(),
+      ttlExpiresAt: completedCarerTaskTtl(),
+      completedByCarerUid: null,
+      completedByCarerUsername: null,
+      automationStatus: null,
+      automationJobId: null,
+      linkedJobId: null,
+      currentJobId: null,
+      activeJobId: null,
+      assignedJobStatus: null,
+      automationError: null,
+      error: null,
+      failureReason: 'deleted_by_carer',
+      deletedFromPendingAt: serverTimestamp(),
+      deletedFromPendingByCarerUid: carerUid,
+      deletedFromPendingByCarerUsername: carerUsername,
+      updatedAt: serverTimestamp(),
     });
   });
   await forceRefreshTaskFromServer(taskId, taskRef);

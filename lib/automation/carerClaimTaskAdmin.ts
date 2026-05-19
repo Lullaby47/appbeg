@@ -624,6 +624,7 @@ export async function claimCarerTaskAsAdmin(input: {
         lobbyUrl: resolvedAccess.lobbyUrl,
         retryPending: false,
         resetToPendingAt: null,
+        returnedToPendingAt: null,
         pendingSince: null,
       } as Record<string, unknown>;
       const mappedType = mapTaskType(resolveTaskTypeLabel(claimedTaskData));
@@ -706,6 +707,7 @@ export async function claimCarerTaskAsAdmin(input: {
           automationError: null,
           retryPending: false,
           resetToPendingAt: null,
+          returnedToPendingAt: null,
           pendingSince: null,
           automationUpdatedAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
@@ -776,6 +778,7 @@ export async function claimCarerTaskAsAdmin(input: {
         automationError: null,
         retryPending: false,
         resetToPendingAt: null,
+        returnedToPendingAt: null,
         pendingSince: null,
         automationUpdatedAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
