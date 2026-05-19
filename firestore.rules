@@ -105,24 +105,27 @@ service cloud.firestore {
         resource.data.playerUid == request.auth.uid ||
         (isScopedWorker() && scopedToCaller(resource.data))
       );
-      allow create: if signedIn()
-        && isPlayer()
-        && request.resource.data.playerUid == request.auth.uid
-        && request.resource.data.status == 'pending'
-        && !maintenanceEnabledFor(request.resource.data.coadminUid);
+      allow create: if false;
       allow update: if signedIn() && (
         isAdmin() ||
         (isScopedWorker() && scopedToCaller(resource.data)) ||
         (
           isPlayer() &&
           resource.data.playerUid == request.auth.uid &&
+          request.resource.data.playerUid == request.auth.uid &&
+          resource.data.type == 'redeem' &&
+          request.resource.data.type == 'redeem' &&
+          resource.data.status == 'pending' &&
+          request.resource.data.status == 'dismissed' &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'status',
             'completedAt',
             'ttlExpiresAt',
             'pokedAt',
             'pokeMessage'
-          ])
+          ]) &&
+          request.resource.data.pokedAt == null &&
+          request.resource.data.pokeMessage == null
         )
       );
       allow delete: if isAdmin() || (isScopedWorker() && scopedToCaller(resource.data));
@@ -153,10 +156,7 @@ service cloud.firestore {
         resource.data.playerUid == request.auth.uid ||
         (isScopedWorker() && scopedToCaller(resource.data))
       );
-      allow create: if signedIn()
-        && isPlayer()
-        && request.resource.data.playerUid == request.auth.uid
-        && !maintenanceEnabledFor(request.resource.data.coadminUid);
+      allow create: if false;
       allow update: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)));
       allow delete: if isAdmin() || (isCoadmin() && scopedToCaller(resource.data));
     }
@@ -238,13 +238,25 @@ service cloud.firestore {
         resource.data.playerUid == request.auth.uid ||
         (isScopedWorker() && scopedToCaller(resource.data))
       );
-      allow create, update: if signedIn() && (
+      allow create: if signedIn() && (
         isAdmin() ||
         (
+          isPlayer() &&
           request.resource.data.playerUid == request.auth.uid &&
-          (!isPlayer() || !maintenanceEnabledFor(request.resource.data.coadminUid))
+          request.resource.data.keys().hasOnly([
+            'playerUid',
+            'coadminUid',
+            'hashCode',
+            'paymentPhotoUrl',
+            'createdAt',
+            'expiresAt'
+          ]) &&
+          !maintenanceEnabledFor(request.resource.data.coadminUid)
         ) ||
-        (isScopedWorker() && scopedToCaller(request.resource.data)) ||
+        (isScopedWorker() && scopedToCaller(request.resource.data))
+      );
+      allow update: if signedIn() && (
+        isAdmin() ||
         (isScopedWorker() && scopedToCaller(resource.data))
       );
       allow delete: if false;
