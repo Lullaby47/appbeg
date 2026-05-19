@@ -10,7 +10,6 @@ import {
   runTransaction,
   serverTimestamp,
   setDoc,
-  updateDoc,
   where,
   Timestamp,
 } from 'firebase/firestore';
@@ -719,20 +718,9 @@ export async function activateBonusEventForPlayer(values: {
   playerUid: string;
   bonusEvent: BonusEvent;
 }) {
-  const currentUser = auth.currentUser;
-
-  if (!currentUser || currentUser.uid !== values.playerUid) {
-    throw new Error('Not authenticated as current player.');
-  }
-
-  await updateDoc(doc(db, 'users', values.playerUid), {
-    activeBonusEventId: values.bonusEvent.id,
-    activeBonusStaffUid:
-      values.bonusEvent.createdByRole === 'staff' ? values.bonusEvent.createdByUid : null,
-    activeBonusEventName: values.bonusEvent.bonusName,
-    activeBonusGameName: values.bonusEvent.gameName,
-    activeBonusAmountNpr: values.bonusEvent.amountNpr,
-    activeBonusPercentage: values.bonusEvent.bonusPercentage,
+  await initiateBonusEventPlay({
+    playerUid: values.playerUid,
+    bonusEventId: values.bonusEvent.id,
   });
 }
 
