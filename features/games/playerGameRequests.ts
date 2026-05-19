@@ -1,5 +1,4 @@
 import {
-  addDoc,
   collection,
   doc,
   getDoc,
@@ -20,7 +19,6 @@ import {
   getCurrentUserCoadminUid,
   type CoadminScopedRecord,
 } from '@/lib/coadmin/scope';
-import { getPlayerGameLoginsByPlayer } from '@/features/games/playerGameLogins';
 import { completedPlayerGameRequestTtl } from '@/lib/firestore/ttl';
 
 export type PlayerGameRequestType = 'recharge' | 'redeem';
@@ -83,26 +81,6 @@ export const PLAYER_GAME_REDEEM_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 function normalizeGameName(gameName: string) {
   return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
-}
-
-async function resolveAssignedGameUsername(
-  playerUid: string,
-  gameName: string
-): Promise<string> {
-  const logins = await getPlayerGameLoginsByPlayer(playerUid);
-  const normalizedGame = normalizeGameName(gameName);
-  const matchingLogin = logins.find(
-    (login) =>
-      normalizeGameName(String(login.gameName || '')) === normalizedGame &&
-      String(login.gameUsername || '').trim().length > 0
-  );
-  const username = String(matchingLogin?.gameUsername || '').trim();
-  if (!username) {
-    throw new Error(
-      'Game username is not assigned for this game yet. Please create username first.'
-    );
-  }
-  return username;
 }
 
 function getRedeemLimitResetDocId(playerUid: string, gameName: string) {
@@ -183,6 +161,14 @@ async function getAuthHeaders() {
 }
 
 function readApiError(messageFallback: string, payload: unknown) {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    'message' in payload &&
+    typeof (payload as { message?: unknown }).message === 'string'
+  ) {
+    return String((payload as { message: string }).message || messageFallback);
+  }
   if (
     payload &&
     typeof payload === 'object' &&
@@ -493,38 +479,27 @@ export async function createPlayerGameRequest(values: {
     );
   }
 
-  const [assignedGameUsername, coadminUid] = await Promise.all([
-    resolveAssignedGameUsername(currentUser.uid, cleanGameName),
-    getCurrentUserCoadminUid(),
-  ]);
-
-  const redeemRef = await addDoc(collection(db, 'playerGameRequests'), {
-    // Redeem keeps client write because protected money fields are not changed here.
-    playerUid: currentUser.uid,
-    gameName: cleanGameName,
-    currentUsername: assignedGameUsername,
-    gameAccountUsername: assignedGameUsername,
-    amount: requestAmount,
-    baseAmount:
-      values.baseAmount !== undefined && values.baseAmount !== null
-        ? Number(values.baseAmount)
-        : null,
-    bonusPercentage:
-      values.bonusPercentage !== undefined && values.bonusPercentage !== null
-        ? Number(values.bonusPercentage)
-        : null,
-    bonusEventId: values.bonusEventId?.trim() || null,
-    type: values.type,
-    status: 'pending',
-    createdBy: coadminUid,
-    coadminUid,
-    createdAt: serverTimestamp(),
-    completedAt: null,
-    pokedAt: null,
-    pokeMessage: null,
+  const response = await fetch('/api/player/game-requests/redeem', {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      gameName: cleanGameName,
+      amount: requestAmount,
+      baseAmount: values.baseAmount,
+      bonusPercentage: values.bonusPercentage,
+      bonusEventId: values.bonusEventId,
+    }),
   });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string; requestId?: string };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to create redeem request.', payload));
+  }
 
-  const redeemSnap = await getDoc(redeemRef);
+  const createdRequestId = String(payload.requestId || '').trim();
+  if (!createdRequestId) {
+    throw new Error('Redeem request was created but request ID was missing.');
+  }
+  const redeemSnap = await getDoc(doc(db, 'playerGameRequests', createdRequestId));
   if (redeemSnap.exists()) {
     await upsertLinkedCarerTaskForRequest(
       mapRequestDoc(redeemSnap.id, redeemSnap.data() as Omit<PlayerGameRequest, 'id'>)

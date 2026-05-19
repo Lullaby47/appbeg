@@ -547,13 +547,18 @@ export async function createCashToCoinTransferRequest(requestedAmountNpr?: numbe
   });
 
   const payload = (await response.json().catch(() => ({}))) as {
-    error?: string;
+    error?: string | boolean;
+    message?: string;
     cash?: number;
     coin?: number;
   };
 
   if (!response.ok) {
-    throw new Error(payload.error || 'Failed to transfer cash to coin.');
+    throw new Error(
+      payload.message ||
+        (typeof payload.error === 'string' ? payload.error : '') ||
+        'Failed to transfer cash to coin.'
+    );
   }
 
   await createRiskAction({

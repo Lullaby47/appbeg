@@ -15,7 +15,7 @@ import {
   where,
 } from 'firebase/firestore';
 import imageCompression from 'browser-image-compression';
-import { signInWithCustomToken } from 'firebase/auth';
+import { onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
 import LogoutButton from '../../components/auth/LogoutButton';
@@ -133,6 +133,11 @@ import {
   type ShiftSession,
 } from '@/features/shifts/userShifts';
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
+import {
+  listenCoadminMaintenanceBreak,
+  setCoadminMaintenanceBreak,
+} from '@/features/maintenance/maintenanceBreak';
+import { normalizeMaintenanceBreak, type MaintenanceBreak } from '@/lib/maintenance/config';
 
 type CoadminView =
   | 'dashboard'
@@ -402,6 +407,10 @@ export default function CoadminPage() {
   const [autoBonusMinPercentInput, setAutoBonusMinPercentInput] = useState('5');
   const [autoBonusMaxPercentInput, setAutoBonusMaxPercentInput] = useState('10');
   const [autoBonusRangeBusy, setAutoBonusRangeBusy] = useState(false);
+  const [maintenanceBreak, setMaintenanceBreak] = useState<MaintenanceBreak>(
+    normalizeMaintenanceBreak(null)
+  );
+  const [maintenanceBusy, setMaintenanceBusy] = useState(false);
 
   const [chatUsers, setChatUsers] = useState<AdminUser[]>([]);
   const [reachOutChatUser, setReachOutChatUser] = useState<AdminUser | null>(null);
@@ -599,6 +608,26 @@ export default function CoadminPage() {
     setMessage((current) => (isQuotaExceededMessage(current) ? '' : current));
   }
 
+  async function handleMaintenanceBreakToggle(enabled: boolean) {
+    setMaintenanceBusy(true);
+    setMessage('');
+
+    try {
+      await setCoadminMaintenanceBreak(enabled);
+      console.info(
+        enabled ? '[MAINTENANCE] enabled by coadmin' : '[MAINTENANCE] disabled by coadmin',
+        { coadminUid: auth.currentUser?.uid || null }
+      );
+      setMessage(enabled ? 'Maintenance Break started.' : 'Maintenance Break ended.');
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : 'Failed to update Maintenance Break.'
+      );
+    } finally {
+      setMaintenanceBusy(false);
+    }
+  }
+
   function scheduleBonusEventsRetry(restart: () => void) {
     if (bonusEventsRetryTimerRef.current != null) {
       window.clearTimeout(bonusEventsRetryTimerRef.current);
@@ -644,6 +673,29 @@ export default function CoadminPage() {
 
     return () => {
       isCancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let stopMaintenanceListener: (() => void) | null = null;
+    const stopAuthListener = onAuthStateChanged(auth, (user) => {
+      stopMaintenanceListener?.();
+      stopMaintenanceListener = null;
+      if (!user) {
+        setMaintenanceBreak(normalizeMaintenanceBreak(null));
+        return;
+      }
+
+      stopMaintenanceListener = listenCoadminMaintenanceBreak(
+        user.uid,
+        setMaintenanceBreak,
+        () => setMaintenanceBreak(normalizeMaintenanceBreak(null))
+      );
+    });
+
+    return () => {
+      stopAuthListener();
+      stopMaintenanceListener?.();
     };
   }, []);
 
@@ -3101,6 +3153,48 @@ export default function CoadminPage() {
                 <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
                   <p className="text-sm text-neutral-400">Total Games</p>
                   <p className="mt-2 text-3xl font-bold">{gameLogins.length}</p>
+                </div>
+              </div>
+
+              <div
+                className={`mt-4 rounded-2xl border p-5 ${
+                  maintenanceBreak.enabled
+                    ? 'border-amber-400/40 bg-amber-500/10'
+                    : 'border-emerald-400/25 bg-emerald-500/10'
+                }`}
+              >
+                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
+                      Maintenance Break
+                    </p>
+                    <h3 className="mt-1 text-xl font-bold text-white">
+                      {maintenanceBreak.enabled ? 'Active' : 'Inactive'}
+                    </h3>
+                    <p className="mt-2 max-w-2xl whitespace-pre-line text-sm leading-relaxed text-neutral-300">
+                      {maintenanceBreak.enabled
+                        ? maintenanceBreak.message
+                        : 'Players can use the player app normally.'}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+                    <button
+                      type="button"
+                      onClick={() => void handleMaintenanceBreakToggle(true)}
+                      disabled={maintenanceBusy || maintenanceBreak.enabled}
+                      className="rounded-xl bg-amber-400 px-4 py-2 text-sm font-bold text-black transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Start Maintenance Break
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleMaintenanceBreakToggle(false)}
+                      disabled={maintenanceBusy || !maintenanceBreak.enabled}
+                      className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold text-white transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      End Maintenance Break
+                    </button>
+                  </div>
                 </div>
               </div>
 

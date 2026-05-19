@@ -301,6 +301,14 @@ function readApiError(messageFallback: string, payload: unknown) {
   if (
     payload &&
     typeof payload === 'object' &&
+    'message' in payload &&
+    typeof (payload as { message?: unknown }).message === 'string'
+  ) {
+    return String((payload as { message: string }).message || messageFallback);
+  }
+  if (
+    payload &&
+    typeof payload === 'object' &&
     'error' in payload &&
     typeof (payload as { error?: unknown }).error === 'string'
   ) {

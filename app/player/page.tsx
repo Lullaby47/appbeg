@@ -72,6 +72,8 @@ import {
   fetchMyReferralRewards,
   type ReferralRewardGroup,
 } from '@/features/referrals/playerReferralRewards';
+import { listenCoadminMaintenanceBreak } from '@/features/maintenance/maintenanceBreak';
+import { normalizeMaintenanceBreak, type MaintenanceBreak } from '@/lib/maintenance/config';
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
 
@@ -554,6 +556,9 @@ export default function PlayerPage() {
   const [redeemDismissSplashRequest, setRedeemDismissSplashRequest] =
     useState<PlayerGameRequest | null>(null);
   const [isBlockedPlayer, setIsBlockedPlayer] = useState(false);
+  const [maintenanceBreak, setMaintenanceBreak] = useState<MaintenanceBreak>(
+    normalizeMaintenanceBreak(null)
+  );
   const [wallet, setWallet] = useState<PlayerWallet>({ coin: 0, cash: 0 });
   const [referralCode, setReferralCode] = useState('');
   const [referredByPlayerName, setReferredByPlayerName] = useState('');
@@ -1731,6 +1736,19 @@ export default function PlayerPage() {
   }, []);
 
   useEffect(() => {
+    if (!playerCoadminUid) {
+      setMaintenanceBreak(normalizeMaintenanceBreak(null));
+      return;
+    }
+
+    return listenCoadminMaintenanceBreak(
+      playerCoadminUid,
+      setMaintenanceBreak,
+      () => setMaintenanceBreak(normalizeMaintenanceBreak(null))
+    );
+  }, [playerCoadminUid]);
+
+  useEffect(() => {
     const unsubscribe = listenToUnreadCounts(setUnreadCounts);
     return () => unsubscribe();
   }, []);
@@ -2099,7 +2117,37 @@ export default function PlayerPage() {
     return () => window.clearTimeout(timeoutId);
   }, [activeView]);
 
+  useEffect(() => {
+    if (!maintenanceBreak.enabled) {
+      return;
+    }
+
+    console.info('[MAINTENANCE] blocked player action', {
+      playerUid: playerUid || auth.currentUser?.uid || null,
+      coadminUid: playerCoadminUid || null,
+    });
+    closeActiveTableSplash();
+    setShowCashoutModal(false);
+    setShowLoadCoinPanel(false);
+    setShowCoinConfirmSplash(false);
+    setPlayRequestSplash(null);
+    setRequestLoading(false);
+    if (activeView === 'play' || activeView === 'bonus-events' || activeView === 'earn-coins') {
+      setActiveView('dashboard');
+    }
+  }, [activeView, closeActiveTableSplash, maintenanceBreak.enabled, playerCoadminUid, playerUid]);
+
   async function handleGameRequest(type: PlayerGameRequestType) {
+    if (maintenanceBreak.enabled) {
+      console.info('[MAINTENANCE] blocked player action', {
+        action: type,
+        playerUid: playerUid || auth.currentUser?.uid || null,
+        coadminUid: playerCoadminUid || null,
+      });
+      setMessage(maintenanceBreak.message);
+      return;
+    }
+
     if (isBlockedPlayer) {
       setMessage(
         'Your account is blocked. Recharge and redeem requests are disabled.'
@@ -2334,6 +2382,16 @@ export default function PlayerPage() {
   }
 
   async function handleCoinButtonClick() {
+    if (maintenanceBreak.enabled) {
+      console.info('[MAINTENANCE] blocked player action', {
+        action: 'cash_to_coin',
+        playerUid: playerUid || auth.currentUser?.uid || null,
+        coadminUid: playerCoadminUid || null,
+      });
+      setMessage(maintenanceBreak.message);
+      return;
+    }
+
     if (!playerUid) {
       setMessage('Player profile not loaded yet.');
       return;
@@ -2365,6 +2423,16 @@ export default function PlayerPage() {
   }
 
   async function handlePlayerCashoutRequest() {
+    if (maintenanceBreak.enabled) {
+      console.info('[MAINTENANCE] blocked player action', {
+        action: 'cashout',
+        playerUid: playerUid || auth.currentUser?.uid || null,
+        coadminUid: playerCoadminUid || null,
+      });
+      setMessage(maintenanceBreak.message);
+      return;
+    }
+
     if (!playerCoadminUid) {
       setMessage('Coadmin not found for this player.');
       return;
@@ -2431,6 +2499,16 @@ export default function PlayerPage() {
   }
 
   async function handleActivateBonusEvent(bonusEvent: BonusEvent) {
+    if (maintenanceBreak.enabled) {
+      console.info('[MAINTENANCE] blocked player action', {
+        action: 'bonus_event',
+        playerUid: playerUid || auth.currentUser?.uid || null,
+        coadminUid: playerCoadminUid || null,
+      });
+      setMessage(maintenanceBreak.message);
+      return;
+    }
+
     if (!playerUid) {
       setMessage('Player profile not loaded yet.');
       return;
@@ -2550,6 +2628,16 @@ export default function PlayerPage() {
   }, [activeCoinLoad]);
 
   async function handleCreateCoinLoadSession() {
+    if (maintenanceBreak.enabled) {
+      console.info('[MAINTENANCE] blocked player action', {
+        action: 'coin_load',
+        playerUid: playerUid || auth.currentUser?.uid || null,
+        coadminUid: playerCoadminUid || null,
+      });
+      setMessage(maintenanceBreak.message);
+      return;
+    }
+
     if (!playerCoadminUid) {
       setMessage('No co-admin is linked to your account yet.');
       return;
@@ -2716,6 +2804,37 @@ export default function PlayerPage() {
         className="player-fire-page relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white md:flex-row md:items-start md:pb-0"
       >
         <div className="ember-overlay" aria-hidden="true" />
+        {maintenanceBreak.enabled ? (
+          <div
+            className="fixed inset-0 z-[220] flex items-center justify-center bg-zinc-950/95 px-4 py-6 text-white backdrop-blur-xl"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="maintenance-break-title"
+          >
+            <div className="w-full max-w-xl rounded-2xl border border-amber-300/30 bg-black/55 p-6 text-center shadow-2xl shadow-amber-950/30 sm:p-8">
+              <p className="text-xs font-black uppercase tracking-[0.28em] text-amber-300/80">
+                Maintenance Break
+              </p>
+              <h1
+                id="maintenance-break-title"
+                className="mt-3 text-2xl font-black leading-tight text-white sm:text-3xl"
+              >
+                {maintenanceBreak.title}
+              </h1>
+              <p className="mt-5 whitespace-pre-line text-sm leading-relaxed text-zinc-200 sm:text-base">
+                {maintenanceBreak.message}
+              </p>
+              <button
+                type="button"
+                onClick={() => void performLogout()}
+                disabled={logoutLoading}
+                className="mt-7 min-h-[48px] rounded-xl border border-white/15 bg-white/10 px-5 py-3 text-sm font-bold text-white transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {logoutLoading ? 'Logging out...' : 'Logout'}
+              </button>
+            </div>
+          </div>
+        ) : null}
         {showPlayerHelpHint && (
           <div className="pointer-events-none fixed left-1/2 top-1/2 z-50 w-[min(92vw,560px)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-amber-400/25 bg-black/55 px-4 py-3 text-center text-xs font-semibold text-amber-100/80 shadow-[0_0_24px_-10px_rgba(251,191,36,0.65)] backdrop-blur-xl">
             {PLAYER_HELP_HINT_MESSAGE}
@@ -2755,17 +2874,18 @@ export default function PlayerPage() {
           </div>
 
           <div className="mt-2 grid w-full grid-cols-3 gap-2">
-            <button
-              type="button"
-              onClick={() => handleChangeView('play')}
-              className="fire-button fire-orange min-h-[48px] scale-[1.04] rounded-xl border border-red-200/80 bg-gradient-to-r from-red-500 via-red-400 to-rose-500 px-2 text-sm font-black text-white shadow-[0_0_34px_-6px_rgba(239,68,68,0.9)] transition-transform hover:scale-[1.1] hover:brightness-110 active:scale-[1.03]"
-            >
+              <button
+                type="button"
+                onClick={() => handleChangeView('play')}
+                disabled={maintenanceBreak.enabled}
+                className="fire-button fire-orange min-h-[48px] scale-[1.04] rounded-xl border border-red-200/80 bg-gradient-to-r from-red-500 via-red-400 to-rose-500 px-2 text-sm font-black text-white shadow-[0_0_34px_-6px_rgba(239,68,68,0.9)] transition-transform hover:scale-[1.1] hover:brightness-110 active:scale-[1.03]"
+              >
               🎰 Play
             </button>
             <button
-              type="button"
-              onClick={() => setShowCashoutModal(true)}
-              disabled={wallet.cash <= 0 || isBlockedPlayer}
+                type="button"
+                onClick={() => setShowCashoutModal(true)}
+                disabled={wallet.cash <= 0 || isBlockedPlayer || maintenanceBreak.enabled}
               className="fire-button fire-green min-h-[40px] rounded-xl border border-cyan-400/35 bg-cyan-500/15 px-2 text-sm font-bold text-cyan-100 disabled:opacity-50"
             >
               💸 Cashout
@@ -2776,7 +2896,7 @@ export default function PlayerPage() {
                 setTransferCoinAmountInput(String(Math.max(0, Number(wallet.cash || 0))));
                 setShowCoinConfirmSplash(true);
               }}
-              disabled={coinLoading}
+              disabled={coinLoading || maintenanceBreak.enabled}
               className="fire-button fire-orange min-h-[40px] rounded-xl border border-emerald-400/35 bg-emerald-500/15 px-2 text-sm font-bold text-emerald-100 disabled:opacity-50"
             >
               {coinLoading ? '⏳' : '🪙 To coin'}
@@ -2943,7 +3063,7 @@ export default function PlayerPage() {
                     setShowLoadCoinPanel(true);
                     setMessage('');
                   }}
-                  disabled={isBlockedPlayer}
+                  disabled={isBlockedPlayer || maintenanceBreak.enabled}
                   className="fire-button fire-orange rounded-2xl border border-amber-400/45 bg-amber-500/20 px-3 py-3 text-sm font-black text-amber-50 shadow-md transition-all hover:bg-amber-500/35 disabled:cursor-not-allowed disabled:opacity-60 lg:px-5 lg:text-base"
                 >
                   ⬇ Load coin
@@ -2965,7 +3085,7 @@ export default function PlayerPage() {
                 <button
                   type="button"
                   onClick={() => setShowCashoutModal(true)}
-                  disabled={wallet.cash <= 0 || isBlockedPlayer}
+                  disabled={wallet.cash <= 0 || isBlockedPlayer || maintenanceBreak.enabled}
                   className="fire-button fire-orange rounded-2xl border border-amber-400/45 bg-amber-500/20 px-3 py-3 text-sm font-black text-amber-50 shadow-md transition-all hover:bg-amber-500/35 disabled:cursor-not-allowed disabled:opacity-60 lg:px-5 lg:text-base"
                 >
                   💸 Cashout
@@ -2973,6 +3093,7 @@ export default function PlayerPage() {
                 <button
                   type="button"
                   onClick={() => setActiveView('play')}
+                  disabled={maintenanceBreak.enabled}
                   className="fire-button fire-orange rounded-2xl border border-red-200/70 bg-gradient-to-r from-red-500 via-red-400 to-rose-500 px-3 py-3 text-sm font-black text-white shadow-[0_0_26px_-10px_rgba(239,68,68,0.9)] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60 lg:px-5 lg:text-base"
                 >
                   🎰 Play
@@ -3008,7 +3129,7 @@ export default function PlayerPage() {
                     setTransferCoinAmountInput(String(Math.max(0, Number(wallet.cash || 0))));
                     setShowCoinConfirmSplash(true);
                   }}
-                  disabled={coinLoading}
+                  disabled={coinLoading || maintenanceBreak.enabled}
                   className="fire-button fire-orange min-h-[44px] rounded-2xl border border-amber-400/45 bg-amber-500/20 px-2 py-2 text-xs font-black text-amber-50 active:scale-[0.99] disabled:opacity-60"
                 >
                   {coinLoading ? '⏳ Transferring…' : '⇄ Transfer cash to coin'}
@@ -3019,7 +3140,7 @@ export default function PlayerPage() {
                     setShowLoadCoinPanel(true);
                     setMessage('');
                   }}
-                  disabled={isBlockedPlayer}
+                  disabled={isBlockedPlayer || maintenanceBreak.enabled}
                   className="fire-button fire-purple min-h-[44px] rounded-2xl border border-fuchsia-300/45 bg-gradient-to-r from-fuchsia-600 via-violet-500 to-purple-600 px-2 py-2 text-xs font-black text-white shadow-[0_0_24px_-12px_rgba(192,38,211,0.95)] active:scale-[0.99] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   ⬇ Load coin
@@ -3027,7 +3148,7 @@ export default function PlayerPage() {
                 <button
                   type="button"
                   onClick={() => setShowCashoutModal(true)}
-                  disabled={wallet.cash <= 0 || isBlockedPlayer}
+                  disabled={wallet.cash <= 0 || isBlockedPlayer || maintenanceBreak.enabled}
                   className="fire-button fire-orange min-h-[44px] rounded-2xl border border-amber-400/45 bg-amber-500/20 px-2 py-2 text-xs font-black text-amber-50 active:scale-[0.99] disabled:opacity-60"
                 >
                   💸 Cashout
@@ -3035,6 +3156,7 @@ export default function PlayerPage() {
                 <button
                   type="button"
                   onClick={() => setActiveView('play')}
+                  disabled={maintenanceBreak.enabled}
                   className="fire-button fire-orange min-h-[44px] rounded-2xl border border-red-200/70 bg-gradient-to-r from-red-500 via-red-400 to-rose-500 px-2 py-2 text-xs font-black text-white shadow-[0_0_24px_-12px_rgba(239,68,68,0.95)] active:scale-[0.99] hover:brightness-110 disabled:opacity-60"
                 >
                   🎰 Play
@@ -3209,7 +3331,7 @@ export default function PlayerPage() {
                             setShowLoadCoinPanel(true);
                             setMessage('');
                           }}
-                          disabled={isBlockedPlayer}
+                          disabled={isBlockedPlayer || maintenanceBreak.enabled}
                           className="fire-button fire-purple h-11 w-full rounded-2xl border border-violet-400/50 bg-violet-500/20 py-2 text-sm font-black text-violet-50 transition hover:bg-violet-500/30 disabled:cursor-not-allowed disabled:opacity-60 sm:h-12 sm:text-base"
                         >
                           ⬇ Load coin — payment reference
@@ -3221,6 +3343,7 @@ export default function PlayerPage() {
                       <button
                         type="button"
                         onClick={() => setActiveView('play')}
+                        disabled={maintenanceBreak.enabled}
                         className="fire-button fire-orange relative h-12 w-full min-w-0 overflow-hidden rounded-2xl border border-red-200/70 bg-gradient-to-r from-red-500 via-red-400 to-rose-500 px-6 py-2 text-lg font-black text-white shadow-[0_0_30px_6px_rgba(239,68,68,0.45)] shadow-red-900/40 transition-all hover:scale-[1.02] hover:brightness-110 hover:shadow-[0_0_42px_8px_rgba(239,68,68,0.55)] sm:h-12 sm:text-xl"
                       >
                         <span className="relative z-10 flex items-center justify-center gap-2">
@@ -3470,7 +3593,7 @@ export default function PlayerPage() {
                                 <button
                                   type="button"
                                   onClick={() => void handleActivateBonusEvent(event)}
-                                  disabled={activatingBonusEventId === event.id}
+                                  disabled={activatingBonusEventId === event.id || maintenanceBreak.enabled}
                                   className="mt-4 flex min-h-[50px] w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-fuchsia-500 via-violet-500 to-fuchsia-600 py-3 text-sm font-black text-white shadow-lg shadow-fuchsia-500/25 transition hover:brightness-110 active:scale-[0.99] disabled:opacity-60"
                                 >
                                   {activatingBonusEventId === event.id ? (
@@ -3661,7 +3784,7 @@ export default function PlayerPage() {
                                 <button
                                   type="button"
                                   onClick={() => void handleActivateBonusEvent(event)}
-                                  disabled={activatingBonusEventId === event.id}
+                                  disabled={activatingBonusEventId === event.id || maintenanceBreak.enabled}
                                   className="fire-button fire-purple mt-5 flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-fuchsia-500 via-violet-500 to-amber-400 py-3 text-sm font-black text-white shadow-lg shadow-fuchsia-500/25 transition hover:brightness-110 active:scale-[0.99] disabled:opacity-60"
                                 >
                                   {activatingBonusEventId === event.id ? (
@@ -4534,6 +4657,7 @@ export default function PlayerPage() {
                     !selectedGameName ||
                     !playAmount ||
                     isBlockedPlayer ||
+                    maintenanceBreak.enabled ||
                     (Number.isFinite(Number(playAmount)) &&
                       Number(playAmount) > 0 &&
                       Number(playAmount) > wallet.coin)
@@ -4551,6 +4675,7 @@ export default function PlayerPage() {
                     !selectedGameName ||
                     !playAmount ||
                     isBlockedPlayer ||
+                    maintenanceBreak.enabled ||
                     !Number.isFinite(Number(playAmount)) ||
                     Number(playAmount) < MIN_REDEEM_AMOUNT ||
                     Number(playAmount) > MAX_REDEEM_AMOUNT
@@ -4623,7 +4748,12 @@ export default function PlayerPage() {
                 <button
                   type="button"
                   onClick={() => void handleCreateCoinLoadSession()}
-                  disabled={coinLoadBusy || !playerCoadminUid || isBlockedPlayer}
+                  disabled={
+                    coinLoadBusy ||
+                    !playerCoadminUid ||
+                    isBlockedPlayer ||
+                    maintenanceBreak.enabled
+                  }
                   className="fire-button fire-purple w-full min-h-[52px] rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-600 py-3 text-sm font-black text-white shadow-lg shadow-violet-500/25 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {coinLoadBusy ? 'Preparing…' : 'Add coins'}

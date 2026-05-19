@@ -1,0 +1,14 @@
+
+> appbeg-new@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.4 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://10.5.0.2:3000
+- Environments: .env.local
+✓ Ready in 743ms
+
+ GET / 307 in 250ms (next.js: 150ms, application-code: 100ms)
+ GET /login 200 in 142ms (next.js: 18ms, application-code: 124ms)
+ GET /player 200 in 250ms (next.js: 18ms, application-code: 232ms)
+ GET /coadmin 200 in 261ms (next.js: 188ms, application-code: 73ms)

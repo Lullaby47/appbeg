@@ -755,9 +755,17 @@ export async function initiateBonusEventPlay(values: {
     },
     body: JSON.stringify({ bonusEventId: values.bonusEventId }),
   });
-  const payload = (await response.json().catch(() => ({}))) as { error?: string; requestId?: string };
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string | boolean;
+    message?: string;
+    requestId?: string;
+  };
   if (!response.ok) {
-    throw new Error(payload.error || 'Failed to initiate bonus event play.');
+    throw new Error(
+      payload.message ||
+        (typeof payload.error === 'string' ? payload.error : '') ||
+        'Failed to initiate bonus event play.'
+    );
   }
   const createdRequestId = String(payload.requestId || '').trim();
   if (!createdRequestId) {

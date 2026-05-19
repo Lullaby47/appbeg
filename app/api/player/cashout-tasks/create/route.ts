@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server';
 import { evaluateWithdrawalPolicy } from '@/lib/economy/policy';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
 import { adminDb } from '@/lib/firebase/admin';
+import { getCoadminMaintenanceBreak, maintenanceBreakApiResponse } from '@/lib/maintenance/admin';
 
 const PLAYER_CASHOUT_MAX_NPR_PER_24_H = 1000;
 const PLAYER_CASHOUT_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -122,6 +123,11 @@ export async function POST(request: Request) {
       if (!coadminUid) {
         throw new Error('Player coadmin scope not found.');
       }
+      const maintenanceBreak = await getCoadminMaintenanceBreak(coadminUid);
+      if (maintenanceBreak.enabled) {
+        console.info('[MAINTENANCE] blocked redeem request', { playerUid, coadminUid });
+        throw new Error(`MAINTENANCE_BREAK:${maintenanceBreak.message}`);
+      }
 
       transaction.update(playerRef, {
         cash: availableCash - amountThisRequest,
@@ -160,6 +166,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, taskId: taskRef.id });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create cashout request.';
+    if (message.startsWith('MAINTENANCE_BREAK:')) {
+      return maintenanceBreakApiResponse(message.replace(/^MAINTENANCE_BREAK:/, ''));
+    }
     const status =
       /not authenticated|authorization|token/i.test(message)
         ? 401

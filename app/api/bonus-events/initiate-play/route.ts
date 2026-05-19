@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { getCoadminMaintenanceBreak, maintenanceBreakApiResponse } from '@/lib/maintenance/admin';
 
 function getStaffBonusMultiplier(bonusPercent: number) {
   if (bonusPercent <= 8) return 1.0;
@@ -74,6 +75,15 @@ export async function POST(request: Request) {
       const boostedAmount = baseAmount + bonusAddAmount;
       const coadminUid = String(bonus.coadminUid || '').trim();
       if (!coadminUid) throw new Error('Bonus event coadmin scope missing.');
+      const maintenanceBreak = await getCoadminMaintenanceBreak(coadminUid);
+      if (maintenanceBreak.enabled) {
+        console.info('[MAINTENANCE] blocked player action', {
+          action: 'bonus_event',
+          playerUid,
+          coadminUid,
+        });
+        throw new Error(`MAINTENANCE_BREAK:${maintenanceBreak.message}`);
+      }
 
       if (String(bonus.createdByRole || '').toLowerCase() === 'staff') {
         const staffRef = adminDb.collection('users').doc(String(bonus.createdByUid || '').trim());
@@ -140,6 +150,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, requestId: requestRef.id });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to initiate bonus play.';
+    if (message.startsWith('MAINTENANCE_BREAK:')) {
+      return maintenanceBreakApiResponse(message.replace(/^MAINTENANCE_BREAK:/, ''));
+    }
     const status = /not authenticated|authorization|token/i.test(message) ? 401 : /forbidden/i.test(message) ? 403 : /required|not found|invalid|low coins|only|blocked/i.test(message) ? 400 : 409;
     return NextResponse.json({ error: message }, { status });
   }

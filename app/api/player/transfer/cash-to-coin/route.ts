@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { getCoadminMaintenanceBreak, maintenanceBreakApiResponse } from '@/lib/maintenance/admin';
 
 type Body = {
   amountNpr?: unknown;
@@ -67,6 +68,17 @@ export async function POST(request: Request) {
         throw new Error('Not enough cash available for transfer.');
       }
 
+      const coadminUid = String(playerData.coadminUid || playerData.createdBy || '').trim() || null;
+      const maintenanceBreak = await getCoadminMaintenanceBreak(coadminUid || '');
+      if (maintenanceBreak.enabled) {
+        console.info('[MAINTENANCE] blocked player action', {
+          action: 'cash_to_coin',
+          playerUid,
+          coadminUid,
+        });
+        throw new Error(`MAINTENANCE_BREAK:${maintenanceBreak.message}`);
+      }
+
       newCash = currentCash - amountNpr;
       newCoin = currentCoin + amountNpr;
 
@@ -75,7 +87,6 @@ export async function POST(request: Request) {
         coin: newCoin,
       });
 
-      const coadminUid = String(playerData.coadminUid || playerData.createdBy || '').trim() || null;
       const eventRef = adminDb.collection('financialEvents').doc();
       transaction.set(eventRef, {
         playerUid,
@@ -89,6 +100,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, cash: newCash, coin: newCoin });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to transfer cash to coin.';
+    if (message.startsWith('MAINTENANCE_BREAK:')) {
+      return maintenanceBreakApiResponse(message.replace(/^MAINTENANCE_BREAK:/, ''));
+    }
     const status = /not authenticated|authorization|token/i.test(message)
       ? 401
       : /forbidden|blocked/i.test(message)

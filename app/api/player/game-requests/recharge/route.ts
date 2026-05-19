@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { getCoadminMaintenanceBreak, maintenanceBreakApiResponse } from '@/lib/maintenance/admin';
 
 type RechargeBody = {
   gameName?: unknown;
@@ -125,6 +126,11 @@ export async function POST(request: Request) {
       if (!coadminUid) {
         throw new Error('Player coadmin scope not found.');
       }
+      const maintenanceBreak = await getCoadminMaintenanceBreak(coadminUid);
+      if (maintenanceBreak.enabled) {
+        console.info('[MAINTENANCE] blocked recharge request', { playerUid, coadminUid });
+        throw new Error(`MAINTENANCE_BREAK:${maintenanceBreak.message}`);
+      }
 
       transaction.update(playerRef, {
         coin: currentCoin - amount,
@@ -174,6 +180,9 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create recharge request.';
+    if (message.startsWith('MAINTENANCE_BREAK:')) {
+      return maintenanceBreakApiResponse(message.replace(/^MAINTENANCE_BREAK:/, ''));
+    }
     const status =
       /not authenticated|authorization|token/i.test(message)
         ? 401
