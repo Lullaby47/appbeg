@@ -216,7 +216,7 @@ service cloud.firestore {
         resource.data.playerUid == request.auth.uid ||
         (isScopedWorker() && scopedToCaller(resource.data))
       );
-      allow create: if signedIn() && isPlayer() && request.resource.data.playerUid == request.auth.uid;
+      allow create: if false;
       allow update: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)));
       allow delete: if false;
     }
