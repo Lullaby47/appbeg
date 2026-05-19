@@ -40,3 +40,45 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 - Never commit service account keys (`serviceAccountKey.json`) to source control.
 - Keep Firebase service account keys outside the repository and load them from secure local paths or secret managers.
 - If a key was ever committed or shared, rotate it immediately in Firebase/GCP and replace local usage with the rotated key.
+- Admin bootstrap must be done by local Firebase Admin SDK tool, not browser.
+
+## Local Admin Tool
+
+Use `tools/admin_tool.py` for local-only administrator management. It uses the Firebase Admin SDK with a local service account JSON and requires a master secret before any action runs.
+
+Install the Python SDK if needed:
+
+```bash
+python -m pip install firebase-admin
+```
+
+Set required environment variables in PowerShell:
+
+```powershell
+$env:APPBEG_SERVICE_ACCOUNT_PATH = "C:\secure\appbeg.service-account.json"
+$env:APPBEG_ADMIN_MASTER_SECRET = "choose-a-long-local-secret"
+```
+
+Or in Command Prompt:
+
+```bash
+set APPBEG_SERVICE_ACCOUNT_PATH=C:\secure\appbeg.service-account.json
+set APPBEG_ADMIN_MASTER_SECRET=choose-a-long-local-secret
+```
+
+Then run the interactive menu:
+
+```bash
+python tools/admin_tool.py
+```
+
+Or run a specific action:
+
+```bash
+python tools/admin_tool.py --action create_admin
+python tools/admin_tool.py --action promote_to_admin
+python tools/admin_tool.py --action demote_admin
+python tools/admin_tool.py --action disable_user
+```
+
+The tool never prints passwords. Keep service account JSON files and secret env files out of git; `.gitignore` excludes `*.service-account.json`, `.adminsEnv`, and `secrets/`.
