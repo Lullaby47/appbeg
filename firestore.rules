@@ -103,6 +103,25 @@ service cloud.firestore {
           'preferences'
         ]);
 
+      allow update: if signedIn()
+        && request.auth.uid == uid
+        && isCoadmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'paymentDetailPhotos',
+          'paymentDetailPhotoUrls',
+          'updatedAt'
+        ]);
+
+      allow update: if signedIn()
+        && request.auth.uid == uid
+        && isCarer()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'paymentQrUrl',
+          'paymentQrPublicId',
+          'paymentDetails',
+          'updatedAt'
+        ]);
+
       // Existing admin/coadmin screens still perform some scoped profile updates
       // directly. Keep those functional, but never allow direct role changes.
       allow update: if signedIn()
