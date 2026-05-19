@@ -3,18 +3,13 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { onAuthStateChanged } from 'firebase/auth';
-import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-} from 'firebase/auth';
+import { signInWithEmailAndPassword } from 'firebase/auth';
 import {
   collection,
   doc,
   getDoc,
   getDocs,
   query,
-  serverTimestamp,
-  setDoc,
   where,
 } from 'firebase/firestore';
 
@@ -77,80 +72,6 @@ export default function LoginPage() {
 
     return () => unsubscribe();
   }, [router]);
-
-  function makeHiddenEmailFromUsername(value: string) {
-    const cleanUsername = value.trim().toLowerCase();
-    return `${cleanUsername}@app.local`;
-  }
-
-  async function handleCreateAdmin(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-
-    const cleanUsername = username.trim().toLowerCase();
-
-    if (!cleanUsername) {
-      setError('Username is required.');
-      return;
-    }
-
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters.');
-      return;
-    }
-
-    setError('');
-    setLoading(true);
-
-    try {
-      const adminQuery = query(
-        collection(db, 'users'),
-        where('role', '==', 'admin')
-      );
-
-      const adminSnapshot = await getDocs(adminQuery);
-
-      if (!adminSnapshot.empty) {
-        setAdminExists(true);
-        throw new Error('Admin already exists.');
-      }
-
-      const usernameQuery = query(
-        collection(db, 'users'),
-        where('username', '==', cleanUsername)
-      );
-
-      const usernameSnapshot = await getDocs(usernameQuery);
-
-      if (!usernameSnapshot.empty) {
-        throw new Error('Username already exists.');
-      }
-
-      const hiddenEmail = makeHiddenEmailFromUsername(cleanUsername);
-
-      const result = await createUserWithEmailAndPassword(
-        auth,
-        hiddenEmail,
-        password
-      );
-
-      await setDoc(doc(db, 'users', result.user.uid), {
-        uid: result.user.uid,
-        username: cleanUsername,
-        email: hiddenEmail,
-        role: 'admin',
-        createdBy: null,
-        createdAt: serverTimestamp(),
-        status: 'active',
-      });
-
-      router.push('/admin');
-    } catch (err) {
-      console.error(err);
-      setError('Failed to create admin.');
-    } finally {
-      setLoading(false);
-    }
-  }
 
   async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -247,58 +168,14 @@ export default function LoginPage() {
               <>
                 <div className="mb-8 text-center">
                   <h1 className="text-3xl font-bold tracking-tight text-slate-800">
-                    Create Admin
+                    Admin Setup Disabled
                   </h1>
                   <p className="mt-2 text-sm text-slate-500">
-                    Set up the first administrator account
+                    Admin setup is disabled in the browser. Please use the local admin setup tool.
                   </p>
                 </div>
 
-                <form onSubmit={handleCreateAdmin} className="space-y-5">
-                  <div>
-                    <input
-                      id="admin-username"
-                      name="username"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      required
-                      placeholder="Username"
-                      autoComplete="username"
-                      className="h-14 w-full rounded-xl border border-slate-200 bg-white/80 px-4 text-base text-slate-800 outline-none transition-all duration-200 placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-200/80"
-                    />
-                  </div>
-
-                  <div>
-                    <input
-                      id="admin-password"
-                      name="password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      type="password"
-                      required
-                      minLength={6}
-                      placeholder="Password"
-                      autoComplete="new-password"
-                      className="h-14 w-full rounded-xl border border-slate-200 bg-white/80 px-4 text-base text-slate-800 outline-none transition-all duration-200 placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-200/80"
-                    />
-                  </div>
-
-                  {error && (
-                    <div className="rounded-xl border border-red-200 bg-red-50/80 p-3 text-sm font-medium text-red-600 backdrop-blur-sm">
-                      {error}
-                    </div>
-                  )}
-
-                  <button
-                    disabled={loading}
-                    className="group relative h-12 w-full overflow-hidden rounded-xl bg-gradient-to-r from-blue-600 to-blue-500 font-semibold text-white shadow-md shadow-blue-500/25 transition-all duration-200 hover:shadow-lg hover:shadow-blue-500/30 active:scale-[0.98] disabled:opacity-60 disabled:hover:scale-100"
-                  >
-                    <span className="relative z-10">
-                      {loading ? 'Creating account...' : 'Create Admin'}
-                    </span>
-                    <div className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/20 to-transparent transition-transform duration-500 group-hover:translate-x-full" />
-                  </button>
-                </form>
+                {/* Admin bootstrap must be done by local Firebase Admin SDK tool, not browser. */}
               </>
             ) : (
               <>
