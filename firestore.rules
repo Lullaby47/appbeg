@@ -353,12 +353,14 @@ service cloud.firestore {
       );
       allow create: if signedIn() && (
         isAdmin() ||
-        scopedToCaller(request.resource.data)
+        ((isCoadmin() || isStaff() || isCarer()) && scopedToCaller(request.resource.data))
       );
       allow update: if signedIn() && (
         isAdmin() ||
-        scopedToCaller(resource.data) ||
-        scopedToCaller(request.resource.data)
+        ((isCoadmin() || isStaff() || isCarer()) && (
+          scopedToCaller(resource.data) ||
+          scopedToCaller(request.resource.data)
+        ))
       );
       allow delete: if false;
     }
