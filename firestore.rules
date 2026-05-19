@@ -62,13 +62,18 @@ service cloud.firestore {
     function protectedUserFieldsChanged() {
       return request.resource.data.diff(resource.data).affectedKeys().hasAny([
         'role',
+        'uid',
+        'email',
+        'coadminUid',
+        'createdBy',
+        'createdAt',
         'coin',
         'cash',
         'cashBoxNpr',
-        'createdBy',
-        'coadminUid',
-        'email',
-        'uid'
+        'permissions',
+        'isAdmin',
+        'isCoadmin',
+        'isCarer'
       ]);
     }
 
@@ -85,9 +90,9 @@ service cloud.firestore {
       // directly. Keep those functional, but never allow direct role changes.
       allow update: if signedIn()
         && (isAdmin() || (isCoadmin() && scopedToCaller(resource.data)))
-        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'uid', 'email']);
+        && !protectedUserFieldsChanged();
 
-      allow create, delete: if isAdmin();
+      allow create, delete: if false;
     }
 
     match /playerGameRequests/{requestId} {
@@ -265,6 +270,121 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    match /userPresence/{uid} {
+      allow read: if signedIn();
+      allow create, update: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['lastSeenAt']);
+      allow delete: if false;
+    }
+
+    match /riskActions/{docId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        scopedToCaller(resource.data) ||
+        resource.data.playerUid == request.auth.uid
+      );
+      allow create: if signedIn() && (
+        isAdmin() ||
+        ((isCoadmin() || isStaff() || isCarer()) && scopedToCaller(request.resource.data))
+      );
+      allow update, delete: if false;
+    }
+
+    match /playerRiskSnapshots/{playerUid} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        scopedToCaller(resource.data) ||
+        playerUid == request.auth.uid
+      );
+      allow create: if signedIn() && (
+        isAdmin() ||
+        ((isCoadmin() || isStaff() || isCarer()) && scopedToCaller(request.resource.data))
+      );
+      allow update: if signedIn() && (
+        isAdmin() ||
+        ((isCoadmin() || isStaff() || isCarer()) && (
+          scopedToCaller(resource.data) ||
+          scopedToCaller(request.resource.data)
+        ))
+      );
+      allow delete: if false;
+    }
+
+    match /carerEscalationAlerts/{alertId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        scopedToCaller(resource.data) ||
+        resource.data.playerUid == request.auth.uid
+      );
+      allow create: if signedIn() && (
+        isAdmin() ||
+        scopedToCaller(request.resource.data) ||
+        request.resource.data.playerUid == request.auth.uid
+      );
+      allow update: if signedIn() && (
+        (
+          isAdmin() ||
+          ((isCoadmin() || isStaff() || isCarer()) && scopedToCaller(resource.data)) ||
+          resource.data.playerUid == request.auth.uid
+        ) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['dismissedByUids']) &&
+        request.auth.uid in request.resource.data.dismissedByUids &&
+        (
+          !resource.data.keys().hasAny(['dismissedByUids']) ||
+          resource.data.dismissedByUids is list
+        ) &&
+        request.resource.data.dismissedByUids is list &&
+        request.resource.data.dismissedByUids.hasAll(
+          resource.data.keys().hasAny(['dismissedByUids']) ? resource.data.dismissedByUids : []
+        ) &&
+        request.resource.data.dismissedByUids.toSet().difference(
+          (resource.data.keys().hasAny(['dismissedByUids']) ? resource.data.dismissedByUids : []).toSet()
+        ).hasOnly([request.auth.uid])
+      );
+      allow delete: if isAdmin() || ((isCoadmin() || isStaff() || isCarer()) && scopedToCaller(resource.data));
+    }
+
+    match /playerGameRedeemLimitResets/{docId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        scopedToCaller(resource.data) ||
+        resource.data.playerUid == request.auth.uid
+      );
+      allow create: if signedIn() && (
+        isAdmin() ||
+        scopedToCaller(request.resource.data)
+      );
+      allow update: if signedIn() && (
+        isAdmin() ||
+        scopedToCaller(resource.data) ||
+        scopedToCaller(request.resource.data)
+      );
+      allow delete: if false;
+    }
+
+    match /playerFriendLinks/{docId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.participants;
+      allow create: if signedIn()
+        && request.resource.data.participants is list
+        && request.auth.uid in request.resource.data.participants;
+      allow update: if signedIn()
+        && resource.data.participants is list
+        && request.resource.data.participants is list
+        && request.auth.uid in resource.data.participants
+        && request.auth.uid in request.resource.data.participants
+        && request.resource.data.participants == resource.data.participants;
+      allow delete: if false;
+    }
+
+    match /carerCreationRequests/{requestId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        resource.data.coadminUid == callerCoadminUid()
+      );
+      allow create, update, delete: if false;
+    }
+
     match /conversations/{conversationId} {
       allow read, update: if signedIn() && request.auth.uid in resource.data.participants;
       allow create: if signedIn() && request.auth.uid in request.resource.data.participants;
@@ -313,7 +433,8 @@ service cloud.firestore {
     }
 
     match /{document=**} {
-      allow read, write: if isAdmin();
+      allow read: if isAdmin();
+      allow write: if false;
     }
   }
 }
