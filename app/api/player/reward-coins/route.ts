@@ -16,6 +16,10 @@ function parsePositiveWhole(value: unknown) {
   return Math.max(0, Math.floor(n));
 }
 
+function canonicalPlayerCoadminUid(player: { coadminUid?: unknown; createdBy?: unknown }) {
+  return String(player.coadminUid || '').trim() || String(player.createdBy || '').trim();
+}
+
 async function verifyPlayerFromAuthHeader(request: Request) {
   const header = request.headers.get('Authorization') || '';
   const match = header.match(/^Bearer\s+(\S+)$/i);
@@ -56,6 +60,10 @@ function httpStatusForRewardCoinsError(error: unknown): number {
 
   if (code.startsWith('auth/') || /id token|authorization|credential|jwt|token/i.test(message)) {
     return 401;
+  }
+
+  if (/forbidden|outside your coadmin scope|different coadmin/i.test(message)) {
+    return 403;
   }
 
   const badRequestMarkers = [
@@ -137,13 +145,26 @@ export async function POST(request: Request) {
         coin?: number;
         promoLockedCoins?: number;
         username?: string;
+        coadminUid?: string | null;
+        createdBy?: string | null;
       };
-      const target = targetSnap.data() as { role?: string; coin?: number; username?: string };
+      const target = targetSnap.data() as {
+        role?: string;
+        coin?: number;
+        username?: string;
+        coadminUid?: string | null;
+        createdBy?: string | null;
+      };
       if (String(target.role || '').toLowerCase() !== 'player') {
         throw new Error('Target user must be a player.');
       }
       if (String(sender.role || '').toLowerCase() !== 'player') {
         throw new Error('Only players can reward coins.');
+      }
+      const senderCoadminUid = canonicalPlayerCoadminUid(sender);
+      const targetCoadminUid = canonicalPlayerCoadminUid(target);
+      if (!senderCoadminUid || !targetCoadminUid || senderCoadminUid !== targetCoadminUid) {
+        throw new Error('Forbidden: reward coins can only be sent within the same coadmin scope.');
       }
 
       const senderCoin = Math.max(0, parsePositiveWhole(sender.coin));
@@ -172,6 +193,7 @@ export async function POST(request: Request) {
         feeCoins,
         receivedCoins: recipientCoins,
         feePercent: REWARD_TRANSFER_FEE_PERCENT,
+        coadminUid: senderCoadminUid,
         createdAt: FieldValue.serverTimestamp(),
       });
     });
