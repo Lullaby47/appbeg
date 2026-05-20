@@ -2336,13 +2336,16 @@ export default function PlayerPage() {
     }
   }
 
-  function handleChangeView(view: PlayerView) {
+  function handleChangeView(view: PlayerView, options: { scrollToTop?: boolean } = {}) {
     setActiveView(view);
     setMobileMenuOpen(false);
     setMessage('');
     setSelectedAgent(null);
     setNewMessage('');
     handleClearImage();
+    if (options.scrollToTop === false) {
+      return;
+    }
     // Player page scrolls inside its own container, not only the window.
     requestAnimationFrame(() => {
       pageScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
@@ -2392,7 +2395,7 @@ export default function PlayerPage() {
       return;
     }
 
-    handleChangeView(nextView);
+    handleChangeView(nextView, { scrollToTop: false });
   }
 
   function togglePassword(loginId: string) {
