@@ -94,7 +94,7 @@ export async function POST(request: Request) {
     tokenCheck.payload.automationAgentId === agentId;
   const auth = hasValidSecret || hasValidBrowserToken
     ? null
-    : await requireApiUser(request, ['carer', 'staff', 'coadmin', 'admin']);
+    : await requireApiUser(request, ['carer']);
   logAutoTickTiming('auth', authStartedAt, {
     authMode: hasValidSecret ? 'secret' : hasValidBrowserToken ? 'browser_token' : 'firebase',
     ok: !(auth && 'response' in auth),
@@ -103,45 +103,37 @@ export async function POST(request: Request) {
   if (auth && 'response' in auth) {
     return auth.response;
   }
-  if (auth && 'user' in auth && auth.user.role === 'carer' && auth.user.uid !== carerUid) {
+  if (auth && 'user' in auth && auth.user.uid !== carerUid) {
     return apiError('Forbidden: cannot tick automation for another carer.', 403);
   }
 
   const userReadStartedAt = Date.now();
-  const authUser = auth && 'user' in auth ? auth.user : null;
-  let userData: { automationAgentId?: string | null; username?: string | null };
-  if (hasValidBrowserToken && tokenCheck?.ok === true) {
-    userData = {
-      automationAgentId: tokenCheck.payload.automationAgentId,
-      username: tokenCheck.payload.username || null,
-    };
-    logAutoTickTiming('user_read', userReadStartedAt, {
+  const userSnap = await adminDb.collection('users').doc(carerUid).get();
+  logAutoTickTiming('user_read', userReadStartedAt, {
+    carerUid,
+    exists: userSnap.exists,
+  });
+  if (!userSnap.exists) {
+    return apiError('User not found.', 404);
+  }
+  const userData = userSnap.data() as {
+    automationAgentId?: string | null;
+    username?: string | null;
+    role?: string | null;
+    coadminUid?: string | null;
+    createdBy?: string | null;
+  };
+  if (String(userData.role || '').toLowerCase() !== 'carer') {
+    return apiError('Automation auto-tick is only available for carer accounts.', 403);
+  }
+  const coadminUid =
+    String(userData.coadminUid || '').trim() || String(userData.createdBy || '').trim();
+  if (!coadminUid) {
+    console.info('[AUTO_TICK] skipped auto tick', {
       carerUid,
-      exists: true,
-      skipped: true,
-      reason: 'browser_token_claims',
+      reason: 'missing_profile_coadmin_uid',
     });
-  } else if (authUser && authUser.uid === carerUid) {
-    userData = {
-      automationAgentId: authUser.automationAgentId || null,
-      username: authUser.username || null,
-    };
-    logAutoTickTiming('user_read', userReadStartedAt, {
-      carerUid,
-      exists: true,
-      skipped: true,
-      reason: 'reused_requireApiUser_profile',
-    });
-  } else {
-    const userSnap = await adminDb.collection('users').doc(carerUid).get();
-    logAutoTickTiming('user_read', userReadStartedAt, {
-      carerUid,
-      exists: userSnap.exists,
-    });
-    if (!userSnap.exists) {
-      return apiError('User not found.', 404);
-    }
-    userData = userSnap.data() as { automationAgentId?: string | null; username?: string | null };
+    return NextResponse.json({ ok: true, claimed: false, reason: 'missing_coadmin_uid' });
   }
   console.info('[AUTO_TICK] request received', {
     carerUid,
@@ -174,7 +166,8 @@ export async function POST(request: Request) {
     carerUsername: String(userData.username || '').trim() || null,
     stateExists: stateSnap.exists,
     enabled: Boolean(state?.enabled),
-    coadminUid: String(state?.coadminUid || '').trim() || null,
+    stateCoadminUidIgnored: String(state?.coadminUid || '').trim() || null,
+    coadminUid,
   });
   if (!state?.enabled) {
     console.info('[AUTO_TICK] skipped auto tick', {
@@ -183,15 +176,6 @@ export async function POST(request: Request) {
     });
     return NextResponse.json({ ok: true, claimed: false, reason: 'disabled' });
   }
-  const coadminUid = String(state.coadminUid || '').trim();
-  if (!coadminUid) {
-    console.info('[AUTO_TICK] skipped auto tick', {
-      carerUid,
-      reason: 'missing_coadmin_uid',
-    });
-    return NextResponse.json({ ok: true, claimed: false, reason: 'missing_coadmin_uid' });
-  }
-
   const leaseStartedAt = Date.now();
   const isBrowserAutoTick = !hasValidSecret && instanceId.startsWith('carer-ui-');
   if (isBrowserAutoTick) {
@@ -425,6 +409,7 @@ export async function POST(request: Request) {
     try {
       const result = await claimCarerTaskAsAdmin({
         carerUid,
+        carerCoadminUid: coadminUid,
         taskId: docSnap.id,
         currentUsername,
         carerName,

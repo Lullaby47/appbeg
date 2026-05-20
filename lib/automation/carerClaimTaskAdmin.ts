@@ -181,6 +181,7 @@ export type ClaimCarerTaskAdminResult = {
 
 export async function claimCarerTaskAsAdmin(input: {
   carerUid: string;
+  carerCoadminUid: string;
   taskId: string;
   currentUsername?: string | null;
   carerName?: string | null;
@@ -265,6 +266,17 @@ export async function claimCarerTaskAsAdmin(input: {
       }
 
       const freshTask = taskSnap.data() as Record<string, unknown>;
+      const carerCoadminUid = String(input.carerCoadminUid || '').trim();
+      const taskCoadminUid = String(freshTask.coadminUid || '').trim();
+      if (!carerCoadminUid || taskCoadminUid !== carerCoadminUid) {
+        console.warn('[automation] cross-scope task claim blocked', {
+          taskId: taskSnap.id,
+          carerUid: input.carerUid,
+          carerCoadminUid: carerCoadminUid || null,
+          taskCoadminUid: taskCoadminUid || null,
+        });
+        throw new Error('Forbidden: task is outside the carer coadmin scope.');
+      }
       const createdByName = input.carerName?.trim() || userData.username?.trim() || 'Carer';
       console.info('[TASK_START] taskId=%s begin path=claimCarerTaskAsAdmin', taskSnap.id);
       console.info('[AUTO_CLAIM_ADMIN] before task status fields', {
@@ -644,7 +656,7 @@ export async function claimCarerTaskAsAdmin(input: {
         currentCarerName: createdByName,
         currentUsername: input.currentUsername ?? null,
       });
-      const coadminUid = String(freshTask.coadminUid || '').trim();
+      const coadminUid = taskCoadminUid;
       const staleOrFailedJob =
         !skipSingleStaleJobCleanup &&
         activeExistingJob &&

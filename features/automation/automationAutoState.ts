@@ -6,7 +6,6 @@ export const AUTOMATION_AUTO_STATE_COLLECTION = 'automation_auto_state';
 
 export type CarerAutomationAutoStateDoc = {
   enabled?: boolean;
-  coadminUid?: string;
   startedAt?: unknown;
   startedBy?: string;
   stoppedAt?: unknown;
@@ -59,7 +58,6 @@ export async function setCarerAutomationAutoEnabled(input: {
     ref,
     {
       enabled: input.enabled,
-      coadminUid: coadmin,
       updatedAt: serverTimestamp(),
       ...(input.enabled
         ? {
