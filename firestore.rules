@@ -467,18 +467,82 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    function automationJobActiveStatus(status) {
+      return status in ['queued', 'waiting', 'running', 'in_progress', 'cancelled_requested'];
+    }
+
+    function automationJobCreateAllowed() {
+      return isCarer()
+        && request.resource.data.carerUid == request.auth.uid
+        && request.resource.data.createdByUid == request.auth.uid
+        && scopedToCaller(request.resource.data)
+        && request.resource.data.status == 'queued'
+        && request.resource.data.keys().hasOnly([
+          'carerUid',
+          'coadminUid',
+          'agentId',
+          'taskId',
+          'type',
+          'status',
+          'payload',
+          'createdByUid',
+          'createdByName',
+          'createdAt',
+          'updatedAt',
+          'startedAt',
+          'completedAt',
+          'ttlExpiresAt',
+          'error',
+          'attempts',
+          'lastHeartbeatAt'
+        ]);
+    }
+
+    function automationJobSafeClientUpdateAllowed() {
+      return isCarer()
+        && resource.data.carerUid == request.auth.uid
+        && request.resource.data.carerUid == resource.data.carerUid
+        && request.resource.data.coadminUid == resource.data.coadminUid
+        && request.resource.data.createdByUid == resource.data.createdByUid
+        && request.resource.data.taskId == resource.data.taskId
+        && request.resource.data.type == resource.data.type
+        && request.resource.data.agentId == resource.data.agentId
+        && request.resource.data.payload == resource.data.payload
+        && scopedToCaller(resource.data)
+        && automationJobActiveStatus(resource.data.status)
+        && request.resource.data.status in ['cancelled', 'failed']
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'claimedStatus',
+          'cancelledAt',
+          'cancelledReason',
+          'updatedAt',
+          'lastHeartbeatAt',
+          'completedAt',
+          'ttlExpiresAt',
+          'error',
+          'result',
+          'startedAt'
+        ]);
+    }
+
     match /automation_jobs/{jobId} {
       allow read: if signedIn() && (
         isAdmin() ||
-        resource.data.carerUid == request.auth.uid ||
+        (isCarer() && resource.data.carerUid == request.auth.uid) ||
         (isScopedWorker() && scopedToCaller(resource.data))
       );
-      allow create, update: if signedIn() && (
+
+      allow create: if signedIn() && (
         isAdmin() ||
-        request.resource.data.carerUid == request.auth.uid ||
-        resource.data.carerUid == request.auth.uid ||
-        (isScopedWorker() && scopedToCaller(request.resource.data))
+        automationJobCreateAllowed()
       );
+
+      allow update: if signedIn() && (
+        isAdmin() ||
+        automationJobSafeClientUpdateAllowed()
+      );
+
       allow delete: if false;
     }
 
