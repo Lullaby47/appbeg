@@ -8,7 +8,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { AnimatePresence, motion } from 'motion/react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc, onSnapshot, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import imageCompression from 'browser-image-compression';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
@@ -632,7 +632,6 @@ export default function PlayerPage() {
   const cashoutSplashSeenIdsRef = useRef<Set<string>>(new Set());
   const knownCashoutStatusByIdRef = useRef<Record<string, string>>({});
   const referralCodeEnsureInFlightRef = useRef(false);
-  const lastSyncedRequestTotalsRef = useRef<string | null>(null);
   const clipboardToastTimerRef = useRef<number | null>(null);
   const rechargeSuccessSplashTimerRef = useRef<number | null>(null);
 
@@ -1247,28 +1246,6 @@ export default function PlayerPage() {
     knownRedeemRequestStatusByIdRef.current = nextStatusById;
   }, [playerUid, requestHistory]);
 
-  const requestTotals = useMemo(() => {
-    return requestHistory.reduce(
-      (acc, request) => {
-        const amount = Math.max(0, Number(request.amount || 0));
-        if (request.type === 'recharge') {
-          acc.rechargeAmount += amount;
-          acc.rechargeCount += 1;
-        } else if (request.type === 'redeem') {
-          acc.redeemAmount += amount;
-          acc.redeemCount += 1;
-        }
-        return acc;
-      },
-      {
-        rechargeAmount: 0,
-        redeemAmount: 0,
-        rechargeCount: 0,
-        redeemCount: 0,
-      }
-    );
-  }, [requestHistory]);
-
   const usernamesCreatorFilterKeys = useMemo(() => {
     const uidSet = new Set<string>();
     let hasMissingCreator = false;
@@ -1872,37 +1849,6 @@ export default function PlayerPage() {
 
     return () => unsubscribe();
   }, [playerUid]);
-
-  useEffect(() => {
-    if (!playerUid) {
-      return;
-    }
-
-    const totalsSignature = JSON.stringify({
-      playerUid,
-      rechargeAmount: Math.round(requestTotals.rechargeAmount),
-      redeemAmount: Math.round(requestTotals.redeemAmount),
-      rechargeCount: requestTotals.rechargeCount,
-      redeemCount: requestTotals.redeemCount,
-    });
-
-    if (lastSyncedRequestTotalsRef.current === totalsSignature) {
-      return;
-    }
-
-    lastSyncedRequestTotalsRef.current = totalsSignature;
-
-    void updateDoc(doc(db, 'users', playerUid), {
-      totalRechargeAmount: Math.round(requestTotals.rechargeAmount),
-      totalRedeemAmount: Math.round(requestTotals.redeemAmount),
-      totalRechargeCount: requestTotals.rechargeCount,
-      totalRedeemCount: requestTotals.redeemCount,
-      rechargeRedeemTotalsUpdatedAt: new Date(),
-    }).catch(() => {
-      lastSyncedRequestTotalsRef.current = null;
-      // Non-blocking metrics sync.
-    });
-  }, [playerUid, requestTotals]);
 
   useEffect(() => {
     if (!referredByPlayerUid || referredByPlayerName) {
