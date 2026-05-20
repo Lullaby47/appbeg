@@ -1,4 +1,4 @@
-import { doc, getDoc, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
 
@@ -29,6 +29,26 @@ export function validateAutomationAgentId(agentId: string): {
     };
   }
   return { valid: true, normalized: trimmed };
+}
+
+async function postAutomationAgentUpdate(body: Record<string, unknown>) {
+  const current = auth.currentUser;
+  if (!current) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await current.getIdToken();
+  const response = await fetch('/api/carer/automation-agent', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to update automation agent.');
+  }
 }
 
 export async function getCarerAutomationAgent(
@@ -80,26 +100,11 @@ export async function setCarerAutomationAgent(
   if (!v.valid || !v.normalized) {
     throw new Error(v.error || 'Invalid agent ID.');
   }
-  const userRef = doc(db, 'users', carerUid);
-  const snap = await getDoc(userRef);
-  if (!snap.exists()) {
-    throw new Error('Profile not found.');
-  }
-  const role = String((snap.data() as { role?: string }).role || '').toLowerCase();
-  if (role !== 'carer') {
-    throw new Error('Only carers can link an automation agent.');
-  }
-  const hadAgent = Boolean(
-    String((snap.data() as { automationAgentId?: string }).automationAgentId || '').trim()
-  );
-  const payload: Record<string, unknown> = {
-    automationAgentId: v.normalized,
-    automationAgentUpdatedAt: serverTimestamp(),
-  };
-  if (!hadAgent) {
-    payload.automationAgentLinkedAt = serverTimestamp();
-  }
-  await updateDoc(userRef, payload);
+  await postAutomationAgentUpdate({
+    action: 'link',
+    carerUid,
+    agentId: v.normalized,
+  });
 }
 
 export async function disconnectCarerAutomationAgent(carerUid: string): Promise<void> {
@@ -107,18 +112,8 @@ export async function disconnectCarerAutomationAgent(carerUid: string): Promise<
   if (!current || current.uid !== carerUid) {
     throw new Error('You can only disconnect your own automation agent.');
   }
-  const userRef = doc(db, 'users', carerUid);
-  const snap = await getDoc(userRef);
-  if (!snap.exists()) {
-    throw new Error('Profile not found.');
-  }
-  const role = String((snap.data() as { role?: string }).role || '').toLowerCase();
-  if (role !== 'carer') {
-    throw new Error('Only carers can disconnect an automation agent.');
-  }
-  await updateDoc(userRef, {
-    automationAgentId: null,
-    automationAgentLinkedAt: null,
-    automationAgentUpdatedAt: serverTimestamp(),
+  await postAutomationAgentUpdate({
+    action: 'disconnect',
+    carerUid,
   });
 }
