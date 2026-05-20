@@ -13,6 +13,10 @@ type Body = {
   paymentDetails?: unknown;
 };
 
+function canSettleCarerCashout(role: string) {
+  return role === 'admin' || role === 'coadmin';
+}
+
 export async function POST(request: Request) {
   try {
     const auth = await requireApiUser(request, ['carer', 'staff', 'coadmin', 'admin']);
@@ -57,6 +61,9 @@ export async function POST(request: Request) {
     const cashoutRef = adminDb.collection('carerCashouts').doc(cashoutId);
 
     if (action === 'complete') {
+      if (!canSettleCarerCashout(auth.user.role)) {
+        return apiError('Forbidden: only admin or coadmin can complete cashout requests.', 403);
+      }
       const doneAmountNpr = Math.max(0, Math.round(Number(body.amountNpr || 0)));
       await adminDb.runTransaction(async (transaction) => {
         const cashoutSnap = await transaction.get(cashoutRef);
@@ -114,6 +121,9 @@ export async function POST(request: Request) {
     }
 
     if (action === 'decline') {
+      if (!canSettleCarerCashout(auth.user.role)) {
+        return apiError('Forbidden: only admin or coadmin can decline cashout requests.', 403);
+      }
       await adminDb.runTransaction(async (transaction) => {
         const cashoutSnap = await transaction.get(cashoutRef);
         if (!cashoutSnap.exists) throw new Error('Cashout request not found.');
