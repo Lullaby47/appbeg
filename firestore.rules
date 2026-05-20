@@ -81,6 +81,55 @@ service cloud.firestore {
       ]);
     }
 
+    function adminCoadminUserBrowserUpdateAllowed() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'displayName',
+        'name',
+        'usernameDisplay',
+        'photoURL',
+        'avatarUrl',
+        'phone',
+        'notificationPreferences',
+        'updatedAt',
+        'lastSeenAt',
+        'theme',
+        'preferences',
+        'paymentDetailPhotos',
+        'paymentDetailPhotoUrls',
+        'paymentQrUrl',
+        'paymentQrPublicId',
+        'paymentDetails'
+      ]);
+    }
+
+    function playerCarerEscalationAlertCreateAllowed() {
+      return isPlayer()
+        && request.resource.data.playerUid == request.auth.uid
+        && scopedToCaller(request.resource.data)
+        && request.resource.data.escalationFrom == 'player'
+        && request.resource.data.contextType == 'cashbox_inquiry'
+        && request.resource.data.taskId == null
+        && request.resource.data.createdByCarerUid == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'coadminUid',
+          'contextType',
+          'escalationFrom',
+          'taskId',
+          'playerUid',
+          'playerUsername',
+          'gameName',
+          'message',
+          'createdByCarerUid',
+          'createdByCarerUsername',
+          'createdAt',
+          'status'
+        ])
+        && (
+          !request.resource.data.keys().hasAny(['status']) ||
+          request.resource.data.status in ['open', 'pending']
+        );
+    }
+
     match /users/{uid} {
       allow read: if signedIn() && (request.auth.uid == uid || isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)));
 
@@ -126,7 +175,7 @@ service cloud.firestore {
       // directly. Keep those functional, but never allow direct role changes.
       allow update: if signedIn()
         && (isAdmin() || (isCoadmin() && scopedToCaller(resource.data)))
-        && !protectedUserFieldsChanged();
+        && adminCoadminUserBrowserUpdateAllowed();
 
       allow create, delete: if false;
     }
@@ -368,7 +417,7 @@ service cloud.firestore {
       allow create: if signedIn() && (
         isAdmin() ||
         (isScopedWorker() && scopedToCaller(request.resource.data)) ||
-        request.resource.data.playerUid == request.auth.uid
+        playerCarerEscalationAlertCreateAllowed()
       );
       allow update: if signedIn() && (
         (
