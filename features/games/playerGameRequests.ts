@@ -671,57 +671,15 @@ export async function dismissPendingRedeemAsCarer(requestId: string) {
     throw new Error('Only carers can dismiss pending redeem tasks this way.');
   }
 
-  const carerCoadminUid = await getCurrentUserCoadminUid();
-
-  const requestRef = doc(db, 'playerGameRequests', requestId);
-  const taskRef = doc(db, 'carerTasks', `request__${requestId}`);
-
-  await runTransaction(db, async (transaction) => {
-    const [requestSnap, taskSnap] = await Promise.all([
-      transaction.get(requestRef),
-      transaction.get(taskRef),
-    ]);
-
-    if (!requestSnap.exists()) {
-      throw new Error('Request not found.');
-    }
-
-    const requestData = requestSnap.data() as Omit<PlayerGameRequest, 'id'>;
-
-    if (requestData.type !== 'redeem') {
-      throw new Error('Only redeem requests can be dismissed.');
-    }
-
-    if (requestData.status !== 'pending') {
-      throw new Error('Only pending redeem requests can be dismissed.');
-    }
-
-    const playerRef = doc(db, 'users', requestData.playerUid);
-    const playerSnap = await transaction.get(playerRef);
-
-    if (!playerSnap.exists()) {
-      throw new Error('Player not found.');
-    }
-
-    const playerData = playerSnap.data() as CoadminScopedRecord;
-    const playerCoin = Number((playerData as { coin?: number }).coin || 0);
-
-    if (!belongsToCoadmin(playerData, carerCoadminUid)) {
-      throw new Error('This request is outside your coadmin scope.');
-    }
-
-    transaction.update(requestRef, {
-      status: 'dismissed',
-      completedAt: serverTimestamp(),
-      ttlExpiresAt: completedPlayerGameRequestTtl(),
-      pokedAt: null,
-      pokeMessage: null,
-    });
-
-    if (taskSnap.exists()) {
-      transaction.delete(taskRef);
-    }
+  const response = await fetch('/api/carer/game-requests/dismiss-redeem', {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({ requestId }),
   });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to dismiss redeem request.', payload));
+  }
 }
 
 /**
