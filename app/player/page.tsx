@@ -3,7 +3,7 @@
 import '../../styles/player-fire.css';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { MouseEvent } from 'react';
+import type { MouseEvent, TouchEvent } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { AnimatePresence, motion } from 'motion/react';
@@ -519,6 +519,14 @@ const NAV_ITEMS: {
   { label: 'Vault', view: 'usernames', icon: 'user-secret', emoji: '🔐' },
 ];
 
+const SWIPE_NAV_VIEWS: PlayerView[] = [
+  'dashboard',
+  'bonus-events',
+  'earn-coins',
+  'agents',
+  'usernames',
+];
+
 export default function PlayerPage() {
   const router = useRouter();
   const [activeView, setActiveView] = useState<PlayerView>('dashboard');
@@ -947,6 +955,7 @@ export default function PlayerPage() {
   }, [showActiveTableSplash]);
   const selfClaimedBonusIdRef = useRef<string | null>(null);
   const lastBonusIdsRef = useRef<string[]>([]);
+  const panelSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const musicEnabledRef = useRef(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const currentTrackRef = useRef<string | null>(null);
@@ -2341,6 +2350,51 @@ export default function PlayerPage() {
     });
   }
 
+  function handlePanelTouchStart(event: TouchEvent<HTMLDivElement>) {
+    if (event.touches.length !== 1) {
+      panelSwipeStartRef.current = null;
+      return;
+    }
+
+    const touch = event.touches[0];
+    panelSwipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+  }
+
+  function handlePanelTouchEnd(event: TouchEvent<HTMLDivElement>) {
+    const start = panelSwipeStartRef.current;
+    panelSwipeStartRef.current = null;
+    if (!start || event.changedTouches.length !== 1) {
+      return;
+    }
+
+    const touch = event.changedTouches[0];
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    const absX = Math.abs(deltaX);
+    const absY = Math.abs(deltaY);
+
+    // Ignore small accidental drags; users often nudge the page while tapping controls.
+    const minimumHorizontalSwipePx = 50;
+    // Only mostly-horizontal gestures switch panels, preserving normal vertical scrolling.
+    const horizontalDominanceRatio = 1.5;
+    if (absX < minimumHorizontalSwipePx || absX < absY * horizontalDominanceRatio) {
+      return;
+    }
+
+    const currentIndex = SWIPE_NAV_VIEWS.indexOf(activeView);
+    if (currentIndex === -1) {
+      return;
+    }
+
+    const nextIndex = deltaX < 0 ? currentIndex + 1 : currentIndex - 1;
+    const nextView = SWIPE_NAV_VIEWS[nextIndex];
+    if (!nextView) {
+      return;
+    }
+
+    handleChangeView(nextView);
+  }
+
   function togglePassword(loginId: string) {
     setVisiblePasswords((previous) => ({
       ...previous,
@@ -2994,7 +3048,11 @@ export default function PlayerPage() {
           <div className="pointer-events-none absolute top-0 right-0 h-72 w-72 rounded-full bg-amber-500/10 blur-3xl" />
 
           <div className="relative z-10 flex min-h-0 flex-1 flex-col">
-            <div className="flex min-h-0 flex-1 flex-col overflow-x-hidden px-3 pb-4 pt-4 md:px-7 md:pb-8 md:pt-6">
+            <div
+              className="flex min-h-0 flex-1 flex-col overflow-x-hidden px-3 pb-4 pt-4 md:px-7 md:pb-8 md:pt-6"
+              onTouchStart={handlePanelTouchStart}
+              onTouchEnd={handlePanelTouchEnd}
+            >
               {activeView === 'dashboard' ? (
               <>
               <div className="player-lobby-action-grid relative z-20 mb-4 hidden shrink-0 gap-2 md:grid md:gap-2.5 lg:gap-3">
@@ -3666,6 +3724,7 @@ export default function PlayerPage() {
                             if (Math.abs(deltaX) < 40) {
                               return;
                             }
+                            event.stopPropagation();
                             if (deltaX < 0) {
                               setBonusCarouselIndex((i) =>
                                 i >= playerBonusEvents.length - 1 ? 0 : i + 1
