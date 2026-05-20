@@ -217,11 +217,12 @@ service cloud.firestore {
       allow create: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(request.resource.data)));
       allow update: if signedIn() && (
         isAdmin() ||
-        isCoadmin() ||
         (
-          (isCarer() || isStaff()) &&
-            scopedToCaller(resource.data) &&
+          isScopedWorker() &&
+          scopedToCaller(resource.data) &&
+          scopedToCaller(request.resource.data) &&
           (
+            isCoadmin() ||
             resource.data.assignedCarerUid == request.auth.uid ||
             resource.data.assignedHandlerUid == request.auth.uid ||
             resource.data.status == 'pending'
