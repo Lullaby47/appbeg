@@ -11,7 +11,6 @@ import {
   runTransaction,
   serverTimestamp,
   where,
-  writeBatch,
 } from 'firebase/firestore';
 
 import { auth, db, getClientDb } from '@/lib/firebase/client';
@@ -128,97 +127,34 @@ function normalizeClaimedStatus(value: unknown) {
   return normalized;
 }
 
-function buildTaskClaimReleaseFields(
-  automationError: string | null,
-  status: 'pending' | 'failed' = 'pending',
-  automationStatus: 'waiting' | 'failed' | 'pending_review' | null = null
-) {
-  return {
-    status,
-    assignedCarerUid: null,
-    assignedCarer: null,
-    assignedCarerUsername: null,
-    claimedStatus: null,
-    claimedAt: null,
-    claimedByUid: null,
-    claimedByUsername: null,
-    startedAt: null,
-    runningAt: null,
-    expiresAt: null,
-    completedAt: null,
-    cancelledAt: null,
-    failedAt: null,
-    ttlExpiresAt: null,
-    completedByCarerUid: null,
-    completedByCarerUsername: null,
-    lastHeartbeatAt: null,
-    automationStatus,
-    automationJobId: null,
-    linkedJobId: null,
-    currentJobId: null,
-    activeJobId: null,
-    assignedJobStatus: null,
-    automationError,
-    error: null,
-    failureReason: null,
-    lastFailureReason: null,
-    retryPending: status === 'pending',
-    resetToPendingAt: status === 'pending' ? serverTimestamp() : null,
-    returnedToPendingAt: status === 'pending' ? serverTimestamp() : null,
-    pendingSince: status === 'pending' ? serverTimestamp() : null,
-    automationUpdatedAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  };
-}
-
-function buildLinkedRequestPendingResetFields() {
-  return {
-    status: 'pending',
-    automationStatus: null,
-    automationJobId: null,
-    linkedJobId: null,
-    completedAt: null,
-    dismissedAt: null,
-    failedAt: null,
-    ttlExpiresAt: null,
-    pokedAt: null,
-    pokeMessage: null,
-    fakeRedeem: null,
-    fakeRedeemReason: null,
-    dismissType: null,
-    dismissedByAutomation: null,
-    dismissReasonCode: null,
-    dismissReasonMessage: null,
-    dismissMeta: null,
-    automationError: null,
-    resetToPendingAt: serverTimestamp(),
-    returnedToPendingAt: serverTimestamp(),
-    error: null,
-    failureReason: null,
-    lastFailureReason: null,
-    retryPending: true,
-    updatedAt: serverTimestamp(),
-  };
-}
-
-function logTaskResetPending(details: {
-  taskId: string;
-  oldStatus?: string | null;
-  oldAutomationJobId?: string | null;
-  oldLinkedJobId?: string | null;
-}) {
-  console.info('[TASK_RESET_PENDING] taskId=%s', details.taskId);
-  console.info('[TASK_RESET_PENDING] oldStatus=%s', details.oldStatus || null);
-  console.info('[TASK_RESET_PENDING] oldAutomationJobId=%s', details.oldAutomationJobId || null);
-  console.info('[TASK_RESET_PENDING] oldLinkedJobId=%s', details.oldLinkedJobId || null);
-  console.info('[TASK_RESET_PENDING] cleared stale automation fields');
-  console.info('[TASK_RESET_PENDING] status=pending updatedAt=serverTimestamp');
-}
-
 async function forceRefreshTaskFromServer(taskId: string, taskRef = doc(db, 'carerTasks', taskId)) {
   const snapshot = await getDocFromServer(taskRef);
   console.info('[FIRESTORE] forced server refresh taskId=%s', taskId);
   return snapshot;
+}
+
+async function getAuthHeaders() {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await currentUser.getIdToken();
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+  };
+}
+
+function readApiError(messageFallback: string, payload: unknown) {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    'error' in payload &&
+    typeof (payload as { error?: unknown }).error === 'string'
+  ) {
+    return String((payload as { error: string }).error || messageFallback);
+  }
+  return messageFallback;
 }
 
 function isAgentSupportedAutomationType(value: QueuedAutomationType) {
@@ -1296,294 +1232,17 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
   }
 
   const taskRef = doc(db, 'carerTasks', taskId);
-  const deterministicJobRef = doc(db, 'automation_jobs', automationJobDocId(currentUser.uid, taskId));
-  const loadSameTaskJobRefs = async () => {
-    const sameTaskJobsSnap = await getDocsFromServer(
-      query(collection(db, 'automation_jobs'), where('taskId', '==', taskId), limit(20))
-    );
-    return sameTaskJobsSnap.docs.map((jobSnap) => jobSnap.ref);
-  };
-  const isRetryableConcurrencyError = (error: unknown) => {
-    const code = String(
-      (error as { code?: string } | null | undefined)?.code || ''
-    ).toLowerCase();
-    const message = String(
-      (error as { message?: string } | null | undefined)?.message || ''
-    ).toLowerCase();
-    return (
-      code.includes('failed-precondition') ||
-      code.includes('aborted') ||
-      message.includes('failed-precondition') ||
-      message.includes('too much contention') ||
-      message.includes('transaction')
-    );
-  };
-
-  const concurrencyRetryMessage = 'Task was already changed. Please refresh and try again.';
-  const runResetTransaction = async (attempt: number) => {
-    const sameTaskJobRefs = await loadSameTaskJobRefs();
-    console.info('[carer] returnToPendingTransactionStarted', {
-      taskId,
-      retryCount: attempt - 1,
-      sameTaskJobIds: sameTaskJobRefs.map((jobRef) => jobRef.id),
-    });
-    const taskSnap = await forceRefreshTaskFromServer(taskId, taskRef);
-    if (!taskSnap.exists()) {
-      throw new Error('Task not found.');
-    }
-      const taskData = taskSnap.data() as Record<string, unknown>;
-      const linkedJobId = String(taskData.automationJobId || '').trim();
-      const requestId = String(taskData.requestId || '').trim();
-      const oldTaskStatus = String(taskData.status || '').trim().toLowerCase() || null;
-      const jobRefs = Array.from(
-      new Map(
-        [
-          deterministicJobRef,
-          ...(linkedJobId ? [doc(db, 'automation_jobs', linkedJobId)] : []),
-          ...sameTaskJobRefs,
-        ].map((jobRef) => [jobRef.id, jobRef])
-      ).values()
-    );
-    const jobSnaps = await Promise.all(jobRefs.map((jobRef) => getDocFromServer(jobRef)));
-    const jobStates = jobRefs.map((jobRef, index) => {
-      const jobSnap = jobSnaps[index];
-      const jobData = jobSnap.exists() ? (jobSnap.data() as Record<string, unknown>) : null;
-      return {
-        ref: jobRef,
-        exists: jobSnap.exists(),
-        status: String(jobData?.status || '').trim().toLowerCase(),
-        taskId: String(jobData?.taskId || '').trim(),
-      };
-    });
-    const linkedJobState =
-      jobStates.find((job) => job.ref.id === linkedJobId) ||
-      jobStates.find((job) => job.ref.id === deterministicJobRef.id) ||
-      null;
-    const requestRef = requestId ? doc(db, 'playerGameRequests', requestId) : null;
-    const requestSnap = requestRef ? await getDocFromServer(requestRef) : null;
-    const requestData = requestSnap?.exists()
-      ? (requestSnap.data() as Record<string, unknown>)
-      : null;
-
-    console.info('[carer] back-to-pending clicked', {
-      taskId,
-      linkedJobId: linkedJobId || deterministicJobRef.id,
-      attempt,
-    });
-    console.info('[TASK_START] terminalCheck=%o', {
-      taskId,
-      path: 'returnTaskToPendingAndCancelAutomation',
-      linkedJobId: linkedJobId || null,
-      deterministicJobId: deterministicJobRef.id,
-      linkedJobStatus: linkedJobState?.status || null,
-      jobStates: jobStates.map((job) => ({
-        jobId: job.ref.id,
-        exists: job.exists,
-        status: job.status || null,
-        taskId: job.taskId || null,
-      })),
-    });
-    console.info('[carer] returnToPendingTransactionState', {
-      taskId,
-      oldTaskStatus,
-      oldAutomationJobId: linkedJobId || null,
-      oldJobStatus: linkedJobState?.status || null,
-      linkedRequestId: requestId || null,
-      linkedRequestStatus: String(requestData?.status || '').trim() || null,
-      linkedRequestAutomationStatus: String(requestData?.automationStatus || '').trim() || null,
-      retryCount: attempt - 1,
-      jobStates: jobStates.map((job) => ({
-        jobId: job.ref.id,
-        exists: job.exists,
-        status: job.status || null,
-        taskId: job.taskId || null,
-      })),
-    });
-
-    const batch = writeBatch(db);
-    jobStates.forEach((job) => {
-      if (!job.exists) {
-        return;
-      }
-      if (job.taskId && job.taskId !== taskId) {
-        return;
-      }
-      if (
-        job.status === 'queued' ||
-        job.status === 'waiting' ||
-        job.status === 'running' ||
-        job.status === 'in_progress' ||
-        job.status === 'cancelled_requested'
-      ) {
-        batch.update(job.ref, {
-          status: 'cancelled',
-          claimedStatus: 'cancelled',
-          cancelledAt: serverTimestamp(),
-          cancelledReason: 'returned_to_pending',
-          updatedAt: serverTimestamp(),
-          lastHeartbeatAt: serverTimestamp(),
-          completedAt: serverTimestamp(),
-          ttlExpiresAt: automationJobTtl(),
-          error: 'Cancelled by carer (returned_to_pending).',
-        });
-        console.info('[RETURN_TO_PENDING] stale active job cancelled', {
-          taskId,
-          jobId: job.ref.id,
-          previousStatus: job.status,
-          reason: 'returned_to_pending',
-        });
-        console.info('[carer] linked job cancelled', {
-          taskId,
-          linkedJobId: job.ref.id,
-          previousStatus: job.status,
-          nextStatus: 'cancelled',
-        });
-        console.info('[TASK_START] terminalCheck=active_cancelled taskId=%s linkedJobId=%s previousStatus=%s nextStatus=cancelled writeTimestamps=serverTimestamp',
-          taskId,
-          job.ref.id,
-          job.status
-        );
-        return;
-      }
-      console.info('[carer] linked job already terminal; stale link cleared on task', {
-        taskId,
-        linkedJobId: job.ref.id,
-        previousStatus: job.status || null,
-      });
-      console.info('[TASK_START] terminalCheck=terminal_stale_link_cleared taskId=%s linkedJobId=%s previousStatus=%s',
-        taskId,
-        job.ref.id,
-        job.status || null
-      );
-    });
-
-    batch.update(taskRef, {
-      ...buildTaskClaimReleaseFields(null, 'pending', null),
-      queuedAt: null,
-    });
-    console.info('[RETRY_RESET] task returned to pending after automation failure', {
-      taskId,
-      source: 'back_to_pending',
-      oldStatus: oldTaskStatus,
-      oldAutomationJobId: linkedJobId || null,
-    });
-    console.info('[RETRY_RESET] retryable failure forced task pending', {
-      taskId,
-      source: 'back_to_pending',
-    });
-    if (requestRef && requestSnap?.exists()) {
-      batch.update(requestRef, buildLinkedRequestPendingResetFields());
-      console.info('[RETRY_RESET] linked request returned to pending', {
-        taskId,
-        requestId,
-        source: 'back_to_pending',
-      });
-      console.info('[RETRY_RESET] retryable failure forced request pending', {
-        taskId,
-        requestId,
-        source: 'back_to_pending',
-      });
-      console.info('[carer] linked request reset to pending', {
-        taskId,
-        requestId,
-        oldStatus: String(requestData?.status || '').trim() || null,
-        oldAutomationStatus: String(requestData?.automationStatus || '').trim() || null,
-        oldAutomationJobId: String(requestData?.automationJobId || '').trim() || null,
-        oldLinkedJobId: String(requestData?.linkedJobId || '').trim() || null,
-      });
-    }
-    await batch.commit();
-    logTaskResetPending({
-      taskId,
-      oldStatus: oldTaskStatus,
-      oldAutomationJobId: linkedJobId || null,
-      oldLinkedJobId: String(taskData.linkedJobId || '').trim() || null,
-    });
-    console.info('[TASK_START] task status transition taskId=%s from=%s to=pending automationJobId=null writeTimestamps=serverTimestamp',
-      taskId,
-      oldTaskStatus || null
-    );
-    console.info('[carer] task reset complete', {
-      taskId,
-      attempt,
-      oldTaskStatus,
-      oldAutomationJobId: linkedJobId || null,
-      oldJobStatus: linkedJobState?.status || null,
-      clearedClaimFields: [
-        'status',
-        'assignedCarerUid',
-        'assignedCarer',
-        'assignedCarerUsername',
-        'claimedStatus',
-        'claimedAt',
-        'claimedByUid',
-        'claimedByUsername',
-        'startedAt',
-        'lastHeartbeatAt',
-        'automationStatus',
-        'automationJobId',
-        'automationError',
-        'queuedAt',
-      ],
-      retryCount: attempt - 1,
-    });
-    await forceRefreshTaskFromServer(taskId, taskRef);
-  };
-
-  let lastError: unknown = null;
-  for (let attempt = 1; attempt <= 4; attempt += 1) {
-    try {
-      await runResetTransaction(attempt);
-      return;
-    } catch (error) {
-      lastError = error;
-      if (!isRetryableConcurrencyError(error) || attempt >= 4) {
-        break;
-      }
-      // Explicit fresh read before one retry to avoid stale write races.
-      await forceRefreshTaskFromServer(taskId, taskRef);
-      console.info('[carer] returnToPending retrying after concurrency error', {
-        taskId,
-        retryCount: attempt,
-        message: error instanceof Error ? error.message : String(error),
-      });
-      await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
-    }
+  const response = await fetch('/api/carer/tasks/return-to-pending', {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({ taskId }),
+  });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to move task back to pending.', payload));
   }
 
-  const latestTaskSnap = await forceRefreshTaskFromServer(taskId, taskRef);
-  if (latestTaskSnap.exists()) {
-    const latestTask = latestTaskSnap.data() as Record<string, unknown>;
-    const latestStatus = String(latestTask.status || '').trim().toLowerCase();
-    const latestClaimedStatus = String(latestTask.claimedStatus || '').trim();
-    const latestClaimedByUid = String(latestTask.claimedByUid || '').trim();
-    const latestAssignedCarerUid = String(latestTask.assignedCarerUid || '').trim();
-    const latestAutomationJobId = String(latestTask.automationJobId || '').trim();
-    if (
-      latestStatus === 'pending' &&
-      !latestClaimedStatus &&
-      !latestClaimedByUid &&
-      !latestAssignedCarerUid &&
-      !latestAutomationJobId
-    ) {
-      return;
-    }
-    console.info('[carer] returnToPending latest state still claimed', {
-      taskId,
-      status: latestStatus || null,
-      claimedStatus: latestClaimedStatus || null,
-      claimedByUid: latestClaimedByUid || null,
-      assignedCarerUid: latestAssignedCarerUid || null,
-      automationJobId: latestAutomationJobId || null,
-    });
-  }
-
-  if (isRetryableConcurrencyError(lastError)) {
-    throw new Error(concurrencyRetryMessage);
-  }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error('Failed to move task back to pending.');
+  await forceRefreshTaskFromServer(taskId, taskRef);
 }
 
 export function listenAutomationUiStatusByTask(
