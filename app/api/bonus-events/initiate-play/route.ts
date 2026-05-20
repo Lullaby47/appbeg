@@ -42,10 +42,17 @@ export async function POST(request: Request) {
       const player = playerSnap.data() as {
         role?: string;
         coin?: number;
+        coadminUid?: string | null;
+        createdBy?: string | null;
         bonusBlockedUntil?: FirebaseFirestore.Timestamp | null;
       };
       if (String(player.role || '').toLowerCase() !== 'player') {
         throw new Error('Only players can start bonus event play.');
+      }
+      const playerCoadminUid =
+        String(player.coadminUid || '').trim() || String(player.createdBy || '').trim();
+      if (!playerCoadminUid) {
+        throw new Error('Player coadmin scope not found.');
       }
       if ((player.bonusBlockedUntil?.toMillis?.() || 0) > Date.now()) {
         throw new Error('Bonus play is temporarily blocked for this account.');
@@ -75,12 +82,15 @@ export async function POST(request: Request) {
       const boostedAmount = baseAmount + bonusAddAmount;
       const coadminUid = String(bonus.coadminUid || '').trim();
       if (!coadminUid) throw new Error('Bonus event coadmin scope missing.');
-      const maintenanceBreak = await getCoadminMaintenanceBreak(coadminUid);
+      if (coadminUid !== playerCoadminUid) {
+        throw new Error('Forbidden: bonus event is outside your coadmin scope.');
+      }
+      const maintenanceBreak = await getCoadminMaintenanceBreak(playerCoadminUid);
       if (maintenanceBreak.enabled) {
         console.info('[MAINTENANCE] blocked player action', {
           action: 'bonus_event',
           playerUid,
-          coadminUid,
+          coadminUid: playerCoadminUid,
         });
         throw new Error(`MAINTENANCE_BREAK:${maintenanceBreak.message}`);
       }

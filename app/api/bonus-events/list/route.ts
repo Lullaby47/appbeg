@@ -115,6 +115,17 @@ function resolveCoadminUidForRole(userDoc: {
   return String(userDoc.coadminUid || userDoc.createdBy || '').trim();
 }
 
+function resolveVisibleCoadminUid(values: {
+  role: string;
+  requestedCoadminUid: string;
+  derivedCoadminUid: string;
+}) {
+  if (values.role === 'admin') {
+    return values.requestedCoadminUid || values.derivedCoadminUid;
+  }
+  return values.derivedCoadminUid;
+}
+
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
@@ -143,10 +154,11 @@ export async function GET(request: Request) {
       ...userData,
     });
     const role = String(userData.role || '').toLowerCase();
-    const coadminUid =
-      role === 'coadmin'
-        ? derivedCoadminUid
-        : requestedCoadminUid || derivedCoadminUid;
+    const coadminUid = resolveVisibleCoadminUid({
+      role,
+      requestedCoadminUid,
+      derivedCoadminUid,
+    });
     if (!coadminUid) {
       return NextResponse.json({ events: [] });
     }

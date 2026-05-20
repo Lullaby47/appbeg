@@ -269,7 +269,11 @@ service cloud.firestore {
     }
 
     match /bonusEvents/{docId} {
-      allow read: if signedIn() && (isAdmin() || isPlayer() || (isScopedWorker() && scopedToCaller(resource.data)));
+      allow read: if signedIn() && (
+        isAdmin() ||
+        (isPlayer() && scopedToCaller(resource.data)) ||
+        (isScopedWorker() && scopedToCaller(resource.data))
+      );
       allow create: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(request.resource.data)));
       allow update, delete: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)));
     }
