@@ -245,10 +245,7 @@ service cloud.firestore {
 
     match /financialEvents/{eventId} {
       allow read: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)) || resource.data.playerUid == request.auth.uid);
-      // TODO: move all financial event creation to server routes. Until then,
-      // allow scoped workers/admins to keep current transaction-based workflows.
-      allow create: if signedIn() && (isAdmin() || isCoadmin() || isStaff() || isCarer());
-      allow update, delete: if false;
+      allow create, update, delete: if false;
     }
 
     match /gameLogins/{docId} {
