@@ -1,5 +1,6 @@
 import {
   doc,
+  getDoc,
   onSnapshot,
   serverTimestamp,
   setDoc,
@@ -7,6 +8,7 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
+import { getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
 import {
   DEFAULT_MAINTENANCE_MESSAGE,
   DEFAULT_MAINTENANCE_TITLE,
@@ -37,11 +39,25 @@ export function listenCoadminMaintenanceBreak(
   );
 }
 
+export async function getCoadminMaintenanceBreakClient(
+  coadminUid: string
+): Promise<MaintenanceBreak> {
+  const cleanCoadminUid = String(coadminUid || '').trim();
+  if (!cleanCoadminUid) {
+    return normalizeMaintenanceBreak(null);
+  }
+
+  const snapshot = await getDoc(doc(db, 'coadminMaintenance', cleanCoadminUid));
+  return normalizeMaintenanceBreak(snapshot.data()?.maintenanceBreak);
+}
+
 export async function setCoadminMaintenanceBreak(enabled: boolean) {
   const currentUser = auth.currentUser;
   if (!currentUser) {
     throw new Error('Not authenticated.');
   }
+
+  const coadminUid = await getCurrentUserCoadminUid();
 
   const maintenanceBreak = enabled
     ? {
@@ -60,9 +76,9 @@ export async function setCoadminMaintenanceBreak(enabled: boolean) {
       };
 
   await setDoc(
-    doc(db, 'coadminMaintenance', currentUser.uid),
+    doc(db, 'coadminMaintenance', coadminUid),
     {
-      coadminUid: currentUser.uid,
+      coadminUid,
       maintenanceBreak,
       updatedAt: serverTimestamp(),
       updatedBy: currentUser.uid,

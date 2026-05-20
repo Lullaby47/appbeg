@@ -25,7 +25,9 @@ import { jobCompleteGuard } from '@/lib/automation/jobCompleteGuard';
 import { auth, db } from '@/lib/firebase/client';
 import {
   getCurrentUserCoadminUid as getScopedCurrentUserCoadminUid,
+  resolveCoadminUid,
 } from '@/lib/coadmin/scope';
+import { getCoadminMaintenanceBreakClient } from '@/features/maintenance/maintenanceBreak';
 import { GameLogin, getGameLoginsByCoadmin } from '@/features/games/gameLogins';
 import {
   getPlayerGameLoginsByCoadmin,
@@ -1351,22 +1353,35 @@ async function dropPendingRechargeRequestsWithoutEnoughCoin(
 }
 
 export async function syncCarerTasksForCoadmin(coadminUid: string) {
+  const cleanCoadminUid = String(coadminUid || '').trim();
   const players = dedupeById(
-    (await getPlayersByCoadmin(coadminUid)).filter((player) => player.status !== 'disabled')
+    (await getPlayersByCoadmin(cleanCoadminUid)).filter((player) => player.status !== 'disabled')
   );
-  const games = dedupeById(await getGameLoginsByCoadmin(coadminUid));
-  const logins = dedupeById(await getPlayerGameLoginsByCoadmin(coadminUid));
-  const pendingRequestsRaw = await getPendingPlayerGameRequestsByCoadmin(coadminUid);
+  const games = dedupeById(await getGameLoginsByCoadmin(cleanCoadminUid));
+  const logins = dedupeById(await getPlayerGameLoginsByCoadmin(cleanCoadminUid));
+  const pendingRequestsRaw = await getPendingPlayerGameRequestsByCoadmin(cleanCoadminUid);
   const pendingRequests = await dropPendingRechargeRequestsWithoutEnoughCoin(
     pendingRequestsRaw.filter((request) => players.some((player) => player.uid === request.playerUid)),
     players
   );
-  const completedRequests = (await getCompletedPlayerGameRequestsByCoadmin(coadminUid)).filter(
+  const completedRequests = (await getCompletedPlayerGameRequestsByCoadmin(cleanCoadminUid)).filter(
     (request) => players.some((player) => player.uid === request.playerUid)
   );
 
+  const maintenanceBreak = await getCoadminMaintenanceBreakClient(cleanCoadminUid);
+  if (maintenanceBreak.enabled) {
+    console.info(`[MAINTENANCE] sync skipped for coadmin=${cleanCoadminUid}`);
+    return {
+      players,
+      games,
+      logins,
+      pendingRequests,
+      completedRequests,
+    };
+  }
+
   await syncCarerTasks({
-    coadminUid,
+    coadminUid: cleanCoadminUid,
     players,
     games,
     logins,
@@ -1994,17 +2009,40 @@ export async function createPlayerCredentialTask(values: {
     throw new Error('Game name is required.');
   }
 
+  const playerSnap = await getDoc(doc(db, 'users', values.playerUid));
+  if (!playerSnap.exists()) {
+    throw new Error('Player profile not found.');
+  }
+
+  const playerCoadminUid =
+    resolveCoadminUid({
+      uid: values.playerUid,
+      ...(playerSnap.data() as {
+        role?: string | null;
+        coadminUid?: string | null;
+        createdBy?: string | null;
+      }),
+    }) || String(values.coadminUid || '').trim();
+  if (!playerCoadminUid) {
+    throw new Error('Player coadmin scope not found.');
+  }
+
+  const maintenanceBreak = await getCoadminMaintenanceBreakClient(playerCoadminUid);
+  if (maintenanceBreak.enabled) {
+    throw new Error(maintenanceBreak.message);
+  }
+
   const taskId =
     values.taskType === 'reset_password'
-      ? resetPasswordTaskId(values.coadminUid, values.playerUid, values.gameName)
-      : recreateUsernameTaskId(values.coadminUid, values.playerUid, values.gameName);
+      ? resetPasswordTaskId(playerCoadminUid, values.playerUid, values.gameName)
+      : recreateUsernameTaskId(playerCoadminUid, values.playerUid, values.gameName);
 
   const taskRef = doc(db, 'carerTasks', taskId);
 
   await setDoc(
     taskRef,
     {
-      coadminUid: values.coadminUid,
+      coadminUid: playerCoadminUid,
       type: values.taskType,
       playerUid: values.playerUid,
       playerUsername: values.playerUsername || 'Player',

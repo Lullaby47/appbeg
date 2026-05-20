@@ -72,7 +72,10 @@ import {
   fetchMyReferralRewards,
   type ReferralRewardGroup,
 } from '@/features/referrals/playerReferralRewards';
-import { listenCoadminMaintenanceBreak } from '@/features/maintenance/maintenanceBreak';
+import {
+  getCoadminMaintenanceBreakClient,
+  listenCoadminMaintenanceBreak,
+} from '@/features/maintenance/maintenanceBreak';
 import { normalizeMaintenanceBreak, type MaintenanceBreak } from '@/lib/maintenance/config';
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
@@ -1938,6 +1941,8 @@ export default function PlayerPage() {
           status?: string;
           coin?: number;
           cash?: number;
+          coadminUid?: string | null;
+          createdBy?: string | null;
           referralCode?: string;
           referredByUid?: string;
           referredByUsername?: string;
@@ -1949,6 +1954,11 @@ export default function PlayerPage() {
           coin: Number(playerData.coin || 0),
           cash: Number(playerData.cash || 0),
         });
+        const resolvedCoadminUid = resolveCoadminUid({
+          uid: playerUid,
+          ...playerData,
+        });
+        setPlayerCoadminUid(resolvedCoadminUid ? String(resolvedCoadminUid) : '');
         const isPlayerRole = String(playerData.role || '').toLowerCase() === 'player';
         const nextReferralCode = String(playerData.referralCode || '').trim();
         if (isPlayerRole && /^\d{6,10}$/.test(nextReferralCode)) {
@@ -2203,6 +2213,17 @@ export default function PlayerPage() {
     gameLogin: PlayerGameLogin,
     taskType: 'reset_password' | 'recreate_username'
   ) {
+    const credentialCoadminUid =
+      String(gameLogin.coadminUid || '').trim() || String(playerCoadminUid || '').trim();
+    const currentMaintenanceBreak =
+      maintenanceBreak.enabled || !credentialCoadminUid
+        ? maintenanceBreak
+        : await getCoadminMaintenanceBreakClient(credentialCoadminUid);
+    if (currentMaintenanceBreak.enabled) {
+      setMessage(currentMaintenanceBreak.message);
+      return;
+    }
+
     const loadingKey = `${taskType}:${gameLogin.id}`;
     setCredentialTaskLoadingKey(loadingKey);
     setMessage('');
@@ -2213,7 +2234,7 @@ export default function PlayerPage() {
         playerUid: gameLogin.playerUid,
         playerUsername: gameLogin.playerUsername || 'Player',
         gameName: gameLogin.gameName,
-        coadminUid: gameLogin.coadminUid,
+        coadminUid: credentialCoadminUid,
       });
 
       setMessage(
