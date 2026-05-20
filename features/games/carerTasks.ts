@@ -1897,66 +1897,18 @@ export async function startCarerTask(taskId: string) {
 }
 
 export async function deletePendingCarerTask(taskId: string) {
-  const { uid: carerUid, username: carerUsername } = await getCurrentCarerIdentity();
-  const carerCoadminUid = await getCurrentUserCoadminUid();
   const taskRef = doc(db, 'carerTasks', taskId);
 
-  await runTransaction(db, async (transaction) => {
-    const taskSnap = await transaction.get(taskRef);
-
-    if (!taskSnap.exists()) {
-      throw new Error('Task not found.');
-    }
-
-    const task = taskSnap.data() as Omit<CarerTask, 'id'>;
-    const effectiveStatus = getEffectiveCarerTaskStatus({
-      id: taskId,
-      ...task,
-    });
-
-    if (task.coadminUid !== carerCoadminUid) {
-      throw new Error('This task is outside your coadmin scope.');
-    }
-
-    if (effectiveStatus !== 'pending') {
-      throw new Error('Only pending tasks can be deleted.');
-    }
-
-    if (String(task.requestId || '').trim()) {
-      throw new Error('Request tasks must be dismissed through their linked request.');
-    }
-
-    transaction.update(taskRef, {
-      status: 'failed',
-      assignedCarerUid: null,
-      assignedCarer: null,
-      assignedCarerUsername: null,
-      claimedStatus: null,
-      claimedAt: null,
-      claimedByUid: null,
-      claimedByUsername: null,
-      startedAt: null,
-      runningAt: null,
-      expiresAt: null,
-      completedAt: serverTimestamp(),
-      ttlExpiresAt: completedCarerTaskTtl(),
-      completedByCarerUid: null,
-      completedByCarerUsername: null,
-      automationStatus: null,
-      automationJobId: null,
-      linkedJobId: null,
-      currentJobId: null,
-      activeJobId: null,
-      assignedJobStatus: null,
-      automationError: null,
-      error: null,
-      failureReason: 'deleted_by_carer',
-      deletedFromPendingAt: serverTimestamp(),
-      deletedFromPendingByCarerUid: carerUid,
-      deletedFromPendingByCarerUsername: carerUsername,
-      updatedAt: serverTimestamp(),
-    });
+  const response = await fetch('/api/carer/tasks/delete-pending', {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({ taskId }),
   });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to delete pending task.', payload));
+  }
+
   await forceRefreshTaskFromServer(taskId, taskRef);
 }
 
