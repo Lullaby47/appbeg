@@ -3132,7 +3132,8 @@ export default function CoadminPage() {
           )}
 
           {/* Dashboard content (stats) */}
-          <div>
+          {activeView === 'dashboard' && (
+            <div>
             <DashboardView
               coadminCount={0}
               staffCount={staffList.length}
@@ -3416,6 +3417,7 @@ export default function CoadminPage() {
                 </button>
               )}
             </div>
+          )}
 
           {activeView === 'view-tasks' && (
             <div>
