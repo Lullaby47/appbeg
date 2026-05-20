@@ -3,7 +3,11 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
-import { getCoadminMaintenanceBreak, maintenanceBreakApiResponse } from '@/lib/maintenance/admin';
+import {
+  getCoadminMaintenanceBreak,
+  maintenanceBreakApiResponse,
+  rejectIfPlayerMaintenanceBreak,
+} from '@/lib/maintenance/admin';
 
 function getStaffBonusMultiplier(bonusPercent: number) {
   if (bonusPercent <= 8) return 1.0;
@@ -18,6 +22,7 @@ export async function POST(request: Request) {
   try {
     const auth = await requireApiUser(request, ['player']);
     if ('response' in auth) return auth.response;
+    await rejectIfPlayerMaintenanceBreak(auth.user.uid, 'bonus_event');
     const body = (await request.json()) as Body;
     const bonusEventId = String(body.bonusEventId || '').trim();
     if (!bonusEventId) return apiError('bonusEventId is required.', 400);

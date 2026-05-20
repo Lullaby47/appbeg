@@ -46,7 +46,9 @@ service cloud.firestore {
 
     function callerCoadminUid() {
       let data = userDoc(request.auth.uid).data;
-      return isCoadmin() ? request.auth.uid : (data.coadminUid != null ? data.coadminUid : data.createdBy);
+      return isCoadmin()
+        ? request.auth.uid
+        : (data.coadminUid is string && data.coadminUid != '' ? data.coadminUid : data.createdBy);
     }
 
     function scopedToCaller(data) {

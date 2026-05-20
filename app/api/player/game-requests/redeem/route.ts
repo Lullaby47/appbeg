@@ -3,7 +3,11 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
-import { getCoadminMaintenanceBreak, maintenanceBreakApiResponse } from '@/lib/maintenance/admin';
+import {
+  getCoadminMaintenanceBreak,
+  maintenanceBreakApiResponse,
+  rejectIfPlayerMaintenanceBreak,
+} from '@/lib/maintenance/admin';
 
 const MIN_REDEEM_AMOUNT = 50;
 const MAX_REDEEM_AMOUNT = 350;
@@ -60,6 +64,7 @@ export async function POST(request: Request) {
   try {
     const auth = await requireApiUser(request, ['player']);
     if ('response' in auth) return auth.response;
+    await rejectIfPlayerMaintenanceBreak(auth.user.uid, 'redeem');
 
     const body = (await request.json()) as RedeemBody;
     const gameName = String(body.gameName || '').trim();

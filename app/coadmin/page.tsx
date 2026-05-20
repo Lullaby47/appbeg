@@ -3131,74 +3131,75 @@ export default function CoadminPage() {
             </div>
           )}
 
-          {activeView === 'dashboard' && (
-            <div>
-              <DashboardView
-                coadminCount={0}
-                staffCount={staffList.length}
-                unreadCount={totalUnread}
-              />
+          {/* Dashboard content (stats) */}
+          <div>
+            <DashboardView
+              coadminCount={0}
+              staffCount={staffList.length}
+              unreadCount={totalUnread}
+            />
 
-              <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-                <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
-                  <p className="text-sm text-neutral-400">Total Carers</p>
-                  <p className="mt-2 text-3xl font-bold">{carerList.length}</p>
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
-                  <p className="text-sm text-neutral-400">Total Players</p>
-                  <p className="mt-2 text-3xl font-bold">{playerList.length}</p>
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
-                  <p className="text-sm text-neutral-400">Total Games</p>
-                  <p className="mt-2 text-3xl font-bold">{gameLogins.length}</p>
-                </div>
+            <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
+                <p className="text-sm text-neutral-400">Total Carers</p>
+                <p className="mt-2 text-3xl font-bold">{carerList.length}</p>
               </div>
 
-              <div
-                className={`mt-4 rounded-2xl border p-5 ${
-                  maintenanceBreak.enabled
-                    ? 'border-amber-400/40 bg-amber-500/10'
-                    : 'border-emerald-400/25 bg-emerald-500/10'
-                }`}
-              >
-                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                  <div>
-                    <p className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
-                      Maintenance Break
-                    </p>
-                    <h3 className="mt-1 text-xl font-bold text-white">
-                      {maintenanceBreak.enabled ? 'Active' : 'Inactive'}
-                    </h3>
-                    <p className="mt-2 max-w-2xl whitespace-pre-line text-sm leading-relaxed text-neutral-300">
-                      {maintenanceBreak.enabled
-                        ? maintenanceBreak.message
-                        : 'Players can use the player app normally.'}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
-                    <button
-                      type="button"
-                      onClick={() => void handleMaintenanceBreakToggle(true)}
-                      disabled={maintenanceBusy || maintenanceBreak.enabled}
-                      className="rounded-xl bg-amber-400 px-4 py-2 text-sm font-bold text-black transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Start Maintenance Break
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleMaintenanceBreakToggle(false)}
-                      disabled={maintenanceBusy || !maintenanceBreak.enabled}
-                      className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold text-white transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      End Maintenance Break
-                    </button>
-                  </div>
-                </div>
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
+                <p className="text-sm text-neutral-400">Total Players</p>
+                <p className="mt-2 text-3xl font-bold">{playerList.length}</p>
               </div>
 
-              {visiblePendingCarerRequests.length > 0 && (
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
+                <p className="text-sm text-neutral-400">Total Games</p>
+                <p className="mt-2 text-3xl font-bold">{gameLogins.length}</p>
+              </div>
+            </div>
+
+            {/* Maintenance Break card — render for coadmin pages regardless of active view so it's reachable */}
+            <div
+              className={`mt-4 rounded-2xl border p-5 ${
+                maintenanceBreak.enabled
+                  ? 'border-amber-400/40 bg-amber-500/10'
+                  : 'border-emerald-400/25 bg-emerald-500/10'
+              }`}
+            >
+              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
+                    Maintenance Break
+                  </p>
+                  <h3 className="mt-1 text-xl font-bold text-white">
+                    {maintenanceBreak.enabled ? 'Active' : 'Inactive'}
+                  </h3>
+                  <p className="mt-2 max-w-2xl whitespace-pre-line text-sm leading-relaxed text-neutral-300">
+                    {maintenanceBreak.enabled
+                      ? maintenanceBreak.message
+                      : 'Players can use the player app normally.'}
+                  </p>
+                </div>
+                <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+                  <button
+                    type="button"
+                    onClick={() => void handleMaintenanceBreakToggle(true)}
+                    disabled={maintenanceBusy || maintenanceBreak.enabled}
+                    className="rounded-xl bg-amber-400 px-4 py-2 text-sm font-bold text-black transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Start Maintenance Break
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleMaintenanceBreakToggle(false)}
+                    disabled={maintenanceBusy || !maintenanceBreak.enabled}
+                    className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold text-white transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    End Maintenance Break
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {visiblePendingCarerRequests.length > 0 && (
                 <div className="mt-4 rounded-2xl border border-yellow-500/30 bg-yellow-500/10 p-5">
                   <h3 className="text-lg font-bold text-yellow-200">
                     Carer Requests Awaiting Admin Approval ({visiblePendingCarerRequests.length})
@@ -3406,7 +3407,6 @@ export default function CoadminPage() {
                 </div>
               )}
 
-
               {totalUnread > 0 && (
                 <button
                   onClick={handleOpenAnyUnreadChat}
@@ -3416,7 +3416,6 @@ export default function CoadminPage() {
                 </button>
               )}
             </div>
-          )}
 
           {activeView === 'view-tasks' && (
             <div>

@@ -4,7 +4,11 @@ import { NextResponse } from 'next/server';
 import { evaluateWithdrawalPolicy } from '@/lib/economy/policy';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
 import { adminDb } from '@/lib/firebase/admin';
-import { getCoadminMaintenanceBreak, maintenanceBreakApiResponse } from '@/lib/maintenance/admin';
+import {
+  getCoadminMaintenanceBreak,
+  maintenanceBreakApiResponse,
+  rejectIfPlayerMaintenanceBreak,
+} from '@/lib/maintenance/admin';
 
 const PLAYER_CASHOUT_MAX_NPR_PER_24_H = 1000;
 const PLAYER_CASHOUT_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -65,6 +69,7 @@ export async function POST(request: Request) {
   try {
     const auth = await requireApiUser(request, ['player']);
     if ('response' in auth) return auth.response;
+    await rejectIfPlayerMaintenanceBreak(auth.user.uid, 'cashout');
 
     const body = (await request.json()) as Body;
     const paymentDetails = String(body.paymentDetails || '').trim();
