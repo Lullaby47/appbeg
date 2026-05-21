@@ -10,6 +10,12 @@ import { UserRole } from '@/lib/auth/roles';
 import { recordDevActiveSession } from '@/features/dev/devUsageEstimates';
 import UserPresenceSync from '@/components/presence/UserPresenceSync';
 import IdleLogoutSync from '@/components/auth/IdleLogoutSync';
+import {
+  endLocalPlayerSession,
+  getLocalPlayerSessionId,
+  listenForPlayerSessionReplacement,
+  touchPlayerSession,
+} from '@/features/auth/playerSession';
 
 type ProtectedRouteProps = {
   allowedRoles: UserRole[];
@@ -50,6 +56,12 @@ export default function ProtectedRoute({
         return;
       }
 
+      if (role === 'player' && !getLocalPlayerSessionId()) {
+        setCurrentRole(null);
+        router.replace('/login');
+        return;
+      }
+
       setCurrentRole(role);
 
       if (role === 'player' || role === 'carer') {
@@ -61,6 +73,35 @@ export default function ProtectedRoute({
 
     return () => unsubscribe();
   }, [allowedRoles, router]);
+
+  useEffect(() => {
+    if (currentRole !== 'player') {
+      return;
+    }
+
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      return;
+    }
+
+    const stopSessionListener = listenForPlayerSessionReplacement(currentUser);
+    void touchPlayerSession(currentUser);
+    const heartbeat = window.setInterval(() => {
+      void touchPlayerSession(currentUser);
+    }, 45_000);
+    const markInactive = () => {
+      void endLocalPlayerSession('browser_closed');
+    };
+    window.addEventListener('pagehide', markInactive);
+    window.addEventListener('beforeunload', markInactive);
+
+    return () => {
+      stopSessionListener();
+      window.clearInterval(heartbeat);
+      window.removeEventListener('pagehide', markInactive);
+      window.removeEventListener('beforeunload', markInactive);
+    };
+  }, [currentRole]);
 
   if (checking) {
     return (

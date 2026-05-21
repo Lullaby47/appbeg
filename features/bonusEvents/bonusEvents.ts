@@ -19,6 +19,7 @@ import { recordBonusEventsListenerFirstSnapshot } from '@/features/dev/devUsageE
 import { getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
 import { upsertCarerTaskForPlayerGameRequest } from '@/features/games/carerTasks';
 import type { PlayerGameRequest } from '@/features/games/playerGameRequests';
+import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 
 export type BonusEvent = {
   id: string;
@@ -734,13 +735,9 @@ export async function initiateBonusEventPlay(values: {
     throw new Error('Not authenticated as current player.');
   }
 
-  const token = await currentUser.getIdToken();
   const response = await fetch('/api/bonus-events/initiate-play', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getPlayerApiHeaders(),
     body: JSON.stringify({ bonusEventId: values.bonusEventId }),
   });
   const payload = (await response.json().catch(() => ({}))) as {

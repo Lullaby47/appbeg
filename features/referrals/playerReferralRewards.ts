@@ -1,4 +1,4 @@
-import { auth } from '@/lib/firebase/client';
+import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 
 export type ReferralRewardRow = {
   rechargeId: string;
@@ -20,15 +20,7 @@ export type ReferralRewardGroup = {
 };
 
 async function getAuthHeader() {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-  const idToken = await currentUser.getIdToken();
-  return {
-    Authorization: `Bearer ${idToken}`,
-    'Content-Type': 'application/json',
-  };
+  return getPlayerApiHeaders();
 }
 
 export async function fetchMyReferralRewards() {

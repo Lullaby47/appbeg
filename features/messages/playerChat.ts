@@ -26,6 +26,7 @@ import { computeRewardCoinsAfterFee } from '@/lib/rewardCoinTransferFee';
 import { auth, db } from '@/lib/firebase/client';
 import { uploadImageToCloudinary } from '@/lib/cloudinary/uploadImage';
 import { chatMessageTtl } from '@/lib/firestore/ttl';
+import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 
 const DIRECT_CONVERSATIONS = 'playerConversations';
 const GROUP_CONVERSATIONS = 'playerGroupConversations';
@@ -594,13 +595,9 @@ export async function rewardCoinsToPlayer(targetUid: string, amountCoins: number
     throw new Error(`Maximum reward per transfer is ${MAX_REWARD_COINS_PER_TRANSFER} coins.`);
   }
 
-  const token = await self.getIdToken();
   const response = await fetch('/api/player/reward-coins', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getPlayerApiHeaders(),
     body: JSON.stringify({
       targetUid: cleanTargetUid,
       amountCoins: cleanAmount,

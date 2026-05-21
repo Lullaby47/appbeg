@@ -1,7 +1,8 @@
 import { FieldValue } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
-import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import { adminDb } from '@/lib/firebase/admin';
+import { requireApiUser } from '@/lib/firebase/apiAuth';
 import { getTransferableCoinBalance } from '@/lib/economy/policy';
 import {
   computeRewardCoinsAfterFee,
@@ -21,25 +22,12 @@ function canonicalPlayerCoadminUid(player: { coadminUid?: unknown; createdBy?: u
 }
 
 async function verifyPlayerFromAuthHeader(request: Request) {
-  const header = request.headers.get('Authorization') || '';
-  const match = header.match(/^Bearer\s+(\S+)$/i);
-  const idToken = match?.[1];
-  if (!idToken) {
-    throw new Error('Missing or invalid authorization.');
+  const auth = await requireApiUser(request, ['player']);
+  if ('response' in auth) {
+    const payload = (await auth.response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(payload.error || 'Missing or invalid authorization.');
   }
-
-  const decoded = await adminAuth.verifyIdToken(idToken);
-  const senderUid = decoded.uid;
-  const senderRef = adminDb.collection('users').doc(senderUid);
-  const senderSnap = await senderRef.get();
-  if (!senderSnap.exists) {
-    throw new Error('Player profile not found.');
-  }
-  const senderData = senderSnap.data() as { role?: string };
-  if (String(senderData.role || '').toLowerCase() !== 'player') {
-    throw new Error('Only players can reward coins.');
-  }
-  return { senderUid };
+  return { senderUid: auth.user.uid };
 }
 
 function httpStatusForRewardCoinsError(error: unknown): number {
@@ -58,7 +46,7 @@ function httpStatusForRewardCoinsError(error: unknown): number {
       ? String((error as { code?: unknown }).code || '')
       : '';
 
-  if (code.startsWith('auth/') || /id token|authorization|credential|jwt|token/i.test(message)) {
+  if (code.startsWith('auth/') || /id token|authorization|credential|jwt|token|logged out/i.test(message)) {
     return 401;
   }
 

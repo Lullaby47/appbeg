@@ -1,7 +1,8 @@
 import { FieldValue } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
-import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import { adminDb } from '@/lib/firebase/admin';
+import { requireApiUser } from '@/lib/firebase/apiAuth';
 import {
   getLockedPromoCoins,
   isReferralRechargeEligible,
@@ -50,15 +51,12 @@ function buildClaimDocId(referrerUid: string, referredPlayerUid: string) {
 }
 
 async function verifyPlayerFromAuthHeader(request: Request) {
-  const header = request.headers.get('Authorization') || '';
-  const match = header.match(/^Bearer\s+(\S+)$/i);
-  const idToken = match?.[1];
-  if (!idToken) {
-    throw new Error('Missing or invalid authorization.');
+  const auth = await requireApiUser(request, ['player']);
+  if ('response' in auth) {
+    const payload = (await auth.response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(payload.error || 'Missing or invalid authorization.');
   }
-
-  const decoded = await adminAuth.verifyIdToken(idToken);
-  const referrerUid = decoded.uid;
+  const referrerUid = auth.user.uid;
   const referrerRef = adminDb.collection('users').doc(referrerUid);
   const referrerSnap = await referrerRef.get();
   if (!referrerSnap.exists) {
@@ -164,9 +162,10 @@ export async function GET(request: Request) {
     const groups = await loadRewardGroups(referrerUid);
     return NextResponse.json({ success: true, groups });
   } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to load referral rewards.';
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to load referral rewards.' },
-      { status: 400 }
+      { error: message },
+      { status: /authorization|token|logged out/i.test(message) ? 401 : 400 }
     );
   }
 }
@@ -260,9 +259,10 @@ export async function POST(request: Request) {
       message: "Congratulations! You received referral reward coins from this player's recharge.",
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to claim referral reward.';
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to claim referral reward.' },
-      { status: 400 }
+      { error: message },
+      { status: /authorization|token|logged out/i.test(message) ? 401 : 400 }
     );
   }
 }

@@ -17,6 +17,10 @@ function bearerToken(request: Request) {
   return (request.headers.get('Authorization') || '').match(/^Bearer\s+(\S+)$/i)?.[1] || '';
 }
 
+function playerSessionId(request: Request) {
+  return String(request.headers.get('X-Player-Session-Id') || '').trim();
+}
+
 export function apiError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });
 }
@@ -45,6 +49,33 @@ export async function requireApiUser(
   const role = String(data.role || '').toLowerCase() as ApiRole;
   if (!allowedRoles.includes(role)) {
     return { response: apiError('Forbidden.', 403) };
+  }
+
+  if (role === 'player') {
+    const sessionId = playerSessionId(request);
+    if (!sessionId || sessionId !== String(data.activeSessionId || '').trim()) {
+      return {
+        response: apiError(
+          'You were logged out because this account logged in on another device.',
+          401
+        ),
+      };
+    }
+
+    const sessionSnap = await adminDb.collection('playerSessions').doc(sessionId).get();
+    const sessionData = sessionSnap.data() || {};
+    if (
+      !sessionSnap.exists ||
+      String(sessionData.playerUid || '') !== decoded.uid ||
+      sessionData.active !== true
+    ) {
+      return {
+        response: apiError(
+          'You were logged out because this account logged in on another device.',
+          401
+        ),
+      };
+    }
   }
 
   return {

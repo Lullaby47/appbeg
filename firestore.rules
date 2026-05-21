@@ -140,6 +140,16 @@ service cloud.firestore {
       // through trusted server/admin paths.
       allow update: if signedIn()
         && request.auth.uid == uid
+        && isPlayer()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'activeSessionId',
+          'activeDeviceId',
+          'activeSessionStartedAt',
+          'activeSessionLastSeenAt'
+        ]);
+
+      allow update: if signedIn()
+        && request.auth.uid == uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'displayName',
           'name',
@@ -180,6 +190,36 @@ service cloud.firestore {
         && adminCoadminUserBrowserUpdateAllowed();
 
       allow create, delete: if false;
+    }
+
+    match /playerSessions/{sessionId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        resource.data.playerUid == request.auth.uid ||
+        (isScopedWorker() && scopedToCaller(resource.data))
+      );
+      allow create: if signedIn()
+        && isPlayer()
+        && request.resource.data.playerUid == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'playerUid',
+          'deviceId',
+          'startedAt',
+          'lastSeenAt',
+          'active'
+        ]);
+      allow update: if signedIn()
+        && isPlayer()
+        && resource.data.playerUid == request.auth.uid
+        && request.resource.data.playerUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'deviceId',
+          'lastSeenAt',
+          'active',
+          'endedAt',
+          'endedReason'
+        ]);
+      allow delete: if false;
     }
 
     match /playerGameRequests/{requestId} {

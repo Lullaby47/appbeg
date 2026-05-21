@@ -16,6 +16,7 @@ import {
 
 import { auth, db } from '@/lib/firebase/client';
 import { resolveCoadminUid } from '@/lib/coadmin/scope';
+import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 
 export type RiskLevel = 'low' | 'medium' | 'high';
 export type TransferRequestStatus = 'pending' | 'approved' | 'rejected';
@@ -532,17 +533,13 @@ export async function recordFinancialEventAndRefreshRisk(values: {
 }
 
 export async function createCashToCoinTransferRequest(requestedAmountNpr?: number) {
-  const token = await auth.currentUser?.getIdToken();
-  if (!token) {
+  if (!auth.currentUser) {
     throw new Error('Not authenticated.');
   }
 
   const response = await fetch('/api/player/transfer/cash-to-coin', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getPlayerApiHeaders(),
     body: JSON.stringify({ amountNpr: requestedAmountNpr ?? 0 }),
   });
 

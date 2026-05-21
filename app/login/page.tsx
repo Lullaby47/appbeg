@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { onAuthStateChanged } from 'firebase/auth';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import {
   collection,
   doc,
@@ -15,6 +15,11 @@ import {
 
 import { auth, db } from '@/lib/firebase/client';
 import { DASHBOARD_BY_ROLE, isValidRole } from '@/lib/auth/roles';
+import {
+  getLocalPlayerSessionId,
+  PLAYER_REPLACED_LOGIN_MESSAGE,
+  startPlayerSession,
+} from '@/features/auth/playerSession';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -47,6 +52,16 @@ export default function LoginPage() {
     checkAdminExists();
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const message = new URLSearchParams(window.location.search).get('message');
+    if (message === 'another-device') {
+      setError(PLAYER_REPLACED_LOGIN_MESSAGE);
+    }
+  }, []);
+
   // If the user is already signed in, send them to their app — so the browser
   // "back" key does not look like a confusing pseudo-logout on /login.
   useEffect(() => {
@@ -63,6 +78,10 @@ export default function LoginPage() {
 
         const role = (userSnap.data() as { role?: string }).role;
         if (role && isValidRole(role)) {
+          if (role === 'player' && !getLocalPlayerSessionId()) {
+            await signOut(auth);
+            return;
+          }
           router.replace(DASHBOARD_BY_ROLE[role]);
         }
       } catch {
@@ -110,12 +129,16 @@ export default function LoginPage() {
 
       const hiddenEmail = userData.email;
 
-      await signInWithEmailAndPassword(auth, hiddenEmail, password);
+      const credential = await signInWithEmailAndPassword(auth, hiddenEmail, password);
 
       const role = userData.role;
 
       if (!isValidRole(role)) {
         throw new Error('Invalid role.');
+      }
+
+      if (role === 'player') {
+        await startPlayerSession(credential.user);
       }
 
       router.push(DASHBOARD_BY_ROLE[role]);

@@ -14,6 +14,7 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
+import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 import {
   belongsToCoadmin,
   getCurrentUserCoadminUid,
@@ -149,15 +150,7 @@ function sortByNewest(requests: PlayerGameRequest[]) {
 }
 
 async function getAuthHeaders() {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-  const token = await currentUser.getIdToken();
-  return {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${token}`,
-  };
+  return getPlayerApiHeaders();
 }
 
 function readApiError(messageFallback: string, payload: unknown) {

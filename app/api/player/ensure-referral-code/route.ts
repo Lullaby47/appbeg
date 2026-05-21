@@ -1,7 +1,8 @@
 import { FieldValue } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
-import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import { adminDb } from '@/lib/firebase/admin';
+import { requireApiUser } from '@/lib/firebase/apiAuth';
 import {
   buildUniqueReferralCodeCandidates,
   findFreeReferralCodeInTransaction,
@@ -16,15 +17,9 @@ import {
  */
 export async function POST(request: Request) {
   try {
-    const header = request.headers.get('Authorization') || '';
-    const match = header.match(/^Bearer\s+(\S+)$/i);
-    const idToken = match?.[1];
-    if (!idToken) {
-      return NextResponse.json({ error: 'Missing or invalid authorization.' }, { status: 401 });
-    }
-
-    const decoded = await adminAuth.verifyIdToken(idToken);
-    const uid = decoded.uid;
+    const auth = await requireApiUser(request, ['player']);
+    if ('response' in auth) return auth.response;
+    const uid = auth.user.uid;
     const userRef = adminDb.collection('users').doc(uid);
     const userSnap = await userRef.get();
 
@@ -99,9 +94,10 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ success: true, referralCode: assigned });
   } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Failed to ensure referral code.';
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to ensure referral code.' },
-      { status: 500 }
+      { error: message },
+      { status: /authorization|token|logged out/i.test(message) ? 401 : 500 }
     );
   }
 }

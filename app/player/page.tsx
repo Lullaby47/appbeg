@@ -77,6 +77,7 @@ import {
   listenCoadminMaintenanceBreak,
 } from '@/features/maintenance/maintenanceBreak';
 import { normalizeMaintenanceBreak, type MaintenanceBreak } from '@/lib/maintenance/config';
+import { endLocalPlayerSession, getPlayerApiHeaders } from '@/features/auth/playerSession';
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
 
@@ -1524,10 +1525,9 @@ export default function PlayerPage() {
       if (!currentUser) {
         return;
       }
-      const token = await currentUser.getIdToken();
       const res = await fetch('/api/player/ensure-referral-code', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        headers: await getPlayerApiHeaders(false),
       });
       const data = (await res.json()) as {
         success?: boolean;
@@ -2573,6 +2573,7 @@ export default function PlayerPage() {
     setLogoutLoading(true);
     setMessage('');
     try {
+      await endLocalPlayerSession('logout');
       await signOut(auth);
       setShowLogoutConfirmSplash(false);
       router.replace('/login');

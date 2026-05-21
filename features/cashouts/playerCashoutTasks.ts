@@ -17,6 +17,7 @@ import {
 
 import { auth, db } from '@/lib/firebase/client';
 import { evaluateWithdrawalPolicy } from '@/lib/economy/policy';
+import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 
 export type PlayerCashoutTaskStatus = 'pending' | 'in_progress' | 'completed' | 'declined';
 export type PlayerCashoutPayoutMethod = 'qr' | 'app';
@@ -286,15 +287,7 @@ async function getCurrentUserIdentity() {
 }
 
 async function getAuthHeaders() {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-  const token = await currentUser.getIdToken();
-  return {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${token}`,
-  };
+  return getPlayerApiHeaders();
 }
 
 function readApiError(messageFallback: string, payload: unknown) {
