@@ -4915,7 +4915,7 @@ export default function PlayerPage() {
           >
             <h3 className="text-2xl font-black">Player Cashout</h3>
             <p className="mt-2 text-sm text-cyan-100/80">
-              You can cash out up to {PLAYER_CASHOUT_MAX_NPR_PER_24_H} NPR in a rolling 24-hour window
+              You can cash out up to ${formatWalletAmount(PLAYER_CASHOUT_MAX_NPR_PER_24_H)} in a rolling 24-hour window
               (excluding declined requests). Anything above that stays in your cash balance until the
               window allows more.
             </p>
@@ -4929,8 +4929,8 @@ export default function PlayerPage() {
                 ) : null}
               </span>
               <span className="mt-2 block text-xs text-cyan-200/80">
-                Window used: ${formatWalletAmount(rollingCashoutUsedNpr)} /{' '}
-                {PLAYER_CASHOUT_MAX_NPR_PER_24_H}
+                Window used: ${formatWalletAmount(rollingCashoutUsedNpr)} / $
+                {formatWalletAmount(PLAYER_CASHOUT_MAX_NPR_PER_24_H)}
               </span>
             </p>
 
