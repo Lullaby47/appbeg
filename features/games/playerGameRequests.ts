@@ -428,6 +428,10 @@ export async function createPlayerGameRequest(values: {
     if (!createdRequestId) {
       throw new Error('Recharge request was created but request ID was missing.');
     }
+    console.info('[PLAYER_GAME_REQUEST] server-created linked task expected', {
+      requestId: createdRequestId,
+      type: 'recharge',
+    });
     const createdSnap = await getDoc(doc(db, 'playerGameRequests', createdRequestId));
     if (createdSnap.exists()) {
       await upsertLinkedCarerTaskForRequest(
@@ -493,6 +497,10 @@ export async function createPlayerGameRequest(values: {
   if (!createdRequestId) {
     throw new Error('Redeem request was created but request ID was missing.');
   }
+  console.info('[PLAYER_GAME_REQUEST] server-created linked task expected', {
+    requestId: createdRequestId,
+    type: 'redeem',
+  });
   const redeemSnap = await getDoc(doc(db, 'playerGameRequests', createdRequestId));
   if (redeemSnap.exists()) {
     await upsertLinkedCarerTaskForRequest(

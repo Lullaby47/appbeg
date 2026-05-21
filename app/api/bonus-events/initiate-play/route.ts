@@ -8,6 +8,11 @@ import {
   maintenanceBreakApiResponse,
   rejectIfPlayerMaintenanceBreak,
 } from '@/lib/maintenance/admin';
+import {
+  buildPendingRequestLinkedCarerTaskPayload,
+  findRequestLinkedGameCredential,
+  requestLinkedCarerTaskId,
+} from '@/lib/games/requestLinkedCarerTask';
 
 function getStaffBonusMultiplier(bonusPercent: number) {
   if (bonusPercent <= 8) return 1.0;
@@ -17,6 +22,10 @@ function getStaffBonusMultiplier(bonusPercent: number) {
 }
 
 type Body = { bonusEventId?: unknown };
+
+function normalizeGameName(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+}
 
 export async function POST(request: Request) {
   try {
@@ -31,11 +40,14 @@ export async function POST(request: Request) {
     const playerRef = adminDb.collection('users').doc(playerUid);
     const bonusRef = adminDb.collection('bonusEvents').doc(bonusEventId);
     const requestRef = adminDb.collection('playerGameRequests').doc();
+    const taskRef = adminDb.collection('carerTasks').doc(requestLinkedCarerTaskId(requestRef.id));
 
     await adminDb.runTransaction(async (transaction) => {
-      const [playerSnap, bonusSnap] = await Promise.all([
+      const [playerSnap, bonusSnap, loginSnap, existingTaskSnap] = await Promise.all([
         transaction.get(playerRef),
         transaction.get(bonusRef),
+        adminDb.collection('playerGameLogins').where('playerUid', '==', playerUid).get(),
+        transaction.get(taskRef),
       ]);
       if (!playerSnap.exists) throw new Error('Player profile not found.');
       if (!bonusSnap.exists) {
@@ -46,6 +58,7 @@ export async function POST(request: Request) {
 
       const player = playerSnap.data() as {
         role?: string;
+        username?: string | null;
         coin?: number;
         coadminUid?: string | null;
         createdBy?: string | null;
@@ -86,6 +99,7 @@ export async function POST(request: Request) {
       const bonusAddAmount = Math.max(1, Math.round((baseAmount * bonusPercent) / 100));
       const boostedAmount = baseAmount + bonusAddAmount;
       const coadminUid = String(bonus.coadminUid || '').trim();
+      const gameName = String(bonus.gameName || '').trim();
       if (!coadminUid) throw new Error('Bonus event coadmin scope missing.');
       if (coadminUid !== playerCoadminUid) {
         throw new Error('Forbidden: bonus event is outside your coadmin scope.');
@@ -99,6 +113,23 @@ export async function POST(request: Request) {
         });
         throw new Error(`MAINTENANCE_BREAK:${maintenanceBreak.message}`);
       }
+      const assignedLogin = loginSnap.docs
+        .map((docSnap) => docSnap.data() as { gameName?: string; gameUsername?: string })
+        .find(
+          (row) =>
+            normalizeGameName(String(row.gameName || '')) === normalizeGameName(gameName) &&
+            String(row.gameUsername || '').trim().length > 0
+        );
+      const assignedGameUsername = String(assignedLogin?.gameUsername || '').trim();
+      const [coadminGameSnap, legacyGameSnap] = await Promise.all([
+        adminDb.collection('gameLogins').where('coadminUid', '==', coadminUid).get(),
+        adminDb.collection('gameLogins').where('createdBy', '==', coadminUid).get(),
+      ]);
+      const gameCredential = findRequestLinkedGameCredential(
+        [...coadminGameSnap.docs, ...legacyGameSnap.docs].map((docSnap) => docSnap.data()),
+        gameName
+      );
+      const createdAt = FieldValue.serverTimestamp();
 
       if (String(bonus.createdByRole || '').toLowerCase() === 'staff') {
         const staffRef = adminDb.collection('users').doc(String(bonus.createdByUid || '').trim());
@@ -135,7 +166,7 @@ export async function POST(request: Request) {
       });
       transaction.set(requestRef, {
         playerUid,
-        gameName: String(bonus.gameName || '').trim(),
+        gameName,
         amount: boostedAmount,
         baseAmount,
         bonusPercentage: bonusPercent,
@@ -144,12 +175,48 @@ export async function POST(request: Request) {
         status: 'pending',
         createdBy: coadminUid,
         coadminUid,
-        createdAt: FieldValue.serverTimestamp(),
+        createdAt,
         completedAt: null,
         pokedAt: null,
         pokeMessage: null,
         coinDeductedOnRequest: true,
       });
+      if (!existingTaskSnap.exists) {
+        console.info('[GAME_REQUEST_API][BONUS] creating linked carer task', {
+          requestId: requestRef.id,
+          taskId: taskRef.id,
+          type: 'recharge',
+          bonusEventId,
+        });
+        transaction.set(
+          taskRef,
+          buildPendingRequestLinkedCarerTaskPayload({
+            requestId: requestRef.id,
+            coadminUid,
+            type: 'recharge',
+            playerUid,
+            playerUsername: String(player.username || '').trim() || 'Player',
+            gameName,
+            amount: boostedAmount,
+            currentUsername: assignedGameUsername,
+            createdAt,
+            gameCredential,
+          })
+        );
+        console.info('[GAME_REQUEST_API][BONUS] linked carer task created', {
+          requestId: requestRef.id,
+          taskId: taskRef.id,
+          type: 'recharge',
+          bonusEventId,
+        });
+      } else {
+        console.info('[GAME_REQUEST_API][BONUS] linked carer task already exists, skipped', {
+          requestId: requestRef.id,
+          taskId: taskRef.id,
+          type: 'recharge',
+          bonusEventId,
+        });
+      }
       transaction.set(adminDb.collection('financialEvents').doc(), {
         playerUid,
         coadminUid,
@@ -160,6 +227,12 @@ export async function POST(request: Request) {
         createdAt: FieldValue.serverTimestamp(),
       });
       transaction.delete(bonusRef);
+    });
+    console.info('[GAME_REQUEST_API][BONUS] request/task/financial event committed atomically', {
+      requestId: requestRef.id,
+      taskId: taskRef.id,
+      type: 'recharge',
+      bonusEventId,
     });
 
     return NextResponse.json({ success: true, requestId: requestRef.id });

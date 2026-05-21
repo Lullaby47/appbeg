@@ -8,6 +8,11 @@ import {
   maintenanceBreakApiResponse,
   rejectIfPlayerMaintenanceBreak,
 } from '@/lib/maintenance/admin';
+import {
+  buildPendingRequestLinkedCarerTaskPayload,
+  findRequestLinkedGameCredential,
+  requestLinkedCarerTaskId,
+} from '@/lib/games/requestLinkedCarerTask';
 
 const MIN_REDEEM_AMOUNT = 50;
 const MAX_REDEEM_AMOUNT = 350;
@@ -98,12 +103,14 @@ export async function POST(request: Request) {
 
     const playerRef = adminDb.collection('users').doc(playerUid);
     const requestRef = adminDb.collection('playerGameRequests').doc();
+    const taskRef = adminDb.collection('carerTasks').doc(requestLinkedCarerTaskId(requestRef.id));
     const normalizedGame = normalizeGameName(gameName);
 
     await adminDb.runTransaction(async (transaction) => {
-      const [playerSnap, loginSnap] = await Promise.all([
+      const [playerSnap, loginSnap, existingTaskSnap] = await Promise.all([
         transaction.get(playerRef),
         adminDb.collection('playerGameLogins').where('playerUid', '==', playerUid).get(),
+        transaction.get(taskRef),
       ]);
 
       if (!playerSnap.exists) {
@@ -113,6 +120,7 @@ export async function POST(request: Request) {
       const playerData = playerSnap.data() as {
         role?: string;
         status?: string;
+        username?: string | null;
         coadminUid?: string | null;
         createdBy?: string | null;
       };
@@ -149,8 +157,16 @@ export async function POST(request: Request) {
           'Game username is not assigned for this game yet. Please create username first.'
         );
       }
-
-      transaction.set(requestRef, {
+      const [coadminGameSnap, legacyGameSnap] = await Promise.all([
+        adminDb.collection('gameLogins').where('coadminUid', '==', coadminUid).get(),
+        adminDb.collection('gameLogins').where('createdBy', '==', coadminUid).get(),
+      ]);
+      const gameCredential = findRequestLinkedGameCredential(
+        [...coadminGameSnap.docs, ...legacyGameSnap.docs].map((docSnap) => docSnap.data()),
+        gameName
+      );
+      const createdAt = FieldValue.serverTimestamp();
+      const requestPayload = {
         playerUid,
         gameName,
         currentUsername: assignedGameUsername,
@@ -169,11 +185,45 @@ export async function POST(request: Request) {
         status: 'pending',
         createdBy: coadminUid,
         coadminUid,
-        createdAt: FieldValue.serverTimestamp(),
+        createdAt,
         completedAt: null,
         pokedAt: null,
         pokeMessage: null,
-      });
+      };
+
+      transaction.set(requestRef, requestPayload);
+      if (!existingTaskSnap.exists) {
+        console.info('[GAME_REQUEST_API] creating linked carer task', {
+          requestId: requestRef.id,
+          taskId: taskRef.id,
+          type: 'redeem',
+        });
+        transaction.set(
+          taskRef,
+          buildPendingRequestLinkedCarerTaskPayload({
+            requestId: requestRef.id,
+            coadminUid,
+            type: 'redeem',
+            playerUid,
+            playerUsername: String(playerData.username || '').trim() || 'Player',
+            gameName,
+            amount,
+            currentUsername: assignedGameUsername,
+            createdAt,
+            gameCredential,
+          })
+        );
+        console.info('[GAME_REQUEST_API] linked carer task created', {
+          requestId: requestRef.id,
+          taskId: taskRef.id,
+          type: 'redeem',
+        });
+      }
+    });
+    console.info('[GAME_REQUEST_API] request and task committed atomically', {
+      requestId: requestRef.id,
+      taskId: taskRef.id,
+      type: 'redeem',
     });
 
     return NextResponse.json({ success: true, requestId: requestRef.id });

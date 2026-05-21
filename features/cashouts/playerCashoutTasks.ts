@@ -9,7 +9,6 @@ import {
   onSnapshot,
   orderBy,
   query,
-  runTransaction,
   serverTimestamp,
   updateDoc,
   where,
@@ -45,7 +44,6 @@ export type PlayerCashoutTask = {
   completedAt?: Timestamp | null;
 };
 
-const TASK_DURATION_MS = 3 * 60 * 1000;
 const CASHOUT_ACTIVE_LISTENER_LIMIT = 100;
 const CASHOUT_HISTORY_LISTENER_LIMIT = 50;
 
@@ -290,6 +288,18 @@ async function getAuthHeaders() {
   return getPlayerApiHeaders();
 }
 
+async function getCurrentUserApiHeaders() {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+  const token = await currentUser.getIdToken();
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+  };
+}
+
 function readApiError(messageFallback: string, payload: unknown) {
   if (
     payload &&
@@ -331,42 +341,15 @@ export async function createPlayerCashoutTask(values: {
 }
 
 export async function startPlayerCashoutTask(taskId: string) {
-  const identity = await getCurrentUserIdentity();
-  const taskRef = doc(db, 'playerCashoutTasks', taskId);
-
-  await runTransaction(db, async (transaction) => {
-    const taskSnap = await transaction.get(taskRef);
-
-    if (!taskSnap.exists()) {
-      throw new Error('Cashout task not found.');
-    }
-
-    const taskData = taskSnap.data() as Omit<PlayerCashoutTask, 'id'>;
-    const effectiveStatus = getEffectivePlayerCashoutTaskStatus(
-      toTask(taskSnap.id, taskData)
-    );
-
-    if (
-      effectiveStatus === 'in_progress' &&
-      taskData.assignedHandlerUid &&
-      taskData.assignedHandlerUid !== identity.uid
-    ) {
-      throw new Error('This task is already assigned to another handler.');
-    }
-
-    if (effectiveStatus === 'completed') {
-      throw new Error('Task already completed.');
-    }
-
-    const now = Timestamp.now();
-    transaction.update(taskRef, {
-      status: 'in_progress',
-      assignedHandlerUid: identity.uid,
-      assignedHandlerUsername: identity.username,
-      startedAt: now,
-      expiresAt: Timestamp.fromMillis(now.toMillis() + TASK_DURATION_MS),
-    });
+  const response = await fetch('/api/cashout-tasks/start', {
+    method: 'POST',
+    headers: await getCurrentUserApiHeaders(),
+    body: JSON.stringify({ taskId }),
   });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(readApiError('Failed to start cashout task.', payload));
+  }
 }
 
 export async function completePlayerCashoutTask(taskId: string) {

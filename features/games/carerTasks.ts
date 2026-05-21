@@ -830,6 +830,15 @@ export async function upsertCarerTaskForPlayerGameRequest(
   const existingTask = existingSnap.exists()
     ? toCarerTask(existingSnap.id, existingSnap.data() as Omit<CarerTask, 'id'>)
     : undefined;
+  if (existingTask) {
+    console.info('[PLAYER_GAME_REQUEST] client task upsert skipped existing server task', {
+      requestId: request.id,
+      taskId: taskRef.id,
+      type: request.type,
+      status: existingTask.status || null,
+    });
+    return;
+  }
   const loginQuery = query(
     collection(db, 'playerGameLogins'),
     where('playerUid', '==', request.playerUid)

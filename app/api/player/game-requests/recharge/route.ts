@@ -8,6 +8,11 @@ import {
   maintenanceBreakApiResponse,
   rejectIfPlayerMaintenanceBreak,
 } from '@/lib/maintenance/admin';
+import {
+  buildPendingRequestLinkedCarerTaskPayload,
+  findRequestLinkedGameCredential,
+  requestLinkedCarerTaskId,
+} from '@/lib/games/requestLinkedCarerTask';
 
 type RechargeBody = {
   gameName?: unknown;
@@ -56,9 +61,10 @@ export async function POST(request: Request) {
     const normalizedGame = normalizeGameName(gameName);
     const playerRef = adminDb.collection('users').doc(playerUid);
     const requestRef = adminDb.collection('playerGameRequests').doc();
+    const taskRef = adminDb.collection('carerTasks').doc(requestLinkedCarerTaskId(requestRef.id));
 
     await adminDb.runTransaction(async (transaction) => {
-      const [playerSnap, loginSnap, firstRechargeAppliedSnap] = await Promise.all([
+      const [playerSnap, loginSnap, firstRechargeAppliedSnap, existingTaskSnap] = await Promise.all([
         transaction.get(playerRef),
         adminDb
           .collection('playerGameLogins')
@@ -70,6 +76,7 @@ export async function POST(request: Request) {
           .where('type', '==', 'recharge')
           .where('firstRechargeMatchApplied', '==', true)
           .get(),
+        transaction.get(taskRef),
       ]);
 
       if (!playerSnap.exists) {
@@ -79,6 +86,7 @@ export async function POST(request: Request) {
       const playerData = playerSnap.data() as {
         role?: string;
         status?: string;
+        username?: string | null;
         coin?: number;
         firstRechargeMatchUsed?: boolean | null;
         coadminUid?: string | null;
@@ -136,11 +144,16 @@ export async function POST(request: Request) {
         console.info('[MAINTENANCE] blocked recharge request', { playerUid, coadminUid });
         throw new Error(`MAINTENANCE_BREAK:${maintenanceBreak.message}`);
       }
-
-      transaction.update(playerRef, {
-        coin: currentCoin - amount,
-      });
-      transaction.set(requestRef, {
+      const [coadminGameSnap, legacyGameSnap] = await Promise.all([
+        adminDb.collection('gameLogins').where('coadminUid', '==', coadminUid).get(),
+        adminDb.collection('gameLogins').where('createdBy', '==', coadminUid).get(),
+      ]);
+      const gameCredential = findRequestLinkedGameCredential(
+        [...coadminGameSnap.docs, ...legacyGameSnap.docs].map((docSnap) => docSnap.data()),
+        gameName
+      );
+      const createdAt = FieldValue.serverTimestamp();
+      const requestPayload = {
         playerUid,
         gameName,
         currentUsername: assignedGameUsername,
@@ -162,12 +175,44 @@ export async function POST(request: Request) {
         status: 'pending',
         createdBy: coadminUid,
         coadminUid,
-        createdAt: FieldValue.serverTimestamp(),
+        createdAt,
         completedAt: null,
         pokedAt: null,
         pokeMessage: null,
         coinDeductedOnRequest: true,
+      };
+
+      transaction.update(playerRef, {
+        coin: currentCoin - amount,
       });
+      transaction.set(requestRef, requestPayload);
+      if (!existingTaskSnap.exists) {
+        console.info('[GAME_REQUEST_API] creating linked carer task', {
+          requestId: requestRef.id,
+          taskId: taskRef.id,
+          type: 'recharge',
+        });
+        transaction.set(
+          taskRef,
+          buildPendingRequestLinkedCarerTaskPayload({
+            requestId: requestRef.id,
+            coadminUid,
+            type: 'recharge',
+            playerUid,
+            playerUsername: String(playerData.username || '').trim() || 'Player',
+            gameName,
+            amount: boostedAmount,
+            currentUsername: assignedGameUsername,
+            createdAt,
+            gameCredential,
+          })
+        );
+        console.info('[GAME_REQUEST_API] linked carer task created', {
+          requestId: requestRef.id,
+          taskId: taskRef.id,
+          type: 'recharge',
+        });
+      }
       transaction.set(adminDb.collection('financialEvents').doc(), {
         playerUid,
         coadminUid,
@@ -177,6 +222,11 @@ export async function POST(request: Request) {
         createdAt: FieldValue.serverTimestamp(),
         ttlExpiresAt: ttlAfterDays(90),
       });
+    });
+    console.info('[GAME_REQUEST_API] request and task committed atomically', {
+      requestId: requestRef.id,
+      taskId: taskRef.id,
+      type: 'recharge',
     });
 
     return NextResponse.json({
