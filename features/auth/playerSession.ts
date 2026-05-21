@@ -3,6 +3,7 @@
 import { User, signOut } from 'firebase/auth';
 import {
   doc,
+  getDoc,
   onSnapshot,
   runTransaction,
   serverTimestamp,
@@ -16,6 +17,9 @@ export const PLAYER_DEVICE_ID_KEY = 'appbeg:playerDeviceId';
 export const PLAYER_SESSION_ID_KEY = 'appbeg:playerSessionId';
 export const PLAYER_REPLACED_LOGIN_MESSAGE =
   'You were logged out because this account logged in on another device.';
+export const PLAYER_SESSION_REPLACED_LOGIN_PATH = '/login?reason=session_replaced';
+
+let forcedPlayerLogout = false;
 
 function makeId() {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -46,7 +50,72 @@ export function getLocalPlayerSessionId() {
   return window.localStorage.getItem(PLAYER_SESSION_ID_KEY) || '';
 }
 
+export function isPlayerForcedLogout() {
+  return forcedPlayerLogout;
+}
+
+export function clearPlayerBrowserState() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  console.info('[SESSION_GUARD] clearing local session');
+  const deviceId = window.localStorage.getItem(PLAYER_DEVICE_ID_KEY);
+  window.localStorage.clear();
+  window.sessionStorage.clear();
+  if (deviceId) {
+    window.localStorage.setItem(PLAYER_DEVICE_ID_KEY, deviceId);
+  }
+  window.dispatchEvent(new Event('appbeg:player-session-cleared'));
+}
+
+export async function forcePlayerSessionLogout(options?: {
+  redirect?: (url: string) => void;
+  markSessionInactive?: boolean;
+}) {
+  if (forcedPlayerLogout) {
+    return;
+  }
+  forcedPlayerLogout = true;
+
+  if (options?.markSessionInactive !== false) {
+    await endLocalPlayerSession('replaced_by_new_login');
+  }
+  clearPlayerBrowserState();
+
+  console.info('[SESSION_GUARD] firebase signOut start');
+  try {
+    await signOut(auth);
+  } finally {
+    console.info('[SESSION_GUARD] firebase signOut done');
+  }
+
+  console.info('[SESSION_GUARD] redirecting to login');
+  if (options?.redirect) {
+    options.redirect(PLAYER_SESSION_REPLACED_LOGIN_PATH);
+  } else if (typeof window !== 'undefined') {
+    window.location.replace(PLAYER_SESSION_REPLACED_LOGIN_PATH);
+  }
+}
+
+export async function assertActivePlayerSession() {
+  const currentUser = auth.currentUser;
+  const localSessionId = getLocalPlayerSessionId();
+  if (!currentUser || !localSessionId || forcedPlayerLogout) {
+    await forcePlayerSessionLogout({ markSessionInactive: false });
+    throw new Error(PLAYER_REPLACED_LOGIN_MESSAGE);
+  }
+
+  const userSnap = await getDoc(doc(db, 'users', currentUser.uid));
+  const activeSessionId = String(userSnap.data()?.activeSessionId || '').trim();
+  if (!activeSessionId || activeSessionId !== localSessionId) {
+    console.info('[SESSION_GUARD] mismatch detected');
+    await forcePlayerSessionLogout();
+    throw new Error(PLAYER_REPLACED_LOGIN_MESSAGE);
+  }
+}
+
 export async function getPlayerApiHeaders(contentType = true) {
+  await assertActivePlayerSession();
   const currentUser = auth.currentUser;
   if (!currentUser) {
     throw new Error('Not authenticated.');
@@ -61,6 +130,7 @@ export async function getPlayerApiHeaders(contentType = true) {
 }
 
 export async function startPlayerSession(user: User) {
+  forcedPlayerLogout = false;
   const sessionId = makeId();
   const deviceId = getOrCreatePlayerDeviceId();
   const userRef = doc(db, 'users', user.uid);
@@ -145,19 +215,10 @@ export async function endLocalPlayerSession(reason = 'logout') {
   }
 }
 
-export function clearPlayerBrowserState() {
-  if (typeof window === 'undefined') {
-    return;
-  }
-  const deviceId = window.localStorage.getItem(PLAYER_DEVICE_ID_KEY);
-  window.localStorage.clear();
-  window.sessionStorage.clear();
-  if (deviceId) {
-    window.localStorage.setItem(PLAYER_DEVICE_ID_KEY, deviceId);
-  }
-}
-
-export function listenForPlayerSessionReplacement(user: User) {
+export function listenForPlayerSessionReplacement(
+  user: User,
+  onMismatch?: () => void
+) {
   const localSessionId = getLocalPlayerSessionId();
   if (!localSessionId) {
     return () => {};
@@ -169,9 +230,7 @@ export function listenForPlayerSessionReplacement(user: User) {
       return;
     }
 
-    await endLocalPlayerSession('replaced_by_new_login');
-    clearPlayerBrowserState();
-    await signOut(auth);
-    window.location.replace('/login?message=another-device');
+    console.info('[SESSION_GUARD] mismatch detected');
+    onMismatch?.();
   });
 }

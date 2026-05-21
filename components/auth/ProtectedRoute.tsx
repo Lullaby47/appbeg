@@ -12,7 +12,9 @@ import UserPresenceSync from '@/components/presence/UserPresenceSync';
 import IdleLogoutSync from '@/components/auth/IdleLogoutSync';
 import {
   endLocalPlayerSession,
+  forcePlayerSessionLogout,
   getLocalPlayerSessionId,
+  isPlayerForcedLogout,
   listenForPlayerSessionReplacement,
   touchPlayerSession,
 } from '@/features/auth/playerSession';
@@ -29,9 +31,16 @@ export default function ProtectedRoute({
   const router = useRouter();
   const [checking, setChecking] = useState(true);
   const [currentRole, setCurrentRole] = useState<UserRole | null>(null);
+  const [forcedLogout, setForcedLogout] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (forcedLogout || isPlayerForcedLogout()) {
+        setCurrentRole(null);
+        setChecking(false);
+        return;
+      }
+
       if (!firebaseUser) {
         setCurrentRole(null);
         router.replace('/login');
@@ -56,9 +65,23 @@ export default function ProtectedRoute({
         return;
       }
 
-      if (role === 'player' && !getLocalPlayerSessionId()) {
+      const localPlayerSessionId = role === 'player' ? getLocalPlayerSessionId() : '';
+      const activePlayerSessionId = String(userData.activeSessionId || '').trim();
+      if (
+        role === 'player' &&
+        (!localPlayerSessionId || localPlayerSessionId !== activePlayerSessionId)
+      ) {
+        if (localPlayerSessionId && activePlayerSessionId) {
+          console.info('[SESSION_GUARD] mismatch detected');
+        }
+        console.info('[SESSION_GUARD] protected render blocked');
         setCurrentRole(null);
-        router.replace('/login');
+        setForcedLogout(true);
+        setChecking(false);
+        void forcePlayerSessionLogout({
+          redirect: (url) => router.replace(url),
+          markSessionInactive: false,
+        });
         return;
       }
 
@@ -72,7 +95,7 @@ export default function ProtectedRoute({
     });
 
     return () => unsubscribe();
-  }, [allowedRoles, router]);
+  }, [allowedRoles, forcedLogout, router]);
 
   useEffect(() => {
     if (currentRole !== 'player') {
@@ -84,7 +107,16 @@ export default function ProtectedRoute({
       return;
     }
 
-    const stopSessionListener = listenForPlayerSessionReplacement(currentUser);
+    let stopSessionListener = () => {};
+    const triggerForcedLogout = () => {
+      setForcedLogout(true);
+      setCurrentRole(null);
+      stopSessionListener();
+      void forcePlayerSessionLogout({
+        redirect: (url) => router.replace(url),
+      });
+    };
+    stopSessionListener = listenForPlayerSessionReplacement(currentUser, triggerForcedLogout);
     void touchPlayerSession(currentUser);
     const heartbeat = window.setInterval(() => {
       void touchPlayerSession(currentUser);
@@ -101,7 +133,16 @@ export default function ProtectedRoute({
       window.removeEventListener('pagehide', markInactive);
       window.removeEventListener('beforeunload', markInactive);
     };
-  }, [currentRole]);
+  }, [currentRole, router]);
+
+  if (forcedLogout || isPlayerForcedLogout()) {
+    console.info('[SESSION_GUARD] protected render blocked');
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-neutral-950 text-white">
+        <p className="text-sm text-neutral-400">Signing out...</p>
+      </main>
+    );
+  }
 
   if (checking) {
     return (

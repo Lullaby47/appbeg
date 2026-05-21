@@ -56,8 +56,10 @@ export default function LoginPage() {
     if (typeof window === 'undefined') {
       return;
     }
-    const message = new URLSearchParams(window.location.search).get('message');
-    if (message === 'another-device') {
+    const params = new URLSearchParams(window.location.search);
+    const message = params.get('message');
+    const reason = params.get('reason');
+    if (message === 'another-device' || reason === 'session_replaced') {
       setError(PLAYER_REPLACED_LOGIN_MESSAGE);
     }
   }, []);

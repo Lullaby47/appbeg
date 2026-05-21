@@ -14,7 +14,7 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
-import { getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { assertActivePlayerSession, getPlayerApiHeaders } from '@/features/auth/playerSession';
 import {
   belongsToCoadmin,
   getCurrentUserCoadminUid,
@@ -391,6 +391,7 @@ export async function createPlayerGameRequest(values: {
     throw new Error('Not authenticated.');
   }
 
+  await assertActivePlayerSession();
   await assertCurrentPlayerIsActive(currentUser.uid);
 
   if (!values.gameName.trim()) {

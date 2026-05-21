@@ -23,6 +23,7 @@ import {
 import { jobCompleteGuard } from '@/lib/automation/jobCompleteGuard';
 
 import { auth, db } from '@/lib/firebase/client';
+import { assertActivePlayerSession } from '@/features/auth/playerSession';
 import {
   getCurrentUserCoadminUid as getScopedCurrentUserCoadminUid,
   resolveCoadminUid,
@@ -2004,6 +2005,8 @@ export async function createPlayerCredentialTask(values: {
   if (currentUser.uid !== values.playerUid) {
     throw new Error('You can only create credential tasks for your own account.');
   }
+
+  await assertActivePlayerSession();
 
   if (!values.gameName.trim()) {
     throw new Error('Game name is required.');
