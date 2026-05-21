@@ -2825,7 +2825,7 @@ export default function PlayerPage() {
     <ProtectedRoute allowedRoles={['player']}>
       <main
         ref={pageScrollRef}
-        className="player-fire-page relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white md:flex-row md:items-start md:pb-0"
+        className="player-fire-page relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white md:flex-row md:items-start lg:pb-0"
       >
         <div className="ember-overlay" aria-hidden="true" />
         {maintenanceBreak.enabled ? (
@@ -2931,7 +2931,7 @@ export default function PlayerPage() {
         <button
           type="button"
           onClick={() => setMusicEnabled((previous) => !previous)}
-          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] right-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-full border border-amber-400/35 bg-black/70 text-lg text-amber-100 shadow-[0_0_24px_-10px_rgba(234,179,8,0.7)] backdrop-blur-xl transition hover:border-amber-300/60 hover:bg-black/80 md:bottom-4 md:right-4"
+          className="fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] right-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-full border border-amber-400/35 bg-black/70 text-lg text-amber-100 shadow-[0_0_24px_-10px_rgba(234,179,8,0.7)] backdrop-blur-xl transition hover:border-amber-300/60 hover:bg-black/80 lg:bottom-4 lg:right-4"
           aria-pressed={musicEnabled}
           aria-label={musicEnabled ? 'Turn music off' : 'Turn music on'}
           title={musicEnabled ? 'Turn music off' : 'Turn music on'}
@@ -4370,7 +4370,7 @@ export default function PlayerPage() {
         </section>
 
         <nav
-          className="fixed bottom-0 left-0 right-0 z-40 flex items-stretch justify-around border-t border-amber-500/25 bg-[#07030a]/95 px-1 pb-[env(safe-area-inset-bottom)] pt-2 shadow-[0_-8px_32px_rgba(0,0,0,0.55)] backdrop-blur-2xl md:hidden"
+          className="fixed bottom-0 left-0 right-0 z-40 flex items-stretch justify-around border-t border-amber-500/25 bg-[#07030a]/95 px-1 pb-[env(safe-area-inset-bottom)] pt-2 shadow-[0_-8px_32px_rgba(0,0,0,0.55)] backdrop-blur-2xl lg:hidden"
           aria-label="Main navigation"
         >
           {NAV_ITEMS.filter((item) => item.view !== 'play').map((item) => {
@@ -4412,7 +4412,7 @@ export default function PlayerPage() {
         </nav>
         <Link
           href="/player/chat"
-          className={`fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] left-4 z-[60] h-12 w-12 items-center justify-center rounded-full border border-emerald-300/50 bg-emerald-500/20 text-2xl shadow-lg shadow-emerald-500/30 backdrop-blur-sm transition hover:bg-emerald-500/30 md:bottom-4 md:left-4 md:inline-flex ${
+          className={`fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] left-4 z-[60] h-12 w-12 items-center justify-center rounded-full border border-emerald-300/50 bg-emerald-500/20 text-2xl shadow-lg shadow-emerald-500/30 backdrop-blur-sm transition hover:bg-emerald-500/30 lg:bottom-4 lg:left-4 lg:inline-flex ${
             mobileMenuOpen ? 'inline-flex' : 'hidden'
           }`}
           aria-label="Open player chat"
