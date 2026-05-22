@@ -1,0 +1,236 @@
+'use client';
+
+import { AnimatePresence, motion } from 'motion/react';
+import { getPlayerBonusEventDescription } from '../utils';
+
+type Props = Record<string, any>;
+
+export default function Bonus(props: Props) {
+  const {
+    activatingBonusEventId,
+    activeBonusCarouselIndex,
+    bonusSwipeStartXRef,
+    bonusVanishedToast,
+    handleActivateBonusEvent,
+    maintenanceBreak,
+    playerBonusEvents,
+    setBonusCarouselIndex,
+    setBonusStripPaused,
+    showBonusPanelHint,
+  } = props;
+
+  return (
+
+              <div className="space-y-5 sm:space-y-6">
+                <AnimatePresence>
+                  {showBonusPanelHint ? (
+                    <motion.div
+                      key="bonus-panel-open-hint"
+                      initial={{ opacity: 0, y: -6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: 0.3 }}
+                      className="rounded-2xl border border-violet-400/35 bg-violet-500/15 px-3 py-2 text-xs font-semibold text-violet-100 shadow-lg shadow-violet-900/20"
+                    >
+                      Scroll to learn about bonus events.
+                    </motion.div>
+                  ) : null}
+                </AnimatePresence>
+                <AnimatePresence>
+                  {bonusVanishedToast ? (
+                    <motion.div
+                      key="bonus-events-vanish"
+                      initial={{ opacity: 0, y: -6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: 0.35 }}
+                      className="flex items-center gap-2 rounded-2xl border border-amber-400/30 bg-gradient-to-r from-amber-500/20 to-rose-500/15 px-3 py-2.5 text-xs font-semibold text-amber-100 shadow-lg shadow-amber-900/20"
+                    >
+                      <span className="text-lg" aria-hidden>
+                        ✨
+                      </span>
+                      <span>
+                        A bonus was just claimed and vanished. Keep watching for the next drop.
+                      </span>
+                    </motion.div>
+                  ) : null}
+                </AnimatePresence>
+                <div
+                  className="player-bonus-drops-panel fire-panel fire-purple group/bonus relative flex min-h-[min(19rem,44svh)] flex-col items-center justify-center rounded-3xl border border-violet-400/35 bg-gradient-to-br from-violet-950/70 via-black/55 to-fuchsia-950/30 px-4 py-8 shadow-[0_0_40px_-12px_rgba(139,92,246,0.35)] backdrop-blur-xl sm:min-h-[min(21rem,40svh)] sm:px-8 sm:py-10"
+                  onPointerEnter={() => setBonusStripPaused(true)}
+                  onPointerLeave={() => setBonusStripPaused(false)}
+                >
+                  <div
+                    className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-fuchsia-500/20 blur-3xl"
+                    aria-hidden
+                  />
+                  {playerBonusEvents.length === 0 ? (
+                    <div className="mx-auto flex w-full max-w-md flex-col items-center justify-center rounded-3xl border border-dashed border-violet-400/25 bg-black/25 px-5 py-12 text-center">
+                      <p className="text-4xl" aria-hidden>
+                        🎁
+                      </p>
+                      <p className="mt-4 text-base font-bold text-violet-100">
+                        No bonus events right now. Check back soon.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="relative z-10 flex w-full min-w-0 max-w-2xl flex-col items-center justify-center">
+                      <AnimatePresence initial={false} mode="wait">
+                        <motion.div
+                          key={playerBonusEvents[activeBonusCarouselIndex]?.id || 'bonus-events-card'}
+                          initial={{ opacity: 0, y: 14, filter: 'blur(10px)' }}
+                          animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+                          exit={{ opacity: 0, y: -12, filter: 'blur(8px)' }}
+                          transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+                          className="mx-auto w-full rounded-3xl border border-fuchsia-400/25 bg-gradient-to-br from-white/[0.08] via-violet-950/45 to-black/70 p-5 text-center shadow-[0_0_36px_-12px_rgba(244,114,182,0.45)] sm:p-6"
+                          onTouchStart={(event) => {
+                            bonusSwipeStartXRef.current = event.touches[0]?.clientX ?? null;
+                          }}
+                          onTouchEnd={(event) => {
+                            const startX = bonusSwipeStartXRef.current;
+                            const endX = event.changedTouches[0]?.clientX ?? null;
+                            bonusSwipeStartXRef.current = null;
+                            if (
+                              startX == null ||
+                              endX == null ||
+                              playerBonusEvents.length <= 1
+                            ) {
+                              return;
+                            }
+                            const deltaX = endX - startX;
+                            if (Math.abs(deltaX) < 40) {
+                              return;
+                            }
+                            event.stopPropagation();
+                            if (deltaX < 0) {
+                              setBonusCarouselIndex((i: number) =>
+                                i >= playerBonusEvents.length - 1 ? 0 : i + 1
+                              );
+                            } else {
+                              setBonusCarouselIndex((i: number) =>
+                                i <= 0 ? playerBonusEvents.length - 1 : i - 1
+                              );
+                            }
+                          }}
+                        >
+                          {(() => {
+                            const event = playerBonusEvents[activeBonusCarouselIndex];
+                            if (!event) {
+                              return null;
+                            }
+                            const eventDescription = getPlayerBonusEventDescription(
+                              event.description
+                            );
+
+                            return (
+                              <>
+                                <p className="text-xs font-bold uppercase tracking-[0.24em] text-fuchsia-200/85">
+                                  Limited drop
+                                </p>
+                                <h3 className="mt-2 text-2xl font-black text-white sm:text-3xl">
+                                  {event.bonusName}
+                                </h3>
+                                {eventDescription ? (
+                                  <p className="mt-2 text-sm text-violet-100/80 sm:text-base">
+                                    {eventDescription}
+                                  </p>
+                                ) : null}
+
+                                <div className="mx-auto mt-5 grid w-full max-w-xl grid-cols-2 gap-3 text-sm sm:grid-cols-3 sm:max-w-2xl">
+                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3 text-center">
+                                    <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
+                                      Game Name
+                                    </p>
+                                    <p className="mt-1 font-bold text-white">{event.gameName}</p>
+                                  </div>
+                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3 text-center">
+                                    <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
+                                      Bonus Name
+                                    </p>
+                                    <p className="mt-1 font-bold text-white">{event.bonusName}</p>
+                                  </div>
+                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3 text-center">
+                                    <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
+                                      You Pay
+                                    </p>
+                                    <p className="mt-1 font-bold text-white">
+                                      ${Math.round(event.amountNpr || 0).toLocaleString('en-US')}
+                                    </p>
+                                  </div>
+                                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3 text-center">
+                                    <p className="text-[10px] font-black uppercase tracking-wider text-violet-200/55">
+                                      You Get
+                                    </p>
+                                    <p className="mt-1 font-bold text-white">
+                                      $
+                                      {(
+                                        Number(event.amountNpr || 0) +
+                                        Math.max(
+                                          1,
+                                          Math.round(
+                                            (Number(event.amountNpr || 0) *
+                                              Number(event.bonusPercentage || 0)) /
+                                              100
+                                          )
+                                        )
+                                      ).toLocaleString('en-US')}
+                                    </p>
+                                  </div>
+                                  <div className="rounded-2xl border border-fuchsia-400/25 bg-fuchsia-500/10 p-3 text-center">
+                                    <p className="text-[10px] font-black uppercase tracking-wider text-fuchsia-200/70">
+                                      Status
+                                    </p>
+                                    <p className="mt-1 font-bold text-fuchsia-50">Available now</p>
+                                  </div>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => void handleActivateBonusEvent(event)}
+                                  disabled={activatingBonusEventId === event.id || maintenanceBreak.enabled}
+                                  className="fire-button fire-purple mt-5 flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-fuchsia-500 via-violet-500 to-amber-400 py-3 text-sm font-black text-white shadow-lg shadow-fuchsia-500/25 transition hover:brightness-110 active:scale-[0.99] disabled:opacity-60"
+                                >
+                                  {activatingBonusEventId === event.id ? (
+                                    <>
+                                      <i className="fas fa-circle-notch fa-spin" aria-hidden />
+                                      Opening drop...
+                                    </>
+                                  ) : (
+                                    <>Claim / Open Bonus</>
+                                  )}
+                                </button>
+                              </>
+                            );
+                          })()}
+                        </motion.div>
+                      </AnimatePresence>
+                    </div>
+                  )}
+                </div>
+
+                <div className="fire-panel fire-purple rounded-3xl border border-violet-400/25 bg-gradient-to-br from-[#21102f]/90 via-[#14091f]/92 to-black/85 p-5 shadow-[0_0_34px_-16px_rgba(168,85,247,0.55)] sm:p-6">
+                  <p className="text-xs font-black uppercase tracking-[0.28em] text-fuchsia-200/80">
+                    Bonus Event Guide
+                  </p>
+                  <h3 className="mt-2 text-2xl font-black text-white sm:text-[1.8rem]">
+                    How bonus events work
+                  </h3>
+                  <div className="mt-4 space-y-3 text-sm leading-relaxed text-violet-100/82 sm:text-base">
+                    <p>
+                      Bonus events are limited drops. When a bonus appears, you can open it and
+                      try to claim it before another player does.
+                    </p>
+                    <p>
+                      Each event shows the game, bonus amount, and what you get from the bonus, so you can
+                      quickly see what you are getting before you claim.
+                    </p>
+                    <p>
+                      When you claim a bonus event, that drop is locked in and removed from the
+                      live list. If someone else claims it first, it disappears and you need to
+                      wait for the next bonus event.
+                    </p>
+                  </div>
+                </div>
+              </div>
+  );
+}
