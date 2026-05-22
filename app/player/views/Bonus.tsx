@@ -21,16 +21,17 @@ export default function Bonus(props: Props) {
 
   return (
 
-              <div className="space-y-5 sm:space-y-6">
+              <div className="relative space-y-5 sm:space-y-6">
+                <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex flex-col gap-2 px-2 pt-2 sm:px-4 sm:pt-3">
                 <AnimatePresence>
                   {showBonusPanelHint ? (
                     <motion.div
                       key="bonus-panel-open-hint"
-                      initial={{ opacity: 0, y: -6 }}
+                      initial={{ opacity: 0, y: -8 }}
                       animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -8 }}
+                      exit={{ opacity: 0, y: -10 }}
                       transition={{ duration: 0.3 }}
-                      className="rounded-2xl border border-violet-400/35 bg-violet-500/15 px-3 py-2 text-xs font-semibold text-violet-100 shadow-lg shadow-violet-900/20"
+                      className="rounded-2xl border border-violet-400/35 bg-violet-500/25 px-3 py-2 text-xs font-semibold text-violet-100 shadow-lg shadow-violet-900/20 backdrop-blur-xl"
                     >
                       Scroll to learn about bonus events.
                     </motion.div>
@@ -40,11 +41,11 @@ export default function Bonus(props: Props) {
                   {bonusVanishedToast ? (
                     <motion.div
                       key="bonus-events-vanish"
-                      initial={{ opacity: 0, y: -6 }}
+                      initial={{ opacity: 0, y: -8 }}
                       animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -8 }}
+                      exit={{ opacity: 0, y: -10 }}
                       transition={{ duration: 0.35 }}
-                      className="flex items-center gap-2 rounded-2xl border border-amber-400/30 bg-gradient-to-r from-amber-500/20 to-rose-500/15 px-3 py-2.5 text-xs font-semibold text-amber-100 shadow-lg shadow-amber-900/20"
+                      className="flex items-center gap-2 rounded-2xl border border-amber-400/30 bg-gradient-to-r from-amber-500/25 to-rose-500/20 px-3 py-2.5 text-xs font-semibold text-amber-100 shadow-lg shadow-amber-900/20 backdrop-blur-xl"
                     >
                       <span className="text-lg" aria-hidden>
                         ✨
@@ -55,6 +56,7 @@ export default function Bonus(props: Props) {
                     </motion.div>
                   ) : null}
                 </AnimatePresence>
+                </div>
                 <div
                   className="player-bonus-drops-panel fire-panel fire-purple group/bonus relative flex min-h-[min(19rem,44svh)] flex-col items-center justify-center rounded-3xl border border-violet-400/35 bg-gradient-to-br from-violet-950/70 via-black/55 to-fuchsia-950/30 px-4 py-8 shadow-[0_0_40px_-12px_rgba(139,92,246,0.35)] backdrop-blur-xl sm:min-h-[min(21rem,40svh)] sm:px-8 sm:py-10"
                   onPointerEnter={() => setBonusStripPaused(true)}
