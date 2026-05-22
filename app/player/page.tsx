@@ -101,6 +101,22 @@ type GameBackgroundAsset = {
   imageUrl: string;
 };
 
+const DEFAULT_GAME_BACKGROUND_IMAGE = '/gamebackgroundimage/game-vault.png';
+
+const GAME_BACKGROUND_IMAGE_BY_KEY: Record<string, string> = {
+  cashfrenzy: '/gamebackgroundimage/cash-frenzy.png',
+  firekirin: '/gamebackgroundimage/fire-kirin.png',
+  gamevault: '/gamebackgroundimage/game-vault.png',
+  juwa: '/gamebackgroundimage/juwa.png',
+  juwa2: '/gamebackgroundimage/juwa-2.png',
+  mafia: '/gamebackgroundimage/mafia.png',
+  milkyway: '/gamebackgroundimage/milky-way.png',
+  orionstars: '/gamebackgroundimage/orion-stars.png',
+  ultrapanda: '/gamebackgroundimage/ultra-panda.png',
+  vblink: '/gamebackgroundimage/vb-link.png',
+  vegassweeps: '/gamebackgroundimage/vegas-sweeps.png',
+};
+
 function getTimestampMs(value: unknown) {
   if (!value) {
     return 0;
@@ -269,39 +285,23 @@ function normalizeBackgroundKey(gameName: string) {
   return gameName.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+function getGameBackgroundImage(
+  backgroundsByKey: Record<string, string>,
+  gameName?: string | null
+) {
+  const key = normalizeBackgroundKey(String(gameName || ''));
+  if (!key) {
+    return DEFAULT_GAME_BACKGROUND_IMAGE;
+  }
+  return backgroundsByKey[key] || DEFAULT_GAME_BACKGROUND_IMAGE;
+}
+
 function normalizeExternalUrl(siteUrl?: string | null) {
   const trimmed = String(siteUrl || '').trim();
   if (!trimmed) {
     return '';
   }
   return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-}
-
-function buildGameBackgroundCandidates(gameName: string) {
-  const trimmed = gameName.trim();
-  if (!trimmed) {
-    return [] as string[];
-  }
-
-  const compact = normalizeBackgroundKey(trimmed);
-  const dashed = trimmed.trim().toLowerCase().replace(/\s+/g, '-');
-  const underscored = trimmed.trim().toLowerCase().replace(/\s+/g, '_');
-  // Keep fallback probes narrow to avoid large 404 storms.
-  const baseNames = Array.from(new Set([trimmed, dashed, underscored, compact].filter(Boolean)));
-  const roots = ['/gamebackgroundimage'];
-  const extensions = ['jpg', 'jpeg', 'png'];
-  const candidates: string[] = [];
-
-  for (const root of roots) {
-    for (const baseName of baseNames) {
-      const encodedBaseName = encodeURIComponent(baseName);
-      for (const ext of extensions) {
-        candidates.push(`${root}/${encodedBaseName}.${ext}`);
-      }
-    }
-  }
-
-  return candidates;
 }
 
 const UNKNOWN_CREATOR_FILTER_KEY = '__unknown_creator__';
@@ -549,9 +549,8 @@ export default function PlayerPage() {
 
   const [selectedGameName, setSelectedGameName] = useState('');
   const [gameBackgroundImageByKey, setGameBackgroundImageByKey] = useState<Record<string, string>>(
-    {}
+    GAME_BACKGROUND_IMAGE_BY_KEY
   );
-  const attemptedBackgroundKeysRef = useRef<Set<string>>(new Set());
   const [playAmount, setPlayAmount] = useState('');
   const [requestLoading, setRequestLoading] = useState(false);
   const [playRequestSplash, setPlayRequestSplash] = useState<null | {
@@ -1016,11 +1015,7 @@ export default function PlayerPage() {
   }, [playerCoadminUid]);
 
   const selectedGameBackgroundImage = useMemo(() => {
-    const key = normalizeBackgroundKey(selectedGameName);
-    if (!key) {
-      return '';
-    }
-    return gameBackgroundImageByKey[key] || '';
+    return getGameBackgroundImage(gameBackgroundImageByKey, selectedGameName);
   }, [gameBackgroundImageByKey, selectedGameName]);
 
   const selectedGameLogin = useMemo(() => {
@@ -1102,20 +1097,23 @@ export default function PlayerPage() {
           return;
         }
         const payload = (await response.json()) as { backgrounds?: GameBackgroundAsset[] };
-        const nextMap: Record<string, string> = {};
+        const nextMap: Record<string, string> = { ...GAME_BACKGROUND_IMAGE_BY_KEY };
         for (const item of payload.backgrounds || []) {
           const key = normalizeBackgroundKey(item.key);
           if (!key) {
             continue;
           }
-          nextMap[key] = String(item.imageUrl || '');
+          const imageUrl = String(item.imageUrl || '').trim();
+          if (imageUrl.endsWith('.png')) {
+            nextMap[key] = imageUrl;
+          }
         }
         if (!isCancelled) {
           setGameBackgroundImageByKey(nextMap);
         }
       } catch {
         if (!isCancelled) {
-          setGameBackgroundImageByKey({});
+          setGameBackgroundImageByKey(GAME_BACKGROUND_IMAGE_BY_KEY);
         }
       }
     }
@@ -1125,55 +1123,6 @@ export default function PlayerPage() {
       isCancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || gameLogins.length === 0) {
-      return;
-    }
-
-    let isCancelled = false;
-
-    const resolveFirstExistingImage = async (candidates: string[]) => {
-      for (const candidate of candidates) {
-        const exists = await new Promise<boolean>((resolve) => {
-          const img = new window.Image();
-          img.onload = () => resolve(true);
-          img.onerror = () => resolve(false);
-          img.src = candidate;
-        });
-        if (exists) {
-          return candidate;
-        }
-      }
-      return '';
-    };
-
-    async function hydrateMissingBackgrounds() {
-      const additions: Record<string, string> = {};
-
-      for (const login of gameLogins) {
-        const gameName = String(login.gameName || '');
-        const key = normalizeBackgroundKey(gameName);
-        if (!key || gameBackgroundImageByKey[key] || attemptedBackgroundKeysRef.current.has(key)) {
-          continue;
-        }
-        attemptedBackgroundKeysRef.current.add(key);
-        const resolvedUrl = await resolveFirstExistingImage(buildGameBackgroundCandidates(gameName));
-        if (resolvedUrl) {
-          additions[key] = resolvedUrl;
-        }
-      }
-
-      if (!isCancelled && Object.keys(additions).length > 0) {
-        setGameBackgroundImageByKey((prev) => ({ ...prev, ...additions }));
-      }
-    }
-
-    void hydrateMissingBackgrounds();
-    return () => {
-      isCancelled = true;
-    };
-  }, [gameBackgroundImageByKey, gameLogins]);
 
   useEffect(() => {
     const len = playerBonusEvents.length;
@@ -3896,8 +3845,10 @@ export default function PlayerPage() {
                         const isPasswordVisible = Boolean(visiblePasswords[game.id]);
                         const hasUsername = Boolean(resolvedUsername);
                         const isSelected = selectedGameName === game.gameName;
-                        const gameCardBackgroundImage =
-                          gameBackgroundImageByKey[normalizeBackgroundKey(game.gameName)] || '';
+                        const gameCardBackgroundImage = getGameBackgroundImage(
+                          gameBackgroundImageByKey,
+                          game.gameName
+                        );
 
                         return (
                           <motion.div
@@ -4112,8 +4063,10 @@ export default function PlayerPage() {
                       const downloadGameUrl = normalizeExternalUrl(
                         login.frontendUrl || login.siteUrl || fallbackFrontendUrl
                       );
-                      const gameCardBackgroundImage =
-                        gameBackgroundImageByKey[normalizeBackgroundKey(login.gameName || '')] || '';
+                      const gameCardBackgroundImage = getGameBackgroundImage(
+                        gameBackgroundImageByKey,
+                        login.gameName
+                      );
                       return (
                         <motion.div
                           key={login.id}

@@ -2,7 +2,7 @@ import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { NextResponse } from 'next/server';
 
-const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png']);
+const IMAGE_EXTENSION = '.png';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
@@ -21,7 +21,7 @@ export async function GET() {
         const baseName = path.basename(entry.name, ext);
         return { ext, baseName, name: entry.name };
       })
-      .filter((entry) => IMAGE_EXTENSIONS.has(entry.ext))
+      .filter((entry) => entry.ext === IMAGE_EXTENSION)
       .map((entry) => ({
         key: normalizeBackgroundKey(entry.baseName),
         imageUrl: `/gamebackgroundimage/${encodeURIComponent(entry.name)}`,
