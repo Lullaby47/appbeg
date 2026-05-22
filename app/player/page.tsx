@@ -102,7 +102,6 @@ import {
   PLAYER_SPLASH_BACKDROP,
   PLAYER_SPLASH_BACKDROP_CENTER,
   PLAYER_SPLASH_CARD,
-  PLAYER_SPLASH_CARD_WIDE,
   SWIPE_NAV_VIEWS,
   UNKNOWN_CREATOR_FILTER_KEY,
 } from './constants';
@@ -3431,12 +3430,13 @@ export default function PlayerPage() {
       {showCashoutModal && (
         <div
           onClick={() => setShowCashoutModal(false)}
-          className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[73]`}
+          className="fixed inset-0 z-[73] flex items-end justify-center bg-black/82 px-3 pt-4 backdrop-blur-xl sm:items-center sm:p-4"
         >
           <div
             onClick={(event) => event.stopPropagation()}
-            className={`${PLAYER_SPLASH_CARD_WIDE} fire-panel fire-green text-white`}
+            className="fire-panel fire-green max-h-[100svh] w-full max-w-lg overflow-y-auto overscroll-contain rounded-t-3xl border border-amber-400/25 bg-gradient-to-b from-[#121018] via-zinc-950/98 to-black text-white shadow-2xl shadow-amber-500/10 sm:max-h-[calc(100dvh-2rem)] sm:max-w-2xl sm:rounded-3xl"
           >
+            <div className="p-6 sm:p-7">
             <h3 className="text-2xl font-black">Player Cashout</h3>
             <p className="mt-2 text-sm text-cyan-100/80">
               You can cash out up to ${formatWalletAmount(PLAYER_CASHOUT_MAX_NPR_PER_24_H)} in a rolling 24-hour window
@@ -3574,8 +3574,9 @@ export default function PlayerPage() {
                 </label>
               </div>
             )}
+            </div>
 
-            <div className="mt-5 flex gap-3">
+            <div className="sticky bottom-0 flex gap-3 border-t border-white/10 bg-black/90 px-6 pb-[calc(24px+env(safe-area-inset-bottom))] pt-4 backdrop-blur-xl sm:px-7 sm:pb-7">
               <button
                 type="button"
                 onClick={() => setShowCashoutModal(false)}
