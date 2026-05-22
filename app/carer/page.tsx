@@ -1243,53 +1243,67 @@ export default function CarerPage() {
   }, [coadminUid]);
 
   useEffect(() => {
+    if (!carerIdentity?.uid || !coadminUid) {
+      return;
+    }
+
+    const activeCarer = carerIdentity;
     let disposed = false;
     let heartbeatId: number | null = null;
+    let startDelayId: number | null = null;
+    let sessionIdForThisEffect: string | null = null;
 
     async function startMyShift() {
       const currentUser = auth.currentUser;
-      if (!currentUser) {
+      if (!currentUser || currentUser.uid !== activeCarer.uid || disposed) {
         return;
       }
-      const userSnap = await getDoc(doc(db, 'users', currentUser.uid));
-      if (!userSnap.exists()) {
-        return;
-      }
-      const userData = userSnap.data() as { username?: string };
-      const resolvedCoadminUid = await getCurrentUserCoadminUid();
+
       const sessionId = await startShiftSession({
-        coadminUid: resolvedCoadminUid,
+        coadminUid,
         userUid: currentUser.uid,
         userRole: 'carer',
-        userUsername: userData.username?.trim() || 'Carer',
+        userUsername: activeCarer.username?.trim() || 'Carer',
       });
+      sessionIdForThisEffect = sessionId;
+
       if (disposed) {
         await endShiftSession(sessionId).catch(() => undefined);
         return;
       }
+
       shiftSessionIdRef.current = sessionId;
       heartbeatId = window.setInterval(() => {
-        const id = shiftSessionIdRef.current;
-        if (id) {
-          void heartbeatShiftSession(id).catch(() => undefined);
+        if (!sessionIdForThisEffect || shiftSessionIdRef.current !== sessionIdForThisEffect) {
+          return;
         }
+        void heartbeatShiftSession(sessionIdForThisEffect).catch(() => undefined);
       }, 60_000);
     }
 
-    void startMyShift().catch(() => undefined);
+    startDelayId = window.setTimeout(() => {
+      startDelayId = null;
+      void startMyShift().catch(() => undefined);
+    }, 0);
 
     return () => {
       disposed = true;
+      if (startDelayId !== null) {
+        window.clearTimeout(startDelayId);
+      }
       if (heartbeatId !== null) {
         window.clearInterval(heartbeatId);
       }
-      const id = shiftSessionIdRef.current;
-      shiftSessionIdRef.current = null;
-      if (id) {
-        void endShiftSession(id).catch(() => undefined);
+      const id = sessionIdForThisEffect;
+      if (!id) {
+        return;
       }
+      if (shiftSessionIdRef.current === id) {
+        shiftSessionIdRef.current = null;
+      }
+      void endShiftSession(id).catch(() => undefined);
     };
-  }, []);
+  }, [carerIdentity?.uid, carerIdentity?.username, coadminUid]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
