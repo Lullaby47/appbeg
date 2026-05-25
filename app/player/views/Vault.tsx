@@ -100,7 +100,7 @@ export default function Vault(props: Props) {
                           normalizeBackgroundKey(String(login.gameName || ''))
                         ] || '';
                       const downloadGameUrl = normalizeExternalUrl(
-                        login.frontendUrl || login.siteUrl || fallbackFrontendUrl
+                        login.frontendUrl || fallbackFrontendUrl || login.siteUrl
                       );
                       const gameCardBackgroundImage = getGameBackgroundImage(
                         gameBackgroundImageByKey,

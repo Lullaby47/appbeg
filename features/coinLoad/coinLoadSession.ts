@@ -5,6 +5,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  increment,
   onSnapshot,
   query,
   serverTimestamp,
@@ -95,6 +96,8 @@ export async function setCoadminPaymentDetailPhotos(
   await updateDoc(doc(db, 'users', coadminUid), {
     paymentDetailPhotos: photos,
     paymentDetailPhotoUrls: photos.map((p) => p.imageUrl),
+    paymentDetailsNoticeVersion: increment(1),
+    paymentDetailsUpdatedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
 }

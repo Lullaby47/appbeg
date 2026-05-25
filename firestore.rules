@@ -133,7 +133,12 @@ service cloud.firestore {
     }
 
     match /users/{uid} {
-      allow read: if signedIn() && (request.auth.uid == uid || isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)));
+      allow read: if signedIn() && (
+        request.auth.uid == uid ||
+        isAdmin() ||
+        (isPlayer() && uid == callerCoadminUid()) ||
+        (isScopedWorker() && scopedToCaller(resource.data))
+      );
 
       // Users may maintain only explicitly harmless own-profile fields.
       // Balance, role, scope, identity, and app-control fields must move
@@ -147,6 +152,14 @@ service cloud.firestore {
           'activeSessionStartedAt',
           'activeSessionLastSeenAt'
         ]);
+
+      allow update: if signedIn()
+        && request.auth.uid == uid
+        && isPlayer()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'dismissedPaymentDetailsNoticeVersion'
+        ])
+        && request.resource.data.dismissedPaymentDetailsNoticeVersion is number;
 
       allow update: if signedIn()
         && request.auth.uid == uid
@@ -170,6 +183,8 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'paymentDetailPhotos',
           'paymentDetailPhotoUrls',
+          'paymentDetailsNoticeVersion',
+          'paymentDetailsUpdatedAt',
           'updatedAt'
         ]);
 

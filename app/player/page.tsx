@@ -8,7 +8,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { AnimatePresence, motion } from 'motion/react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot, updateDoc } from 'firebase/firestore';
 import imageCompression from 'browser-image-compression';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
@@ -230,6 +230,9 @@ export default function PlayerPage() {
   const [playerCashoutTasks, setPlayerCashoutTasks] = useState<PlayerCashoutTask[]>([]);
   const [cashoutLoading, setCashoutLoading] = useState(false);
   const [showCashoutSuccessSplash, setShowCashoutSuccessSplash] = useState(false);
+  const [paymentDetailsNoticeVersion, setPaymentDetailsNoticeVersion] = useState(0);
+  const [dismissedPaymentDetailsNoticeVersion, setDismissedPaymentDetailsNoticeVersion] =
+    useState(0);
   const [showCashoutInquiryPanel, setShowCashoutInquiryPanel] = useState(false);
   const [cashoutInquiryMessage, setCashoutInquiryMessage] = useState('');
   const [sendingCashoutInquiry, setSendingCashoutInquiry] = useState(false);
@@ -1266,6 +1269,8 @@ export default function PlayerPage() {
         setIsBlockedPlayer(false);
         setWallet({ coin: 0, cash: 0 });
         setPlayerCoadminUid('');
+        setPaymentDetailsNoticeVersion(0);
+        setDismissedPaymentDetailsNoticeVersion(0);
         setShowCashoutSuccessSplash(false);
         hasSeenCashoutTaskSnapshotRef.current = false;
         knownCompletedCashoutTaskIdsRef.current = new Set();
@@ -1295,6 +1300,9 @@ export default function PlayerPage() {
           uid: nextPlayerUid,
           ...(playerData as Record<string, unknown>),
         });
+        if (!resolvedCoadminUid) {
+          setPaymentDetailsNoticeVersion(0);
+        }
         setPlayerCoadminUid(resolvedCoadminUid ? String(resolvedCoadminUid) : '');
       } catch {
         setIsBlockedPlayer(false);
@@ -1319,6 +1327,30 @@ export default function PlayerPage() {
       setMaintenanceBreak,
       () => setMaintenanceBreak(normalizeMaintenanceBreak(null))
     );
+  }, [playerCoadminUid]);
+
+  useEffect(() => {
+    if (!playerCoadminUid) {
+      return;
+    }
+
+    const unsubscribe = onSnapshot(
+      doc(db, 'users', playerCoadminUid),
+      (snapshot) => {
+        if (!snapshot.exists()) {
+          setPaymentDetailsNoticeVersion(0);
+          return;
+        }
+
+        const coadminData = snapshot.data() as {
+          paymentDetailsNoticeVersion?: number;
+        };
+        setPaymentDetailsNoticeVersion(Number(coadminData.paymentDetailsNoticeVersion || 0));
+      },
+      () => setPaymentDetailsNoticeVersion(0)
+    );
+
+    return () => unsubscribe();
   }, [playerCoadminUid]);
 
   useEffect(() => {
@@ -1541,16 +1573,23 @@ export default function PlayerPage() {
           referredByUsername?: string;
           referralBonusNotice?: string;
           referralBonusNoticeAt?: unknown;
+          dismissedPaymentDetailsNoticeVersion?: number;
         };
 
         setWallet({
           coin: Number(playerData.coin || 0),
           cash: Number(playerData.cash || 0),
         });
+        setDismissedPaymentDetailsNoticeVersion(
+          Number(playerData.dismissedPaymentDetailsNoticeVersion || 0)
+        );
         const resolvedCoadminUid = resolveCoadminUid({
           uid: playerUid,
           ...playerData,
         });
+        if (!resolvedCoadminUid) {
+          setPaymentDetailsNoticeVersion(0);
+        }
         setPlayerCoadminUid(resolvedCoadminUid ? String(resolvedCoadminUid) : '');
         const isPlayerRole = String(playerData.role || '').toLowerCase() === 'player';
         const nextReferralCode = String(playerData.referralCode || '').trim();
@@ -1579,6 +1618,7 @@ export default function PlayerPage() {
       },
       () => {
         setWallet({ coin: 0, cash: 0 });
+        setDismissedPaymentDetailsNoticeVersion(0);
         setReferralCode('');
         setReferredByPlayerName('');
         setReferredByPlayerUid('');
@@ -2273,6 +2313,27 @@ export default function PlayerPage() {
     const m = Math.floor(totalSec / 60);
     const s = totalSec % 60;
     return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  const shouldShowPaymentDetailsNotice =
+    paymentDetailsNoticeVersion > 0 &&
+    paymentDetailsNoticeVersion > dismissedPaymentDetailsNoticeVersion;
+
+  async function dismissPaymentDetailsNotice() {
+    if (!playerUid || paymentDetailsNoticeVersion <= 0) {
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'users', playerUid), {
+        dismissedPaymentDetailsNoticeVersion: paymentDetailsNoticeVersion,
+      });
+      setDismissedPaymentDetailsNoticeVersion(paymentDetailsNoticeVersion);
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : 'Failed to dismiss payment details notice.'
+      );
+    }
   }
 
   function renderRequestHistory() {
@@ -3593,6 +3654,39 @@ export default function PlayerPage() {
                 {cashoutLoading ? 'Sending...' : 'Send Cashout'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {shouldShowPaymentDetailsNotice && (
+        <div
+          onClick={() => void dismissPaymentDetailsNotice()}
+          className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[78] bg-black/85`}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="payment-details-notice-title"
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            className="fire-panel fire-purple w-full max-w-lg rounded-3xl border border-violet-300/45 bg-gradient-to-br from-violet-950 via-zinc-950 to-black p-7 text-center text-white shadow-2xl shadow-violet-900/30 backdrop-blur-xl"
+          >
+            <p className="text-xs font-black uppercase tracking-[0.26em] text-violet-100/80">
+              Payment Update
+            </p>
+            <h3 id="payment-details-notice-title" className="mt-3 text-2xl font-black">
+              Payment details changed
+            </h3>
+            <p className="mt-4 text-sm leading-relaxed text-violet-50/90">
+              Payment details for loading coins has been changed. Please click on Load Coin to see
+              the latest payment details.
+            </p>
+            <button
+              type="button"
+              onClick={() => void dismissPaymentDetailsNotice()}
+              className="fire-button fire-purple mt-7 w-full rounded-2xl bg-white px-4 py-3 text-sm font-black uppercase text-violet-950 hover:bg-violet-50"
+            >
+              Got it
+            </button>
           </div>
         </div>
       )}
