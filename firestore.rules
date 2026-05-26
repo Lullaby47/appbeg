@@ -305,6 +305,15 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    // FreePlay state and claims are mediated by authenticated Admin SDK API routes.
+    match /freeplayGifts/{giftId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /freeplayPendingGifts/{playerUid} {
+      allow read, create, update, delete: if false;
+    }
+
     match /gameLogins/{docId} {
       allow read, update, delete: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(resource.data)));
       allow create: if signedIn() && (isAdmin() || (isScopedWorker() && scopedToCaller(request.resource.data)));

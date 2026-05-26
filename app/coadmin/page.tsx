@@ -138,6 +138,7 @@ import {
   setCoadminMaintenanceBreak,
 } from '@/features/maintenance/maintenanceBreak';
 import { normalizeMaintenanceBreak, type MaintenanceBreak } from '@/lib/maintenance/config';
+import { giveFreeplayGift } from '@/features/freeplay/coadminFreeplay';
 
 type CoadminView =
   | 'dashboard'
@@ -411,6 +412,7 @@ export default function CoadminPage() {
     normalizeMaintenanceBreak(null)
   );
   const [maintenanceBusy, setMaintenanceBusy] = useState(false);
+  const [freeplayGiveBusy, setFreeplayGiveBusy] = useState(false);
 
   const [chatUsers, setChatUsers] = useState<AdminUser[]>([]);
   const [reachOutChatUser, setReachOutChatUser] = useState<AdminUser | null>(null);
@@ -625,6 +627,22 @@ export default function CoadminPage() {
       );
     } finally {
       setMaintenanceBusy(false);
+    }
+  }
+
+  async function handleGiveFreeplay() {
+    if (freeplayGiveBusy) {
+      return;
+    }
+    setFreeplayGiveBusy(true);
+    setMessage('');
+    try {
+      const playerUsername = await giveFreeplayGift();
+      setMessage(`FreePlay gift sent to ${playerUsername}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to give FreePlay gift.');
+    } finally {
+      setFreeplayGiveBusy(false);
     }
   }
 
@@ -3197,6 +3215,28 @@ export default function CoadminPage() {
                     End Maintenance Break
                   </button>
                 </div>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-fuchsia-400/35 bg-gradient-to-br from-fuchsia-500/15 via-amber-500/10 to-white/5 p-5">
+              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-wide text-fuchsia-200">
+                    Player Surprise
+                  </p>
+                  <h3 className="mt-1 text-xl font-bold text-white">Give FreePlay</h3>
+                  <p className="mt-2 text-sm text-neutral-300">
+                    Send a mystery FreePlay coin gift to one randomly selected active player.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleGiveFreeplay()}
+                  disabled={freeplayGiveBusy}
+                  className="shrink-0 rounded-xl bg-gradient-to-r from-fuchsia-500 to-amber-400 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-fuchsia-900/25 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {freeplayGiveBusy ? 'Sending...' : 'Give FreePlay'}
+                </button>
               </div>
             </div>
 

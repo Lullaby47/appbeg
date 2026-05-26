@@ -1,13 +1,29 @@
 'use client';
 
+import { AnimatePresence, motion } from 'motion/react';
+
 import type { ReferralRewardGroup } from '@/features/referrals/playerReferralRewards';
 
-type Props = Record<string, any>;
+type Props = {
+  claimingFreeplayGift: boolean;
+  claimingReferredPlayerUid: string | null;
+  freeplayClaimSuccessMessage: string;
+  handleClaimFreeplayGift: () => void | Promise<void>;
+  handleClaimReferralReward: (referredPlayerUid: string) => void | Promise<void>;
+  hasPendingFreeplayGift: boolean;
+  referralRewardGroups: ReferralRewardGroup[];
+  referralRewardsLoading: boolean;
+  referredByPlayerName: string;
+};
 
 export default function EarnCoins(props: Props) {
   const {
+    claimingFreeplayGift,
     claimingReferredPlayerUid,
+    freeplayClaimSuccessMessage,
+    handleClaimFreeplayGift,
     handleClaimReferralReward,
+    hasPendingFreeplayGift,
     referralRewardGroups,
     referralRewardsLoading,
     referredByPlayerName,
@@ -37,6 +53,112 @@ export default function EarnCoins(props: Props) {
                     Bonus terms apply
                   </p>
                 </div>
+
+                <AnimatePresence initial={false} mode="wait">
+                  {hasPendingFreeplayGift ? (
+                    <motion.button
+                      key="freeplay-gift"
+                      type="button"
+                      onClick={() => void handleClaimFreeplayGift()}
+                      disabled={claimingFreeplayGift}
+                      initial={{ opacity: 0, scale: 0.96 }}
+                      animate={
+                        claimingFreeplayGift
+                          ? { opacity: 1, scale: 1.1, filter: 'blur(0px)' }
+                          : { opacity: 1, scale: 1, filter: 'blur(0px)' }
+                      }
+                      exit={{ opacity: 0, scale: 1.16, filter: 'blur(7px)' }}
+                      transition={{
+                        duration: claimingFreeplayGift ? 0.45 : 0.35,
+                        ease: [0.22, 1, 0.36, 1],
+                      }}
+                      style={{ willChange: 'transform, opacity, filter' }}
+                      className="fire-panel fire-orange group relative w-full overflow-hidden rounded-3xl border border-yellow-200/80 bg-gradient-to-br from-fuchsia-700/60 via-amber-400/45 to-orange-700/50 p-5 text-left shadow-[0_0_58px_-12px_rgba(250,204,21,0.95)] disabled:cursor-wait sm:p-6"
+                      aria-label="Open your FreePlay gift"
+                    >
+                      <motion.span
+                        className="pointer-events-none absolute -right-9 -top-10 h-36 w-36 rounded-full bg-yellow-200/30 blur-3xl"
+                        animate={{
+                          opacity: claimingFreeplayGift ? [0.42, 0.9, 0.42] : [0.25, 0.5, 0.25],
+                          scale: claimingFreeplayGift ? [1, 1.35, 1] : [1, 1.12, 1],
+                        }}
+                        transition={{ duration: claimingFreeplayGift ? 0.7 : 2.2, repeat: Infinity }}
+                      />
+                      <div className="relative flex items-center gap-4 sm:gap-5">
+                        <motion.span
+                          animate={
+                            claimingFreeplayGift
+                              ? { scale: [1, 1.18, 1.12], y: [0, -3, 0] }
+                              : { scale: [1, 1.06, 1], y: [0, -4, 0] }
+                          }
+                          transition={{
+                            duration: claimingFreeplayGift ? 0.45 : 1.7,
+                            ease: 'easeInOut',
+                            repeat: claimingFreeplayGift ? 0 : Infinity,
+                          }}
+                          style={{ willChange: 'transform' }}
+                          className="relative flex h-20 w-20 shrink-0 items-center justify-center rounded-3xl border border-yellow-100/70 bg-gradient-to-br from-yellow-100/30 via-amber-300/20 to-fuchsia-500/20 text-5xl text-yellow-100 shadow-[0_0_32px_rgba(253,224,71,0.7),inset_0_1px_18px_rgba(255,255,255,0.3)] sm:h-24 sm:w-24 sm:text-6xl"
+                        >
+                          <span className="absolute inset-2 rounded-2xl bg-yellow-300/20 blur-xl" />
+                          <img
+                            src="/assets/player/freeplay-gift-box.webp"
+                            alt="FreePlay gift box"
+                            className="relative h-16 w-16 object-contain drop-shadow-[0_0_18px_rgba(253,224,71,0.95)] sm:h-20 sm:w-20"
+                          />
+                          <motion.i
+                            className="fas fa-star absolute -right-2 -top-2 text-base text-yellow-100"
+                            aria-hidden="true"
+                            animate={{ opacity: [0.2, 1, 0.2], scale: [0.75, 1.2, 0.75] }}
+                            transition={{ duration: 1.25, repeat: Infinity }}
+                          />
+                          <motion.i
+                            className="fas fa-star absolute -bottom-1 -left-2 text-xs text-amber-100"
+                            aria-hidden="true"
+                            animate={{ opacity: [1, 0.2, 1], scale: [1.1, 0.7, 1.1] }}
+                            transition={{ duration: 1.4, repeat: Infinity }}
+                          />
+                        </motion.span>
+                        <div>
+                          <p className="text-xs font-black uppercase tracking-[0.3em] text-yellow-100">
+                            Mystery Drop
+                          </p>
+                          <h3 className="mt-1 text-xl font-black text-white sm:text-2xl">
+                            FreePlay Gift Box
+                          </h3>
+                          <p className="mt-1 text-sm font-semibold text-yellow-50/95">
+                            {claimingFreeplayGift
+                              ? 'Revealing your reward...'
+                              : 'Tap to open your premium bonus'}
+                          </p>
+                        </div>
+                      </div>
+                    </motion.button>
+                  ) : freeplayClaimSuccessMessage ? (
+                    <motion.div
+                      key="freeplay-success"
+                      initial={{ opacity: 0, scale: 0.84 }}
+                      animate={{ opacity: 1, scale: [0.84, 1.06, 1] }}
+                      exit={{ opacity: 0, scale: 0.96 }}
+                      transition={{ duration: 0.3, ease: [0.2, 0.9, 0.25, 1.2] }}
+                      style={{ willChange: 'transform, opacity' }}
+                      className="fire-panel fire-orange relative overflow-hidden rounded-3xl border border-yellow-200/75 bg-gradient-to-br from-yellow-300/35 via-amber-500/30 to-fuchsia-900/45 p-6 text-center shadow-[0_0_52px_-10px_rgba(250,204,21,0.9)] sm:p-7"
+                    >
+                      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_20%,rgba(254,240,138,0.35),transparent_52%)]" />
+                      <motion.i
+                        className="fas fa-coins relative text-4xl text-yellow-200 drop-shadow-[0_0_16px_rgba(253,224,71,1)]"
+                        aria-hidden="true"
+                        animate={{ scale: [1, 1.14, 1], rotate: [0, -3, 0, 3, 0] }}
+                        transition={{ duration: 0.75 }}
+                      />
+                      <p className="relative mt-3 text-xl font-black text-yellow-50 sm:text-2xl">
+                        {freeplayClaimSuccessMessage}
+                      </p>
+                      <p className="relative mt-1 text-xs font-bold uppercase tracking-[0.28em] text-amber-100/85">
+                        Bonus Unlocked
+                      </p>
+                    </motion.div>
+                  ) : null}
+                </AnimatePresence>
 
                 <div className="fire-panel fire-orange fire-hero rounded-3xl border border-amber-400/35 bg-gradient-to-br from-amber-500/15 via-emerald-900/20 to-black/50 p-5 shadow-lg sm:p-6">
                   <p className="text-xs font-black uppercase tracking-[0.35em] text-amber-200/90 sm:text-sm">

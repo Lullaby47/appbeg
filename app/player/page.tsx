@@ -71,6 +71,10 @@ import {
   type ReferralRewardGroup,
 } from '@/features/referrals/playerReferralRewards';
 import {
+  claimFreeplayGift,
+  fetchPendingFreeplayGift,
+} from '@/features/freeplay/playerFreeplay';
+import {
   getCoadminMaintenanceBreakClient,
   listenCoadminMaintenanceBreak,
 } from '@/features/maintenance/maintenanceBreak';
@@ -215,6 +219,10 @@ export default function PlayerPage() {
   const [referralRewardsLoading, setReferralRewardsLoading] = useState(false);
   const [claimingReferredPlayerUid, setClaimingReferredPlayerUid] = useState<string | null>(null);
   const [earnedRewardSplashCoins, setEarnedRewardSplashCoins] = useState<number | null>(null);
+  const [hasPendingFreeplayGift, setHasPendingFreeplayGift] = useState(false);
+  const [pendingFreeplayGiftId, setPendingFreeplayGiftId] = useState('');
+  const [claimingFreeplayGift, setClaimingFreeplayGift] = useState(false);
+  const [freeplayClaimSuccessMessage, setFreeplayClaimSuccessMessage] = useState('');
   const [showCashoutModal, setShowCashoutModal] = useState(false);
   const [showCoinConfirmSplash, setShowCoinConfirmSplash] = useState(false);
   const [transferCoinAmountInput, setTransferCoinAmountInput] = useState('');
@@ -1666,12 +1674,66 @@ export default function PlayerPage() {
     }
   }
 
+  const loadFreeplayGift = useCallback(async () => {
+    if (!playerUid) {
+      setHasPendingFreeplayGift(false);
+      setPendingFreeplayGiftId('');
+      return;
+    }
+    try {
+      const pendingGift = await fetchPendingFreeplayGift();
+      setHasPendingFreeplayGift(pendingGift.hasPendingGift);
+      setPendingFreeplayGiftId(pendingGift.giftId);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to load FreePlay gift.');
+    }
+  }, [playerUid]);
+
+  async function handleClaimFreeplayGift() {
+    if (!hasPendingFreeplayGift || !pendingFreeplayGiftId || claimingFreeplayGift) {
+      return;
+    }
+    const revealStartedAt = Date.now();
+    setClaimingFreeplayGift(true);
+    setMessage('');
+    try {
+      const result = await claimFreeplayGift(pendingFreeplayGiftId);
+      const revealTimeRemainingMs = Math.max(0, 450 - (Date.now() - revealStartedAt));
+      if (revealTimeRemainingMs > 0) {
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, revealTimeRemainingMs);
+        });
+      }
+      setHasPendingFreeplayGift(false);
+      setPendingFreeplayGiftId('');
+      setFreeplayClaimSuccessMessage(
+        result.message || `You got ${result.amount} FreePlay coins!`
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to claim FreePlay gift.');
+      await loadFreeplayGift();
+    } finally {
+      setClaimingFreeplayGift(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!freeplayClaimSuccessMessage) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setFreeplayClaimSuccessMessage('');
+    }, 3000);
+    return () => window.clearTimeout(timeoutId);
+  }, [freeplayClaimSuccessMessage]);
+
   useEffect(() => {
     if (activeView !== 'earn-coins') {
       return;
     }
     void loadReferralRewards();
-  }, [activeView, loadReferralRewards]);
+    void loadFreeplayGift();
+  }, [activeView, loadFreeplayGift, loadReferralRewards]);
 
   useEffect(() => {
     if (activeView === 'agents' && playerUid) {
@@ -2945,7 +3007,7 @@ export default function PlayerPage() {
             {activeView === 'usernames' && <Vault coadminFrontendLinkByGameKey={coadminFrontendLinkByGameKey} copyCredentialValue={copyCredentialValue} creatorNames={creatorNames} credentialTaskLoadingKey={credentialTaskLoadingKey} gameBackgroundImageByKey={gameBackgroundImageByKey} gameLogins={gameLogins} loadingList={loadingList} openCredentialResetModal={openCredentialResetModal} selectedCreatorUid={selectedCreatorUid} setSelectedCreatorUid={setSelectedCreatorUid} togglePassword={togglePassword} usernameCarersByGame={usernameCarersByGame} usernamesCreatorFilterKeys={usernamesCreatorFilterKeys} usernamesVisibleLogins={usernamesVisibleLogins} visiblePasswords={visiblePasswords} />}
 
             {/* EARN COINS VIEW */}
-            {activeView === 'earn-coins' && <EarnCoins claimingReferredPlayerUid={claimingReferredPlayerUid} handleClaimReferralReward={handleClaimReferralReward} referralRewardGroups={referralRewardGroups} referralRewardsLoading={referralRewardsLoading} referredByPlayerName={referredByPlayerName} />}
+            {activeView === 'earn-coins' && <EarnCoins claimingFreeplayGift={claimingFreeplayGift} claimingReferredPlayerUid={claimingReferredPlayerUid} freeplayClaimSuccessMessage={freeplayClaimSuccessMessage} handleClaimFreeplayGift={handleClaimFreeplayGift} handleClaimReferralReward={handleClaimReferralReward} hasPendingFreeplayGift={hasPendingFreeplayGift} referralRewardGroups={referralRewardGroups} referralRewardsLoading={referralRewardsLoading} referredByPlayerName={referredByPlayerName} />}
 
             {/* AGENTS VIEW - ReachOutView integration remains the same but styled via the prop structure */}
             {activeView === 'agents' && <Agents agentOnlineByUid={agentOnlineByUid} agents={agents} agentsScrollRef={agentsScrollRef} handleAgentSelect={handleAgentSelect} handleClearImage={handleClearImage} handleImageSelect={handleImageSelect} handleSendMessage={handleSendMessage} imagePreview={imagePreview} messages={messages} newMessage={newMessage} pagedAgentChat={pagedAgentChat} selectedAgent={selectedAgent} sendingImage={sendingImage} setNewMessage={setNewMessage} unreadCounts={unreadCounts} />}
