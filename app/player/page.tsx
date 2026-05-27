@@ -325,11 +325,65 @@ export default function PlayerPage() {
   const showActiveTableSplashRef = useRef(false);
   const activeTableSplashContentRef = useRef<HTMLDivElement | null>(null);
   const activeTableAmountInputRef = useRef<HTMLInputElement | null>(null);
+  const giftSoundRef = useRef<HTMLAudioElement | null>(null);
+  const activeTableSoundRef = useRef<HTMLAudioElement | null>(null);
+  const notificationSoundRef = useRef<HTMLAudioElement | null>(null);
+  const lastGiftSoundStartedAtRef = useRef(0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const [activeTableKeyboardInset, setActiveTableKeyboardInset] = useState(0);
   const [activeTableViewportHeight, setActiveTableViewportHeight] = useState<number | null>(null);
   const playerHelpHintSeenRef = useRef(false);
   const playerHelpHintHideTimeoutRef = useRef<number | null>(null);
   const playerHelpHintIdleTimeoutRef = useRef<number | null>(null);
+
+  const playSoundEffect = useCallback(
+    (
+      soundRef: { current: HTMLAudioElement | null },
+      source: string,
+      volume: number
+    ) => {
+      const audio = soundRef.current ?? new Audio(source);
+      if (!soundRef.current) {
+        audio.preload = 'auto';
+        soundRef.current = audio;
+      }
+      if (!audio.paused && !audio.ended) {
+        return;
+      }
+
+      audioRef.current?.pause();
+      if (soundRef !== giftSoundRef) {
+        giftSoundRef.current?.pause();
+      }
+      if (soundRef !== activeTableSoundRef) {
+        activeTableSoundRef.current?.pause();
+      }
+      if (soundRef !== notificationSoundRef) {
+        notificationSoundRef.current?.pause();
+      }
+      audio.volume = volume;
+      audio.currentTime = 0;
+      void audio.play().catch(() => undefined);
+    },
+    []
+  );
+
+  const playGiftSound = useCallback(() => {
+    const now = Date.now();
+    if (now - lastGiftSoundStartedAtRef.current < 600) {
+      return;
+    }
+    lastGiftSoundStartedAtRef.current = now;
+    playSoundEffect(giftSoundRef, '/gift.mp3', 0.45);
+  }, [playSoundEffect]);
+
+  const playTableOpenSound = useCallback(() => {
+    const audio = activeTableSoundRef.current;
+    if (audio && !audio.paused) {
+      audio.pause();
+    }
+    playSoundEffect(activeTableSoundRef, '/play.mp3', 0.4);
+  }, [playSoundEffect]);
 
   function hasActiveTableSplashHistoryState() {
     const state = window.history.state as Record<string, unknown> | null;
@@ -337,6 +391,7 @@ export default function PlayerPage() {
   }
 
   function openActiveTableSplash() {
+    playTableOpenSound();
     if (!activeTableHistoryOpenRef.current) {
       window.history.pushState(
         {
@@ -603,15 +658,10 @@ export default function PlayerPage() {
   const lastBonusIdsRef = useRef<string[]>([]);
   const panelSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const musicEnabledRef = useRef(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const currentTrackRef = useRef<string | null>(null);
   const playRandomTrackRef = useRef<((previousTrack?: string | null) => Promise<void>) | null>(null);
   const interactionListenerCleanupRef = useRef<null | (() => void)>(null);
   const autoplayRetryTimeoutRef = useRef<number | null>(null);
-  const giftSoundRef = useRef<HTMLAudioElement | null>(null);
-  const playPanelSoundRef = useRef<HTMLAudioElement | null>(null);
-  const lastGiftSoundStartedAtRef = useRef(0);
-  const lastPlayPanelSoundStartedAtRef = useRef(0);
 
   const formatWalletAmount = useCallback((value: number) => {
     return new Intl.NumberFormat('en-US').format(value);
@@ -629,53 +679,9 @@ export default function PlayerPage() {
   const shouldListenToBonusEvents =
     Boolean(playerCoadminUid) && activeView === 'bonus-events';
 
-  const playSoundEffect = useCallback(
-    (
-      soundRef: { current: HTMLAudioElement | null },
-      source: string,
-      volume: number
-    ) => {
-      const audio = soundRef.current ?? new Audio(source);
-      if (!soundRef.current) {
-        audio.preload = 'auto';
-        soundRef.current = audio;
-      }
-      if (!audio.paused && !audio.ended) {
-        return;
-      }
-
-      audio.volume = volume;
-      audio.currentTime = 0;
-      void audio.play().catch(() => undefined);
-    },
-    []
-  );
-
-  const playGiftSound = useCallback(() => {
-    const now = Date.now();
-    if (now - lastGiftSoundStartedAtRef.current < 600) {
-      return;
-    }
-    lastGiftSoundStartedAtRef.current = now;
-    playSoundEffect(giftSoundRef, '/gift.mp3', 0.45);
-  }, [playSoundEffect]);
-
-  useEffect(() => {
-    if (activeView !== 'play') {
-      return;
-    }
-
-    const now = Date.now();
-    if (now - lastPlayPanelSoundStartedAtRef.current < 1200) {
-      return;
-    }
-    lastPlayPanelSoundStartedAtRef.current = now;
-    playSoundEffect(playPanelSoundRef, '/play.mp3', 0.4);
-  }, [activeView, playSoundEffect]);
-
   useEffect(() => {
     return () => {
-      [giftSoundRef, playPanelSoundRef].forEach((soundRef) => {
+      [giftSoundRef, activeTableSoundRef, notificationSoundRef].forEach((soundRef) => {
         const audio = soundRef.current;
         if (!audio) {
           return;
@@ -1009,6 +1015,9 @@ export default function PlayerPage() {
     }
 
     try {
+      giftSoundRef.current?.pause();
+      activeTableSoundRef.current?.pause();
+      notificationSoundRef.current?.pause();
       audio.volume = DEFAULT_PLAYER_MUSIC_VOLUME;
       await audio.play();
       clearInteractionListener();
@@ -1205,10 +1214,8 @@ export default function PlayerPage() {
   }
 
   const playNotificationSound = useCallback(() => {
-    const audio = new Audio('/urgency-sound.mp3');
-    audio.volume = 0.6;
-    void audio.play().catch(() => undefined);
-  }, []);
+    playSoundEffect(notificationSoundRef, '/urgency-sound.mp3', 0.6);
+  }, [playSoundEffect]);
 
   useEffect(() => {
     musicEnabledRef.current = musicEnabled;
