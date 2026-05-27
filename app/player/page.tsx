@@ -329,7 +329,10 @@ export default function PlayerPage() {
   const activeTableSoundRef = useRef<HTMLAudioElement | null>(null);
   const notificationSoundRef = useRef<HTMLAudioElement | null>(null);
   const lastGiftSoundStartedAtRef = useRef(0);
+  const musicEnabledRef = useRef(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const resumeThemeAfterTableRef = useRef(false);
+  const resumeBackgroundMusicRef = useRef<null | (() => void)>(null);
   const [activeTableKeyboardInset, setActiveTableKeyboardInset] = useState(0);
   const [activeTableViewportHeight, setActiveTableViewportHeight] = useState<number | null>(null);
   const playerHelpHintSeenRef = useRef(false);
@@ -391,7 +394,13 @@ export default function PlayerPage() {
   }
 
   function openActiveTableSplash() {
+    if (!showActiveTableSplashRef.current && !activeTableHistoryOpenRef.current) {
+      resumeThemeAfterTableRef.current = Boolean(
+        musicEnabledRef.current && audioRef.current && !audioRef.current.paused
+      );
+    }
     playTableOpenSound();
+    showActiveTableSplashRef.current = true;
     if (!activeTableHistoryOpenRef.current) {
       window.history.pushState(
         {
@@ -407,11 +416,22 @@ export default function PlayerPage() {
   }
 
   function closeActiveTableSplash(options?: { fromPopState?: boolean }) {
+    const wasOpen = showActiveTableSplashRef.current || activeTableHistoryOpenRef.current;
+    const tableAudio = activeTableSoundRef.current;
+    if (tableAudio) {
+      tableAudio.pause();
+      tableAudio.currentTime = 0;
+    }
+    showActiveTableSplashRef.current = false;
     setShowActiveTableSplash(false);
     if (!options?.fromPopState && hasActiveTableSplashHistoryState()) {
       activeTableHistoryOpenRef.current = false;
       window.history.back();
     }
+    if (wasOpen && resumeThemeAfterTableRef.current) {
+      resumeBackgroundMusicRef.current?.();
+    }
+    resumeThemeAfterTableRef.current = false;
   }
 
   function nudgeActiveTableForKeyboard() {
@@ -657,7 +677,6 @@ export default function PlayerPage() {
   const selfClaimedBonusIdRef = useRef<string | null>(null);
   const lastBonusIdsRef = useRef<string[]>([]);
   const panelSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
-  const musicEnabledRef = useRef(false);
   const currentTrackRef = useRef<string | null>(null);
   const playRandomTrackRef = useRef<((previousTrack?: string | null) => Promise<void>) | null>(null);
   const interactionListenerCleanupRef = useRef<null | (() => void)>(null);
@@ -1027,6 +1046,15 @@ export default function PlayerPage() {
       return false;
     }
   }, [clearAutoplayRetry, clearInteractionListener]);
+
+  useEffect(() => {
+    resumeBackgroundMusicRef.current = () => {
+      void playCurrentAudio();
+    };
+    return () => {
+      resumeBackgroundMusicRef.current = null;
+    };
+  }, [playCurrentAudio]);
 
   const attachInteractionListener = useCallback(() => {
     if (interactionListenerCleanupRef.current || typeof window === 'undefined') {
