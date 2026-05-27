@@ -331,6 +331,7 @@ export default function PlayerPage() {
   const lastGiftSoundStartedAtRef = useRef(0);
   const musicEnabledRef = useRef(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const resumeThemeAfterGiftRef = useRef(false);
   const resumeThemeAfterTableRef = useRef(false);
   const resumeBackgroundMusicRef = useRef<null | (() => void)>(null);
   const [activeTableKeyboardInset, setActiveTableKeyboardInset] = useState(0);
@@ -343,7 +344,8 @@ export default function PlayerPage() {
     (
       soundRef: { current: HTMLAudioElement | null },
       source: string,
-      volume: number
+      volume: number,
+      onPlaybackFailure?: () => void
     ) => {
       const audio = soundRef.current ?? new Audio(source);
       if (!soundRef.current) {
@@ -366,10 +368,19 @@ export default function PlayerPage() {
       }
       audio.volume = volume;
       audio.currentTime = 0;
-      void audio.play().catch(() => undefined);
+      void audio.play().catch(() => onPlaybackFailure?.());
     },
     []
   );
+
+  const finishGiftSound = useCallback(() => {
+    const shouldResumeTheme = resumeThemeAfterGiftRef.current;
+    resumeThemeAfterGiftRef.current = false;
+
+    if (shouldResumeTheme && !showActiveTableSplashRef.current) {
+      resumeBackgroundMusicRef.current?.();
+    }
+  }, []);
 
   const playGiftSound = useCallback(() => {
     const now = Date.now();
@@ -377,8 +388,29 @@ export default function PlayerPage() {
       return;
     }
     lastGiftSoundStartedAtRef.current = now;
-    playSoundEffect(giftSoundRef, '/gift.mp3', 0.45);
-  }, [playSoundEffect]);
+    resumeThemeAfterGiftRef.current = Boolean(
+      musicEnabledRef.current && audioRef.current && !audioRef.current.paused
+    );
+    playSoundEffect(giftSoundRef, '/gift.mp3', 0.45, finishGiftSound);
+  }, [finishGiftSound, playSoundEffect]);
+
+  useEffect(() => {
+    const audio = new Audio('/gift.mp3');
+    audio.preload = 'auto';
+    audio.addEventListener('ended', finishGiftSound);
+    audio.addEventListener('error', finishGiftSound);
+    giftSoundRef.current = audio;
+
+    return () => {
+      audio.removeEventListener('ended', finishGiftSound);
+      audio.removeEventListener('error', finishGiftSound);
+      audio.pause();
+      audio.src = '';
+      if (giftSoundRef.current === audio) {
+        giftSoundRef.current = null;
+      }
+    };
+  }, [finishGiftSound]);
 
   const playTableOpenSound = useCallback(() => {
     const audio = activeTableSoundRef.current;
@@ -700,12 +732,14 @@ export default function PlayerPage() {
 
   useEffect(() => {
     return () => {
-      [giftSoundRef, activeTableSoundRef, notificationSoundRef].forEach((soundRef) => {
+      [activeTableSoundRef, notificationSoundRef].forEach((soundRef) => {
         const audio = soundRef.current;
         if (!audio) {
           return;
         }
         audio.pause();
+        audio.onended = null;
+        audio.onerror = null;
         audio.src = '';
         soundRef.current = null;
       });
