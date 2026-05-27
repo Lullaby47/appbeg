@@ -56,6 +56,10 @@ export type PlayerGameRequest = {
    */
   coinDeductedOnRequest?: boolean | null;
   coinRefundedOnDismissal?: boolean | null;
+  dismissedByAutomation?: boolean | null;
+  dismissType?: string | null;
+  dismissReasonCode?: string | null;
+  dismissReasonMessage?: string | null;
 };
 
 type PlayerGameRedeemLimitReset = {

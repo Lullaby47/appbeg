@@ -136,6 +136,12 @@ import Vault from './views/Vault';
 import EarnCoins from './views/EarnCoins';
 import Agents from './views/Agents';
 
+const GAME_VAULT_MIDNIGHT_PARTY_REASON = 'game_vault_midnight_party_pending';
+const GAME_VAULT_MIDNIGHT_PARTY_WARNING_MARKER =
+  'players can only deposit again after selecting whether or not to participate in the midnight party program';
+const GAME_VAULT_MIDNIGHT_PARTY_PLAYER_MESSAGE =
+  'Recharge blocked: Please open Game Vault and choose whether to participate in the Midnight Party program for your previous deposit before depositing again.';
+
 // Legacy helper retained only to avoid a broad page rewrite in this pass.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function FloatingCasinoBackdrop() {
@@ -318,6 +324,7 @@ export default function PlayerPage() {
   const [bonusVanishedToast, setBonusVanishedToast] = useState(false);
   const knownRechargeRequestStatusByIdRef = useRef<Record<string, PlayerGameRequest['status']>>({});
   const seenCompletedRechargeSplashIdsRef = useRef<Set<string>>(new Set());
+  const seenDismissedRechargeSplashIdsRef = useRef<Set<string>>(new Set());
   const knownRedeemRequestStatusByIdRef = useRef<Record<string, PlayerGameRequest['status']>>({});
   const seenDismissedRedeemSplashIdsRef = useRef<Set<string>>(new Set());
   const bonusSwipeStartXRef = useRef<number | null>(null);
@@ -930,6 +937,7 @@ export default function PlayerPage() {
     if (!playerUid) {
       knownRechargeRequestStatusByIdRef.current = {};
       seenCompletedRechargeSplashIdsRef.current = new Set();
+      seenDismissedRechargeSplashIdsRef.current = new Set();
       knownRedeemRequestStatusByIdRef.current = {};
       seenDismissedRedeemSplashIdsRef.current = new Set();
       return;
@@ -953,6 +961,21 @@ export default function PlayerPage() {
         if (justCompleted && !seenCompletedRechargeSplashIdsRef.current.has(request.id)) {
           showRechargeSuccessToast();
           seenCompletedRechargeSplashIdsRef.current.add(request.id);
+        }
+        const justBlockedByMidnightParty =
+          request.status === 'dismissed' &&
+          (request.dismissReasonCode === GAME_VAULT_MIDNIGHT_PARTY_REASON ||
+            String(request.dismissReasonMessage || '')
+              .toLowerCase()
+              .includes(GAME_VAULT_MIDNIGHT_PARTY_WARNING_MARKER)) &&
+          ((previousStatus !== undefined && previousStatus !== 'dismissed') ||
+            (previousStatus === undefined && recentlyCompleted));
+        if (
+          justBlockedByMidnightParty &&
+          !seenDismissedRechargeSplashIdsRef.current.has(request.id)
+        ) {
+          setRedeemDismissSplashRequest(request);
+          seenDismissedRechargeSplashIdsRef.current.add(request.id);
         }
       }
 
@@ -1012,6 +1035,12 @@ export default function PlayerPage() {
 
   const playerAlert = useMemo(() => getPlayerAlertInfo(message), [message]);
   const isTimedSplashAlert = Boolean(playerAlert && playerAlert.variant !== 'index');
+  const isMidnightPartyDismissSplash =
+    redeemDismissSplashRequest?.type === 'recharge' &&
+    (redeemDismissSplashRequest.dismissReasonCode === GAME_VAULT_MIDNIGHT_PARTY_REASON ||
+      String(redeemDismissSplashRequest.dismissReasonMessage || '')
+        .toLowerCase()
+        .includes(GAME_VAULT_MIDNIGHT_PARTY_WARNING_MARKER));
 
   useEffect(() => {
     if (!isTimedSplashAlert) {
@@ -4047,15 +4076,18 @@ export default function PlayerPage() {
                   id="redeem-dismiss-splash-title"
                   className="mt-2 text-center text-2xl font-black text-white"
                 >
-                  Redeem request dismissed
+                  {isMidnightPartyDismissSplash ? 'Recharge blocked' : 'Redeem request dismissed'}
                 </h3>
                 <p className="mt-5 text-center text-base leading-relaxed text-red-50/95">
-                  A staff member marked this redeem request as fake or mistaken and removed it from
-                  the pending queue.
+                  {isMidnightPartyDismissSplash
+                    ? GAME_VAULT_MIDNIGHT_PARTY_PLAYER_MESSAGE
+                    : 'A staff member marked this redeem request as fake or mistaken and removed it from the pending queue.'}
                 </p>
-                <p className="mt-4 text-center text-sm leading-relaxed text-red-100/85">
-                  If this was an error, contact support with your request amount and game details.
-                </p>
+                {!isMidnightPartyDismissSplash ? (
+                  <p className="mt-4 text-center text-sm leading-relaxed text-red-100/85">
+                    If this was an error, contact support with your request amount and game details.
+                  </p>
+                ) : null}
                 <div className="mt-8 flex justify-center">
                   <button
                     type="button"
