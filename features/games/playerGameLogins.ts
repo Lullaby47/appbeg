@@ -2,6 +2,7 @@ import {
   addDoc,
   collection,
   doc,
+  getDoc,
   getDocs,
   onSnapshot,
   query,
@@ -11,6 +12,11 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
+import {
+  deleteUsernameAfterFirebaseDelete,
+  ensureUsernameAvailable,
+  insertUsernameAfterFirebaseSave,
+} from '@/features/games/usernameRegistry';
 
 export type PlayerGameLogin = {
   id: string;
@@ -60,6 +66,7 @@ export async function createPlayerGameLogin(values: {
   if (!values.gameUsername.trim()) throw new Error('Game username is required.');
   if (!values.gamePassword.trim()) throw new Error('Game password is required.');
 
+  await ensureUsernameAvailable(values.gameUsername);
   await addDoc(collection(db, 'playerGameLogins'), {
     playerUid: values.playerUid,
     playerUsername: values.playerUsername,
@@ -72,6 +79,7 @@ export async function createPlayerGameLogin(values: {
     createdBy: values.coadminUid,
     createdAt: serverTimestamp(),
   });
+  await insertUsernameAfterFirebaseSave(values.gameUsername);
 }
 
 export async function updatePlayerGameLogin(
@@ -88,13 +96,30 @@ export async function updatePlayerGameLogin(
   if (!values.gameUsername.trim()) throw new Error('Game username is required.');
   if (!values.gamePassword.trim()) throw new Error('Game password is required.');
 
-  await updateDoc(doc(db, 'playerGameLogins', loginId), {
+  const loginRef = doc(db, 'playerGameLogins', loginId);
+  const currentSnap = await getDoc(loginRef);
+  const currentUsername = currentSnap.exists()
+    ? String((currentSnap.data() as { gameUsername?: string }).gameUsername || '').trim()
+    : '';
+  const changedUsername =
+    currentUsername.toLowerCase() !== values.gameUsername.trim().toLowerCase();
+  if (changedUsername) {
+    await ensureUsernameAvailable(values.gameUsername);
+  }
+
+  await updateDoc(loginRef, {
     gameName: values.gameName.trim(),
     gameUsername: values.gameUsername.trim(),
     gamePassword: values.gamePassword,
     frontendUrl: String(values.frontendUrl || '').trim(),
     siteUrl: String(values.siteUrl || '').trim(),
   });
+  if (changedUsername) {
+    await insertUsernameAfterFirebaseSave(values.gameUsername);
+    if (currentUsername) {
+      await deleteUsernameAfterFirebaseDelete(currentUsername);
+    }
+  }
 }
 
 export async function getPlayerGameLoginsByPlayer(

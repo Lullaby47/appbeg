@@ -42,6 +42,12 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 - If a key was ever committed or shared, rotate it immediately in Firebase/GCP and replace local usage with the rotated key.
 - Admin bootstrap must be done by local Firebase Admin SDK tool, not browser.
 
+## Username Registry
+
+Set `DATABASE_URL=postgresql://...` in the server environment. AppBeg uses that
+online Postgres database only for the `usernames_registry` existence index; Firebase
+remains the source of truth for game login records.
+
 ## Local Admin Tool
 
 Use `tools/admin_tool.py` for local-only administrator management. It uses the Firebase Admin SDK with a local service account JSON and requires a master secret before any action runs.

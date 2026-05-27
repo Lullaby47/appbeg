@@ -15,6 +15,7 @@ import {
 
 import { auth, db } from '@/lib/firebase/client';
 import { belongsToCoadmin, getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
+import { deleteUsernameAfterFirebaseDelete } from '@/features/games/usernameRegistry';
 
 export type GameLogin = {
   id: string;
@@ -228,6 +229,16 @@ export async function deleteGameLoginAndRelatedData(gameLoginId: string): Promis
   mergeRefs(await _collectRefsForGameName('bonusEvents', 'coadminUid', coadminUid, gameName));
 
   const dependentRefs = Array.from(refByPath.values());
+  const deletedGameUsernames = new Set<string>();
+  await Promise.all(
+    dependentRefs
+      .filter((ref) => ref.parent.id === 'playerGameLogins')
+      .map(async (ref) => {
+        const snap = await getDoc(ref);
+        const username = String((snap.data() as { gameUsername?: string } | undefined)?.gameUsername || '').trim();
+        if (username) deletedGameUsernames.add(username);
+      })
+  );
   const counts = {
     playerGameLogins: 0,
     playerGameRequests: 0,
@@ -258,6 +269,9 @@ export async function deleteGameLoginAndRelatedData(gameLoginId: string): Promis
   }
 
   await deleteDoc(gameRef);
+  for (const username of deletedGameUsernames) {
+    await deleteUsernameAfterFirebaseDelete(username);
+  }
 
   return {
     deleted: {
