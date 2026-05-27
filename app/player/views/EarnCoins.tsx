@@ -70,6 +70,7 @@ export default function EarnCoins(props: Props) {
                       exit={{ opacity: 0, scale: 1.16, filter: 'blur(7px)' }}
                       transition={{
                         duration: claimingFreeplayGift ? 0.45 : 0.35,
+                        delay: claimingFreeplayGift ? 0.25 : 0,
                         ease: [0.22, 1, 0.36, 1],
                       }}
                       style={{ willChange: 'transform, opacity, filter' }}
@@ -93,6 +94,7 @@ export default function EarnCoins(props: Props) {
                           }
                           transition={{
                             duration: claimingFreeplayGift ? 0.45 : 1.7,
+                            delay: claimingFreeplayGift ? 0.25 : 0,
                             ease: 'easeInOut',
                             repeat: claimingFreeplayGift ? 0 : Infinity,
                           }}
@@ -100,11 +102,28 @@ export default function EarnCoins(props: Props) {
                           className="relative flex h-20 w-20 shrink-0 items-center justify-center rounded-3xl border border-yellow-100/70 bg-gradient-to-br from-yellow-100/30 via-amber-300/20 to-fuchsia-500/20 text-5xl text-yellow-100 shadow-[0_0_32px_rgba(253,224,71,0.7),inset_0_1px_18px_rgba(255,255,255,0.3)] sm:h-24 sm:w-24 sm:text-6xl"
                         >
                           <span className="absolute inset-2 rounded-2xl bg-yellow-300/20 blur-xl" />
-                          <img
-                            src="/assets/player/freeplay-gift-box.webp"
-                            alt="FreePlay gift box"
-                            className="relative h-16 w-16 object-contain drop-shadow-[0_0_18px_rgba(253,224,71,0.95)] sm:h-20 sm:w-20"
-                          />
+                          <motion.span
+                            animate={
+                              claimingFreeplayGift
+                                ? {
+                                    x: [0, -2, 2, -2, 2, 0],
+                                    rotate: [0, -2, 2, -2, 2, 0],
+                                  }
+                                : { x: 0, rotate: 0 }
+                            }
+                            transition={{
+                              duration: claimingFreeplayGift ? 0.25 : 0,
+                              ease: 'easeInOut',
+                            }}
+                            style={{ willChange: 'transform' }}
+                            className="relative flex h-16 w-16 items-center justify-center sm:h-20 sm:w-20"
+                          >
+                            <img
+                              src="/assets/player/freeplay-gift-box.webp"
+                              alt="FreePlay gift box"
+                              className="h-full w-full object-contain drop-shadow-[0_0_18px_rgba(253,224,71,0.95)]"
+                            />
+                          </motion.span>
                           <motion.i
                             className="fas fa-star absolute -right-2 -top-2 text-base text-yellow-100"
                             aria-hidden="true"
