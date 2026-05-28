@@ -34,7 +34,6 @@ import { usePaginatedChatMessages } from '@/features/messages/usePaginatedChatMe
 import {
   CarerEscalationAlert,
   dismissCarerEscalationAlertForCurrentUser,
-  listenToCarerEscalationAlerts,
   listenToCarerEscalationAlertsByCoadmin,
 } from '@/features/games/carerTasks';
 import {
@@ -783,18 +782,6 @@ export default function StaffPage() {
           audio.volume = 1;
           audio.play().catch(() => {});
         };
-
-        if (creatorRole === 'admin') {
-          unsubscribe = listenToCarerEscalationAlerts(
-            onAlerts,
-            (error) => {
-              if (!isCancelled) {
-                setMessage(error.message || 'Failed to listen for carer alerts.');
-              }
-            }
-          );
-          return;
-        }
 
         const coadminUid = await getCurrentUserCoadminUid();
 

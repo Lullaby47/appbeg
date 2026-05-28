@@ -138,6 +138,24 @@ export async function getPlayerGameLoginsByPlayer(
   }));
 }
 
+export async function getPlayerGameLoginsByPlayerGame(
+  playerUid: string,
+  gameName: string
+): Promise<PlayerGameLogin[]> {
+  const q = query(
+    collection(db, 'playerGameLogins'),
+    where('playerUid', '==', playerUid),
+    where('gameName', '==', gameName.trim())
+  );
+
+  const snapshot = await getDocs(q);
+
+  return snapshot.docs.map((docSnap) => ({
+    id: docSnap.id,
+    ...(docSnap.data() as Omit<PlayerGameLogin, 'id'>),
+  }));
+}
+
 /**
  * Live updates when carer-agent (or anyone) merges new credentials — same pattern as
  * listenToPlayerGameLoginsByCoadmin on the carer app.

@@ -1362,13 +1362,18 @@ async function dropPendingRechargeRequestsWithoutEnoughCoin(
   return pendingRequests;
 }
 
-export async function syncCarerTasksForCoadmin(coadminUid: string) {
+export async function syncCarerTasksForCoadmin(
+  coadminUid: string,
+  knownLogins?: PlayerGameLogin[]
+) {
   const cleanCoadminUid = String(coadminUid || '').trim();
   const players = dedupeById(
     (await getPlayersByCoadmin(cleanCoadminUid)).filter((player) => player.status !== 'disabled')
   );
   const games = dedupeById(await getGameLoginsByCoadmin(cleanCoadminUid));
-  const logins = dedupeById(await getPlayerGameLoginsByCoadmin(cleanCoadminUid));
+  const logins = dedupeById(
+    knownLogins || (await getPlayerGameLoginsByCoadmin(cleanCoadminUid))
+  );
   const pendingRequestsRaw = await getPendingPlayerGameRequestsByCoadmin(cleanCoadminUid);
   const pendingRequests = await dropPendingRechargeRequestsWithoutEnoughCoin(
     pendingRequestsRaw.filter((request) => players.some((player) => player.uid === request.playerUid)),
@@ -2137,6 +2142,8 @@ export async function sendCarerCashboxInquiryAlert(values: {
   });
 }
 
+const CARER_ESCALATION_ALERT_LIVE_LIMIT = 24;
+
 export function listenToCarerEscalationAlertsByCoadmin(
   coadminUid: string,
   onChange: (alerts: CarerEscalationAlert[]) => void,
@@ -2144,8 +2151,15 @@ export function listenToCarerEscalationAlertsByCoadmin(
 ) {
   const alertsQuery = query(
     collection(db, 'carerEscalationAlerts'),
-    where('coadminUid', '==', coadminUid)
+    where('coadminUid', '==', coadminUid),
+    orderBy('createdAt', 'desc'),
+    limit(CARER_ESCALATION_ALERT_LIVE_LIMIT)
   );
+  console.info(
+    '[ALERTS] bounded coadmin alert listener active limit=%s',
+    CARER_ESCALATION_ALERT_LIVE_LIMIT
+  );
+  console.info('[ALERTS] unbounded global alert listener removed');
 
   return onSnapshot(
     alertsQuery,
@@ -2178,11 +2192,33 @@ export function listenToCarerEscalationAlertsByCoadmin(
   );
 }
 
-export function listenToCarerEscalationAlerts(
+export async function listenToCarerEscalationAlerts(
   onChange: (alerts: CarerEscalationAlert[]) => void,
   onError?: (error: Error) => void
 ) {
-  const alertsQuery = query(collection(db, 'carerEscalationAlerts'));
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+
+  const currentUserSnap = await getDoc(doc(db, 'users', currentUser.uid));
+  const currentUserRole = currentUserSnap.exists()
+    ? String((currentUserSnap.data() as { role?: string }).role || '').toLowerCase()
+    : '';
+  if (currentUserRole !== 'admin') {
+    throw new Error('Only admin can listen to global carer alerts.');
+  }
+
+  const alertsQuery = query(
+    collection(db, 'carerEscalationAlerts'),
+    orderBy('createdAt', 'desc'),
+    limit(CARER_ESCALATION_ALERT_LIVE_LIMIT)
+  );
+  console.info(
+    '[ALERTS] bounded admin alert listener active limit=%s',
+    CARER_ESCALATION_ALERT_LIVE_LIMIT
+  );
+  console.info('[ALERTS] unbounded global alert listener removed');
 
   return onSnapshot(
     alertsQuery,

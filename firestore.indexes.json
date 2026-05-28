@@ -202,6 +202,14 @@
       ]
     },
     {
+      "collectionGroup": "carerEscalationAlerts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "coadminUid", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "financialEvents",
       "queryScope": "COLLECTION",
       "fields": [

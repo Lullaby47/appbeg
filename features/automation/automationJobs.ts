@@ -92,6 +92,7 @@ function normalizeAutomationStatus(value: unknown) {
 function isFreshAutomationJobSignal(job: {
   status?: string | null;
   heartbeatMs?: number;
+  hasHeartbeat?: boolean;
   data?: Record<string, unknown> | null;
 }) {
   const error = String(job.data?.error || '').trim().toLowerCase();
@@ -114,7 +115,7 @@ function isFreshAutomationJobSignal(job: {
     return true;
   }
   if (status === 'running') {
-    return Boolean(job.heartbeatMs);
+    return job.hasHeartbeat ?? Boolean(job.heartbeatMs);
   }
   return false;
 }
@@ -326,6 +327,7 @@ export async function claimTaskAndCreateJob(input: {
           data: jobData,
           status: normalizeAutomationStatus(jobData?.status),
           heartbeatMs,
+          hasHeartbeat: Boolean(getTimestampMs(jobData?.lastHeartbeatAt)),
         };
       });
       const sameTaskJobs = sameTaskJobSnaps
@@ -343,6 +345,7 @@ export async function claimTaskAndCreateJob(input: {
           data: jobData,
           status: normalizeAutomationStatus(jobData.status),
           heartbeatMs,
+          hasHeartbeat: Boolean(getTimestampMs(jobData.lastHeartbeatAt)),
         };
       });
       const candidateJobs = Array.from(
@@ -413,17 +416,23 @@ export async function claimTaskAndCreateJob(input: {
       const reusableActiveJob = [...myFreshJobs].sort(
         (left, right) => right.heartbeatMs - left.heartbeatMs
       )[0];
-      const latestLockActivityMs = Math.max(
-        getTimestampMs(freshTask.lastHeartbeatAt),
-        getTimestampMs(freshTask.claimedAt),
-        reusableActiveJob?.heartbeatMs || 0
-      );
-      const hasFreshLock =
-        Boolean(latestLockActivityMs) &&
-        Date.now() - latestLockActivityMs < STALE_TASK_CLAIM_TIMEOUT_MS;
       const linkedAutomationJob = linkedJobId
         ? candidateJobs.find((job) => job.ref.id === linkedJobId) || null
         : null;
+      const preferredJobLockActivityMs =
+        (linkedAutomationJob && isFreshAutomationJobSignal(linkedAutomationJob)
+          ? linkedAutomationJob.heartbeatMs
+          : 0) ||
+        reusableActiveJob?.heartbeatMs ||
+        [...freshActiveSameTaskJobs].sort((left, right) => right.heartbeatMs - left.heartbeatMs)[0]
+          ?.heartbeatMs ||
+        0;
+      const latestLockActivityMs =
+        preferredJobLockActivityMs ||
+        Math.max(getTimestampMs(freshTask.lastHeartbeatAt), getTimestampMs(freshTask.claimedAt));
+      const hasFreshLock =
+        Boolean(latestLockActivityMs) &&
+        Date.now() - latestLockActivityMs < STALE_TASK_CLAIM_TIMEOUT_MS;
       const linkedAutomationJobIsTerminal = Boolean(
         linkedAutomationJob &&
           linkedAutomationJob.snap.exists() &&
@@ -700,6 +709,7 @@ export async function claimTaskAndCreateJob(input: {
           jobId: reusableActiveJob.ref.id,
           originalTaskUpdatedToInProgress: true,
         });
+        console.info('[HEARTBEAT] task state transition update taskId=%s status=in_progress', taskSnap.id);
         console.info('[automation] start-task:decision', {
           taskId: taskSnap.id,
           decision: 'claim allowed',
@@ -766,6 +776,7 @@ export async function claimTaskAndCreateJob(input: {
         jobId: jobRef.id,
         originalTaskUpdatedToInProgress: true,
       });
+      console.info('[HEARTBEAT] task state transition update taskId=%s status=in_progress', taskSnap.id);
 
       const jobData = {
         carerUid: currentUser.uid,
@@ -1247,7 +1258,10 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
 
 export function listenAutomationUiStatusByTask(
   createdByUid: string,
-  onChange: (statusByTaskId: Record<string, AutomationUiStatus>) => void,
+  onChange: (
+    statusByTaskId: Record<string, AutomationUiStatus>,
+    freshJobByTaskId: Record<string, boolean>
+  ) => void,
   onError?: (error: Error) => void
 ) {
   const jobsQuery = query(
@@ -1269,6 +1283,7 @@ export function listenAutomationUiStatusByTask(
         new Date().toISOString()
       );
       const statusByTaskId: Record<string, AutomationUiStatus> = {};
+      const freshJobByTaskId: Record<string, boolean> = {};
       const seenTaskIds = new Set<string>();
 
       for (const docSnap of snapshot.docs) {
@@ -1284,10 +1299,22 @@ export function listenAutomationUiStatusByTask(
         );
         if (mapped) {
           statusByTaskId[taskId] = mapped;
+          const raw = data as unknown as Record<string, unknown>;
+          freshJobByTaskId[taskId] = isFreshAutomationJobSignal({
+            status: String(data.status || ''),
+            heartbeatMs: Math.max(
+              getTimestampMs(raw.lastHeartbeatAt),
+              getTimestampMs(raw.updatedAt),
+              getTimestampMs(raw.startedAt),
+              getTimestampMs(raw.createdAt)
+            ),
+            hasHeartbeat: Boolean(getTimestampMs(raw.lastHeartbeatAt)),
+            data: raw,
+          });
         }
       }
 
-      onChange(statusByTaskId);
+      onChange(statusByTaskId, freshJobByTaskId);
     },
     (error) => {
       onError?.(error as Error);

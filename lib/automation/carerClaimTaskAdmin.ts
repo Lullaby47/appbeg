@@ -96,6 +96,7 @@ function normalizeAutomationStatus(value: unknown) {
 function isFreshAutomationJobSignal(job: {
   status?: string | null;
   heartbeatMs?: number;
+  hasHeartbeat?: boolean;
   data?: Record<string, unknown> | null;
 }) {
   const error = String(job.data?.error || '').trim().toLowerCase();
@@ -118,7 +119,7 @@ function isFreshAutomationJobSignal(job: {
     return true;
   }
   if (status === 'running') {
-    return Boolean(job.heartbeatMs);
+    return job.hasHeartbeat ?? Boolean(job.heartbeatMs);
   }
   return false;
 }
@@ -352,6 +353,7 @@ export async function claimCarerTaskAsAdmin(input: {
           data: jobData,
           status: normalizeAutomationStatus(jobData?.status),
           heartbeatMs,
+          hasHeartbeat: Boolean(getTimestampMs(jobData?.lastHeartbeatAt)),
         };
       });
       const sameTaskJobs = sameTaskJobSnaps
@@ -369,6 +371,7 @@ export async function claimCarerTaskAsAdmin(input: {
             data: jobData,
             status: normalizeAutomationStatus(jobData.status),
             heartbeatMs,
+            hasHeartbeat: Boolean(getTimestampMs(jobData.lastHeartbeatAt)),
           };
         });
       const candidateJobs = Array.from(
@@ -436,17 +439,23 @@ export async function claimCarerTaskAsAdmin(input: {
       const reusableActiveJob = [...myFreshJobs].sort(
         (left, right) => right.heartbeatMs - left.heartbeatMs
       )[0];
-      const latestLockActivityMs = Math.max(
-        getTimestampMs(freshTask.lastHeartbeatAt),
-        getTimestampMs(freshTask.claimedAt),
-        reusableActiveJob?.heartbeatMs || 0
-      );
-      const hasFreshLock =
-        Boolean(latestLockActivityMs) &&
-        Date.now() - latestLockActivityMs < STALE_TASK_CLAIM_TIMEOUT_MS;
       const linkedAutomationJob = linkedJobId
         ? candidateJobs.find((job) => job.ref.id === linkedJobId) || null
         : null;
+      const preferredJobLockActivityMs =
+        (linkedAutomationJob && isFreshAutomationJobSignal(linkedAutomationJob)
+          ? linkedAutomationJob.heartbeatMs
+          : 0) ||
+        reusableActiveJob?.heartbeatMs ||
+        [...freshActiveSameTaskJobs].sort((left, right) => right.heartbeatMs - left.heartbeatMs)[0]
+          ?.heartbeatMs ||
+        0;
+      const latestLockActivityMs =
+        preferredJobLockActivityMs ||
+        Math.max(getTimestampMs(freshTask.lastHeartbeatAt), getTimestampMs(freshTask.claimedAt));
+      const hasFreshLock =
+        Boolean(latestLockActivityMs) &&
+        Date.now() - latestLockActivityMs < STALE_TASK_CLAIM_TIMEOUT_MS;
       const linkedAutomationJobIsTerminal = Boolean(
         linkedAutomationJob &&
           linkedAutomationJob.snap.exists &&
@@ -730,6 +739,7 @@ export async function claimCarerTaskAsAdmin(input: {
           jobId: reusableActiveJob.ref.id,
           originalTaskUpdatedToInProgress: true,
         });
+        console.info('[HEARTBEAT] task state transition update taskId=%s status=in_progress', taskSnap.id);
         console.info('[automation] start-task:decision', {
           taskId: taskSnap.id,
           decision: 'claim allowed',
@@ -801,6 +811,7 @@ export async function claimCarerTaskAsAdmin(input: {
         jobId: jobRef.id,
         originalTaskUpdatedToInProgress: true,
       });
+      console.info('[HEARTBEAT] task state transition update taskId=%s status=in_progress', taskSnap.id);
 
       const jobData = {
         carerUid: currentUserUid,
