@@ -72,9 +72,22 @@ export default function ProtectedRoute({
         (!localPlayerSessionId || localPlayerSessionId !== activePlayerSessionId)
       ) {
         if (localPlayerSessionId && activePlayerSessionId) {
-          console.info('[SESSION_GUARD] mismatch detected');
+          console.info('[SESSION_GUARD] old device kicked because session mismatch', {
+            uid: firebaseUser.uid,
+            localSessionId: localPlayerSessionId,
+            activeSessionId: activePlayerSessionId,
+          });
         }
-        console.info('[SESSION_GUARD] protected render blocked');
+        console.info('[SESSION_GUARD] protected render blocked', {
+          uid: firebaseUser.uid,
+          reason: !localPlayerSessionId
+            ? 'missing_local_session_id'
+            : !activePlayerSessionId
+              ? 'missing_active_session_id'
+              : 'session_mismatch',
+          localSessionId: localPlayerSessionId || null,
+          activeSessionId: activePlayerSessionId || null,
+        });
         setCurrentRole(null);
         setForcedLogout(true);
         setChecking(false);
@@ -86,6 +99,13 @@ export default function ProtectedRoute({
       }
 
       setCurrentRole(role);
+      if (role === 'player') {
+        console.info('[SESSION_GUARD] protected render allowed', {
+          uid: firebaseUser.uid,
+          sessionId: localPlayerSessionId,
+          reason: 'session_match',
+        });
+      }
 
       if (role === 'player' || role === 'carer') {
         recordDevActiveSession(role, firebaseUser.uid);

@@ -28,6 +28,18 @@ function makeId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+function getPlayerSessionDevice(deviceId: string) {
+  if (typeof window === 'undefined') {
+    return { deviceId };
+  }
+
+  return {
+    deviceId,
+    userAgent: window.navigator.userAgent,
+    platform: window.navigator.platform,
+  };
+}
+
 export function getOrCreatePlayerDeviceId() {
   if (typeof window === 'undefined') {
     return '';
@@ -101,6 +113,15 @@ export async function assertActivePlayerSession() {
   const currentUser = auth.currentUser;
   const localSessionId = getLocalPlayerSessionId();
   if (!currentUser || !localSessionId || forcedPlayerLogout) {
+    console.info('[SESSION_GUARD] blocked player session check', {
+      reason: !currentUser
+        ? 'missing_auth_user'
+        : !localSessionId
+          ? 'missing_local_session_id'
+          : 'forced_logout_already_set',
+      uid: currentUser?.uid || null,
+      localSessionId: localSessionId || null,
+    });
     await forcePlayerSessionLogout({ markSessionInactive: false });
     throw new Error(PLAYER_REPLACED_LOGIN_MESSAGE);
   }
@@ -108,10 +129,19 @@ export async function assertActivePlayerSession() {
   const userSnap = await getDoc(doc(db, 'users', currentUser.uid));
   const activeSessionId = String(userSnap.data()?.activeSessionId || '').trim();
   if (!activeSessionId || activeSessionId !== localSessionId) {
-    console.info('[SESSION_GUARD] mismatch detected');
+    console.info('[SESSION_GUARD] old device kicked because session mismatch', {
+      uid: currentUser.uid,
+      localSessionId,
+      activeSessionId: activeSessionId || null,
+    });
     await forcePlayerSessionLogout();
     throw new Error(PLAYER_REPLACED_LOGIN_MESSAGE);
   }
+
+  console.info('[SESSION_GUARD] allowed player session check', {
+    uid: currentUser.uid,
+    sessionId: localSessionId,
+  });
 }
 
 export async function getPlayerApiHeaders(contentType = true) {
@@ -133,23 +163,25 @@ export async function startPlayerSession(user: User) {
   forcedPlayerLogout = false;
   const sessionId = makeId();
   const deviceId = getOrCreatePlayerDeviceId();
+  const activeSessionDevice = getPlayerSessionDevice(deviceId);
   const userRef = doc(db, 'users', user.uid);
   const sessionRef = doc(db, 'playerSessions', sessionId);
+  let previousSessionId = '';
+
+  console.info('[PLAYER_LOGIN_SESSION] generated sessionId', {
+    uid: user.uid,
+    sessionId,
+    deviceId,
+  });
 
   await runTransaction(db, async (transaction) => {
     const userSnap = await transaction.get(userRef);
-    const previousSessionId = String(userSnap.data()?.activeSessionId || '').trim();
-    if (previousSessionId && previousSessionId !== sessionId) {
-      transaction.set(
-        doc(db, 'playerSessions', previousSessionId),
-        {
-          active: false,
-          endedAt: serverTimestamp(),
-          endedReason: 'replaced_by_new_login',
-        },
-        { merge: true }
-      );
-    }
+    previousSessionId = String(userSnap.data()?.activeSessionId || '').trim();
+
+    console.info('[PLAYER_LOGIN_SESSION] previous activeSessionId', {
+      uid: user.uid,
+      previousSessionId: previousSessionId || null,
+    });
 
     transaction.set(sessionRef, {
       playerUid: user.uid,
@@ -161,12 +193,56 @@ export async function startPlayerSession(user: User) {
     transaction.update(userRef, {
       activeSessionId: sessionId,
       activeDeviceId: deviceId,
+      activeSessionDevice,
       activeSessionStartedAt: serverTimestamp(),
       activeSessionLastSeenAt: serverTimestamp(),
+      activeSessionUpdatedAt: serverTimestamp(),
+      lastLoginAt: serverTimestamp(),
     });
   });
 
   window.localStorage.setItem(PLAYER_SESSION_ID_KEY, sessionId);
+
+  console.info('[PLAYER_LOGIN_SESSION] newly saved activeSessionId', {
+    uid: user.uid,
+    previousSessionId: previousSessionId || null,
+    activeSessionId: sessionId,
+    reason: 'new_login_force_replaced_previous_session',
+  });
+
+  if (previousSessionId && previousSessionId !== sessionId) {
+    const previousSessionRef = doc(db, 'playerSessions', previousSessionId);
+    try {
+      const previousSessionSnap = await getDoc(previousSessionRef);
+      if (previousSessionSnap.exists()) {
+        await updateDoc(previousSessionRef, {
+          active: false,
+          endedAt: serverTimestamp(),
+          endedReason: 'replaced_by_new_login',
+        });
+        console.info('[PLAYER_LOGIN_SESSION] previous player session marked inactive', {
+          uid: user.uid,
+          previousSessionId,
+          activeSessionId: sessionId,
+        });
+      } else {
+        console.info('[PLAYER_LOGIN_SESSION] previous player session cleanup skipped', {
+          uid: user.uid,
+          previousSessionId,
+          activeSessionId: sessionId,
+          reason: 'previous_session_doc_missing',
+        });
+      }
+    } catch (error) {
+      console.warn('[PLAYER_LOGIN_SESSION] previous player session cleanup failed', {
+        uid: user.uid,
+        previousSessionId,
+        activeSessionId: sessionId,
+        error,
+      });
+    }
+  }
+
   return { sessionId, deviceId };
 }
 
@@ -179,6 +255,7 @@ export async function touchPlayerSession(user: User) {
   await Promise.all([
     updateDoc(doc(db, 'users', user.uid), {
       activeSessionLastSeenAt: serverTimestamp(),
+      activeSessionUpdatedAt: serverTimestamp(),
     }),
     setDoc(
       doc(db, 'playerSessions', sessionId),
@@ -230,7 +307,11 @@ export function listenForPlayerSessionReplacement(
       return;
     }
 
-    console.info('[SESSION_GUARD] mismatch detected');
+    console.info('[SESSION_GUARD] old device kicked because session mismatch', {
+      uid: user.uid,
+      localSessionId,
+      activeSessionId,
+    });
     onMismatch?.();
   });
 }

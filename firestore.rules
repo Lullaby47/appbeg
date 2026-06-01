@@ -149,8 +149,11 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'activeSessionId',
           'activeDeviceId',
+          'activeSessionDevice',
           'activeSessionStartedAt',
-          'activeSessionLastSeenAt'
+          'activeSessionLastSeenAt',
+          'activeSessionUpdatedAt',
+          'lastLoginAt'
         ]);
 
       allow update: if signedIn()

@@ -53,7 +53,18 @@ export async function requireApiUser(
 
   if (role === 'player') {
     const sessionId = playerSessionId(request);
-    if (!sessionId || sessionId !== String(data.activeSessionId || '').trim()) {
+    const activeSessionId = String(data.activeSessionId || '').trim();
+    if (!sessionId || sessionId !== activeSessionId) {
+      console.info('[API_AUTH] player request blocked', {
+        uid: decoded.uid,
+        reason: !sessionId
+          ? 'missing_session_header'
+          : !activeSessionId
+            ? 'missing_active_session_id'
+            : 'session_mismatch',
+        sessionId: sessionId || null,
+        activeSessionId: activeSessionId || null,
+      });
       return {
         response: apiError(
           'You were logged out because this account logged in on another device.',
@@ -69,6 +80,16 @@ export async function requireApiUser(
       String(sessionData.playerUid || '') !== decoded.uid ||
       sessionData.active !== true
     ) {
+      console.info('[API_AUTH] player request blocked', {
+        uid: decoded.uid,
+        reason: !sessionSnap.exists
+          ? 'session_doc_missing'
+          : String(sessionData.playerUid || '') !== decoded.uid
+            ? 'session_uid_mismatch'
+            : 'session_doc_inactive',
+        sessionId,
+        activeSessionId,
+      });
       return {
         response: apiError(
           'You were logged out because this account logged in on another device.',
@@ -76,6 +97,12 @@ export async function requireApiUser(
         ),
       };
     }
+
+    console.info('[API_AUTH] player request allowed', {
+      uid: decoded.uid,
+      sessionId,
+      reason: 'session_match',
+    });
   }
 
   return {

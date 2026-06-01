@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { onAuthStateChanged } from 'firebase/auth';
 import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
@@ -29,8 +29,19 @@ export default function LoginPage() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
 
-  const [error, setError] = useState('');
+  const [error, setError] = useState(() => {
+    if (typeof window === 'undefined') {
+      return '';
+    }
+    const params = new URLSearchParams(window.location.search);
+    const message = params.get('message');
+    const reason = params.get('reason');
+    return message === 'another-device' || reason === 'session_replaced'
+      ? PLAYER_REPLACED_LOGIN_MESSAGE
+      : '';
+  });
   const [loading, setLoading] = useState(false);
+  const loginInProgressRef = useRef(false);
 
   useEffect(() => {
     async function checkAdminExists() {
@@ -52,22 +63,14 @@ export default function LoginPage() {
     checkAdminExists();
   }, []);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    const params = new URLSearchParams(window.location.search);
-    const message = params.get('message');
-    const reason = params.get('reason');
-    if (message === 'another-device' || reason === 'session_replaced') {
-      setError(PLAYER_REPLACED_LOGIN_MESSAGE);
-    }
-  }, []);
-
   // If the user is already signed in, send them to their app — so the browser
   // "back" key does not look like a confusing pseudo-logout on /login.
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (loginInProgressRef.current) {
+        return;
+      }
+
       if (!user) {
         return;
       }
@@ -81,9 +84,18 @@ export default function LoginPage() {
         const role = (userSnap.data() as { role?: string }).role;
         if (role && isValidRole(role)) {
           if (role === 'player' && !getLocalPlayerSessionId()) {
+            console.info('[PLAYER_LOGIN_SESSION] login-page redirect blocked', {
+              uid: user.uid,
+              reason: 'missing_local_session_id',
+            });
             await signOut(auth);
             return;
           }
+          console.info('[PLAYER_LOGIN_SESSION] login-page redirect allowed', {
+            uid: user.uid,
+            role,
+            reason: 'existing_authenticated_user',
+          });
           router.replace(DASHBOARD_BY_ROLE[role]);
         }
       } catch {
@@ -106,6 +118,7 @@ export default function LoginPage() {
 
     setError('');
     setLoading(true);
+    loginInProgressRef.current = true;
 
     try {
       const userQuery = query(
@@ -140,7 +153,12 @@ export default function LoginPage() {
       }
 
       if (role === 'player') {
-        await startPlayerSession(credential.user);
+        const { sessionId } = await startPlayerSession(credential.user);
+        console.info('[PLAYER_LOGIN_SESSION] player login allowed after session write', {
+          uid: credential.user.uid,
+          sessionId,
+          reason: 'active_session_saved',
+        });
       }
 
       router.push(DASHBOARD_BY_ROLE[role]);
@@ -148,6 +166,7 @@ export default function LoginPage() {
       console.error(err);
       setError('Invalid username or password.');
     } finally {
+      loginInProgressRef.current = false;
       setLoading(false);
     }
   }
