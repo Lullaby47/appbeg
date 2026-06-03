@@ -20,7 +20,7 @@ import LogoutButton from '../../components/auth/LogoutButton';
 import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 import ImageUploadField from '@/components/common/ImageUploadField';
 import { auth, db, getClientDb } from '@/lib/firebase/client';
-import { GameLogin } from '@/features/games/gameLogins';
+import { GameLogin, getGameLoginsByCoadmin } from '@/features/games/gameLogins';
 import {
   createPlayerGameLogin,
   getPlayerGameLoginsByCoadmin,
@@ -111,10 +111,24 @@ type DashboardCard = {
 };
 
 type TaskSection = 'pending' | 'mine' | 'completed';
+type WarmupStatus = 'not_warmed' | 'warming' | 'ready' | 'partial_ready' | 'failed';
 
 const DEBUG_TAB_FILTER_LOGS = false;
 const CREATE_USERNAME_UI_GRACE_MS = 5 * 60 * 1000;
 const TASK_CLAIM_STALE_TIMEOUT_MS = 5 * 60 * 1000;
+const WARMUP_GAME_NAMES = [
+  'Orion Stars',
+  'Milky Way',
+  'Fire Kirin',
+  'Juwa',
+  'Juwa2',
+  'Mafia',
+  'Game Vault',
+  'Cash Frenzy',
+  'Vegas Sweeps',
+] as const;
+const LOCAL_WARMUP_URL =
+  process.env.NEXT_PUBLIC_CARER_AGENT_WARMUP_URL || 'http://127.0.0.1:8765/warmup-browsers';
 function getTimestampMs(value: unknown) {
   if (!value) {
     return 0;
@@ -489,6 +503,9 @@ export default function CarerPage() {
   const [agentPanelNotice, setAgentPanelNotice] = useState('');
   const [agentPanelError, setAgentPanelError] = useState('');
   const [agentSaving, setAgentSaving] = useState(false);
+  const [browserWarmupStatus, setBrowserWarmupStatus] = useState<WarmupStatus>('not_warmed');
+  const [browserWarmupMessage, setBrowserWarmupMessage] = useState('Not warmed');
+  const [browserWarmupGames, setBrowserWarmupGames] = useState<Record<string, boolean>>({});
   const [isTickRunning, setIsTickRunning] = useState(false);
   const [isListenerActive, setIsListenerActive] = useState(false);
   const [isQueueDraining, setIsQueueDraining] = useState(false);
@@ -1556,6 +1573,105 @@ export default function CarerPage() {
     }
   }
 
+  function warmupStatusLabel() {
+    if (browserWarmupStatus === 'warming') return 'Warming...';
+    if (browserWarmupStatus === 'ready') return 'Ready';
+    if (browserWarmupStatus === 'partial_ready') return 'Partial ready';
+    if (browserWarmupStatus === 'failed') return 'Failed';
+    return 'Not warmed';
+  }
+
+  function normalizeWarmupGameName(value: string) {
+    return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+  }
+
+  function buildWarmupLoginUrl(login: GameLogin) {
+    return String(login.backendUrl || login.siteUrl || login.frontendUrl || '').trim();
+  }
+
+  async function handleWarmUpBrowser() {
+    if (!carerIdentity?.uid || !coadminUid) {
+      setBrowserWarmupStatus('failed');
+      setBrowserWarmupMessage('Coadmin scope is not ready yet.');
+      return;
+    }
+    const agentId =
+      String(carerIdentity.automationAgentId || '').trim() || String(agentInputDraft || '').trim();
+    const agentCheck = validateAutomationAgentId(agentId);
+    if (!agentCheck.valid || !agentCheck.normalized) {
+      setBrowserWarmupStatus('failed');
+      setBrowserWarmupMessage('Connect automation agent first.');
+      return;
+    }
+
+    setBrowserWarmupStatus('warming');
+    setBrowserWarmupMessage('Warming...');
+    setBrowserWarmupGames({});
+    try {
+      const logins = await getGameLoginsByCoadmin(coadminUid);
+      const byGame = new Map(
+        logins.map((login) => [normalizeWarmupGameName(login.gameName), login])
+      );
+      const games = WARMUP_GAME_NAMES.flatMap((gameName) => {
+        const login = byGame.get(normalizeWarmupGameName(gameName));
+        return login
+          ? {
+              gameName,
+              credentialUsername: String(login.username || '').trim(),
+              credentialPassword: String(login.password || ''),
+              loginUrl: buildWarmupLoginUrl(login),
+            }
+          : [];
+      }).filter((game) => Boolean(game.credentialUsername && game.credentialPassword));
+
+      if (games.length === 0) {
+        setBrowserWarmupStatus('failed');
+        setBrowserWarmupMessage('No game credentials found.');
+        return;
+      }
+
+      const response = await fetch(LOCAL_WARMUP_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-carer-agent-id': agentCheck.normalized,
+        },
+        body: JSON.stringify({
+          carerUid: carerIdentity.uid,
+          agentId: agentCheck.normalized,
+          games,
+        }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        games?: Record<string, { ready?: boolean; error?: string }>;
+      };
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || 'Warmup failed.');
+      }
+      const readyByGame = Object.fromEntries(
+        Object.entries(payload.games || {}).map(([gameName, result]) => [gameName, Boolean(result.ready)])
+      );
+      setBrowserWarmupGames(readyByGame);
+      const total = Object.keys(readyByGame).length;
+      const readyCount = Object.values(readyByGame).filter(Boolean).length;
+      if (total > 0 && readyCount === total) {
+        setBrowserWarmupStatus('ready');
+        setBrowserWarmupMessage(`Ready (${readyCount}/${total})`);
+      } else if (readyCount > 0) {
+        setBrowserWarmupStatus('partial_ready');
+        setBrowserWarmupMessage(`Partial ready (${readyCount}/${total})`);
+      } else {
+        setBrowserWarmupStatus('failed');
+        setBrowserWarmupMessage('Failed');
+      }
+    } catch (error) {
+      setBrowserWarmupStatus('failed');
+      setBrowserWarmupMessage(error instanceof Error ? error.message : 'Warmup failed.');
+    }
+  }
+
   async function handleCopyAutomationAgentEnvSnippet() {
     const text = buildAutomationAgentEnvFileSnippet();
     if (!text) {
@@ -2598,6 +2714,18 @@ export default function CarerPage() {
               </button>
               <button
                 type="button"
+                disabled={browserWarmupStatus === 'warming' || !carerIdentity?.automationAgentId}
+                onClick={() => void handleWarmUpBrowser()}
+                className="rounded-xl border border-emerald-400/40 bg-emerald-500/15 px-4 py-2.5 text-sm font-bold text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-50"
+              >
+                {browserWarmupStatus === 'warming'
+                  ? 'Warming...'
+                  : browserWarmupStatus === 'ready' || browserWarmupStatus === 'partial_ready'
+                    ? 'Re-warm'
+                    : 'Warm Up Browser'}
+              </button>
+              <button
+                type="button"
                 disabled={!carerIdentity}
                 onClick={() => void handleCopyAutomationAgentEnvSnippet()}
                 className="rounded-xl border border-white/20 bg-white/5 px-4 py-2.5 text-sm font-bold text-white hover:bg-white/10"
@@ -2605,6 +2733,20 @@ export default function CarerPage() {
                 Copy .env snippet
               </button>
             </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-violet-100/80">
+            <span className="rounded-full border border-white/10 bg-black/30 px-3 py-1 font-semibold">
+              {warmupStatusLabel()}
+            </span>
+            <span>{browserWarmupMessage}</span>
+            {Object.keys(browserWarmupGames).length > 0 ? (
+              <span>
+                {Object.entries(browserWarmupGames)
+                  .map(([gameName, ready]) => `${gameName}: ${ready ? 'ready' : 'failed'}`)
+                  .join(' | ')}
+              </span>
+            ) : null}
           </div>
 
           {agentPanelError ? (
