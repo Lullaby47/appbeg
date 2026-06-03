@@ -20,15 +20,11 @@ import LogoutButton from '../../components/auth/LogoutButton';
 import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 import ImageUploadField from '@/components/common/ImageUploadField';
 import { auth, db, getClientDb } from '@/lib/firebase/client';
-import {
-  GAME_USERNAME_PATTERN_SOURCE,
-  GAME_USERNAME_RULE_MESSAGE,
-} from '@/lib/games/gameUsernameRule';
 import { GameLogin } from '@/features/games/gameLogins';
 import {
   createPlayerGameLogin,
-  getPlayerGameLoginsByPlayer,
-  getPlayerGameLoginsByPlayerGame,
+  getPlayerGameLoginsByCoadmin,
+  listenToPlayerGameLoginsByCoadmin,
   PlayerGameLogin,
   updatePlayerGameLogin,
 } from '@/features/games/playerGameLogins';
@@ -501,136 +497,6 @@ export default function CarerPage() {
   const previousPendingCountRef = useRef(0);
   const shiftSessionIdRef = useRef<string | null>(null);
   const startTaskInFlightIdsRef = useRef<Set<string>>(new Set());
-  const playerLoginCacheRef = useRef<Map<string, PlayerGameLogin[]>>(new Map());
-  const completedCredentialTaskIdsRef = useRef<Set<string>>(new Set());
-  const hasCompleteCoadminCredentialSnapshotRef = useRef(false);
-  const hasSeenCredentialCompletionSnapshotRef = useRef(false);
-  const exactTaskCredentialCacheRef = useRef<Map<string, PlayerGameLogin | null>>(new Map());
-
-  function getPlayerGameCredentialKey(playerUid: string, gameName: string) {
-    return `${String(playerUid || '').trim()}::${normalizeGameName(gameName || '')}`;
-  }
-
-  function setCachedPlayerLogins(playerUid: string, logins: PlayerGameLogin[]) {
-    const cleanPlayerUid = String(playerUid || '').trim();
-    if (!cleanPlayerUid) {
-      return;
-    }
-
-    playerLoginCacheRef.current.set(cleanPlayerUid, logins);
-    for (const login of logins) {
-      exactTaskCredentialCacheRef.current.set(
-        getPlayerGameCredentialKey(login.playerUid, login.gameName),
-        login
-      );
-    }
-    setAllPlayerLogins(Array.from(playerLoginCacheRef.current.values()).flat());
-  }
-
-  function replaceCachedPlayerLogins(logins: PlayerGameLogin[], playerRows: PlayerUser[]) {
-    const next = new Map<string, PlayerGameLogin[]>();
-    for (const player of playerRows) {
-      next.set(player.uid, []);
-    }
-    for (const login of logins) {
-      const rows = next.get(login.playerUid) || [];
-      rows.push(login);
-      next.set(login.playerUid, rows);
-    }
-    playerLoginCacheRef.current = next;
-    exactTaskCredentialCacheRef.current.clear();
-    for (const login of logins) {
-      exactTaskCredentialCacheRef.current.set(
-        getPlayerGameCredentialKey(login.playerUid, login.gameName),
-        login
-      );
-    }
-    setAllPlayerLogins(logins);
-  }
-
-  async function loadPlayerLoginsForPlayer(
-    playerUid: string,
-    options: { force?: boolean; gameName?: string; fallback?: boolean } = {}
-  ) {
-    const cleanPlayerUid = String(playerUid || '').trim();
-    if (!cleanPlayerUid) {
-      return [] as PlayerGameLogin[];
-    }
-
-    const cached = playerLoginCacheRef.current.get(cleanPlayerUid);
-    if (cached && !options.force) {
-      console.info(
-        '[PLAYER_GAME_LOGINS] using cached credential playerUid=%s game=%s',
-        cleanPlayerUid,
-        options.gameName || '*'
-      );
-      return cached;
-    }
-
-    console.info(
-      '[PLAYER_GAME_LOGINS] exact credential fetch playerUid=%s game=%s',
-      cleanPlayerUid,
-      options.gameName || '*'
-    );
-    if (options.fallback) {
-      console.info('[PLAYER_GAME_LOGINS] fallback targeted lookup used');
-    }
-    const logins = await getPlayerGameLoginsByPlayer(cleanPlayerUid);
-    setCachedPlayerLogins(cleanPlayerUid, logins);
-    return logins;
-  }
-
-  async function findCredentialForTask(task: CarerTask) {
-    const embeddedCurrentUsername =
-      String(
-        (task as { currentUsername?: string | null }).currentUsername ||
-          (task as { gameAccountUsername?: string | null }).gameAccountUsername ||
-          ''
-      ).trim() || null;
-    if (embeddedCurrentUsername) {
-      return { login: null as PlayerGameLogin | null, currentUsername: embeddedCurrentUsername };
-    }
-
-    const key = getPlayerGameCredentialKey(task.playerUid, task.gameName);
-    if (exactTaskCredentialCacheRef.current.has(key)) {
-      const cachedLogin = exactTaskCredentialCacheRef.current.get(key) || null;
-      console.info(
-        '[PLAYER_GAME_LOGINS] using cached credential playerUid=%s game=%s',
-        task.playerUid,
-        task.gameName
-      );
-      return {
-        login: cachedLogin,
-        currentUsername: String(cachedLogin?.gameUsername || '').trim() || null,
-      };
-    }
-
-    console.info(
-      '[PLAYER_GAME_LOGINS] exact credential fetch playerUid=%s game=%s',
-      task.playerUid,
-      task.gameName
-    );
-    const exactLogins = await getPlayerGameLoginsByPlayerGame(task.playerUid, task.gameName);
-    let login: PlayerGameLogin | null = exactLogins[0] || null;
-
-    if (!login) {
-      console.info('[PLAYER_GAME_LOGINS] fallback targeted lookup used');
-      const taskLogins = await loadPlayerLoginsForPlayer(task.playerUid, {
-        gameName: task.gameName,
-      });
-      login =
-        taskLogins.find(
-          (entry) =>
-            normalizeGameName(entry.gameName || '') === normalizeGameName(task.gameName || '')
-        ) || null;
-    }
-
-    exactTaskCredentialCacheRef.current.set(key, login);
-    return {
-      login,
-      currentUsername: String(login?.gameUsername || '').trim() || null,
-    };
-  }
 
   const selectedPlayer = useMemo((): PlayerUser | null => {
     if (!selectedPlayerUid.trim()) {
@@ -799,12 +665,6 @@ export default function CarerPage() {
         (login) => `${login.playerUid}::${normalizeGameName(login.gameName || '')}`
       )
     );
-    for (const task of tasks) {
-      if (isUsernameWorkflowTask(task) && isRealCompletedCarerTask(task)) {
-        uniqueLogins.add(`${task.playerUid}::${normalizeGameName(task.gameName || '')}`);
-      }
-    }
-
     let missingCount = 0;
 
     for (const player of players) {
@@ -820,7 +680,7 @@ export default function CarerPage() {
     }
 
     return missingCount;
-  }, [allPlayerLogins, gameOptions, players, tasks]);
+  }, [allPlayerLogins, gameOptions, players]);
 
   const pendingRequestCount = pendingRequests.filter(
     (request) => request.status === 'pending'
@@ -1142,63 +1002,23 @@ export default function CarerPage() {
   }, [carerIdentity?.uid, coadminUid]);
 
   useEffect(() => {
-    console.info('[PLAYER_GAME_LOGINS] broad live listener removed');
-  }, []);
-
-  useEffect(() => {
-    const completedCredentialTasks = tasks.filter(
-      (task) => isUsernameWorkflowTask(task) && isRealCompletedCarerTask(task)
-    );
-    if (!hasSeenCredentialCompletionSnapshotRef.current) {
-      completedCredentialTaskIdsRef.current = new Set(
-        completedCredentialTasks.map(
-          (task) => `${task.id}:${getTimestampMs(task.completedAt)}`
-        )
-      );
-      hasSeenCredentialCompletionSnapshotRef.current = true;
+    if (!coadminUid) {
+      setAllPlayerLogins([]);
       return;
     }
 
-    for (const task of completedCredentialTasks) {
-      const completionKey = `${task.id}:${getTimestampMs(task.completedAt)}`;
-      if (completedCredentialTaskIdsRef.current.has(completionKey)) {
-        continue;
+    const unsubscribe = listenToPlayerGameLoginsByCoadmin(
+      coadminUid,
+      (incomingLogins) => {
+        setAllPlayerLogins(sortByNewest(incomingLogins));
+      },
+      (error) => {
+        setErrorMessage(error.message || 'Failed to listen for player game logins.');
       }
-      const hadCompleteSnapshot = hasCompleteCoadminCredentialSnapshotRef.current;
-      completedCredentialTaskIdsRef.current.add(completionKey);
-      playerLoginCacheRef.current.delete(task.playerUid);
-      exactTaskCredentialCacheRef.current.delete(
-        getPlayerGameCredentialKey(task.playerUid, task.gameName)
-      );
-      hasCompleteCoadminCredentialSnapshotRef.current = false;
-      if (!savingUsername) {
-        console.info(
-          '[PLAYER_GAME_LOGINS] exact credential fetch playerUid=%s game=%s',
-          task.playerUid,
-          task.gameName
-        );
-        void getPlayerGameLoginsByPlayer(task.playerUid)
-          .then((logins) => {
-            playerLoginCacheRef.current.set(task.playerUid, logins);
-            for (const login of logins) {
-              exactTaskCredentialCacheRef.current.set(
-                `${String(login.playerUid || '').trim()}::${normalizeGameName(login.gameName || '')}`,
-                login
-              );
-            }
-            setAllPlayerLogins(Array.from(playerLoginCacheRef.current.values()).flat());
-            if (hadCompleteSnapshot) {
-              hasCompleteCoadminCredentialSnapshotRef.current = true;
-            }
-          })
-          .catch((error) => {
-            setErrorMessage(
-              error instanceof Error ? error.message : 'Failed to refresh credential details.'
-            );
-          });
-      }
-    }
-  }, [savingUsername, tasks]);
+    );
+
+    return () => unsubscribe();
+  }, [coadminUid]);
 
   useEffect(() => {
     if (!carerIdentity?.uid) {
@@ -1535,13 +1355,7 @@ export default function CarerPage() {
   useEffect(() => {
     if (!selectedPlayerUid) {
       setEditingLogin(null);
-      return;
     }
-    void loadPlayerLoginsForPlayer(selectedPlayerUid).catch((error) => {
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to load player credentials.'
-      );
-    });
   }, [selectedPlayerUid]);
 
   useEffect(() => {
@@ -1638,11 +1452,7 @@ export default function CarerPage() {
     }
   }
 
-  async function refreshPageData(
-    showLoader = true,
-    nextCoadminUid = coadminUid,
-    forceCredentialRefresh = false
-  ) {
+  async function refreshPageData(showLoader = true, nextCoadminUid = coadminUid) {
     if (!nextCoadminUid) {
       return;
     }
@@ -1654,20 +1464,14 @@ export default function CarerPage() {
     try {
       await releaseExpiredCarerTasks(nextCoadminUid);
 
-      const cachedLogins =
-        !forceCredentialRefresh && hasCompleteCoadminCredentialSnapshotRef.current
-          ? Array.from(playerLoginCacheRef.current.values()).flat()
-          : undefined;
-      if (cachedLogins) {
-        console.info('[PLAYER_GAME_LOGINS] skipped unnecessary reread');
-      }
-      const synced = await syncCarerTasksForCoadmin(nextCoadminUid, cachedLogins);
-      const latestLogins = sortByNewest(synced.logins);
+      const synced = await syncCarerTasksForCoadmin(nextCoadminUid);
+      const latestLogins = sortByNewest(
+        await getPlayerGameLoginsByCoadmin(nextCoadminUid)
+      );
 
       setPlayers(sortByNewest(synced.players));
       setGameOptions(sortByNewest(synced.games));
-      replaceCachedPlayerLogins(latestLogins, synced.players);
-      hasCompleteCoadminCredentialSnapshotRef.current = true;
+      setAllPlayerLogins(latestLogins);
       setPendingRequests(sortByNewest(synced.pendingRequests));
       setErrorMessage('');
     } catch (error) {
@@ -1797,7 +1601,6 @@ export default function CarerPage() {
       return;
     }
 
-    const hadCompleteSnapshot = hasCompleteCoadminCredentialSnapshotRef.current;
     setSavingUsername(true);
     setErrorMessage('');
     setNoticeMessage('');
@@ -1847,13 +1650,6 @@ export default function CarerPage() {
             rewardSummary.totalAwardNpr
           )} added to Cash Box.`
         );
-      }
-      await loadPlayerLoginsForPlayer(selectedPlayer.uid, {
-        force: true,
-        gameName: gameName.trim(),
-      });
-      if (hadCompleteSnapshot) {
-        hasCompleteCoadminCredentialSnapshotRef.current = true;
       }
       await refreshPageData(false, coadminUid);
       resetUsernameForm();
@@ -1921,7 +1717,20 @@ export default function CarerPage() {
       console.info('[CARER_UI] canStart=True start-task', {
         taskId: task.id,
       });
-      const { currentUsername: resolvedCurrentUsername } = await findCredentialForTask(task);
+      const loginForTask =
+        allPlayerLogins.find(
+          (login) =>
+            login.playerUid === task.playerUid &&
+            normalizeGameName(login.gameName || '') ===
+              normalizeGameName(task.gameName || '')
+        ) || null;
+      const resolvedCurrentUsername =
+        String(
+          loginForTask?.gameUsername ||
+            (task as { currentUsername?: string | null }).currentUsername ||
+            (task as { gameAccountUsername?: string | null }).gameAccountUsername ||
+            ''
+        ).trim() || null;
       const relatedCoadminGame =
         gameOptions.find(
           (game) =>
@@ -2351,13 +2160,26 @@ export default function CarerPage() {
     setAutomationLoadingTaskId(task.id);
     setErrorMessage('');
     setNoticeMessage('');
+    const loginForTask =
+      allPlayerLogins.find(
+        (login) =>
+          login.playerUid === task.playerUid &&
+          normalizeGameName(login.gameName || '') ===
+            normalizeGameName(task.gameName || '')
+      ) || null;
+    const resolvedCurrentUsername =
+      String(
+        loginForTask?.gameUsername ||
+          (task as { currentUsername?: string | null }).currentUsername ||
+          (task as { gameAccountUsername?: string | null }).gameAccountUsername ||
+          ''
+      ).trim() || null;
+    const relatedCoadminGame =
+      gameOptions.find(
+        (game) =>
+          normalizeGameName(game.gameName || '') === normalizeGameName(task.gameName || '')
+      ) || null;
     try {
-      const { currentUsername: resolvedCurrentUsername } = await findCredentialForTask(task);
-      const relatedCoadminGame =
-        gameOptions.find(
-          (game) =>
-            normalizeGameName(game.gameName || '') === normalizeGameName(task.gameName || '')
-        ) || null;
       const claimResult = await claimTaskAndCreateJob({
         taskId: task.id,
         currentUsername: resolvedCurrentUsername,
@@ -2565,41 +2387,6 @@ export default function CarerPage() {
     setActiveView('create-username');
     setShowTaskSplash(false);
     setNoticeMessage('');
-  }
-
-  async function openLoginDetailsTask(task: CarerTask) {
-    try {
-      await loadPlayerLoginsForPlayer(task.playerUid, {
-        gameName: task.gameName,
-      });
-    } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to load credential details.'
-      );
-    }
-    setLoginDetailsTask(task);
-  }
-
-  async function openPendingTaskPayloadPreview(task: CarerTask) {
-    const embeddedUsername =
-      String(
-        (task as { currentUsername?: string | null }).currentUsername ||
-          (task as { gameAccountUsername?: string | null }).gameAccountUsername ||
-          ''
-      ).trim() || null;
-    if (!embeddedUsername) {
-      try {
-        await loadPlayerLoginsForPlayer(task.playerUid, {
-          gameName: task.gameName,
-          fallback: true,
-        });
-      } catch (error) {
-        setErrorMessage(
-          error instanceof Error ? error.message : 'Failed to load task credential details.'
-        );
-      }
-    }
-    setPendingTaskPayloadPreview(task);
   }
 
   async function handleTogglePlayerStatus(player: PlayerUser) {
@@ -3130,8 +2917,6 @@ export default function CarerPage() {
                     onChange={(event) => setGameUsername(event.target.value)}
                     className="w-full rounded-xl border border-white/10 bg-neutral-900 px-4 py-3 text-white outline-none focus:border-white/30"
                     placeholder="Enter game username"
-                    pattern={GAME_USERNAME_PATTERN_SOURCE}
-                    title={GAME_USERNAME_RULE_MESSAGE}
                     disabled={!selectedPlayer}
                     required
                   />
@@ -3253,9 +3038,9 @@ export default function CarerPage() {
       ) || null;
     const taskCurrentUsername =
       String(
-        (task as { currentUsername?: string | null }).currentUsername ||
+        loginForTask?.gameUsername ||
+          (task as { currentUsername?: string | null }).currentUsername ||
           (task as { gameAccountUsername?: string | null }).gameAccountUsername ||
-          loginForTask?.gameUsername ||
           ''
       ).trim() || null;
 
@@ -3309,7 +3094,7 @@ export default function CarerPage() {
     return (
       <div
         key={task.id}
-        onClick={isPendingCard ? () => void openPendingTaskPayloadPreview(task) : undefined}
+        onClick={isPendingCard ? () => setPendingTaskPayloadPreview(task) : undefined}
         className={`rounded-2xl border border-white/10 bg-neutral-950/70 p-4 ${
           isPendingCard ? 'cursor-pointer hover:border-violet-400/40' : ''
         }`}
@@ -3378,7 +3163,7 @@ export default function CarerPage() {
               <button
                 onClick={(event) => {
                   event.stopPropagation();
-                  void openLoginDetailsTask(task);
+                  setLoginDetailsTask(task);
                 }}
                 className="rounded-xl bg-blue-500/20 px-4 py-2 text-sm font-bold text-blue-100 hover:bg-blue-500/30"
               >
@@ -3430,7 +3215,7 @@ export default function CarerPage() {
           {section === 'mine' && isUsernameWorkflowTask(task) && (
             <div className="flex flex-col gap-2">
               <button
-                onClick={() => void openLoginDetailsTask(task)}
+                onClick={() => setLoginDetailsTask(task)}
                 className="rounded-xl bg-blue-500/20 px-4 py-2 text-sm font-bold text-blue-100 hover:bg-blue-500/30"
               >
                 Login Details
@@ -3468,7 +3253,7 @@ export default function CarerPage() {
           {section === 'mine' && isRequestTask && (
             <div className="flex flex-col gap-2">
               <button
-                onClick={() => void openLoginDetailsTask(task)}
+                onClick={() => setLoginDetailsTask(task)}
                 className="rounded-xl bg-blue-500/20 px-4 py-2 text-sm font-bold text-blue-100 hover:bg-blue-500/30"
               >
                 Login Details
@@ -3630,7 +3415,7 @@ export default function CarerPage() {
               Rev
             </button>
             <button
-              onClick={() => void refreshPageData(true, coadminUid, true)}
+              onClick={() => void refreshPageData()}
               className="rounded-xl bg-white px-4 py-2 text-sm font-bold text-black hover:bg-neutral-200"
             >
               Refresh
@@ -4289,7 +4074,8 @@ export default function CarerPage() {
                       ) || null;
                     const currentUsername =
                       String(
-                        (
+                        loginForTask?.gameUsername ||
+                          (
                             pendingTaskPayloadPreview as {
                               currentUsername?: string | null;
                               gameAccountUsername?: string | null;
@@ -4301,7 +4087,6 @@ export default function CarerPage() {
                               gameAccountUsername?: string | null;
                             }
                           ).gameAccountUsername ||
-                          loginForTask?.gameUsername ||
                           ''
                       ).trim() || null;
                     const carerUid = carerIdentity?.uid || '';

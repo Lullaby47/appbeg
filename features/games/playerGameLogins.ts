@@ -1,13 +1,16 @@
 import {
+  addDoc,
   collection,
+  doc,
   getDocs,
   onSnapshot,
   query,
+  serverTimestamp,
+  updateDoc,
   where,
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
-import { assertValidGameUsername } from '@/lib/games/gameUsernameRule';
 
 export type PlayerGameLogin = {
   id: string;
@@ -36,39 +39,6 @@ async function getPlayerGameLoginsByField(
   }));
 }
 
-async function readApiResponse(response: Response) {
-  const text = await response.text();
-  try {
-    return JSON.parse(text) as { error?: string; warning?: string; recorded?: boolean };
-  } catch {
-    return { error: text || 'Server returned invalid response.' };
-  }
-}
-
-async function savePlayerGameLoginOnServer(body: Record<string, unknown>) {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-
-  const response = await fetch('/api/player-game-logins', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${await currentUser.getIdToken()}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  const data = await readApiResponse(response);
-  if (!response.ok) {
-    throw new Error(data.error || 'Failed to save game username.');
-  }
-  if (data.warning) {
-    console.error('[PLAYER_GAME_LOGINS] server saved Firebase username with warning', data);
-  }
-  return data;
-}
-
 export async function createPlayerGameLogin(values: {
   playerUid: string;
   playerUsername: string;
@@ -88,11 +58,9 @@ export async function createPlayerGameLogin(values: {
   if (!values.playerUid) throw new Error('Player is required.');
   if (!values.gameName.trim()) throw new Error('Game name is required.');
   if (!values.gameUsername.trim()) throw new Error('Game username is required.');
-  assertValidGameUsername(values.gameUsername);
   if (!values.gamePassword.trim()) throw new Error('Game password is required.');
 
-  await savePlayerGameLoginOnServer({
-    action: 'create',
+  await addDoc(collection(db, 'playerGameLogins'), {
     playerUid: values.playerUid,
     playerUsername: values.playerUsername,
     gameName: values.gameName.trim(),
@@ -101,6 +69,8 @@ export async function createPlayerGameLogin(values: {
     frontendUrl: String(values.frontendUrl || '').trim(),
     siteUrl: String(values.siteUrl || '').trim(),
     coadminUid: values.coadminUid,
+    createdBy: values.coadminUid,
+    createdAt: serverTimestamp(),
   });
 }
 
@@ -116,12 +86,9 @@ export async function updatePlayerGameLogin(
 ) {
   if (!values.gameName.trim()) throw new Error('Game name is required.');
   if (!values.gameUsername.trim()) throw new Error('Game username is required.');
-  assertValidGameUsername(values.gameUsername);
   if (!values.gamePassword.trim()) throw new Error('Game password is required.');
 
-  await savePlayerGameLoginOnServer({
-    action: 'update',
-    loginId,
+  await updateDoc(doc(db, 'playerGameLogins', loginId), {
     gameName: values.gameName.trim(),
     gameUsername: values.gameUsername.trim(),
     gamePassword: values.gamePassword,
@@ -136,24 +103,6 @@ export async function getPlayerGameLoginsByPlayer(
   const q = query(
     collection(db, 'playerGameLogins'),
     where('playerUid', '==', playerUid)
-  );
-
-  const snapshot = await getDocs(q);
-
-  return snapshot.docs.map((docSnap) => ({
-    id: docSnap.id,
-    ...(docSnap.data() as Omit<PlayerGameLogin, 'id'>),
-  }));
-}
-
-export async function getPlayerGameLoginsByPlayerGame(
-  playerUid: string,
-  gameName: string
-): Promise<PlayerGameLogin[]> {
-  const q = query(
-    collection(db, 'playerGameLogins'),
-    where('playerUid', '==', playerUid),
-    where('gameName', '==', gameName.trim())
   );
 
   const snapshot = await getDocs(q);

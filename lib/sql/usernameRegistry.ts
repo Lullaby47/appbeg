@@ -88,6 +88,9 @@ export async function recordGameUsername(input: RecordGameUsernameInput) {
   const cleanGame = cleanText(input.game, 50);
   if (!cleanUsername) throw new Error('Username is required for username registry.');
   if (!cleanGame) throw new Error('Game is required for username registry.');
+  if (cleanGame !== 'player_login') {
+    throw new Error('Username registry is only for player_login usernames.');
+  }
   assertValidGameUsername(cleanUsername);
 
   const { url, secret } = getRegistryApiConfig();
@@ -120,7 +123,7 @@ export async function recordGameUsername(input: RecordGameUsernameInput) {
   }
 }
 
-export async function insertUsername(username: string, game = 'unknown') {
+export async function insertUsername(username: string, game = 'player_login') {
   await recordGameUsername({ username, game, source: 'legacy_insert_after_firebase' });
 }
 
