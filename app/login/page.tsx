@@ -7,6 +7,8 @@ import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import {
   collection,
   doc,
+  type QueryDocumentSnapshot,
+  type DocumentData,
   getDoc,
   getDocs,
   query,
@@ -106,6 +108,25 @@ export default function LoginPage() {
     return () => unsubscribe();
   }, [router]);
 
+  async function findLoginUserDoc(cleanUsername: string) {
+    const candidates = Array.from(
+      new Set([cleanUsername, cleanUsername.toLowerCase()].filter(Boolean))
+    );
+
+    for (const candidate of candidates) {
+      const userQuery = query(
+        collection(db, 'users'),
+        where('username', '==', candidate)
+      );
+      const userSnapshot = await getDocs(userQuery);
+      if (!userSnapshot.empty) {
+        return userSnapshot.docs[0] as QueryDocumentSnapshot<DocumentData>;
+      }
+    }
+
+    return null;
+  }
+
   async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
@@ -121,18 +142,11 @@ export default function LoginPage() {
     loginInProgressRef.current = true;
 
     try {
-      const userQuery = query(
-        collection(db, 'users'),
-        where('username', '==', cleanUsername)
-      );
-
-      const userSnapshot = await getDocs(userQuery);
-
-      if (userSnapshot.empty) {
+      const userDoc = await findLoginUserDoc(cleanUsername);
+      if (!userDoc) {
         throw new Error('User not found.');
       }
 
-      const userDoc = userSnapshot.docs[0];
       const userData = userDoc.data();
 
       const userRole = String(userData.role || '');
