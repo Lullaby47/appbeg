@@ -2,12 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { requireApiUser } from '@/lib/firebase/apiAuth';
 import { GAME_USERNAME_RULE_MESSAGE, isValidGameUsername } from '@/lib/games/gameUsernameRule';
-import {
-  deleteUsername,
-  insertUsername,
-  recordGameUsername,
-  usernameExists,
-} from '@/lib/sql/usernameRegistry';
+import { usernameExists } from '@/lib/sql/usernameRegistry';
 
 type RegistryAction = 'check' | 'record_after_firebase' | 'insert_after_firebase' | 'delete_after_firebase';
 
@@ -37,23 +32,15 @@ export async function POST(request: Request) {
       const exists = await usernameExists(username);
       return NextResponse.json({ exists, available: !exists });
     }
-    if (action === 'record_after_firebase') {
-      await recordGameUsername({
-        username,
-        game: String(body.game || '').trim(),
-        playerUid: String(body.playerUid || '').trim() || null,
-        coadminUid: String(body.coadminUid || '').trim() || null,
-        source: String(body.source || '').trim() || 'appbeg_api',
-      });
-      return NextResponse.json({ success: true, recorded: true });
-    }
-    if (action === 'insert_after_firebase') {
-      await insertUsername(username);
-      return NextResponse.json({ success: true });
-    }
-    if (action === 'delete_after_firebase') {
-      await deleteUsername(username);
-      return NextResponse.json({ success: true });
+    if (
+      action === 'record_after_firebase' ||
+      action === 'insert_after_firebase' ||
+      action === 'delete_after_firebase'
+    ) {
+      return NextResponse.json(
+        { error: 'Username registry writes must use player account server routes.' },
+        { status: 410 }
+      );
     }
     return NextResponse.json({ error: 'Invalid registry action.' }, { status: 400 });
   } catch (error) {

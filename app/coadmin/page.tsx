@@ -4095,6 +4095,7 @@ export default function CoadminPage() {
               loading={loading}
               onUsernameChange={setPlayerUsername}
               onPasswordChange={setPlayerPassword}
+              validatePlayerUsername
               onSubmit={handleCreatePlayer}
             />
           )}

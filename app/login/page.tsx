@@ -109,7 +109,7 @@ export default function LoginPage() {
   async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
-    const cleanUsername = username.trim().toLowerCase();
+    const cleanUsername = username.trim();
 
     if (!cleanUsername) {
       setError('Username is required.');

@@ -13,6 +13,8 @@ import {
   requireApiUser,
   scopedCoadminUid,
 } from '@/lib/firebase/apiAuth';
+import { assertValidGameUsername } from '@/lib/games/gameUsernameRule';
+import { recordGameUsername } from '@/lib/sql/usernameRegistry';
 
 type CreatableRole = 'staff' | 'carer' | 'player';
 
@@ -35,6 +37,29 @@ function parseReferralCodeInput(value: unknown) {
   return code;
 }
 
+async function recordPlayerLoginUsernameAfterFirebaseSave(input: {
+  username: string;
+  playerUid: string;
+  coadminUid: string;
+}) {
+  try {
+    await recordGameUsername({
+      username: input.username,
+      game: 'player_login',
+      playerUid: input.playerUid,
+      coadminUid: input.coadminUid,
+      source: 'appbeg',
+    });
+  } catch (error) {
+    console.warn('[PLAYER_LOGIN_USERNAME_REGISTRY] record failed after Firebase player creation', {
+      username: input.username,
+      playerUid: input.playerUid,
+      coadminUid: input.coadminUid,
+      error,
+    });
+  }
+}
+
 export async function POST(request: Request) {
   let createdAuthUid: string | null = null;
   try {
@@ -43,9 +68,12 @@ export async function POST(request: Request) {
 
     const body = await request.json();
 
-    const username = String(body.username || '').trim().toLowerCase();
-    const password = String(body.password || '');
     const role = String(body.role || 'staff').trim().toLowerCase();
+    const username =
+      role === 'player'
+        ? String(body.username || '').trim()
+        : String(body.username || '').trim().toLowerCase();
+    const password = String(body.password || '');
     const requestedOwnerUid = String(body.coadminUid || body.createdBy || '').trim();
     const callerScopeUid = scopedCoadminUid(auth.user);
     const ownerCoadminUid =
@@ -61,6 +89,9 @@ export async function POST(request: Request) {
 
     if (!username) {
       return NextResponse.json({ error: 'Username is required.' }, { status: 400 });
+    }
+    if (role === 'player') {
+      assertValidGameUsername(username);
     }
 
     if (password.length < 6) {
@@ -216,6 +247,11 @@ export async function POST(request: Request) {
         }
       });
       createdAuthUid = null;
+      await recordPlayerLoginUsernameAfterFirebaseSave({
+        username,
+        playerUid: authUser.uid,
+        coadminUid: ownerCoadminUid,
+      });
     } else {
       await userRef.set({
         uid: authUser.uid,

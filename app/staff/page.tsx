@@ -1440,6 +1440,7 @@ export default function StaffPage() {
               loading={loading}
               onUsernameChange={setPlayerUsername}
               onPasswordChange={setPlayerPassword}
+              validatePlayerUsername
               onSubmit={handleCreatePlayer}
             />
           )}

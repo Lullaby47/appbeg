@@ -102,7 +102,11 @@ export async function POST(request: Request) {
     await ensureAuthUserDeleted(uid, userData?.email);
     await userRef.delete();
     if (userData?.role === 'player') {
-      await deactivatePlayerGameUsernames(uid, permanent ? 'deleted' : 'archived');
+      await deactivatePlayerLoginUsername({
+        username: String(userData?.username || '').trim(),
+        playerUid: uid,
+        reason: permanent ? 'deleted' : 'archived',
+      });
     }
 
     return NextResponse.json({
@@ -122,38 +126,25 @@ export async function POST(request: Request) {
   }
 }
 
-async function deactivatePlayerGameUsernames(playerUid: string, reason: 'deleted' | 'archived') {
+async function deactivatePlayerLoginUsername(input: {
+  username: string;
+  playerUid: string;
+  reason: 'deleted' | 'archived';
+}) {
+  if (!input.username) {
+    return;
+  }
   try {
-    const snapshot = await adminDb
-      .collection('playerGameLogins')
-      .where('playerUid', '==', playerUid)
-      .get();
-    const usernames = Array.from(
-      new Set(
-        snapshot.docs
-          .map((docSnap) =>
-            String((docSnap.data() as { gameUsername?: string }).gameUsername || '').trim()
-          )
-          .filter(Boolean)
-      )
-    );
-
-    await Promise.all(
-      usernames.map((username) =>
-        deactivateGameUsername({ username, playerUid, reason }).catch((error) => {
-          console.warn('[DELETE_USER] username registry deactivate failed', {
-            username,
-            playerUid,
-            reason,
-            error,
-          });
-        })
-      )
-    );
+    await deactivateGameUsername({
+      username: input.username,
+      playerUid: input.playerUid,
+      reason: input.reason,
+    });
   } catch (error) {
-    console.warn('[DELETE_USER] failed to load player usernames for registry deactivation', {
-      playerUid,
-      reason,
+    console.warn('[PLAYER_LOGIN_USERNAME_REGISTRY] deactivate failed after Firebase player delete', {
+      username: input.username,
+      playerUid: input.playerUid,
+      reason: input.reason,
       error,
     });
   }

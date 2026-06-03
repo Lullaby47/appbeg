@@ -2,6 +2,8 @@ import type { DocumentData } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import { assertValidGameUsername } from '@/lib/games/gameUsernameRule';
+import { deactivateGameUsername, recordGameUsername } from '@/lib/sql/usernameRegistry';
 
 function makeHiddenEmail(username: string) {
   return `${username}@app.local`;
@@ -18,6 +20,44 @@ function workerBelongsToCoadmin(
     return true;
   }
   return false;
+}
+
+async function recordPlayerLoginUsernameChange(input: {
+  previousUsername: string;
+  newUsername: string;
+  playerUid: string;
+  coadminUid: string;
+}) {
+  try {
+    await deactivateGameUsername({
+      username: input.previousUsername,
+      playerUid: input.playerUid,
+      reason: 'replaced',
+    });
+  } catch (error) {
+    console.warn('[PLAYER_LOGIN_USERNAME_REGISTRY] deactivate failed after Firebase username change', {
+      username: input.previousUsername,
+      playerUid: input.playerUid,
+      error,
+    });
+  }
+
+  try {
+    await recordGameUsername({
+      username: input.newUsername,
+      game: 'player_login',
+      playerUid: input.playerUid,
+      coadminUid: input.coadminUid,
+      source: 'appbeg',
+    });
+  } catch (error) {
+    console.warn('[PLAYER_LOGIN_USERNAME_REGISTRY] record failed after Firebase username change', {
+      username: input.newUsername,
+      playerUid: input.playerUid,
+      coadminUid: input.coadminUid,
+      error,
+    });
+  }
 }
 
 /**
@@ -58,7 +98,7 @@ export async function POST(request: Request) {
         : undefined;
     const newUsernameInput =
       newUsernameRaw != null && String(newUsernameRaw) !== ''
-        ? String(newUsernameRaw).trim().toLowerCase()
+        ? String(newUsernameRaw).trim()
         : undefined;
 
     if (!targetUid) {
@@ -106,8 +146,9 @@ export async function POST(request: Request) {
       );
     }
 
-    const currentUsername = String(target.username || '').trim().toLowerCase();
-    let newUsername: string | undefined = newUsernameInput;
+    const currentUsername = String(target.username || '').trim();
+    let newUsername: string | undefined =
+      newUsernameInput && role !== 'player' ? newUsernameInput.toLowerCase() : newUsernameInput;
     if (newUsername && newUsername === currentUsername) {
       newUsername = undefined;
     }
@@ -115,6 +156,9 @@ export async function POST(request: Request) {
     if (newUsername !== undefined) {
       if (!newUsername) {
         return NextResponse.json({ error: 'Username cannot be empty.' }, { status: 400 });
+      }
+      if (role === 'player') {
+        assertValidGameUsername(newUsername);
       }
       const taken = await adminDb
         .collection('users')
@@ -144,6 +188,14 @@ export async function POST(request: Request) {
         username: newUsername,
         email: makeHiddenEmail(newUsername),
       });
+      if (role === 'player') {
+        await recordPlayerLoginUsernameChange({
+          previousUsername: currentUsername,
+          newUsername,
+          playerUid: targetUid,
+          coadminUid: callerUid,
+        });
+      }
     }
 
     return NextResponse.json({

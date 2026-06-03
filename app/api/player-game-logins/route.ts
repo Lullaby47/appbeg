@@ -4,7 +4,6 @@ import { NextResponse } from 'next/server';
 import { apiError, belongsToScope, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
 import { adminDb } from '@/lib/firebase/admin';
 import { assertValidGameUsername } from '@/lib/games/gameUsernameRule';
-import { deactivateGameUsername, recordGameUsername } from '@/lib/sql/usernameRegistry';
 
 type SavePlayerGameLoginBody = {
   action?: unknown;
@@ -41,61 +40,6 @@ async function assertPlayerScope(playerUid: string, coadminUid: string) {
     throw new Error('Player is outside your coadmin scope.');
   }
   return player;
-}
-
-async function recordAfterFirebaseSave(input: {
-  username: string;
-  game: string;
-  playerUid: string;
-  coadminUid: string;
-  source: string;
-}) {
-  try {
-    await recordGameUsername({
-      username: input.username,
-      game: input.game,
-      playerUid: input.playerUid,
-      coadminUid: input.coadminUid,
-      source: input.source,
-    });
-    return { recorded: true as const };
-  } catch (error) {
-    console.warn('[PLAYER_GAME_LOGINS] VPS username registry record failed after Firebase save', {
-      username: input.username,
-      game: input.game,
-      playerUid: input.playerUid,
-      coadminUid: input.coadminUid,
-      source: input.source,
-      error,
-    });
-    return {
-      recorded: false as const,
-      warning: 'Firebase save succeeded, but VPS username registry recording failed.',
-    };
-  }
-}
-
-async function deactivateAfterFirebaseSave(input: {
-  username: string;
-  playerUid: string;
-  reason: 'deleted' | 'archived' | 'removed' | 'replaced';
-}) {
-  try {
-    await deactivateGameUsername({
-      username: input.username,
-      playerUid: input.playerUid,
-      reason: input.reason,
-    });
-    return { deactivated: true as const };
-  } catch (error) {
-    console.warn('[PLAYER_GAME_LOGINS] VPS username registry deactivate failed after Firebase save', {
-      username: input.username,
-      playerUid: input.playerUid,
-      reason: input.reason,
-      error,
-    });
-    return { deactivated: false as const };
-  }
 }
 
 export async function POST(request: Request) {
@@ -145,15 +89,7 @@ export async function POST(request: Request) {
         createdAt: FieldValue.serverTimestamp(),
       });
 
-      const registry = await recordAfterFirebaseSave({
-        username: gameUsername,
-        game: gameName,
-        playerUid,
-        coadminUid: requestedCoadminUid,
-        source: 'appbeg',
-      });
-
-      return NextResponse.json({ success: true, id: docRef.id, ...registry });
+      return NextResponse.json({ success: true, id: docRef.id });
     }
 
     if (action === 'update') {
@@ -187,26 +123,7 @@ export async function POST(request: Request) {
         updatedAt: FieldValue.serverTimestamp(),
       });
 
-      const previousUsername = clean(login.gameUsername);
-      const usernameReplaced =
-        previousUsername && previousUsername.toLowerCase() !== gameUsername.toLowerCase();
-      if (usernameReplaced) {
-        await deactivateAfterFirebaseSave({
-          username: previousUsername,
-          playerUid,
-          reason: 'replaced',
-        });
-      }
-
-      const registry = await recordAfterFirebaseSave({
-        username: gameUsername,
-        game: gameName,
-        playerUid,
-        coadminUid,
-        source: 'appbeg',
-      });
-
-      return NextResponse.json({ success: true, id: loginId, ...registry });
+      return NextResponse.json({ success: true, id: loginId });
     }
 
     return apiError('Invalid player game login action.', 400);

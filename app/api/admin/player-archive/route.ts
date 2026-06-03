@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
+import { assertValidGameUsername } from '@/lib/games/gameUsernameRule';
+import { recordGameUsername } from '@/lib/sql/usernameRegistry';
 import {
   findUniqueReferralCodeWithQueries,
   isReferralCodeReusableByPlayer,
@@ -32,6 +34,29 @@ type DeletedPlayerDoc = {
 function defaultPasswordFor(username: string) {
   const clean = (username || 'player').replace(/[^a-zA-Z0-9]/g, '');
   return `${clean || 'player'}@12345`;
+}
+
+async function recordRestoredPlayerLoginUsername(input: {
+  username: string;
+  playerUid: string;
+  coadminUid?: string | null;
+}) {
+  try {
+    await recordGameUsername({
+      username: input.username,
+      game: 'player_login',
+      playerUid: input.playerUid,
+      coadminUid: input.coadminUid || null,
+      source: 'appbeg',
+    });
+  } catch (error) {
+    console.warn('[PLAYER_LOGIN_USERNAME_REGISTRY] record failed after Firebase player restore', {
+      username: input.username,
+      playerUid: input.playerUid,
+      coadminUid: input.coadminUid || null,
+      error,
+    });
+  }
 }
 
 export async function GET(request: Request) {
@@ -77,12 +102,13 @@ export async function POST(request: Request) {
     }
 
     const deletedData = deletedSnap.data() as DeletedPlayerDoc;
-    const username = String(deletedData.username || '').trim().toLowerCase();
+    const username = String(deletedData.username || '').trim();
     const email = String(deletedData.email || `${username}@app.local`).trim().toLowerCase();
 
     if (!username) {
       return NextResponse.json({ error: 'Deleted player username is invalid.' }, { status: 400 });
     }
+    assertValidGameUsername(username);
 
     const activeUserRef = adminDb.collection('users').doc(uid);
     const activeUserSnap = await activeUserRef.get();
@@ -160,6 +186,11 @@ export async function POST(request: Request) {
       );
 
     await deletedRef.delete();
+    await recordRestoredPlayerLoginUsername({
+      username,
+      playerUid: uid,
+      coadminUid: deletedData.coadminUid || deletedData.createdBy || null,
+    });
 
     return NextResponse.json({
       success: true,

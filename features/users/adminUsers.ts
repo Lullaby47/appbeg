@@ -6,6 +6,7 @@ import {
   getCurrentUserCoadminUid,
   resolveCoadminUid,
 } from '@/lib/coadmin/scope';
+import { assertValidGameUsername } from '@/lib/games/gameUsernameRule';
 
 export type CoadminUser = {
   id: string;
@@ -217,9 +218,12 @@ async function createManagedUser(
   role: 'staff' | 'carer' | 'player',
   referralCodeInput?: string
 ) {
-  const cleanUsername = username.trim().toLowerCase();
+  const cleanUsername = role === 'player' ? username.trim() : username.trim().toLowerCase();
 
   if (!cleanUsername) throw new Error('Username is required.');
+  if (role === 'player') {
+    assertValidGameUsername(cleanUsername);
+  }
   if (password.length < 6) {
     throw new Error('Password must be at least 6 characters.');
   }
@@ -667,6 +671,9 @@ export async function resetCoadminWorkerCredentials(
   }
   if (options.newUsername !== undefined && !String(options.newUsername).trim()) {
     throw new Error('Username cannot be empty.');
+  }
+  if (options.newUsername !== undefined && user.role === 'player') {
+    assertValidGameUsername(String(options.newUsername));
   }
 
   const token = await currentUser.getIdToken();
