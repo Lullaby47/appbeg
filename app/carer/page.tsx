@@ -112,6 +112,13 @@ type DashboardCard = {
 
 type TaskSection = 'pending' | 'mine' | 'completed';
 type WarmupStatus = 'not_warmed' | 'warming' | 'ready' | 'partial_ready' | 'failed';
+type BrowserWarmupGameResult = {
+  ready?: boolean;
+  reason?: string;
+  statusLabel?: string;
+  visibleError?: string;
+  error?: string;
+};
 
 const DEBUG_TAB_FILTER_LOGS = false;
 const CREATE_USERNAME_UI_GRACE_MS = 5 * 60 * 1000;
@@ -505,7 +512,7 @@ export default function CarerPage() {
   const [agentSaving, setAgentSaving] = useState(false);
   const [browserWarmupStatus, setBrowserWarmupStatus] = useState<WarmupStatus>('not_warmed');
   const [browserWarmupMessage, setBrowserWarmupMessage] = useState('Not warmed');
-  const [browserWarmupGames, setBrowserWarmupGames] = useState<Record<string, boolean>>({});
+  const [browserWarmupGames, setBrowserWarmupGames] = useState<Record<string, BrowserWarmupGameResult>>({});
   const [isTickRunning, setIsTickRunning] = useState(false);
   const [isListenerActive, setIsListenerActive] = useState(false);
   const [isQueueDraining, setIsQueueDraining] = useState(false);
@@ -1645,17 +1652,15 @@ export default function CarerPage() {
       const payload = (await response.json().catch(() => ({}))) as {
         ok?: boolean;
         error?: string;
-        games?: Record<string, { ready?: boolean; error?: string }>;
+        games?: Record<string, BrowserWarmupGameResult>;
       };
       if (!response.ok || !payload.ok) {
         throw new Error(payload.error || 'Warmup failed.');
       }
-      const readyByGame = Object.fromEntries(
-        Object.entries(payload.games || {}).map(([gameName, result]) => [gameName, Boolean(result.ready)])
-      );
+      const readyByGame = payload.games || {};
       setBrowserWarmupGames(readyByGame);
       const total = Object.keys(readyByGame).length;
-      const readyCount = Object.values(readyByGame).filter(Boolean).length;
+      const readyCount = Object.values(readyByGame).filter((result) => Boolean(result.ready)).length;
       if (total > 0 && readyCount === total) {
         setBrowserWarmupStatus('ready');
         setBrowserWarmupMessage(`Ready (${readyCount}/${total})`);
@@ -2743,7 +2748,15 @@ export default function CarerPage() {
             {Object.keys(browserWarmupGames).length > 0 ? (
               <span>
                 {Object.entries(browserWarmupGames)
-                  .map(([gameName, ready]) => `${gameName}: ${ready ? 'ready' : 'failed'}`)
+                  .map(([gameName, result]) => {
+                    const detail =
+                      result.statusLabel ||
+                      result.reason?.replace(/_/g, ' ') ||
+                      result.visibleError ||
+                      result.error ||
+                      (result.ready ? 'ready' : 'failed');
+                    return `${gameName}: ${detail}`;
+                  })
                   .join(' | ')}
               </span>
             ) : null}
