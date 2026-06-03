@@ -311,9 +311,16 @@ export function buildAutomationPayload(input: AutomationPayloadInput): Automatio
   };
 
   if (mappedType === 'CREATE_USERNAME') {
+    console.info(
+      '[CREATE_USERNAME_TASK] old/generated gameAccountUsername=%s',
+      base.gameAccountUsername || ''
+    );
+    console.info('[CREATE_USERNAME_TASK] playerUsername=%s', base.playerUsername || '');
+    console.info('[CREATE_USERNAME_TASK] game=%s', base.game || '');
+
     return {
       ...base,
-      username: base.currentUsername || base.player || null,
+      username: base.currentUsername || null,
       amount: null,
       originalTask: buildOriginalTaskCommon(input, mergedTask, base),
     };
