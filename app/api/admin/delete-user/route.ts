@@ -7,6 +7,7 @@ import {
   requireApiUser,
   scopedCoadminUid,
 } from '@/lib/firebase/apiAuth';
+import { deactivateGameUsername } from '@/lib/sql/usernameRegistry';
 
 function isAuthUserNotFound(error: unknown) {
   if (!error || typeof error !== 'object') {
@@ -100,6 +101,9 @@ export async function POST(request: Request) {
 
     await ensureAuthUserDeleted(uid, userData?.email);
     await userRef.delete();
+    if (userData?.role === 'player') {
+      await deactivatePlayerGameUsernames(uid, permanent ? 'deleted' : 'archived');
+    }
 
     return NextResponse.json({
       success: true,
@@ -115,5 +119,42 @@ export async function POST(request: Request) {
       { error: err instanceof Error ? err.message : 'Failed to delete user.' },
       { status: 500 }
     );
+  }
+}
+
+async function deactivatePlayerGameUsernames(playerUid: string, reason: 'deleted' | 'archived') {
+  try {
+    const snapshot = await adminDb
+      .collection('playerGameLogins')
+      .where('playerUid', '==', playerUid)
+      .get();
+    const usernames = Array.from(
+      new Set(
+        snapshot.docs
+          .map((docSnap) =>
+            String((docSnap.data() as { gameUsername?: string }).gameUsername || '').trim()
+          )
+          .filter(Boolean)
+      )
+    );
+
+    await Promise.all(
+      usernames.map((username) =>
+        deactivateGameUsername({ username, playerUid, reason }).catch((error) => {
+          console.warn('[DELETE_USER] username registry deactivate failed', {
+            username,
+            playerUid,
+            reason,
+            error,
+          });
+        })
+      )
+    );
+  } catch (error) {
+    console.warn('[DELETE_USER] failed to load player usernames for registry deactivation', {
+      playerUid,
+      reason,
+      error,
+    });
   }
 }

@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server';
 import { apiError, belongsToScope, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
 import { adminDb } from '@/lib/firebase/admin';
 import { assertValidGameUsername } from '@/lib/games/gameUsernameRule';
-import { recordGameUsername } from '@/lib/sql/usernameRegistry';
+import { deactivateGameUsername, recordGameUsername } from '@/lib/sql/usernameRegistry';
 
 type SavePlayerGameLoginBody = {
   action?: unknown;
@@ -75,6 +75,29 @@ async function recordAfterFirebaseSave(input: {
   }
 }
 
+async function deactivateAfterFirebaseSave(input: {
+  username: string;
+  playerUid: string;
+  reason: 'deleted' | 'archived' | 'removed' | 'replaced';
+}) {
+  try {
+    await deactivateGameUsername({
+      username: input.username,
+      playerUid: input.playerUid,
+      reason: input.reason,
+    });
+    return { deactivated: true as const };
+  } catch (error) {
+    console.warn('[PLAYER_GAME_LOGINS] VPS username registry deactivate failed after Firebase save', {
+      username: input.username,
+      playerUid: input.playerUid,
+      reason: input.reason,
+      error,
+    });
+    return { deactivated: false as const };
+  }
+}
+
 export async function POST(request: Request) {
   try {
     const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer']);
@@ -142,6 +165,7 @@ export async function POST(request: Request) {
       if (!loginSnap.exists) return apiError('Game login not found.', 404);
       const login = loginSnap.data() as {
         playerUid?: string;
+        gameUsername?: string | null;
         coadminUid?: string | null;
         createdBy?: string | null;
       };
@@ -162,6 +186,17 @@ export async function POST(request: Request) {
         siteUrl,
         updatedAt: FieldValue.serverTimestamp(),
       });
+
+      const previousUsername = clean(login.gameUsername);
+      const usernameReplaced =
+        previousUsername && previousUsername.toLowerCase() !== gameUsername.toLowerCase();
+      if (usernameReplaced) {
+        await deactivateAfterFirebaseSave({
+          username: previousUsername,
+          playerUid,
+          reason: 'replaced',
+        });
+      }
 
       const registry = await recordAfterFirebaseSave({
         username: gameUsername,

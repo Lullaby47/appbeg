@@ -39,7 +39,7 @@ async function ensurePg(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS game_usernames (
       id BIGSERIAL PRIMARY KEY,
-      username VARCHAR(100) UNIQUE NOT NULL,
+      username VARCHAR(100) NOT NULL,
       game VARCHAR(50) NOT NULL,
       created_at TIMESTAMP DEFAULT NOW()
     )
@@ -50,7 +50,9 @@ async function ensurePg(pool) {
     'ALTER TABLE game_usernames ADD COLUMN IF NOT EXISTS source TEXT NULL',
     "ALTER TABLE game_usernames ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'",
     'ALTER TABLE game_usernames ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()',
-    'CREATE UNIQUE INDEX IF NOT EXISTS game_usernames_username_idx ON game_usernames (username)',
+    'ALTER TABLE game_usernames DROP CONSTRAINT IF EXISTS game_usernames_username_key',
+    'DROP INDEX IF EXISTS game_usernames_username_idx',
+    "CREATE UNIQUE INDEX IF NOT EXISTS game_usernames_active_username_unique ON game_usernames (lower(username)) WHERE status = 'active'",
     'CREATE INDEX IF NOT EXISTS game_usernames_game_idx ON game_usernames (game)',
     'CREATE INDEX IF NOT EXISTS game_usernames_coadmin_uid_idx ON game_usernames (coadmin_uid)',
   ];
@@ -88,25 +90,35 @@ async function main() {
     }
 
     try {
+      const playerUid = clean(data.playerUid) || null;
+      const coadminUid = clean(data.coadminUid || data.createdBy) || null;
+      const updateResult = await pool.query(
+        `
+          UPDATE game_usernames
+          SET game = $2,
+              player_uid = COALESCE($3, player_uid),
+              coadmin_uid = COALESCE($4, coadmin_uid),
+              source = COALESCE(source, 'firebase_backfill'),
+              status = 'active',
+              updated_at = NOW()
+          WHERE lower(username) = lower($1)
+            AND status = 'active'
+            AND ($3::text IS NULL OR player_uid IS NULL OR player_uid = $3)
+        `,
+        [username, game, playerUid, coadminUid]
+      );
+      if (updateResult.rowCount > 0) {
+        skipped += 1;
+        continue;
+      }
+
       const result = await pool.query(
         `
           INSERT INTO game_usernames (username, game, player_uid, coadmin_uid, source, status, updated_at)
           VALUES ($1, $2, $3, $4, 'firebase_backfill', 'active', NOW())
-          ON CONFLICT (username) DO UPDATE SET
-            game = EXCLUDED.game,
-            player_uid = COALESCE(EXCLUDED.player_uid, game_usernames.player_uid),
-            coadmin_uid = COALESCE(EXCLUDED.coadmin_uid, game_usernames.coadmin_uid),
-            source = COALESCE(game_usernames.source, EXCLUDED.source),
-            status = 'active',
-            updated_at = NOW()
           RETURNING (xmax = 0) AS inserted
         `,
-        [
-          username,
-          game,
-          clean(data.playerUid) || null,
-          clean(data.coadminUid || data.createdBy) || null,
-        ]
+        [username, game, playerUid, coadminUid]
       );
       if (result.rows[0]?.inserted) inserted += 1;
       else skipped += 1;
