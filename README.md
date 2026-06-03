@@ -44,8 +44,9 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 
 ## Username Registry
 
-Set `DATABASE_URL=postgresql://...` in the server environment. AppBeg uses that
-online Postgres database only for the `usernames_registry` existence index; Firebase
+Set `USERNAME_REGISTRY_API_URL` and `USERNAME_REGISTRY_SECRET` in the AppBeg server
+environment. AppBeg calls the VPS username-registry HTTPS API after Firebase saves a
+player game username; AppBeg does not connect to PostgreSQL directly. Firebase
 remains the source of truth for game login records.
 
 ## Local Admin Tool

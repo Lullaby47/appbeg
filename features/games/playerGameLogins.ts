@@ -1,22 +1,13 @@
 import {
-  addDoc,
   collection,
-  doc,
-  getDoc,
   getDocs,
   onSnapshot,
   query,
-  serverTimestamp,
-  updateDoc,
   where,
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
-import {
-  deleteUsernameAfterFirebaseDelete,
-  ensureUsernameAvailable,
-  insertUsernameAfterFirebaseSave,
-} from '@/features/games/usernameRegistry';
+import { assertValidGameUsername } from '@/lib/games/gameUsernameRule';
 
 export type PlayerGameLogin = {
   id: string;
@@ -45,6 +36,39 @@ async function getPlayerGameLoginsByField(
   }));
 }
 
+async function readApiResponse(response: Response) {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as { error?: string; warning?: string; recorded?: boolean };
+  } catch {
+    return { error: text || 'Server returned invalid response.' };
+  }
+}
+
+async function savePlayerGameLoginOnServer(body: Record<string, unknown>) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+
+  const response = await fetch('/api/player-game-logins', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${await currentUser.getIdToken()}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await readApiResponse(response);
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to save game username.');
+  }
+  if (data.warning) {
+    console.error('[PLAYER_GAME_LOGINS] server saved Firebase username with warning', data);
+  }
+  return data;
+}
+
 export async function createPlayerGameLogin(values: {
   playerUid: string;
   playerUsername: string;
@@ -64,10 +88,11 @@ export async function createPlayerGameLogin(values: {
   if (!values.playerUid) throw new Error('Player is required.');
   if (!values.gameName.trim()) throw new Error('Game name is required.');
   if (!values.gameUsername.trim()) throw new Error('Game username is required.');
+  assertValidGameUsername(values.gameUsername);
   if (!values.gamePassword.trim()) throw new Error('Game password is required.');
 
-  await ensureUsernameAvailable(values.gameUsername);
-  await addDoc(collection(db, 'playerGameLogins'), {
+  await savePlayerGameLoginOnServer({
+    action: 'create',
     playerUid: values.playerUid,
     playerUsername: values.playerUsername,
     gameName: values.gameName.trim(),
@@ -76,10 +101,7 @@ export async function createPlayerGameLogin(values: {
     frontendUrl: String(values.frontendUrl || '').trim(),
     siteUrl: String(values.siteUrl || '').trim(),
     coadminUid: values.coadminUid,
-    createdBy: values.coadminUid,
-    createdAt: serverTimestamp(),
   });
-  await insertUsernameAfterFirebaseSave(values.gameUsername);
 }
 
 export async function updatePlayerGameLogin(
@@ -94,32 +116,18 @@ export async function updatePlayerGameLogin(
 ) {
   if (!values.gameName.trim()) throw new Error('Game name is required.');
   if (!values.gameUsername.trim()) throw new Error('Game username is required.');
+  assertValidGameUsername(values.gameUsername);
   if (!values.gamePassword.trim()) throw new Error('Game password is required.');
 
-  const loginRef = doc(db, 'playerGameLogins', loginId);
-  const currentSnap = await getDoc(loginRef);
-  const currentUsername = currentSnap.exists()
-    ? String((currentSnap.data() as { gameUsername?: string }).gameUsername || '').trim()
-    : '';
-  const changedUsername =
-    currentUsername.toLowerCase() !== values.gameUsername.trim().toLowerCase();
-  if (changedUsername) {
-    await ensureUsernameAvailable(values.gameUsername);
-  }
-
-  await updateDoc(loginRef, {
+  await savePlayerGameLoginOnServer({
+    action: 'update',
+    loginId,
     gameName: values.gameName.trim(),
     gameUsername: values.gameUsername.trim(),
     gamePassword: values.gamePassword,
     frontendUrl: String(values.frontendUrl || '').trim(),
     siteUrl: String(values.siteUrl || '').trim(),
   });
-  if (changedUsername) {
-    await insertUsernameAfterFirebaseSave(values.gameUsername);
-    if (currentUsername) {
-      await deleteUsernameAfterFirebaseDelete(currentUsername);
-    }
-  }
 }
 
 export async function getPlayerGameLoginsByPlayer(

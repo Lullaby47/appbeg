@@ -20,6 +20,10 @@ import LogoutButton from '../../components/auth/LogoutButton';
 import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 import ImageUploadField from '@/components/common/ImageUploadField';
 import { auth, db, getClientDb } from '@/lib/firebase/client';
+import {
+  GAME_USERNAME_PATTERN_SOURCE,
+  GAME_USERNAME_RULE_MESSAGE,
+} from '@/lib/games/gameUsernameRule';
 import { GameLogin } from '@/features/games/gameLogins';
 import {
   createPlayerGameLogin,
@@ -3126,6 +3130,8 @@ export default function CarerPage() {
                     onChange={(event) => setGameUsername(event.target.value)}
                     className="w-full rounded-xl border border-white/10 bg-neutral-900 px-4 py-3 text-white outline-none focus:border-white/30"
                     placeholder="Enter game username"
+                    pattern={GAME_USERNAME_PATTERN_SOURCE}
+                    title={GAME_USERNAME_RULE_MESSAGE}
                     disabled={!selectedPlayer}
                     required
                   />
