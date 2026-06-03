@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { FieldValue } from 'firebase-admin/firestore';
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 import {
   REFERRAL_REWARD_COINS,
@@ -18,6 +19,16 @@ import { recordGameUsername } from '@/lib/sql/usernameRegistry';
 
 type CreatableRole = 'staff' | 'carer' | 'player';
 
+type GameLoginTaskSeed = {
+  id: string;
+  gameName: string;
+  username?: unknown;
+  password?: unknown;
+  backendUrl?: unknown;
+  frontendUrl?: unknown;
+  siteUrl?: unknown;
+};
+
 function makeHiddenEmail(username: string) {
   return `${username}@app.local`;
 }
@@ -35,6 +46,153 @@ function parseReferralCodeInput(value: unknown) {
     throw new Error('Invalid referral code.');
   }
   return code;
+}
+
+function normalizeCarerTaskGameName(gameName: string) {
+  return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+}
+
+function createGameUsernameTaskId(coadminUid: string, playerUid: string, gameName: string) {
+  return `create_game_username__${coadminUid}__${playerUid}__${normalizeCarerTaskGameName(
+    gameName
+  )}`;
+}
+
+function normalizeTaskUrl(value?: unknown) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) {
+    return null;
+  }
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+function normalizeTaskText(value?: unknown) {
+  return String(value || '').trim() || null;
+}
+
+function resolveTaskGameAccess(game: GameLoginTaskSeed) {
+  const loginUrl = normalizeTaskUrl(game.backendUrl || game.siteUrl || '');
+  const siteUrl = normalizeTaskUrl(game.siteUrl || game.frontendUrl || game.backendUrl || '');
+
+  return {
+    loginUrl,
+    gameLoginUrl: loginUrl,
+    lobbyUrl: loginUrl,
+    siteUrl,
+    baseUrl: loginUrl || siteUrl,
+    gameCredentialUsername: normalizeTaskText(game.username),
+    gameCredentialPassword: normalizeTaskText(game.password),
+  };
+}
+
+async function getGameLoginTaskSeedsForCoadmin(coadminUid: string) {
+  const snapshots = await Promise.all(
+    (['coadminUid', 'createdBy'] as const).map((field) =>
+      adminDb.collection('gameLogins').where(field, '==', coadminUid).limit(100).get()
+    )
+  );
+  const byNormalizedGame = new Map<string, GameLoginTaskSeed>();
+
+  for (const snap of snapshots) {
+    for (const docSnap of snap.docs) {
+      const data = docSnap.data() as Omit<GameLoginTaskSeed, 'id' | 'gameName'> & {
+        gameName?: unknown;
+      };
+      const gameName = String(data.gameName || '').trim();
+      const normalizedGame = normalizeCarerTaskGameName(gameName);
+      if (!gameName || !normalizedGame || byNormalizedGame.has(normalizedGame)) {
+        continue;
+      }
+      byNormalizedGame.set(normalizedGame, {
+        id: docSnap.id,
+        gameName,
+        username: data.username,
+        password: data.password,
+        backendUrl: data.backendUrl,
+        frontendUrl: data.frontendUrl,
+        siteUrl: data.siteUrl,
+      });
+    }
+  }
+
+  return Array.from(byNormalizedGame.values());
+}
+
+function setInitialCreateUsernameTasksForPlayerInTransaction(input: {
+  transaction: FirebaseFirestore.Transaction;
+  games: GameLoginTaskSeed[];
+  coadminUid: string;
+  playerUid: string;
+  playerUsername: string;
+  playerPassword: string;
+}) {
+  const now = FieldValue.serverTimestamp();
+  const taskIds: string[] = [];
+
+  for (const game of input.games) {
+    const taskId = createGameUsernameTaskId(input.coadminUid, input.playerUid, game.gameName);
+    const taskRef = adminDb.collection('carerTasks').doc(taskId);
+    input.transaction.set(taskRef, {
+      coadminUid: input.coadminUid,
+      coadminId: input.coadminUid,
+      type: 'create_game_username',
+      action: 'createUsername',
+      taskAction: 'createUsername',
+      playerUid: input.playerUid,
+      playerId: input.playerUid,
+      playerUsername: input.playerUsername,
+      username: input.playerUsername,
+      password: input.playerPassword,
+      gameName: game.gameName,
+      game: game.gameName,
+      amount: null,
+      requestId: null,
+      status: 'pending',
+      assignedCarerUid: null,
+      assignedCarer: null,
+      assignedCarerUsername: null,
+      claimedStatus: null,
+      claimedAt: null,
+      claimedByUid: null,
+      claimedByUsername: null,
+      startedAt: null,
+      runningAt: null,
+      expiresAt: null,
+      completedAt: null,
+      cancelledAt: null,
+      failedAt: null,
+      ttlExpiresAt: null,
+      completedByCarerUid: null,
+      completedByCarerUsername: null,
+      automationStatus: null,
+      automationJobId: null,
+      linkedJobId: null,
+      currentJobId: null,
+      activeJobId: null,
+      assignedJobStatus: null,
+      automationError: null,
+      error: null,
+      failureReason: null,
+      retryPending: true,
+      resetToPendingAt: null,
+      returnedToPendingAt: null,
+      pendingSince: now,
+      lastHeartbeatAt: null,
+      queuedAt: null,
+      automationUpdatedAt: null,
+      updatedAt: now,
+      createdAt: now,
+      isPoked: false,
+      pokedAt: null,
+      pokeMessage: null,
+      playerLoginUsername: input.playerUsername,
+      playerLoginPassword: input.playerPassword,
+      ...resolveTaskGameAccess(game),
+    });
+    taskIds.push(taskId);
+  }
+
+  return taskIds;
 }
 
 async function recordPlayerLoginUsernameAfterFirebaseSave(input: {
@@ -173,7 +331,9 @@ export async function POST(request: Request) {
 
     if (role === 'player') {
       const referralCandidates = buildUniqueReferralCodeCandidates(40);
+      const gameTaskSeeds = await getGameLoginTaskSeedsForCoadmin(ownerCoadminUid);
       const now = new Date();
+      let createdTaskIds: string[] = [];
 
       await adminDb.runTransaction(async (transaction) => {
         let referrerRef: FirebaseFirestore.DocumentReference | null = null;
@@ -245,8 +405,20 @@ export async function POST(request: Request) {
             claimedAt: null,
           });
         }
+
+        createdTaskIds = setInitialCreateUsernameTasksForPlayerInTransaction({
+          transaction,
+          games: gameTaskSeeds,
+          coadminUid: ownerCoadminUid,
+          playerUid: authUser.uid,
+          playerUsername: username,
+          playerPassword: password,
+        });
       });
       createdAuthUid = null;
+      createdTaskIds.forEach((taskId) => {
+        console.info('[CREATE_PLAYER_TASK] task created id=%s', taskId);
+      });
       await recordPlayerLoginUsernameAfterFirebaseSave({
         username,
         playerUid: authUser.uid,

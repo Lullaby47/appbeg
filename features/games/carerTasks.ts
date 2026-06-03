@@ -919,11 +919,16 @@ function getVisibleTaskForCarer(task: CarerTask, currentCarerUid: string) {
   }
 
   if (effectiveStatus === 'pending') {
+    const assignedCarerUid = String(task.assignedCarerUid || '').trim();
+    if (assignedCarerUid && assignedCarerUid !== currentCarerUid) {
+      return null;
+    }
+
     return {
       ...task,
       status: 'pending',
-      assignedCarerUid: null,
-      assignedCarerUsername: null,
+      assignedCarerUid: assignedCarerUid || null,
+      assignedCarerUsername: assignedCarerUid ? task.assignedCarerUsername || null : null,
       startedAt: null,
       expiresAt: null,
     } satisfies CarerTask;
@@ -1436,6 +1441,14 @@ export function listenToAvailableCarerTasks(
   let activeTasks: CarerTask[] = [];
   let completedTasks: CarerTask[] = [];
 
+  console.info(
+    '[CARER_TASKS_LIVE] listener attached coadminUid=%s carerUid=%s activeLimit=%s completedLimit=%s',
+    coadminUid,
+    currentCarerUid,
+    CARER_TASK_LIVE_LISTENER_LIMIT,
+    CARER_TASK_COMPLETED_LISTENER_LIMIT
+  );
+
   const emit = () => {
     const byId = new Map<string, CarerTask>();
     for (const task of [...activeTasks, ...completedTasks]) {
@@ -1481,6 +1494,12 @@ export function listenToAvailableCarerTasks(
       const snapshotReceivedAt = new Date().toISOString();
       const docChanges = snapshot.docChanges();
       console.info(
+        '[CARER_TASKS_LIVE] snapshot size=%s tab=active fromCache=%s hasPendingWrites=%s',
+        snapshot.size,
+        snapshot.metadata.fromCache,
+        snapshot.metadata.hasPendingWrites
+      );
+      console.info(
         '[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s docCount=%s docChanges=%s at=%s',
         snapshot.metadata.fromCache,
         snapshot.metadata.hasPendingWrites,
@@ -1508,6 +1527,7 @@ export function listenToAvailableCarerTasks(
       emit();
     },
     (error) => {
+      console.error('[CARER_TASKS_LIVE] active listener error', error);
       onError?.(error as Error);
     }
   );
@@ -1517,6 +1537,12 @@ export function listenToAvailableCarerTasks(
     (snapshot) => {
       const snapshotReceivedAt = new Date().toISOString();
       const docChanges = snapshot.docChanges();
+      console.info(
+        '[CARER_TASKS_LIVE] snapshot size=%s tab=completed fromCache=%s hasPendingWrites=%s',
+        snapshot.size,
+        snapshot.metadata.fromCache,
+        snapshot.metadata.hasPendingWrites
+      );
       console.info(
         '[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s docCount=%s docChanges=%s at=%s',
         snapshot.metadata.fromCache,
@@ -1545,6 +1571,7 @@ export function listenToAvailableCarerTasks(
       emit();
     },
     (error) => {
+      console.error('[CARER_TASKS_LIVE] completed listener error', error);
       onError?.(error as Error);
     }
   );
