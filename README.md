@@ -45,9 +45,11 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 ## Username Registry
 
 Set `USERNAME_REGISTRY_API_URL` and `USERNAME_REGISTRY_SECRET` in the AppBeg server
-environment. AppBeg calls the VPS username-registry HTTPS API after Firebase saves a
-player game username; AppBeg does not connect to PostgreSQL directly. Firebase
-remains the source of truth for game login records.
+environment. `USERNAME_REGISTRY_API_URL` may be an HTTP URL such as
+`http://103.214.71.5/username-registry` until HTTPS is configured. AppBeg calls the
+VPS username-registry API after Firebase saves a player game username; AppBeg does
+not connect to PostgreSQL directly. Firebase remains the source of truth for game
+login records.
 
 ## Local Admin Tool
 

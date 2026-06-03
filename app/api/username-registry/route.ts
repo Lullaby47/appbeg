@@ -58,7 +58,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid registry action.' }, { status: 400 });
   } catch (error) {
     if (action === 'record_after_firebase' || action === 'insert_after_firebase') {
-      console.error('[USERNAME_REGISTRY] VPS API record failed after Firebase save', {
+      console.warn('[USERNAME_REGISTRY] VPS API record failed after Firebase save', {
         username,
         game: String(body.game || '').trim(),
         playerUid: String(body.playerUid || '').trim() || null,
@@ -73,7 +73,7 @@ export async function POST(request: Request) {
       });
     }
     if (action === 'delete_after_firebase') {
-      console.error(`[USERNAME_REGISTRY] SQL delete failed after Firebase delete username=${username}`);
+      console.warn(`[USERNAME_REGISTRY] registry delete unavailable after Firebase delete username=${username}`);
       return NextResponse.json({ success: true, recorded: false });
     }
     return NextResponse.json({ error: 'Username registry SQL is unavailable.' }, { status: 503 });

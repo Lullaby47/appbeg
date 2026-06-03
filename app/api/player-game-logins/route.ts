@@ -60,7 +60,7 @@ async function recordAfterFirebaseSave(input: {
     });
     return { recorded: true as const };
   } catch (error) {
-    console.error('[PLAYER_GAME_LOGINS] VPS username registry record failed after Firebase save', {
+    console.warn('[PLAYER_GAME_LOGINS] VPS username registry record failed after Firebase save', {
       username: input.username,
       game: input.game,
       playerUid: input.playerUid,

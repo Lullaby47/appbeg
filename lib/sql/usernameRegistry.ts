@@ -8,6 +8,9 @@ export type RecordGameUsernameInput = {
   source?: string | null;
 };
 
+const REGISTRY_TIMEOUT_MS = 5_000;
+let registryUrlLogged = false;
+
 function cleanText(value: string | null | undefined, maxLength?: number) {
   const clean = String(value || '').trim();
   return maxLength ? clean.slice(0, maxLength) : clean;
@@ -21,6 +24,10 @@ function getRegistryApiConfig() {
   }
   if (!secret) {
     throw new Error('USERNAME_REGISTRY_SECRET is required for username registry.');
+  }
+  if (!registryUrlLogged) {
+    registryUrlLogged = true;
+    console.info('[USERNAME_REGISTRY] Registry URL loaded', { url });
   }
   return { url, secret };
 }
@@ -53,27 +60,49 @@ export async function recordGameUsername(input: RecordGameUsernameInput) {
     game: cleanGame,
     playerUid: cleanText(input.playerUid || null) || undefined,
     coadminUid: cleanText(input.coadminUid || null) || undefined,
-    source: cleanText(input.source || null) || 'appbeg',
+    source: 'appbeg',
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-appbeg-registry-secret': secret,
-    },
-    body: JSON.stringify(payload),
-    cache: 'no-store',
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REGISTRY_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-appbeg-registry-secret': secret,
+      },
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+      signal: controller.signal,
+    });
 
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(
-      `Username registry API failed status=${response.status} body=${text.slice(0, 500)}`
-    );
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(
+        `Username registry API failed status=${response.status} body=${text.slice(0, 500)}`
+      );
+    }
+
+    console.info('[USERNAME_REGISTRY] Registry call success', {
+      url,
+      username: cleanUsername,
+      game: cleanGame,
+      playerUid: payload.playerUid || null,
+      coadminUid: payload.coadminUid || null,
+      source: payload.source,
+    });
+  } catch (error) {
+    console.warn('[USERNAME_REGISTRY] Registry call failed', {
+      url,
+      username: cleanUsername,
+      game: cleanGame,
+      error,
+    });
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-
-  console.info(`[USERNAME_REGISTRY] recorded via VPS API username=${cleanUsername} game=${cleanGame}`);
 }
 
 export async function insertUsername(username: string, game = 'unknown') {
