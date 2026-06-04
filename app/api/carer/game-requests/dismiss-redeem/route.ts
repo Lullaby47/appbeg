@@ -118,10 +118,11 @@ export async function POST(request: Request) {
       }
 
       const currentStatus = String(requestData.status || '').toLowerCase();
-      if (currentStatus === 'dismissed') {
-        return { alreadyDismissed: true, taskDeleted: false };
-      }
-      if (!DISMISSIBLE_REDEEM_STATUSES.has(currentStatus)) {
+      const alreadyDismissed = currentStatus === 'dismissed';
+      console.info('[REQUEST_DISMISS] requestId=%s statusBefore=%s', requestId, currentStatus || null);
+      console.info('[REQUEST_DISMISS] alreadyDismissed=%s', alreadyDismissed);
+      console.info('[REQUEST_DISMISS] linkedTaskId=%s', taskRef.id);
+      if (!alreadyDismissed && !DISMISSIBLE_REDEEM_STATUSES.has(currentStatus)) {
         throw new Error('Redeem request is not dismissible.');
       }
 
@@ -142,6 +143,12 @@ export async function POST(request: Request) {
         error: null,
         failureReason: null,
         retryPending: null,
+        retryableFailure: null,
+        resetToPendingAt: null,
+        returnedToPendingAt: null,
+        pendingSince: null,
+        automationJobId: null,
+        automationStatus: null,
         updatedAt: FieldValue.serverTimestamp(),
       });
 
@@ -149,7 +156,12 @@ export async function POST(request: Request) {
         transaction.delete(taskRef);
       }
 
-      return { alreadyDismissed: false, taskDeleted: taskSnap.exists };
+      return {
+        alreadyDismissed,
+        taskDeleted: taskSnap.exists,
+        linkedTaskId: taskRef.id,
+        retryMarkersCleared: true,
+      };
     });
 
     console.info('DISMISS_REDEEM success', {
@@ -158,6 +170,10 @@ export async function POST(request: Request) {
       callerRole: auth.user.role,
       ...outcome,
     });
+    console.info('[REQUEST_DISMISS] requestId=%s alreadyDismissed=%s', requestId, outcome.alreadyDismissed);
+    console.info('[REQUEST_DISMISS] linkedTaskId=%s', outcome.linkedTaskId);
+    console.info('[REQUEST_DISMISS] linkedTaskDeleted=%s', outcome.taskDeleted);
+    console.info('[REQUEST_DISMISS] retryMarkersCleared=%s', outcome.retryMarkersCleared);
     return NextResponse.json({ success: true, ...outcome });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to dismiss redeem request.';

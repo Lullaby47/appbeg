@@ -2054,7 +2054,11 @@ export default function CarerPage() {
 
     try {
       await dismissPendingRedeemAsCarer(requestId);
+      console.info('[CARER_DELETE_TASK] requestId=%s', requestId);
+      console.info('[CARER_DELETE_TASK] optimisticRemoveTaskId=%s', task.id);
+      setTasks((previous) => previous.filter((current) => current.id !== task.id));
       setNoticeMessage('Pending redeem request dismissed.');
+      console.info('[CARER_DELETE_TASK] refreshAfterDelete=true');
       await refreshPageData(false);
     } catch (error) {
       setErrorMessage(
@@ -2091,7 +2095,11 @@ export default function CarerPage() {
 
     try {
       await dismissPendingRechargeAsCarer(requestId);
+      console.info('[CARER_DELETE_TASK] requestId=%s', requestId);
+      console.info('[CARER_DELETE_TASK] optimisticRemoveTaskId=%s', task.id);
+      setTasks((previous) => previous.filter((current) => current.id !== task.id));
       setNoticeMessage('Pending recharge request dismissed.');
+      console.info('[CARER_DELETE_TASK] refreshAfterDelete=true');
       await refreshPageData(false);
     } catch (error) {
       setErrorMessage(
@@ -2117,6 +2125,7 @@ export default function CarerPage() {
     }
 
     const requestId = task.requestId?.trim() || null;
+    console.info('[CARER_DELETE_TASK] requestId=%s', requestId);
     setDeletingPendingTaskId(task.id);
     setErrorMessage('');
     setNoticeMessage('');
@@ -2132,6 +2141,8 @@ export default function CarerPage() {
         await deletePendingCarerTask(task.id);
       }
 
+      console.info('[CARER_DELETE_TASK] optimisticRemoveTaskId=%s', task.id);
+      setTasks((previous) => previous.filter((current) => current.id !== task.id));
       setAutomationStatusByTaskId((previous) => {
         if (!previous[task.id]) return previous;
         const next = { ...previous };
@@ -2151,6 +2162,7 @@ export default function CarerPage() {
         return next;
       });
       setPendingTaskPayloadPreview((current) => (current?.id === task.id ? null : current));
+      console.info('[CARER_DELETE_TASK] refreshAfterDelete=true');
       await refreshPageData(false);
       setNoticeMessage('Pending task deleted.');
     } catch (error) {

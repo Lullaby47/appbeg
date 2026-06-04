@@ -62,11 +62,35 @@ export async function POST(request: Request) {
       }
 
       const currentStatus = String(requestData.status || '').toLowerCase();
-      if (currentStatus === 'dismissed') {
-        return { alreadyDismissed: true, refunded: false };
-      }
-      if (currentStatus !== 'pending') {
+      const alreadyDismissed = currentStatus === 'dismissed';
+      console.info('[REQUEST_DISMISS] requestId=%s statusBefore=%s', requestId, currentStatus || null);
+      console.info('[REQUEST_DISMISS] alreadyDismissed=%s', alreadyDismissed);
+      console.info('[REQUEST_DISMISS] linkedTaskId=%s', taskRef.id);
+      if (!alreadyDismissed && currentStatus !== 'pending') {
         throw new Error('Request is not pending.');
+      }
+
+      if (alreadyDismissed) {
+        transaction.update(requestRef, {
+          retryPending: null,
+          retryableFailure: null,
+          resetToPendingAt: null,
+          returnedToPendingAt: null,
+          pendingSince: null,
+          automationJobId: null,
+          automationStatus: null,
+          automationError: null,
+        });
+        if (taskSnap.exists) {
+          transaction.delete(taskRef);
+        }
+        return {
+          alreadyDismissed: true,
+          refunded: false,
+          taskDeleted: taskSnap.exists,
+          linkedTaskId: taskRef.id,
+          retryMarkersCleared: true,
+        };
       }
 
       const playerUid = String(requestData.playerUid || '').trim();
@@ -86,6 +110,7 @@ export async function POST(request: Request) {
         Number((requestData.baseAmount ?? requestData.amount ?? 0) || 0)
       );
       const shouldRefund =
+        !alreadyDismissed &&
         Boolean(requestData.coinDeductedOnRequest) &&
         !Boolean(requestData.coinRefundedOnDismissal) &&
         deductedAmount > 0;
@@ -97,6 +122,14 @@ export async function POST(request: Request) {
         pokedAt: null,
         pokeMessage: null,
         dismissType: 'carer_manual',
+        retryPending: null,
+        retryableFailure: null,
+        resetToPendingAt: null,
+        returnedToPendingAt: null,
+        pendingSince: null,
+        automationJobId: null,
+        automationStatus: null,
+        automationError: null,
         ...(shouldRefund
           ? {
               coinRefundedOnDismissal: true,
@@ -123,9 +156,19 @@ export async function POST(request: Request) {
         });
       }
 
-      return { alreadyDismissed: false, refunded: shouldRefund };
+      return {
+        alreadyDismissed,
+        refunded: shouldRefund,
+        taskDeleted: taskSnap.exists,
+        linkedTaskId: taskRef.id,
+        retryMarkersCleared: true,
+      };
     });
 
+    console.info('[REQUEST_DISMISS] requestId=%s alreadyDismissed=%s', requestId, outcome.alreadyDismissed);
+    console.info('[REQUEST_DISMISS] linkedTaskId=%s', outcome.linkedTaskId);
+    console.info('[REQUEST_DISMISS] linkedTaskDeleted=%s', outcome.taskDeleted);
+    console.info('[REQUEST_DISMISS] retryMarkersCleared=%s', outcome.retryMarkersCleared);
     return NextResponse.json({ success: true, ...outcome });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to dismiss recharge request.';

@@ -427,6 +427,19 @@ function getTaskStatusFromRequest(request: PlayerGameRequest): CarerTaskStatus {
   return getTaskStatusFromRequestStatus(request.status);
 }
 
+function isActiveRequestLinkedTaskStatus(status: unknown) {
+  const normalized = String(status || '').trim().toLowerCase();
+  return normalized === 'pending' || normalized === 'poked' || normalized === 'pending_review';
+}
+
+function logRequestTaskSync(requestId: string, requestStatus: unknown, skipReason?: string) {
+  console.info('[REQUEST_TASK_SYNC] requestId=%s', requestId);
+  console.info('[REQUEST_TASK_SYNC] requestStatus=%s', String(requestStatus || '').trim() || null);
+  if (skipReason) {
+    console.info('[REQUEST_TASK_SYNC] skipCreate reason=%s', skipReason);
+  }
+}
+
 function isRecentlyResetPendingTask(task: CarerTask | undefined) {
   if (!task || String(task.status || '').trim().toLowerCase() !== 'pending') {
     return false;
@@ -819,32 +832,47 @@ export async function upsertCarerTaskForPlayerGameRequest(
     return;
   }
 
-  const playerSnap = await getDoc(doc(db, 'users', request.playerUid));
+  const authoritativeRequestSnap = await getDocFromServer(doc(db, 'playerGameRequests', request.id));
+  if (!authoritativeRequestSnap.exists()) {
+    logRequestTaskSync(request.id, 'missing', 'request_not_pending');
+    return;
+  }
+  const authoritativeRequest = {
+    id: authoritativeRequestSnap.id,
+    ...(authoritativeRequestSnap.data() as Omit<PlayerGameRequest, 'id'>),
+  } satisfies PlayerGameRequest;
+  if (!isActiveRequestLinkedTaskStatus(authoritativeRequest.status)) {
+    logRequestTaskSync(authoritativeRequest.id, authoritativeRequest.status, 'request_not_pending');
+    return;
+  }
+  logRequestTaskSync(authoritativeRequest.id, authoritativeRequest.status);
+
+  const playerSnap = await getDoc(doc(db, 'users', authoritativeRequest.playerUid));
   const playerUsername = playerSnap.exists()
     ? String((playerSnap.data() as { username?: string }).username || '').trim() ||
       'Player'
     : 'Player';
 
-  const taskRef = doc(db, 'carerTasks', requestTaskId(request.id));
+  const taskRef = doc(db, 'carerTasks', requestTaskId(authoritativeRequest.id));
   const existingSnap = await getDoc(taskRef);
   const existingTask = existingSnap.exists()
     ? toCarerTask(existingSnap.id, existingSnap.data() as Omit<CarerTask, 'id'>)
     : undefined;
   if (existingTask) {
     console.info('[PLAYER_GAME_REQUEST] client task upsert skipped existing server task', {
-      requestId: request.id,
+      requestId: authoritativeRequest.id,
       taskId: taskRef.id,
-      type: request.type,
+      type: authoritativeRequest.type,
       status: existingTask.status || null,
     });
     return;
   }
   const loginQuery = query(
     collection(db, 'playerGameLogins'),
-    where('playerUid', '==', request.playerUid)
+    where('playerUid', '==', authoritativeRequest.playerUid)
   );
   const loginSnap = await getDocs(loginQuery);
-  const normalizedRequestGame = normalizeGameName(request.gameName || '');
+  const normalizedRequestGame = normalizeGameName(authoritativeRequest.gameName || '');
   const coadminGames = await getGameLoginsByCoadmin(coadminUid);
   const matchedGame =
     coadminGames.find(
@@ -861,7 +889,7 @@ export async function upsertCarerTaskForPlayerGameRequest(
 
   const payload = computeRequestLinkedCarerTaskWrite(
     coadminUid,
-    request,
+    authoritativeRequest,
     playerUsername,
     existingTask,
     requestGameUsername,
@@ -1150,40 +1178,54 @@ export async function syncCarerTasks({
     const taskId = requestTaskId(request.id);
     const taskRef = doc(db, 'carerTasks', taskId);
     const existingTask = existingTasks.get(taskId);
-    const desiredStatus = getTaskStatusFromRequest(request);
+    const authoritativeRequestSnap = await getDocFromServer(doc(db, 'playerGameRequests', request.id));
+    if (!authoritativeRequestSnap.exists()) {
+      logRequestTaskSync(request.id, 'missing', 'request_not_pending');
+      continue;
+    }
+    const authoritativeRequest = {
+      id: authoritativeRequestSnap.id,
+      ...(authoritativeRequestSnap.data() as Omit<PlayerGameRequest, 'id'>),
+    } satisfies PlayerGameRequest;
+    if (!isActiveRequestLinkedTaskStatus(authoritativeRequest.status)) {
+      logRequestTaskSync(authoritativeRequest.id, authoritativeRequest.status, 'request_not_pending');
+      continue;
+    }
+    logRequestTaskSync(authoritativeRequest.id, authoritativeRequest.status);
+    const desiredStatus = getTaskStatusFromRequest(authoritativeRequest);
     if (
       desiredStatus === 'pending' &&
-      (request.status === 'pending_review' || request.status === 'failed') &&
-      hasRetryablePendingRequestMarker(request)
+      authoritativeRequest.status === 'pending_review' &&
+      hasRetryablePendingRequestMarker(authoritativeRequest)
     ) {
       console.info('[RETRY_RESET] retryable failure forced task pending', {
         taskId,
-        requestId: request.id,
-        requestStatus: request.status,
+        requestId: authoritativeRequest.id,
+        requestStatus: authoritativeRequest.status,
       });
     }
     if (isRecentlyResetPendingTask(existingTask) && desiredStatus !== 'pending') {
       console.info('[carerTasks] skip terminal request overwrite after pending reset', {
         taskId,
-        requestId: request.id,
-        requestStatus: request.status,
+        requestId: authoritativeRequest.id,
+        requestStatus: authoritativeRequest.status,
         resetToPendingAt: existingTask?.resetToPendingAt || null,
         returnedToPendingAt: existingTask?.returnedToPendingAt || null,
       });
       continue;
     }
-    const playerUsername = playerNameMap.get(request.playerUid) || 'Player';
+    const playerUsername = playerNameMap.get(authoritativeRequest.playerUid) || 'Player';
     const loginUsername =
       loginUsernameByPlayerGame.get(
-        `${request.playerUid}::${normalizeGameName(request.gameName || '')}`
+        `${authoritativeRequest.playerUid}::${normalizeGameName(authoritativeRequest.gameName || '')}`
       ) || null;
     const payload = computeRequestLinkedCarerTaskWrite(
       coadminUid,
-      request,
+      authoritativeRequest,
       playerUsername,
       existingTask,
       loginUsername,
-      gameByNormalizedName.get(normalizeGameName(request.gameName || '')) || null
+      gameByNormalizedName.get(normalizeGameName(authoritativeRequest.gameName || '')) || null
     );
 
     batch.set(taskRef, payload, { merge: true });
