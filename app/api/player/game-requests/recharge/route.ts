@@ -1,4 +1,5 @@
 import { FieldValue } from 'firebase-admin/firestore';
+import { createHash } from 'node:crypto';
 import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
@@ -11,6 +12,7 @@ import {
 import {
   buildPendingRequestLinkedCarerTaskPayload,
   findRequestLinkedGameCredential,
+  type RequestLinkedGameCredential,
   requestLinkedCarerTaskId,
 } from '@/lib/games/requestLinkedCarerTask';
 
@@ -30,6 +32,17 @@ function parsePositiveNumber(value: unknown) {
 
 function normalizeGameName(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+}
+
+function passwordDebug(value: unknown) {
+  const password = String(value ?? '');
+  return {
+    passwordPresent: Boolean(password),
+    passwordLength: password.length,
+    passwordHashPrefix: password
+      ? createHash('sha256').update(password, 'utf8').digest('hex').slice(0, 8)
+      : '-',
+  };
 }
 
 function ttlAfterDays(days: number) {
@@ -148,10 +161,21 @@ export async function POST(request: Request) {
         adminDb.collection('gameLogins').where('coadminUid', '==', coadminUid).get(),
         adminDb.collection('gameLogins').where('createdBy', '==', coadminUid).get(),
       ]);
-      const gameCredential = findRequestLinkedGameCredential(
-        [...coadminGameSnap.docs, ...legacyGameSnap.docs].map((docSnap) => docSnap.data()),
+      const gameCredential = findRequestLinkedGameCredential<RequestLinkedGameCredential>(
+        [...coadminGameSnap.docs, ...legacyGameSnap.docs].map((docSnap) => ({
+          id: docSnap.id,
+          ...docSnap.data(),
+        })),
         gameName
       );
+      if (normalizeGameName(gameName) === 'vegas_sweeps') {
+        console.info('[VEGAS_CREDS_TASK_CREATE]', {
+          game: gameName,
+          credentialDocId: String(gameCredential?.id || '') || null,
+          credentialUsername: String(gameCredential?.username || '').trim() || null,
+          ...passwordDebug(gameCredential?.password),
+        });
+      }
       const createdAt = FieldValue.serverTimestamp();
       const requestPayload = {
         playerUid,

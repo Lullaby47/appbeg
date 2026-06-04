@@ -4,6 +4,7 @@
  */
 
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
+import { createHash } from 'node:crypto';
 
 import { adminDb } from '@/lib/firebase/admin';
 import {
@@ -29,6 +30,21 @@ function logAutoClaimTiming(step: string, startedAt: number, details: Record<str
   console.info(`[AUTO_CLAIM_TIMING] ${step}`, {
     durationMs: Date.now() - startedAt,
     ...details,
+  });
+}
+
+function logVegasPayloadCredentials(payload: Record<string, unknown>) {
+  const game = String(payload.game || '').trim();
+  if (normalizeGameNameForAutomation(game) !== 'vegas_sweeps') return;
+  const password = String(payload.gameCredentialPassword ?? '');
+  console.info('[VEGAS_CREDS_API_PAYLOAD]', {
+    game,
+    credentialUsername: String(payload.gameCredentialUsername || '').trim() || null,
+    passwordPresent: Boolean(password),
+    passwordLength: password.length,
+    passwordHashPrefix: password
+      ? createHash('sha256').update(password, 'utf8').digest('hex').slice(0, 8)
+      : '-',
   });
 }
 
@@ -811,6 +827,7 @@ export async function claimCarerTaskAsAdmin(input: {
         jobId: jobRef.id,
         originalTaskUpdatedToInProgress: true,
       });
+      logVegasPayloadCredentials(payload as unknown as Record<string, unknown>);
       console.info('[HEARTBEAT] task state transition update taskId=%s status=in_progress', taskSnap.id);
 
       const jobData = {

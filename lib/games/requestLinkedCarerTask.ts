@@ -3,6 +3,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 export type RequestLinkedCarerTaskType = 'recharge' | 'redeem';
 
 export type RequestLinkedGameCredential = {
+  id?: unknown;
   gameName?: unknown;
   username?: unknown;
   password?: unknown;
