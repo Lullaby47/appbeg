@@ -63,6 +63,10 @@ export async function POST(request: Request) {
       const task = taskSnap.data() as {
         status?: string;
         assignedCarerUid?: string | null;
+        assignedCarerUsername?: string | null;
+        assignedCarer?: string | null;
+        completedByCarerUid?: string | null;
+        completedByCarerUsername?: string | null;
         coadminUid?: string;
         playerUid?: string;
         requestId?: string | null;
@@ -108,6 +112,31 @@ export async function POST(request: Request) {
       };
       const requestStatus = String(requestData.status || '').toLowerCase();
       if (requestStatus === 'completed') {
+        transaction.update(taskRef, {
+          status: 'completed',
+          expiresAt: null,
+          completedAt: FieldValue.serverTimestamp(),
+          ttlExpiresAt: ttlAfterDays(30),
+          automationStatus: 'completed',
+          automationUpdatedAt: FieldValue.serverTimestamp(),
+          claimedStatus: 'completed',
+          isPoked: false,
+          pokedAt: null,
+          pokeMessage: null,
+          completedByCarerUid:
+            task.completedByCarerUid || task.assignedCarerUid || caller.uid,
+          completedByCarerUsername:
+            task.completedByCarerUsername ||
+            task.assignedCarerUsername ||
+            task.assignedCarer ||
+            caller.username ||
+            'Handler',
+        });
+        console.info('[automation] task completed from already-completed request', {
+          taskId,
+          completedByCarerUid:
+            task.completedByCarerUid || task.assignedCarerUid || caller.uid,
+        });
         return { alreadyCompleted: true, completedTaskCount: 0, totalAwardNpr: 0 };
       }
       if (requestStatus !== 'pending' && requestStatus !== 'poked') {
@@ -148,6 +177,7 @@ export async function POST(request: Request) {
         ttlExpiresAt: ttlAfterDays(30),
         automationStatus: 'completed',
         automationUpdatedAt: FieldValue.serverTimestamp(),
+        claimedStatus: 'completed',
         isPoked: false,
         pokedAt: null,
         pokeMessage: null,
