@@ -17,6 +17,7 @@ import {
 import { auth, db } from '@/lib/firebase/client';
 import { evaluateWithdrawalPolicy } from '@/lib/economy/policy';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 
 export type PlayerCashoutTaskStatus = 'pending' | 'in_progress' | 'completed' | 'declined';
 export type PlayerCashoutPayoutMethod = 'qr' | 'app';
@@ -284,20 +285,8 @@ async function getCurrentUserIdentity() {
   };
 }
 
-async function getAuthHeaders() {
+async function getPlayerCashoutAuthHeaders() {
   return getPlayerApiHeaders();
-}
-
-async function getCurrentUserApiHeaders() {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-  const token = await currentUser.getIdToken();
-  return {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${token}`,
-  };
 }
 
 function readApiError(messageFallback: string, payload: unknown) {
@@ -331,7 +320,7 @@ export async function createPlayerCashoutTask(values: {
 }) {
   const response = await fetch('/api/player/cashout-tasks/create', {
     method: 'POST',
-    headers: await getAuthHeaders(),
+    headers: await getPlayerCashoutAuthHeaders(),
     body: JSON.stringify(values),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
@@ -343,7 +332,7 @@ export async function createPlayerCashoutTask(values: {
 export async function startPlayerCashoutTask(taskId: string) {
   const response = await fetch('/api/cashout-tasks/start', {
     method: 'POST',
-    headers: await getCurrentUserApiHeaders(),
+    headers: await getFirebaseApiHeaders(),
     body: JSON.stringify({ taskId }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
@@ -355,7 +344,7 @@ export async function startPlayerCashoutTask(taskId: string) {
 export async function completePlayerCashoutTask(taskId: string) {
   const response = await fetch('/api/cashout-tasks/complete', {
     method: 'POST',
-    headers: await getAuthHeaders(),
+    headers: await getFirebaseApiHeaders(),
     body: JSON.stringify({ taskId }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
@@ -375,7 +364,7 @@ export async function declinePlayerCashoutTaskForCurrentHandler(taskId: string) 
 export async function declinePlayerCashoutTaskByCoadmin(taskId: string) {
   const response = await fetch('/api/cashout-tasks/decline', {
     method: 'POST',
-    headers: await getAuthHeaders(),
+    headers: await getFirebaseApiHeaders(),
     body: JSON.stringify({ taskId }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };

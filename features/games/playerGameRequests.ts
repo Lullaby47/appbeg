@@ -15,6 +15,7 @@ import {
 
 import { auth, db } from '@/lib/firebase/client';
 import { assertActivePlayerSession, getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import {
   belongsToCoadmin,
   getCurrentUserCoadminUid,
@@ -153,7 +154,7 @@ function sortByNewest(requests: PlayerGameRequest[]) {
   });
 }
 
-async function getAuthHeaders() {
+async function getPlayerRequestAuthHeaders() {
   return getPlayerApiHeaders();
 }
 
@@ -414,7 +415,7 @@ export async function createPlayerGameRequest(values: {
   if (values.type === 'recharge') {
     const response = await fetch('/api/player/game-requests/recharge', {
       method: 'POST',
-      headers: await getAuthHeaders(),
+      headers: await getPlayerRequestAuthHeaders(),
       body: JSON.stringify({
         gameName: cleanGameName,
         amount: requestAmount,
@@ -483,7 +484,7 @@ export async function createPlayerGameRequest(values: {
 
   const response = await fetch('/api/player/game-requests/redeem', {
     method: 'POST',
-    headers: await getAuthHeaders(),
+    headers: await getPlayerRequestAuthHeaders(),
     body: JSON.stringify({
       gameName: cleanGameName,
       amount: requestAmount,
@@ -679,7 +680,7 @@ export async function dismissPendingRedeemAsCarer(requestId: string) {
 
   const response = await fetch('/api/carer/game-requests/dismiss-redeem', {
     method: 'POST',
-    headers: await getAuthHeaders(),
+    headers: await getFirebaseApiHeaders(),
     body: JSON.stringify({ requestId }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
@@ -715,7 +716,7 @@ export async function dismissPendingRechargeAsCarer(requestId: string) {
 
   const response = await fetch('/api/carer/game-requests/dismiss-recharge', {
     method: 'POST',
-    headers: await getAuthHeaders(),
+    headers: await getFirebaseApiHeaders(),
     body: JSON.stringify({ requestId }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
