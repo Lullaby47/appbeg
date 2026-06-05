@@ -1,10 +1,24 @@
 'use client';
 
+import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import type { PlayerGameLogin } from '@/features/games/playerGameLogins';
 import { getGameBackgroundImage } from '../utils';
 
 type Props = Record<string, any>;
+
+const MOBILE_CARD_INITIAL_LIMIT = 12;
+const MOBILE_CARD_INCREMENT = 12;
+
+function getMobileLowEndMode() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  return (
+    window.matchMedia('(max-width: 767px)').matches ||
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
 
 export default function Play(props: Props) {
   const {
@@ -18,6 +32,39 @@ export default function Play(props: Props) {
     togglePassword,
     visiblePasswords,
   } = props;
+
+  const [mobileLowEndMode, setMobileLowEndMode] = useState(getMobileLowEndMode);
+  const [visibleCardCount, setVisibleCardCount] = useState(MOBILE_CARD_INITIAL_LIMIT);
+
+  useEffect(() => {
+    const mobileQuery = window.matchMedia('(max-width: 767px)');
+    const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const updateMode = () => {
+      setMobileLowEndMode(mobileQuery.matches || reducedMotionQuery.matches);
+    };
+
+    updateMode();
+    mobileQuery.addEventListener('change', updateMode);
+    reducedMotionQuery.addEventListener('change', updateMode);
+    return () => {
+      mobileQuery.removeEventListener('change', updateMode);
+      reducedMotionQuery.removeEventListener('change', updateMode);
+    };
+  }, []);
+
+  useEffect(() => {
+    setVisibleCardCount(MOBILE_CARD_INITIAL_LIMIT);
+  }, [gameLogins.length, mobileLowEndMode]);
+
+  const visibleGameLogins = useMemo(
+    () =>
+      mobileLowEndMode
+        ? gameLogins.slice(0, visibleCardCount)
+        : gameLogins,
+    [gameLogins, mobileLowEndMode, visibleCardCount]
+  );
+  const hasMoreGameLogins =
+    mobileLowEndMode && visibleCardCount < gameLogins.length;
 
   return (
 
@@ -48,7 +95,7 @@ export default function Play(props: Props) {
                 ) : (
                   <>
                     <div className="grid grid-cols-2 gap-2 sm:items-start">
-                      {gameLogins.map((game: PlayerGameLogin, index: number) => {
+                      {visibleGameLogins.map((game: PlayerGameLogin, index: number) => {
                         const resolvedUsername = (game.gameUsername || '').trim();
                         const resolvedPassword = String(game.gamePassword || '');
                         const isPasswordVisible = Boolean(visiblePasswords[game.id]);
@@ -62,9 +109,9 @@ export default function Play(props: Props) {
                         return (
                           <motion.div
                             key={game.id}
-                            initial={{ opacity: 0, y: 16 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: index * 0.05 }}
+                            initial={mobileLowEndMode ? false : { opacity: 0, y: 16 }}
+                            animate={mobileLowEndMode ? undefined : { opacity: 1, y: 0 }}
+                            transition={mobileLowEndMode ? undefined : { delay: index * 0.05 }}
                             onClick={() => {
                               setSelectedGameName(game.gameName);
                               openActiveTableSplash();
@@ -191,6 +238,19 @@ export default function Play(props: Props) {
                         );
                       })}
                     </div>
+                    {hasMoreGameLogins ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setVisibleCardCount((count) =>
+                            Math.min(gameLogins.length, count + MOBILE_CARD_INCREMENT)
+                          )
+                        }
+                        className="mt-3 min-h-[44px] w-full rounded-2xl border border-amber-400/35 bg-black/45 px-4 py-3 text-sm font-black text-amber-100"
+                      >
+                        Show more tables ({gameLogins.length - visibleCardCount} more)
+                      </button>
+                    ) : null}
                   </>
                 )}
               </div>

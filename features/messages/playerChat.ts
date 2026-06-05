@@ -32,6 +32,7 @@ const DIRECT_CONVERSATIONS = 'playerConversations';
 const GROUP_CONVERSATIONS = 'playerGroupConversations';
 const GLOBAL_GROUP_ID = 'global';
 const RATE_LIMIT_MS = 900;
+const DIRECT_MESSAGE_LIVE_WINDOW = 50;
 
 export type PlayerPeer = {
   uid: string;
@@ -251,12 +252,12 @@ export function listenDirectMessages(
   const conversationId = getDirectConversationId(selfUid, otherUid);
   const q = query(
     collection(db, DIRECT_CONVERSATIONS, conversationId, 'messages'),
-    orderBy('createdAt', 'asc'),
-    limit(250)
+    orderBy('createdAt', 'desc'),
+    limit(DIRECT_MESSAGE_LIVE_WINDOW)
   );
   return onSnapshot(q, (snap) => {
     const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PlayerChatMessage, 'id'>) }));
-    onNext(list);
+    onNext(list.reverse());
   });
 }
 

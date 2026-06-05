@@ -3,7 +3,9 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
+  orderBy,
   query,
   runTransaction,
   serverTimestamp,
@@ -84,6 +86,12 @@ export const MIN_REDEEM_AMOUNT = 50;
 export const MAX_REDEEM_AMOUNT = 350;
 export const PLAYER_GAME_REDEEM_MAX_PER_24H = 350;
 export const PLAYER_GAME_REDEEM_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
+const PLAYER_REQUEST_HISTORY_LISTENER_LIMIT = 75;
+const PLAYER_REQUEST_ACTIVE_STATUSES: PlayerGameRequestStatus[] = [
+  'pending',
+  'poked',
+  'pending_review',
+];
 
 function normalizeGameName(gameName: string) {
   return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
@@ -566,27 +574,71 @@ export function listenToPlayerGameRequestsByPlayer(
   onChange: (requests: PlayerGameRequest[]) => void,
   onError?: (error: Error) => void
 ) {
-  const requestsQuery = query(
+  const recentRequestsQuery = query(
     collection(db, 'playerGameRequests'),
-    where('playerUid', '==', playerUid)
+    where('playerUid', '==', playerUid),
+    orderBy('createdAt', 'desc'),
+    limit(PLAYER_REQUEST_HISTORY_LISTENER_LIMIT)
   );
+  const activeRequestsQuery = query(
+    collection(db, 'playerGameRequests'),
+    where('playerUid', '==', playerUid),
+    where('status', 'in', PLAYER_REQUEST_ACTIVE_STATUSES)
+  );
+  let recentRequests: PlayerGameRequest[] = [];
+  let activeRequests: PlayerGameRequest[] = [];
 
-  return onSnapshot(
-    requestsQuery,
+  const emitMergedRequests = () => {
+    onChange(
+      sortByNewest(
+        Array.from(
+          new Map(
+            [...recentRequests, ...activeRequests].map((request) => [
+              request.id,
+              request,
+            ])
+          ).values()
+        )
+      )
+    );
+  };
+
+  const unsubscribeRecent = onSnapshot(
+    recentRequestsQuery,
     (snapshot) => {
-      const requests = snapshot.docs.map((docSnap) =>
+      recentRequests = snapshot.docs.map((docSnap) =>
         mapRequestDoc(
           docSnap.id,
           docSnap.data() as Omit<PlayerGameRequest, 'id'>
         )
       );
-
-      onChange(sortByNewest(requests));
+      emitMergedRequests();
     },
     (error) => {
       onError?.(error as Error);
     }
   );
+
+  const unsubscribeActive = onSnapshot(
+    activeRequestsQuery,
+    (snapshot) => {
+      activeRequests = snapshot.docs.map((docSnap) =>
+        mapRequestDoc(
+          docSnap.id,
+          docSnap.data() as Omit<PlayerGameRequest, 'id'>
+        )
+      );
+      emitMergedRequests();
+    },
+    (error) => {
+      onError?.(error as Error);
+    }
+  );
+
+  return () => {
+    unsubscribeRecent();
+    unsubscribeActive();
+  };
 }
 
 export async function markPlayerGameRequestDone(requestId: string) {

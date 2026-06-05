@@ -28,6 +28,17 @@ import {
   getCurrentUserCoadminUid as getScopedCurrentUserCoadminUid,
   resolveCoadminUid,
 } from '@/lib/coadmin/scope';
+
+function isCarerTaskDebugLoggingEnabled() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  try {
+    return window.localStorage.getItem('debugCarerTaskListener') === '1';
+  } catch {
+    return false;
+  }
+}
 import { getCoadminMaintenanceBreakClient } from '@/features/maintenance/maintenanceBreak';
 import { GameLogin, getGameLoginsByCoadmin } from '@/features/games/gameLogins';
 import {
@@ -1482,14 +1493,17 @@ export function listenToAvailableCarerTasks(
   );
   let activeTasks: CarerTask[] = [];
   let completedTasks: CarerTask[] = [];
+  const debugLogs = isCarerTaskDebugLoggingEnabled();
 
-  console.info(
-    '[CARER_TASKS_LIVE] listener attached coadminUid=%s carerUid=%s activeLimit=%s completedLimit=%s',
-    coadminUid,
-    currentCarerUid,
-    CARER_TASK_LIVE_LISTENER_LIMIT,
-    CARER_TASK_COMPLETED_LISTENER_LIMIT
-  );
+  if (debugLogs) {
+    console.info(
+      '[CARER_TASKS_LIVE] listener attached coadminUid=%s carerUid=%s activeLimit=%s completedLimit=%s',
+      coadminUid,
+      currentCarerUid,
+      CARER_TASK_LIVE_LISTENER_LIMIT,
+      CARER_TASK_COMPLETED_LISTENER_LIMIT
+    );
+  }
 
   const emit = () => {
     const byId = new Map<string, CarerTask>();
@@ -1514,16 +1528,18 @@ export function listenToAvailableCarerTasks(
         const visible = getVisibleTaskForCarer(task, currentCarerUid);
         const included = Boolean(visible);
         const reason = included ? 'visible' : 'filtered_out';
-        console.info(
-          '[TASK_VISIBILITY] taskId=%s existsInSnapshot=%s status=%s automationStatus=%s tab=%s included=%s reason=%s',
-          docSnap.id,
-          true,
-          String(raw.status || '').trim() || null,
-          String(raw.automationStatus || '').trim() || null,
-          tab,
-          included,
-          reason
-        );
+        if (debugLogs) {
+          console.info(
+            '[TASK_VISIBILITY] taskId=%s existsInSnapshot=%s status=%s automationStatus=%s tab=%s included=%s reason=%s',
+            docSnap.id,
+            true,
+            String(raw.status || '').trim() || null,
+            String(raw.automationStatus || '').trim() || null,
+            tab,
+            included,
+            reason
+          );
+        }
 
         return visible;
       })
@@ -1535,36 +1551,38 @@ export function listenToAvailableCarerTasks(
     (snapshot) => {
       const snapshotReceivedAt = new Date().toISOString();
       const docChanges = snapshot.docChanges();
-      console.info(
-        '[CARER_TASKS_LIVE] snapshot size=%s tab=active fromCache=%s hasPendingWrites=%s',
-        snapshot.size,
-        snapshot.metadata.fromCache,
-        snapshot.metadata.hasPendingWrites
-      );
-      console.info(
-        '[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s docCount=%s docChanges=%s at=%s',
-        snapshot.metadata.fromCache,
-        snapshot.metadata.hasPendingWrites,
-        snapshot.size,
-        docChanges.length,
-        snapshotReceivedAt
-      );
-      snapshot.docs.forEach((docSnap) => {
-        const task = docSnap.data() as Partial<CarerTask> & { linkedJobId?: string | null };
+      if (debugLogs) {
         console.info(
-          '[START_TIMING] snapshot received at=%s fromCache=%s hasPendingWrites=%s taskId=%s status=%s automationStatus=%s assignedCarerUid=%s claimedByUid=%s automationJobId=%s linkedJobId=%s',
-          snapshotReceivedAt,
+          '[CARER_TASKS_LIVE] snapshot size=%s tab=active fromCache=%s hasPendingWrites=%s',
+          snapshot.size,
+          snapshot.metadata.fromCache,
+          snapshot.metadata.hasPendingWrites
+        );
+        console.info(
+          '[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s docCount=%s docChanges=%s at=%s',
           snapshot.metadata.fromCache,
           snapshot.metadata.hasPendingWrites,
-          docSnap.id,
-          String(task.status || '').trim() || null,
-          String(task.automationStatus || '').trim() || null,
-          String(task.assignedCarerUid || '').trim() || null,
-          String(task.claimedByUid || '').trim() || null,
-          String(task.automationJobId || '').trim() || null,
-          String(task.linkedJobId || '').trim() || null
+          snapshot.size,
+          docChanges.length,
+          snapshotReceivedAt
         );
-      });
+        snapshot.docs.forEach((docSnap) => {
+          const task = docSnap.data() as Partial<CarerTask> & { linkedJobId?: string | null };
+          console.info(
+            '[START_TIMING] snapshot received at=%s fromCache=%s hasPendingWrites=%s taskId=%s status=%s automationStatus=%s assignedCarerUid=%s claimedByUid=%s automationJobId=%s linkedJobId=%s',
+            snapshotReceivedAt,
+            snapshot.metadata.fromCache,
+            snapshot.metadata.hasPendingWrites,
+            docSnap.id,
+            String(task.status || '').trim() || null,
+            String(task.automationStatus || '').trim() || null,
+            String(task.assignedCarerUid || '').trim() || null,
+            String(task.claimedByUid || '').trim() || null,
+            String(task.automationJobId || '').trim() || null,
+            String(task.linkedJobId || '').trim() || null
+          );
+        });
+      }
       activeTasks = mapVisibleTasks(snapshot.docs, 'active');
       emit();
     },
@@ -1579,36 +1597,38 @@ export function listenToAvailableCarerTasks(
     (snapshot) => {
       const snapshotReceivedAt = new Date().toISOString();
       const docChanges = snapshot.docChanges();
-      console.info(
-        '[CARER_TASKS_LIVE] snapshot size=%s tab=completed fromCache=%s hasPendingWrites=%s',
-        snapshot.size,
-        snapshot.metadata.fromCache,
-        snapshot.metadata.hasPendingWrites
-      );
-      console.info(
-        '[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s docCount=%s docChanges=%s at=%s',
-        snapshot.metadata.fromCache,
-        snapshot.metadata.hasPendingWrites,
-        snapshot.size,
-        docChanges.length,
-        snapshotReceivedAt
-      );
-      snapshot.docs.forEach((docSnap) => {
-        const task = docSnap.data() as Partial<CarerTask> & { linkedJobId?: string | null };
+      if (debugLogs) {
         console.info(
-          '[START_TIMING] snapshot received at=%s fromCache=%s hasPendingWrites=%s taskId=%s status=%s automationStatus=%s assignedCarerUid=%s claimedByUid=%s automationJobId=%s linkedJobId=%s',
-          snapshotReceivedAt,
+          '[CARER_TASKS_LIVE] snapshot size=%s tab=completed fromCache=%s hasPendingWrites=%s',
+          snapshot.size,
+          snapshot.metadata.fromCache,
+          snapshot.metadata.hasPendingWrites
+        );
+        console.info(
+          '[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s docCount=%s docChanges=%s at=%s',
           snapshot.metadata.fromCache,
           snapshot.metadata.hasPendingWrites,
-          docSnap.id,
-          String(task.status || '').trim() || null,
-          String(task.automationStatus || '').trim() || null,
-          String(task.assignedCarerUid || '').trim() || null,
-          String(task.claimedByUid || '').trim() || null,
-          String(task.automationJobId || '').trim() || null,
-          String(task.linkedJobId || '').trim() || null
+          snapshot.size,
+          docChanges.length,
+          snapshotReceivedAt
         );
-      });
+        snapshot.docs.forEach((docSnap) => {
+          const task = docSnap.data() as Partial<CarerTask> & { linkedJobId?: string | null };
+          console.info(
+            '[START_TIMING] snapshot received at=%s fromCache=%s hasPendingWrites=%s taskId=%s status=%s automationStatus=%s assignedCarerUid=%s claimedByUid=%s automationJobId=%s linkedJobId=%s',
+            snapshotReceivedAt,
+            snapshot.metadata.fromCache,
+            snapshot.metadata.hasPendingWrites,
+            docSnap.id,
+            String(task.status || '').trim() || null,
+            String(task.automationStatus || '').trim() || null,
+            String(task.assignedCarerUid || '').trim() || null,
+            String(task.claimedByUid || '').trim() || null,
+            String(task.automationJobId || '').trim() || null,
+            String(task.linkedJobId || '').trim() || null
+          );
+        });
+      }
       completedTasks = mapVisibleTasks(snapshot.docs, 'completed');
       emit();
     },

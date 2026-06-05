@@ -1,11 +1,25 @@
 'use client';
 
+import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import type { PlayerGameLogin } from '@/features/games/playerGameLogins';
 import { UNKNOWN_CREATOR_FILTER_KEY } from '../constants';
 import { getGameBackgroundImage, normalizeBackgroundKey, normalizeExternalUrl, normalizeGameKey } from '../utils';
 
 type Props = Record<string, any>;
+
+const MOBILE_CREDENTIAL_INITIAL_LIMIT = 10;
+const MOBILE_CREDENTIAL_INCREMENT = 10;
+
+function getMobileLowEndMode() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  return (
+    window.matchMedia('(max-width: 767px)').matches ||
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
 
 export default function Vault(props: Props) {
   const {
@@ -25,6 +39,41 @@ export default function Vault(props: Props) {
     usernamesVisibleLogins,
     visiblePasswords,
   } = props;
+
+  const [mobileLowEndMode, setMobileLowEndMode] = useState(getMobileLowEndMode);
+  const [visibleCredentialCount, setVisibleCredentialCount] = useState(
+    MOBILE_CREDENTIAL_INITIAL_LIMIT
+  );
+
+  useEffect(() => {
+    const mobileQuery = window.matchMedia('(max-width: 767px)');
+    const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const updateMode = () => {
+      setMobileLowEndMode(mobileQuery.matches || reducedMotionQuery.matches);
+    };
+
+    updateMode();
+    mobileQuery.addEventListener('change', updateMode);
+    reducedMotionQuery.addEventListener('change', updateMode);
+    return () => {
+      mobileQuery.removeEventListener('change', updateMode);
+      reducedMotionQuery.removeEventListener('change', updateMode);
+    };
+  }, []);
+
+  useEffect(() => {
+    setVisibleCredentialCount(MOBILE_CREDENTIAL_INITIAL_LIMIT);
+  }, [mobileLowEndMode, selectedCreatorUid, usernamesVisibleLogins.length]);
+
+  const visibleCredentials = useMemo(
+    () =>
+      mobileLowEndMode
+        ? usernamesVisibleLogins.slice(0, visibleCredentialCount)
+        : usernamesVisibleLogins,
+    [mobileLowEndMode, usernamesVisibleLogins, visibleCredentialCount]
+  );
+  const hasMoreCredentials =
+    mobileLowEndMode && visibleCredentialCount < usernamesVisibleLogins.length;
 
   return (
 
@@ -88,8 +137,9 @@ export default function Vault(props: Props) {
                         <p>No credentials match this filter.</p>
                       </div>
                     ) : (
+                      <>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:gap-5">
-                    {usernamesVisibleLogins.map((login: PlayerGameLogin) => {
+                    {visibleCredentials.map((login: PlayerGameLogin) => {
                       const gameCarers =
                         usernameCarersByGame[normalizeGameKey(login.gameName || '')] || [];
                       const visible = visiblePasswords[login.id];
@@ -109,7 +159,7 @@ export default function Vault(props: Props) {
                       return (
                         <motion.div
                           key={login.id}
-                          layout
+                          layout={mobileLowEndMode ? false : true}
                           className="fire-panel fire-orange group rounded-[1.7rem] border border-amber-300/25 bg-gradient-to-br from-[#3a140b]/88 via-[#5d2411]/78 to-[#261018]/92 p-3 shadow-[0_18px_40px_-18px_rgba(56,11,4,0.9)] backdrop-blur-xl transition-all sm:p-3.5 sm:hover:border-amber-300/45 sm:hover:shadow-[0_0_30px_-10px_rgba(251,191,36,0.38)]"
                           style={
                             gameCardBackgroundImage
@@ -226,6 +276,23 @@ export default function Vault(props: Props) {
                       );
                     })}
                   </div>
+                  {hasMoreCredentials ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setVisibleCredentialCount((count) =>
+                          Math.min(
+                            usernamesVisibleLogins.length,
+                            count + MOBILE_CREDENTIAL_INCREMENT
+                          )
+                        )
+                      }
+                      className="mt-3 min-h-[44px] w-full rounded-2xl border border-amber-400/35 bg-black/45 px-4 py-3 text-sm font-black text-amber-100"
+                    >
+                      Show more credentials ({usernamesVisibleLogins.length - visibleCredentialCount} more)
+                    </button>
+                  ) : null}
+                      </>
                     )}
                   </>
                 )}
