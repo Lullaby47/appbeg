@@ -3874,11 +3874,11 @@ export default function PlayerPage() {
             <h3 id="player-transfer-title" className="text-2xl font-black">
               {isCashToCoinTransfer ? 'Cash to Coin Transfer' : 'Coin to Cash Transfer'}
             </h3>
-            <p className="mt-2 text-sm text-amber-100/85">
-              {isCashToCoinTransfer
-                ? 'Enter the cash amount you want to convert. A flat 4% fee is deducted before coins are added.'
-                : 'Enter the coin amount you want to convert. The tip is deducted before cash is added.'}
-            </p>
+            {!isCashToCoinTransfer ? (
+              <p className="mt-2 text-sm text-amber-100/85">
+                Enter the coin amount you want to convert. The tip is deducted before cash is added.
+              </p>
+            ) : null}
             <p className="mt-3 rounded-xl border border-amber-300/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
               Current {isCashToCoinTransfer ? 'Cash' : 'Coin'} Balance:{' '}
               <span className="font-black text-white">
@@ -3933,13 +3933,11 @@ export default function PlayerPage() {
               <p className="mt-3 rounded-xl border border-rose-300/30 bg-rose-500/15 px-3 py-2 text-sm font-bold text-rose-100">
                 {transferCoinValidationMessage}
               </p>
-            ) : (
+            ) : !isCashToCoinTransfer ? (
               <p className="mt-3 text-xs font-semibold text-amber-100/60">
-                {isCashToCoinTransfer
-                  ? 'Coins You Receive equals Transfer Amount minus 4% fee.'
-                  : 'Cash You Receive equals Transfer Amount minus tip.'}
+                Cash You Receive equals Transfer Amount minus tip.
               </p>
-            )}
+            ) : null}
             <div className="mt-5 flex gap-3">
               <button
                 type="button"
