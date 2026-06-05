@@ -3,7 +3,7 @@
 import '../../styles/player-fire.css';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { MouseEvent, TouchEvent } from 'react';
+import type { FormEvent, MouseEvent, TouchEvent } from 'react';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
@@ -83,6 +83,7 @@ import {
 } from '@/features/maintenance/maintenanceBreak';
 import { normalizeMaintenanceBreak, type MaintenanceBreak } from '@/lib/maintenance/config';
 import { endLocalPlayerSession, getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { rememberPlayerLoginCredentials } from '@/features/auth/rememberedPlayerLogin';
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
 
@@ -147,6 +148,7 @@ const GAME_VAULT_MIDNIGHT_PARTY_PLAYER_MESSAGE =
 const PLAYER_BONUS_DEBUG =
   process.env.NODE_ENV !== 'production' &&
   process.env.NEXT_PUBLIC_DEBUG_PLAYER_BONUS_EVENTS === '1';
+const MIN_PLAYER_PASSWORD_LENGTH = 6;
 
 function getCoinToCashTip(amount: number) {
   if (amount >= 150) return 10;
@@ -285,6 +287,11 @@ export default function PlayerPage() {
   );
   const [credentialResetModal, setCredentialResetModal] =
     useState<CredentialResetModalState>(null);
+  const [showPlayerPasswordResetModal, setShowPlayerPasswordResetModal] = useState(false);
+  const [playerResetNewPassword, setPlayerResetNewPassword] = useState('');
+  const [playerResetConfirmPassword, setPlayerResetConfirmPassword] = useState('');
+  const [playerResetPasswordError, setPlayerResetPasswordError] = useState('');
+  const [playerResetPasswordLoading, setPlayerResetPasswordLoading] = useState(false);
 
   const [newMessage, setNewMessage] = useState('');
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
@@ -2398,6 +2405,78 @@ export default function PlayerPage() {
     setShowCoinConfirmSplash(true);
   }
 
+  function openPlayerPasswordResetModal() {
+    setPlayerResetNewPassword('');
+    setPlayerResetConfirmPassword('');
+    setPlayerResetPasswordError('');
+    setShowPlayerPasswordResetModal(true);
+  }
+
+  function closePlayerPasswordResetModal() {
+    if (playerResetPasswordLoading) {
+      return;
+    }
+    setShowPlayerPasswordResetModal(false);
+    setPlayerResetNewPassword('');
+    setPlayerResetConfirmPassword('');
+    setPlayerResetPasswordError('');
+  }
+
+  async function handlePlayerPasswordResetSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const newPassword = playerResetNewPassword;
+    const confirmPassword = playerResetConfirmPassword;
+    if (!newPassword || !confirmPassword) {
+      setPlayerResetPasswordError('New password and confirm password are required.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPlayerResetPasswordError('New password and confirm password must match.');
+      return;
+    }
+    if (newPassword.length < MIN_PLAYER_PASSWORD_LENGTH) {
+      setPlayerResetPasswordError(
+        `Password must be at least ${MIN_PLAYER_PASSWORD_LENGTH} characters.`
+      );
+      return;
+    }
+
+    setPlayerResetPasswordLoading(true);
+    setPlayerResetPasswordError('');
+    try {
+      const response = await fetch('/api/player/reset-password', {
+        method: 'POST',
+        headers: await getPlayerApiHeaders(),
+        body: JSON.stringify({ newPassword, confirmPassword }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        username?: string;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to reset password.');
+      }
+
+      const rememberedUsername =
+        String(payload.username || '').trim() ||
+        playerUsername.trim() ||
+        String(auth.currentUser?.displayName || '').trim();
+      rememberPlayerLoginCredentials(rememberedUsername, newPassword);
+      await auth.currentUser?.getIdToken(true);
+      setMessage('Password reset successfully.');
+      setShowPlayerPasswordResetModal(false);
+      setPlayerResetNewPassword('');
+      setPlayerResetConfirmPassword('');
+    } catch (error) {
+      setPlayerResetPasswordError(
+        error instanceof Error ? error.message : 'Failed to reset password.'
+      );
+    } finally {
+      setPlayerResetPasswordLoading(false);
+    }
+  }
+
   async function handleCoinButtonClick() {
     if (maintenanceBreak.enabled) {
       console.info('[MAINTENANCE] blocked player action', {
@@ -3040,16 +3119,28 @@ export default function PlayerPage() {
                           handleChangeView(item.view);
                         })}
                         {item.view === 'usernames' ? (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setShowLogoutConfirmSplash(true);
-                              setMobileMenuOpen(false);
-                            }}
-                            className="w-full rounded-2xl border border-rose-500/40 bg-rose-500/10 py-3.5 text-sm font-black text-rose-100 transition hover:bg-rose-500/20"
-                          >
-                            Log out
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                openPlayerPasswordResetModal();
+                                setMobileMenuOpen(false);
+                              }}
+                              className="w-full rounded-2xl border border-amber-400/35 bg-amber-500/10 py-3.5 text-sm font-black text-amber-100 transition hover:bg-amber-500/20"
+                            >
+                              Reset Password
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowLogoutConfirmSplash(true);
+                                setMobileMenuOpen(false);
+                              }}
+                              className="w-full rounded-2xl border border-rose-500/40 bg-rose-500/10 py-3.5 text-sm font-black text-rose-100 transition hover:bg-rose-500/20"
+                            >
+                              Log out
+                            </button>
+                          </>
                         ) : null}
                       </div>
                     ))}
@@ -3086,13 +3177,22 @@ export default function PlayerPage() {
                     handleChangeView(item.view);
                   })}
                   {item.view === 'usernames' ? (
-                    <button
-                      type="button"
-                      onClick={() => setShowLogoutConfirmSplash(true)}
-                      className="w-full rounded-2xl border border-rose-500/40 bg-rose-950/40 py-3.5 text-sm font-bold text-rose-100 transition hover:bg-rose-500/15"
-                    >
-                      Log out
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={openPlayerPasswordResetModal}
+                        className="w-full rounded-2xl border border-amber-400/35 bg-amber-500/10 py-3.5 text-sm font-bold text-amber-100 transition hover:bg-amber-500/20"
+                      >
+                        Reset Password
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowLogoutConfirmSplash(true)}
+                        className="w-full rounded-2xl border border-rose-500/40 bg-rose-950/40 py-3.5 text-sm font-bold text-rose-100 transition hover:bg-rose-500/15"
+                      >
+                        Log out
+                      </button>
+                    </>
                   ) : null}
                 </div>
               ))}
@@ -3478,6 +3578,91 @@ export default function PlayerPage() {
           </motion.div>
         ) : null}
       </AnimatePresence>
+
+      {showPlayerPasswordResetModal ? (
+        <div
+          className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[79]`}
+          onClick={closePlayerPasswordResetModal}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="player-password-reset-title"
+        >
+          <form
+            onSubmit={(event) => void handlePlayerPasswordResetSubmit(event)}
+            onClick={(event) => event.stopPropagation()}
+            className={`${PLAYER_SPLASH_CARD} text-white sm:max-w-md`}
+          >
+            <input
+              type="text"
+              name="username"
+              autoComplete="username"
+              value={playerUsername}
+              readOnly
+              className="sr-only"
+              tabIndex={-1}
+            />
+            <p className="text-center text-2xl" aria-hidden>
+              🔐
+            </p>
+            <h3
+              id="player-password-reset-title"
+              className="mt-2 text-center text-xl font-black sm:text-2xl"
+            >
+              Reset Password
+            </h3>
+            <div className="mt-5 space-y-4">
+              <label className="block text-sm font-bold text-amber-100">
+                New password
+                <input
+                  type="password"
+                  name="new-password"
+                  value={playerResetNewPassword}
+                  onChange={(event) => setPlayerResetNewPassword(event.target.value)}
+                  required
+                  minLength={MIN_PLAYER_PASSWORD_LENGTH}
+                  autoComplete="new-password"
+                  className="mt-2 w-full rounded-xl border border-amber-300/30 bg-black/35 px-4 py-3 text-white outline-none focus:border-amber-300/60"
+                />
+              </label>
+              <label className="block text-sm font-bold text-amber-100">
+                Confirm password
+                <input
+                  type="password"
+                  name="confirm-password"
+                  value={playerResetConfirmPassword}
+                  onChange={(event) => setPlayerResetConfirmPassword(event.target.value)}
+                  required
+                  minLength={MIN_PLAYER_PASSWORD_LENGTH}
+                  autoComplete="new-password"
+                  className="mt-2 w-full rounded-xl border border-amber-300/30 bg-black/35 px-4 py-3 text-white outline-none focus:border-amber-300/60"
+                />
+              </label>
+            </div>
+            {playerResetPasswordError ? (
+              <p className="mt-4 rounded-xl border border-rose-300/30 bg-rose-500/15 px-3 py-2 text-sm font-bold text-rose-100">
+                {playerResetPasswordError}
+              </p>
+            ) : null}
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row-reverse">
+              <button
+                type="submit"
+                disabled={playerResetPasswordLoading}
+                className="min-h-[52px] flex-1 rounded-2xl bg-gradient-to-r from-amber-400 to-yellow-400 py-3.5 text-base font-black text-black shadow-lg shadow-amber-500/20 transition hover:brightness-110 active:scale-[0.99] disabled:opacity-60"
+              >
+                {playerResetPasswordLoading ? 'Saving...' : 'Save Password'}
+              </button>
+              <button
+                type="button"
+                onClick={closePlayerPasswordResetModal}
+                disabled={playerResetPasswordLoading}
+                className="min-h-[52px] flex-1 rounded-2xl border border-white/20 bg-white/5 py-3.5 text-base font-bold text-amber-100 transition hover:bg-white/10 disabled:opacity-60"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
 
       {credentialResetModal ? (
         <div

@@ -22,6 +22,7 @@ import {
   PLAYER_REPLACED_LOGIN_MESSAGE,
   startPlayerSession,
 } from '@/features/auth/playerSession';
+import { rememberPlayerLoginCredentials } from '@/features/auth/rememberedPlayerLogin';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -168,6 +169,7 @@ export default function LoginPage() {
 
       if (role === 'player') {
         const { sessionId } = await startPlayerSession(credential.user);
+        rememberPlayerLoginCredentials(cleanUsername, password);
         console.info('[PLAYER_LOGIN_SESSION] player login allowed after session write', {
           uid: credential.user.uid,
           sessionId,
