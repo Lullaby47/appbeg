@@ -343,6 +343,10 @@ export default function PlayerPage() {
   const resumeBackgroundMusicRef = useRef<null | (() => void)>(null);
   const [activeTableKeyboardInset, setActiveTableKeyboardInset] = useState(0);
   const [activeTableViewportHeight, setActiveTableViewportHeight] = useState<number | null>(null);
+  const activeTableViewportMetricsRef = useRef({
+    keyboardInset: 0,
+    viewportHeight: null as number | null,
+  });
   const playerHelpHintSeenRef = useRef(false);
   const playerHelpHintHideTimeoutRef = useRef<number | null>(null);
   const playerHelpHintIdleTimeoutRef = useRef<number | null>(null);
@@ -679,8 +683,14 @@ export default function PlayerPage() {
 
   useEffect(() => {
     if (!showActiveTableSplash) {
-      setActiveTableKeyboardInset(0);
-      setActiveTableViewportHeight(null);
+      if (activeTableViewportMetricsRef.current.keyboardInset !== 0) {
+        activeTableViewportMetricsRef.current.keyboardInset = 0;
+        setActiveTableKeyboardInset(0);
+      }
+      if (activeTableViewportMetricsRef.current.viewportHeight !== null) {
+        activeTableViewportMetricsRef.current.viewportHeight = null;
+        setActiveTableViewportHeight(null);
+      }
       return;
     }
     if (typeof window === 'undefined') {
@@ -692,25 +702,45 @@ export default function PlayerPage() {
       return;
     }
 
-    const updateViewportMetrics = () => {
+    let rafId: number | null = null;
+
+    const measureViewportMetrics = () => {
+      rafId = null;
       const viewportHeight = Math.round(vv.height);
       const keyboardInset = Math.max(
         0,
         Math.round(window.innerHeight - (vv.height + vv.offsetTop))
       );
-      setActiveTableViewportHeight(viewportHeight);
-      setActiveTableKeyboardInset(keyboardInset);
+
+      if (activeTableViewportMetricsRef.current.viewportHeight !== viewportHeight) {
+        activeTableViewportMetricsRef.current.viewportHeight = viewportHeight;
+        setActiveTableViewportHeight(viewportHeight);
+      }
+      if (activeTableViewportMetricsRef.current.keyboardInset !== keyboardInset) {
+        activeTableViewportMetricsRef.current.keyboardInset = keyboardInset;
+        setActiveTableKeyboardInset(keyboardInset);
+      }
+    };
+
+    const updateViewportMetrics = () => {
+      if (rafId !== null) {
+        return;
+      }
+      rafId = window.requestAnimationFrame(measureViewportMetrics);
     };
 
     updateViewportMetrics();
-    vv.addEventListener('resize', updateViewportMetrics);
-    vv.addEventListener('scroll', updateViewportMetrics);
-    window.addEventListener('orientationchange', updateViewportMetrics);
+    vv.addEventListener('resize', updateViewportMetrics, { passive: true });
+    vv.addEventListener('scroll', updateViewportMetrics, { passive: true });
+    window.addEventListener('orientationchange', updateViewportMetrics, { passive: true });
 
     return () => {
       vv.removeEventListener('resize', updateViewportMetrics);
       vv.removeEventListener('scroll', updateViewportMetrics);
       window.removeEventListener('orientationchange', updateViewportMetrics);
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+      }
     };
   }, [showActiveTableSplash]);
   const selfClaimedBonusIdRef = useRef<string | null>(null);
@@ -3610,6 +3640,7 @@ export default function PlayerPage() {
                   <img
                     src={activeCoinLoad.paymentPhotoUrl}
                     alt="Payment reference"
+                    loading="lazy"
                     className="max-h-64 w-full object-contain"
                   />
                 </div>

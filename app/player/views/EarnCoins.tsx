@@ -121,6 +121,7 @@ export default function EarnCoins(props: Props) {
                             <img
                               src="/assets/player/freeplay-gift-box.webp"
                               alt="FreePlay gift box"
+                              loading="lazy"
                               className="h-full w-full object-contain drop-shadow-[0_0_18px_rgba(253,224,71,0.95)]"
                             />
                           </motion.span>

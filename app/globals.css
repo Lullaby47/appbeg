@@ -381,9 +381,32 @@ body {
 }
 
 @media (max-width: 640px) {
+  .casino-bg-base,
+  .casino-ambient,
+  .casino-glow-orb,
+  .casino-streak,
+  .casino-guide,
+  .casino-icon-float,
+  .player-shimmer-sweep {
+    animation: none !important;
+    will-change: auto;
+  }
+
   .casino-ambient {
-    filter: blur(40px);
-    opacity: 0.22;
+    filter: blur(16px);
+    opacity: 0.14;
+  }
+
+  .casino-glow-orb {
+    filter: blur(10px);
+    opacity: 0.08;
+  }
+
+  .casino-bg-grid,
+  .casino-streak,
+  .casino-guide,
+  .casino-icon-float {
+    opacity: 0.04;
   }
 
   .casino-guide {
@@ -411,7 +434,9 @@ body {
   .casino-guide,
   .casino-icon-float,
   .player-shimmer-sweep {
+    animation: none !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

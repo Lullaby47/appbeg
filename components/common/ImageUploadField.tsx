@@ -89,6 +89,7 @@ export default function ImageUploadField({
           <img
             src={displayedPreview}
             alt="Selected"
+            loading="lazy"
             className="max-h-56 w-full object-contain"
           />
         </div>

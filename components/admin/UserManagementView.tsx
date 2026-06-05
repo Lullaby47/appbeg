@@ -503,6 +503,7 @@ export default function UserManagementView<T extends BaseUser>({
                               <img
                                 src={msg.imageUrl}
                                 alt="Chat image"
+                                loading="lazy"
                                 className="max-h-72 max-w-full rounded-xl object-cover"
                               />
                             </button>
@@ -533,6 +534,7 @@ export default function UserManagementView<T extends BaseUser>({
                           <img
                             src={imagePreview}
                             alt="Preview"
+                            loading="lazy"
                             className="max-h-60 rounded-xl object-cover"
                           />
 
@@ -670,6 +672,7 @@ export default function UserManagementView<T extends BaseUser>({
           <img
             src={openImageUrl}
             alt="Full chat image"
+            loading="lazy"
             className="max-h-[90vh] max-w-[90vw] rounded-2xl object-contain"
           />
         </div>

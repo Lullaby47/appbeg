@@ -56,9 +56,9 @@ export default function IdleLogoutSync() {
     };
 
     for (const ev of ACTIVITY_WINDOW_EVENTS) {
-      window.addEventListener(ev, markActivity, { passive: true, capture: true });
+      window.addEventListener(ev, markActivity, { passive: true });
     }
-    document.addEventListener('scroll', markActivity, { passive: true, capture: true });
+    document.addEventListener('scroll', markActivity, { passive: true });
     window.addEventListener('mousemove', markMouse, { passive: true, capture: true });
 
     const id = window.setInterval(async () => {
@@ -82,9 +82,9 @@ export default function IdleLogoutSync() {
 
     return () => {
       for (const ev of ACTIVITY_WINDOW_EVENTS) {
-        window.removeEventListener(ev, markActivity, true);
+        window.removeEventListener(ev, markActivity);
       }
-      document.removeEventListener('scroll', markActivity, true);
+      document.removeEventListener('scroll', markActivity);
       window.removeEventListener('mousemove', markMouse, true);
       window.clearInterval(id);
     };

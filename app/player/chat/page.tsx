@@ -480,7 +480,7 @@ export default function PlayerChatPage() {
                             ) : (
                               <>
                                 {m.imageUrl ? (
-                                  <img src={m.imageUrl} alt="" className="mb-2 max-h-48 rounded-lg" />
+                                  <img src={m.imageUrl} alt="" loading="lazy" className="mb-2 max-h-48 rounded-lg" />
                                 ) : null}
                                 {m.text ? <p className="break-words">{m.text}</p> : null}
                               </>

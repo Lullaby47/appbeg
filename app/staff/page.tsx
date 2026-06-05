@@ -1172,6 +1172,7 @@ export default function StaffPage() {
               <img
                 src={payment.qrImageUrl}
                 alt="Player payout QR"
+                loading="lazy"
                 className="max-h-52 w-full object-contain"
               />
             </div>

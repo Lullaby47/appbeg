@@ -290,6 +290,7 @@ export default function ReachOutView({
                         <img
                           src={msg.imageUrl}
                           alt=""
+                          loading="lazy"
                           className="mb-2 max-h-48 w-full rounded-lg object-cover"
                         />
                       ) : null}
@@ -322,6 +323,7 @@ export default function ReachOutView({
                   <img
                     src={imagePreview}
                     alt="preview"
+                    loading="lazy"
                     className="h-16 w-16 rounded object-cover"
                   />
                   <button

@@ -3102,6 +3102,7 @@ export default function CoadminPage() {
               <img
                 src={payment.qrImageUrl}
                 alt="Player payout QR"
+                loading="lazy"
                 className="max-h-52 w-full object-contain"
               />
             </div>
@@ -4760,6 +4761,7 @@ export default function CoadminPage() {
                           <img
                             src={photo.imageUrl}
                             alt={`Payment reference ${index + 1}`}
+                            loading="lazy"
                             className="h-full w-full object-contain"
                           />
                         </div>

@@ -1126,6 +1126,48 @@
 }
 
 @media (max-width: 640px) {
+  .player-fire-page .ember-overlay,
+  .player-fire-page .ember-overlay::before,
+  .player-fire-page .ember-overlay::after {
+    animation: none !important;
+    filter: none !important;
+    mix-blend-mode: normal;
+    opacity: 0.22;
+    will-change: auto;
+  }
+
+  .player-fire-page .fire-surface,
+  .player-fire-page .fire-panel,
+  .player-fire-page .fire-button,
+  .player-fire-page [class*="backdrop-blur"] {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+
+  .player-fire-page .fire-surface,
+  .player-fire-page .fire-panel,
+  .player-fire-page .fire-button,
+  .player-fire-page [class*="shadow-"] {
+    box-shadow:
+      0 0 0 1px rgba(255, 240, 218, 0.08) inset,
+      0 8px 20px rgba(0, 0, 0, 0.24) !important;
+  }
+
+  .player-fire-page .fire-panel::before,
+  .player-fire-page .fire-panel::after,
+  .player-fire-page .fire-button::before,
+  .player-fire-page .fire-button::after,
+  .player-fire-page .player-dashboard-hero::after {
+    animation: none !important;
+    filter: none !important;
+    opacity: 0.36 !important;
+    will-change: auto;
+  }
+
+  .player-fire-page [class*="drop-shadow"] {
+    filter: none !important;
+  }
+
   .player-fire-page .player-dashboard-hero {
     margin-top: 0 !important;
     padding: 0.45rem 0.75rem 0.75rem !important;
