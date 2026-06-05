@@ -28,6 +28,7 @@ export type FinancialEventType =
   | 'recharge'
   | 'redeem'
   | 'cash_to_coin_transfer'
+  | 'coin_to_cash_transfer'
   | 'coadmin_coin_add'
   | 'coadmin_coin_deduct'
   | 'coadmin_cash_add'
@@ -574,6 +575,50 @@ export async function createCashToCoinTransferRequest(
     feeAmount: payload.feeAmount ?? 0,
     tipAmount: payload.tipAmount ?? 0,
     coinsReceived: payload.coinsReceived ?? 0,
+  };
+}
+
+export async function createCoinToCashTransferRequest(
+  requestedAmountCoins?: number,
+  transferId?: string
+) {
+  if (!auth.currentUser) {
+    throw new Error('Not authenticated.');
+  }
+
+  const response = await fetch('/api/player/transfer/coin-to-cash', {
+    method: 'POST',
+    headers: await getPlayerApiHeaders(),
+    body: JSON.stringify({ amountCoins: requestedAmountCoins ?? 0, transferId }),
+  });
+
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string | boolean;
+    message?: string;
+    cash?: number;
+    coin?: number;
+    transferAmount?: number;
+    feeAmount?: number;
+    tipAmount?: number;
+    cashReceived?: number;
+  };
+
+  if (!response.ok) {
+    throw new Error(
+      payload.message ||
+        (typeof payload.error === 'string' ? payload.error : '') ||
+        'Failed to transfer coin to cash.'
+    );
+  }
+
+  return {
+    message: 'Coin transferred to cash.',
+    cash: payload.cash ?? 0,
+    coin: payload.coin ?? 0,
+    transferAmount: payload.transferAmount ?? requestedAmountCoins ?? 0,
+    feeAmount: payload.feeAmount ?? 0,
+    tipAmount: payload.tipAmount ?? 0,
+    cashReceived: payload.cashReceived ?? 0,
   };
 }
 

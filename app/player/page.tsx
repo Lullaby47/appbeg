@@ -63,7 +63,10 @@ import {
   initiateBonusEventPlay,
   listenBonusEventsByCoadmin,
 } from '../../features/bonusEvents/bonusEvents';
-import { createCashToCoinTransferRequest } from '@/features/risk/playerRisk';
+import {
+  createCashToCoinTransferRequest,
+  createCoinToCashTransferRequest,
+} from '@/features/risk/playerRisk';
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 import {
   claimMyReferralReward,
@@ -145,18 +148,22 @@ const PLAYER_BONUS_DEBUG =
   process.env.NODE_ENV !== 'production' &&
   process.env.NEXT_PUBLIC_DEBUG_PLAYER_BONUS_EVENTS === '1';
 
-// Future Coin to Cash schedule only; Cash to Coin is always 1:1.
 function getCoinToCashTip(amount: number) {
-  if (amount >= 450) return 35;
-  if (amount >= 300) return 20;
-  if (amount >= 200) return 12;
-  if (amount >= 150) return 8;
-  if (amount >= 100) return 5;
+  if (amount >= 150) return 10;
+  if (amount >= 100) return 8;
+  if (amount >= 40) return 4;
   if (amount >= 30) return 3;
+  if (amount >= 20) return 2;
   if (amount >= 10) return 1;
   return 0;
 }
-void getCoinToCashTip;
+
+function getCashToCoinFee(amount: number) {
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  return Number((amount * 0.04).toFixed(2));
+}
+
+type PlayerTransferDirection = 'cash_to_coin' | 'coin_to_cash';
 
 // Legacy helper retained only to avoid a broad page rewrite in this pass.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -248,6 +255,8 @@ export default function PlayerPage() {
   const [freeplayClaimSuccessMessage, setFreeplayClaimSuccessMessage] = useState('');
   const [showCashoutModal, setShowCashoutModal] = useState(false);
   const [showCoinConfirmSplash, setShowCoinConfirmSplash] = useState(false);
+  const [playerTransferDirection, setPlayerTransferDirection] =
+    useState<PlayerTransferDirection>('cash_to_coin');
   const [transferCoinAmountInput, setTransferCoinAmountInput] = useState('');
   const [cashToCoinTransferId, setCashToCoinTransferId] = useState('');
   const [showLoadCoinPanel, setShowLoadCoinPanel] = useState(false);
@@ -910,9 +919,22 @@ export default function PlayerPage() {
 
   const cashoutThisRequestNpr = Math.min(Number(wallet.cash || 0), cashoutRemainingQuotaNpr);
   const transferCoinAmount = Number(transferCoinAmountInput);
-  const transferCoinReceived = Number.isFinite(transferCoinAmount)
-    ? transferCoinAmount
+  const isCashToCoinTransfer = playerTransferDirection === 'cash_to_coin';
+  const transferCoinToCashTip = !isCashToCoinTransfer && Number.isFinite(transferCoinAmount)
+    ? getCoinToCashTip(transferCoinAmount)
     : 0;
+  const transferCashToCoinFee = isCashToCoinTransfer && Number.isFinite(transferCoinAmount)
+    ? getCashToCoinFee(transferCoinAmount)
+    : 0;
+  const transferCoinReceived = isCashToCoinTransfer && Number.isFinite(transferCoinAmount)
+    ? Math.max(0, transferCoinAmount - transferCashToCoinFee)
+    : 0;
+  const transferCashReceived = !isCashToCoinTransfer && Number.isFinite(transferCoinAmount)
+    ? Math.max(0, transferCoinAmount - transferCoinToCashTip)
+    : 0;
+  const transferSourceBalance = isCashToCoinTransfer
+    ? Number(wallet.cash || 0)
+    : Number(wallet.coin || 0);
   const isTransferCoinWholeNumber =
     transferCoinAmountInput.trim() !== '' &&
     Number.isFinite(transferCoinAmount) &&
@@ -921,15 +943,20 @@ export default function PlayerPage() {
     ? ''
     : !isTransferCoinWholeNumber
       ? 'Amount must be a whole number.'
-      : transferCoinAmount > Number(wallet.cash || 0)
-          ? 'Amount cannot exceed your current cash balance.'
-          : transferCoinReceived <= 0
+      : !isCashToCoinTransfer && transferCoinAmount < 10
+        ? 'Minimum Coin to Cash amount is 10.'
+      : transferCoinAmount > transferSourceBalance
+          ? `Amount cannot exceed your current ${isCashToCoinTransfer ? 'cash' : 'coin'} balance.`
+          : isCashToCoinTransfer && transferCoinReceived <= 0
             ? 'Coins you receive must be greater than zero.'
+            : !isCashToCoinTransfer && transferCashReceived <= 0
+              ? 'Cash you receive must be greater than zero after tip.'
             : '';
   const canConfirmCashToCoinTransfer =
     isTransferCoinWholeNumber &&
-    transferCoinAmount <= Number(wallet.cash || 0) &&
-    transferCoinReceived > 0 &&
+    (isCashToCoinTransfer || transferCoinAmount >= 10) &&
+    transferCoinAmount <= transferSourceBalance &&
+    (isCashToCoinTransfer ? transferCoinReceived > 0 : transferCashReceived > 0) &&
     !coinLoading &&
     !maintenanceBreak.enabled;
 
@@ -2352,6 +2379,19 @@ export default function PlayerPage() {
       setMessage(maintenanceBreak.message);
       return;
     }
+    setPlayerTransferDirection('cash_to_coin');
+    setCashToCoinTransferId(createCashToCoinTransferId());
+    setTransferCoinAmountInput('');
+    setMessage('');
+    setShowCoinConfirmSplash(true);
+  }
+
+  function openCoinToCashTransferModal() {
+    if (maintenanceBreak.enabled) {
+      setMessage(maintenanceBreak.message);
+      return;
+    }
+    setPlayerTransferDirection('coin_to_cash');
     setCashToCoinTransferId(createCashToCoinTransferId());
     setTransferCoinAmountInput('');
     setMessage('');
@@ -2361,7 +2401,7 @@ export default function PlayerPage() {
   async function handleCoinButtonClick() {
     if (maintenanceBreak.enabled) {
       console.info('[MAINTENANCE] blocked player action', {
-        action: 'cash_to_coin',
+        action: playerTransferDirection,
         playerUid: playerUid || auth.currentUser?.uid || null,
         coadminUid: playerCoadminUid || null,
       });
@@ -2375,17 +2415,30 @@ export default function PlayerPage() {
     }
 
     const parsedAmount = Number(transferCoinAmountInput);
-    const parsedCoinsReceived = parsedAmount;
+    const parsedCashToCoinFee = isCashToCoinTransfer ? getCashToCoinFee(parsedAmount) : 0;
+    const parsedTipAmount = isCashToCoinTransfer ? 0 : getCoinToCashTip(parsedAmount);
+    const parsedCoinsReceived = isCashToCoinTransfer ? parsedAmount - parsedCashToCoinFee : 0;
+    const parsedCashReceived = isCashToCoinTransfer ? 0 : parsedAmount - parsedTipAmount;
     if (!Number.isFinite(parsedAmount) || parsedAmount !== Math.floor(parsedAmount)) {
       setMessage('Amount must be a whole number.');
       return;
     }
-    if (parsedAmount > Number(wallet.cash || 0)) {
-      setMessage('Transfer amount cannot exceed your cash balance.');
+    if (!isCashToCoinTransfer && parsedAmount < 10) {
+      setMessage('Minimum Coin to Cash amount is 10.');
       return;
     }
-    if (parsedCoinsReceived <= 0) {
+    if (parsedAmount > transferSourceBalance) {
+      setMessage(
+        `Transfer amount cannot exceed your ${isCashToCoinTransfer ? 'cash' : 'coin'} balance.`
+      );
+      return;
+    }
+    if (isCashToCoinTransfer && parsedCoinsReceived <= 0) {
       setMessage('Coins you receive must be greater than zero.');
+      return;
+    }
+    if (!isCashToCoinTransfer && parsedCashReceived <= 0) {
+      setMessage('Cash you receive must be greater than zero after tip.');
       return;
     }
 
@@ -2395,18 +2448,33 @@ export default function PlayerPage() {
     try {
       const transferId = cashToCoinTransferId || createCashToCoinTransferId();
       setCashToCoinTransferId(transferId);
-      const result = await createCashToCoinTransferRequest(parsedAmount, transferId);
-      setMessage(
-        `Transferred $${formatWalletAmount(result.transferAmount)} cash. Received ${formatWalletAmount(
-          result.coinsReceived
-        )} coins.`
-      );
+      if (isCashToCoinTransfer) {
+        const result = await createCashToCoinTransferRequest(parsedAmount, transferId);
+        setMessage(
+          `Transferred $${formatWalletAmount(result.transferAmount)} cash. Fee ${formatWalletAmount(
+            result.feeAmount
+          )}. Received ${formatWalletAmount(
+            result.coinsReceived
+          )} coins.`
+        );
+      } else {
+        const result = await createCoinToCashTransferRequest(parsedAmount, transferId);
+        setMessage(
+          `Transferred ${formatWalletAmount(result.transferAmount)} coins. Tip ${formatWalletAmount(
+            result.tipAmount
+          )}. Received $${formatWalletAmount(result.cashReceived)} cash.`
+        );
+      }
       setShowCoinConfirmSplash(false);
       setTransferCoinAmountInput('');
       setCashToCoinTransferId('');
     } catch (error) {
       setMessage(
-        error instanceof Error ? error.message : 'Failed to transfer cash to coin.'
+        error instanceof Error
+          ? error.message
+          : isCashToCoinTransfer
+            ? 'Failed to transfer cash to coin.'
+            : 'Failed to transfer coin to cash.'
       );
     } finally {
       setCoinLoading(false);
@@ -2903,15 +2971,12 @@ export default function PlayerPage() {
             >
               💸 Cashout
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                setTransferCoinAmountInput(String(Math.max(0, Number(wallet.cash || 0))));
-                setShowCoinConfirmSplash(true);
-              }}
-              disabled={coinLoading || maintenanceBreak.enabled}
-              className="fire-button fire-orange min-h-[40px] rounded-xl border border-emerald-400/35 bg-emerald-500/15 px-2 text-sm font-bold text-emerald-100 disabled:opacity-50"
-            >
+              <button
+                type="button"
+                onClick={openCashToCoinTransferModal}
+                disabled={coinLoading || maintenanceBreak.enabled}
+                className="fire-button fire-orange min-h-[40px] rounded-xl border border-emerald-400/35 bg-emerald-500/15 px-2 text-sm font-bold text-emerald-100 disabled:opacity-50"
+              >
               {coinLoading ? '⏳' : '🪙 To coin'}
             </button>
           </div>
@@ -3085,10 +3150,10 @@ export default function PlayerPage() {
 
                 <button
                   type="button"
-                  onClick={openCashToCoinTransferModal}
+                  onClick={openCoinToCashTransferModal}
                   disabled={maintenanceBreak.enabled}
                   className="fire-panel fire-green cursor-pointer rounded-2xl border border-emerald-300/60 bg-gradient-to-br from-emerald-400/35 to-emerald-700/25 px-4 py-3 text-right shadow-lg shadow-emerald-400/25 transition hover:border-emerald-200/80 hover:brightness-110 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 md:px-4 lg:px-5"
-                  aria-label={`Transfer cash to coin. Current cash balance ${formatWalletAmount(wallet.cash)}`}
+                  aria-label={`Transfer coin to cash. Current cash balance ${formatWalletAmount(wallet.cash)}`}
                 >
                   <div className="flex items-center justify-between gap-3">
                     <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-200/40 bg-emerald-200/15 text-2xl shadow-[0_0_18px_rgba(74,222,128,0.35)]">
@@ -3134,10 +3199,10 @@ export default function PlayerPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={openCashToCoinTransferModal}
+                  onClick={openCoinToCashTransferModal}
                   disabled={maintenanceBreak.enabled}
                   className="fire-panel fire-green cursor-pointer rounded-2xl border border-emerald-300/60 bg-gradient-to-br from-emerald-400/35 to-emerald-700/20 p-3 text-center shadow-md shadow-emerald-400/20 transition hover:border-emerald-200/80 hover:brightness-110 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
-                  aria-label={`Transfer cash to coin. Current cash balance ${formatWalletAmount(wallet.cash)}`}
+                  aria-label={`Transfer coin to cash. Current cash balance ${formatWalletAmount(wallet.cash)}`}
                 >
                   <span className="mx-auto inline-flex h-9 w-9 items-center justify-center rounded-xl border border-emerald-200/40 bg-emerald-200/15 text-xl shadow-[0_0_14px_rgba(74,222,128,0.35)]">
                     💵
@@ -3283,7 +3348,7 @@ export default function PlayerPage() {
             )}
             
             {/* DASHBOARD VIEW */}
-            {activeView === 'dashboard' && <Lobby activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} agents={agents} bonusStripPaused={bonusStripPaused} bonusVanishedToast={bonusVanishedToast} formatWalletAmount={formatWalletAmount} gameLogins={gameLogins} handleActivateBonusEvent={handleActivateBonusEvent} handleCopyReferralCode={handleCopyReferralCode} handleOpenFirstUnreadAgent={handleOpenFirstUnreadAgent} openCashToCoinTransferModal={openCashToCoinTransferModal} isBlockedPlayer={isBlockedPlayer} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} referralCode={referralCode} setActiveView={setActiveView} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} setMessage={setMessage} setShowLoadCoinPanel={setShowLoadCoinPanel} totalUnread={totalUnread} wallet={wallet} />}
+            {activeView === 'dashboard' && <Lobby activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} agents={agents} bonusStripPaused={bonusStripPaused} bonusVanishedToast={bonusVanishedToast} formatWalletAmount={formatWalletAmount} gameLogins={gameLogins} handleActivateBonusEvent={handleActivateBonusEvent} handleCopyReferralCode={handleCopyReferralCode} handleOpenFirstUnreadAgent={handleOpenFirstUnreadAgent} openCashToCoinTransferModal={openCashToCoinTransferModal} openCoinToCashTransferModal={openCoinToCashTransferModal} isBlockedPlayer={isBlockedPlayer} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} referralCode={referralCode} setActiveView={setActiveView} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} setMessage={setMessage} setShowLoadCoinPanel={setShowLoadCoinPanel} totalUnread={totalUnread} wallet={wallet} />}
 
             {activeView === 'bonus-events' && <Bonus activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} bonusSwipeStartXRef={bonusSwipeStartXRef} bonusVanishedToast={bonusVanishedToast} handleActivateBonusEvent={handleActivateBonusEvent} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} showBonusPanelHint={showBonusPanelHint} />}
 
@@ -3800,24 +3865,29 @@ export default function PlayerPage() {
           className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[72]`}
           role="dialog"
           aria-modal="true"
-          aria-labelledby="cash-to-coin-transfer-title"
+          aria-labelledby="player-transfer-title"
         >
           <div
             onClick={(event) => event.stopPropagation()}
             className={`${PLAYER_SPLASH_CARD} fire-panel fire-orange text-white`}
           >
-            <h3 id="cash-to-coin-transfer-title" className="text-2xl font-black">
-              Cash to Coin Transfer
+            <h3 id="player-transfer-title" className="text-2xl font-black">
+              {isCashToCoinTransfer ? 'Cash to Coin Transfer' : 'Coin to Cash Transfer'}
             </h3>
             <p className="mt-2 text-sm text-amber-100/85">
-              Enter the cash amount you want to convert. Cash converts to coins 1:1.
+              {isCashToCoinTransfer
+                ? 'Enter the cash amount you want to convert. A flat 4% fee is deducted before coins are added.'
+                : 'Enter the coin amount you want to convert. The tip is deducted before cash is added.'}
             </p>
             <p className="mt-3 rounded-xl border border-amber-300/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-              Current Cash Balance:{' '}
-              <span className="font-black text-white">${formatWalletAmount(wallet.cash)}</span>
+              Current {isCashToCoinTransfer ? 'Cash' : 'Coin'} Balance:{' '}
+              <span className="font-black text-white">
+                {isCashToCoinTransfer ? '$' : ''}
+                {formatWalletAmount(transferSourceBalance)}
+              </span>
             </p>
             <label className="mt-3 block text-sm text-amber-100/90">
-              Transfer Cash Amount
+              Transfer {isCashToCoinTransfer ? 'Cash' : 'Coin'} Amount
               <input
                 type="number"
                 min={1}
@@ -3837,25 +3907,37 @@ export default function PlayerPage() {
                   Transfer Amount
                 </p>
                 <p className="mt-1 text-lg font-black text-white">
-                  ${formatWalletAmount(Math.max(0, transferCoinAmount || 0))}
+                  {isCashToCoinTransfer ? '$' : ''}
+                  {formatWalletAmount(Math.max(0, transferCoinAmount || 0))}
                 </p>
               </div>
               <div className="rounded-xl border border-emerald-300/20 bg-emerald-500/10 px-3 py-2">
                 <p className="text-xs font-black uppercase tracking-wide text-emerald-100/70">
-                  Coins You Receive
+                  {isCashToCoinTransfer ? 'Coins You Receive' : 'Cash You Receive'}
                 </p>
                 <p className="mt-1 text-lg font-black text-white">
-                  {formatWalletAmount(Math.max(0, transferCoinReceived))}
+                  {isCashToCoinTransfer ? '' : '$'}
+                  {formatWalletAmount(
+                    Math.max(0, isCashToCoinTransfer ? transferCoinReceived : transferCashReceived)
+                  )}
                 </p>
               </div>
             </div>
+            {isCashToCoinTransfer || transferCoinToCashTip > 0 ? (
+              <p className="mt-3 rounded-xl border border-amber-300/25 bg-black/25 px-3 py-2 text-sm font-bold text-amber-100">
+                {isCashToCoinTransfer ? 'Fee' : 'Tip'}:{' '}
+                {formatWalletAmount(isCashToCoinTransfer ? transferCashToCoinFee : transferCoinToCashTip)}
+              </p>
+            ) : null}
             {transferCoinValidationMessage ? (
               <p className="mt-3 rounded-xl border border-rose-300/30 bg-rose-500/15 px-3 py-2 text-sm font-bold text-rose-100">
                 {transferCoinValidationMessage}
               </p>
             ) : (
               <p className="mt-3 text-xs font-semibold text-amber-100/60">
-                Coins You Receive equals Transfer Amount.
+                {isCashToCoinTransfer
+                  ? 'Coins You Receive equals Transfer Amount minus 4% fee.'
+                  : 'Cash You Receive equals Transfer Amount minus tip.'}
               </p>
             )}
             <div className="mt-5 flex gap-3">

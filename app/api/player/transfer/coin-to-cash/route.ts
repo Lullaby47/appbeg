@@ -10,7 +10,7 @@ import {
 } from '@/lib/maintenance/admin';
 
 type Body = {
-  amountNpr?: unknown;
+  amountCoins?: unknown;
   transferId?: unknown;
 };
 
@@ -30,22 +30,30 @@ function parseTransferId(value: unknown) {
   return transferId;
 }
 
-function getCashToCoinFee(amountNpr: number) {
-  if (!Number.isFinite(amountNpr) || amountNpr <= 0) return 0;
-  return Number((amountNpr * 0.04).toFixed(2));
+function getCoinToCashTip(amountCoins: number) {
+  if (amountCoins >= 150) return 10;
+  if (amountCoins >= 100) return 8;
+  if (amountCoins >= 40) return 4;
+  if (amountCoins >= 30) return 3;
+  if (amountCoins >= 20) return 2;
+  if (amountCoins >= 10) return 1;
+  return 0;
 }
 
 export async function POST(request: Request) {
   try {
     const auth = await requireApiUser(request, ['player']);
     if ('response' in auth) return auth.response;
-    await rejectIfPlayerMaintenanceBreak(auth.user.uid, 'cash_to_coin');
+    await rejectIfPlayerMaintenanceBreak(auth.user.uid, 'coin_to_cash');
 
     const body = (await request.json()) as Body;
-    const amountNpr = parsePositiveInteger(body.amountNpr);
+    const amountCoins = parsePositiveInteger(body.amountCoins);
     const transferId = parseTransferId(body.transferId);
-    if (!amountNpr) {
+    if (!amountCoins) {
       return apiError('Amount must be a positive whole number.', 400);
+    }
+    if (amountCoins < 10) {
+      return apiError('Minimum Coin to Cash amount is 10.', 400);
     }
     if (!transferId) {
       return apiError('Transfer id is required.', 400);
@@ -53,12 +61,13 @@ export async function POST(request: Request) {
 
     const playerUid = auth.user.uid;
     const playerRef = adminDb.collection('users').doc(playerUid);
-    const eventRef = adminDb.collection('financialEvents').doc(`cashToCoin_${playerUid}_${transferId}`);
-    const feeAmount = getCashToCoinFee(amountNpr);
-    const coinsReceived = amountNpr - feeAmount;
-    if (coinsReceived <= 0) {
-      return apiError('Transfer amount is too low after fee.', 400);
+    const eventRef = adminDb.collection('financialEvents').doc(`coinToCash_${playerUid}_${transferId}`);
+    const tipAmount = getCoinToCashTip(amountCoins);
+    const cashReceived = amountCoins - tipAmount;
+    if (cashReceived <= 0) {
+      return apiError('Transfer amount is too low after tip.', 400);
     }
+
     let newCash = 0;
     let newCoin = 0;
 
@@ -84,7 +93,7 @@ export async function POST(request: Request) {
       };
 
       if (String(playerData.role || '').toLowerCase() !== 'player') {
-        throw new Error('Only players can transfer cash to coin.');
+        throw new Error('Only players can transfer coin to cash.');
       }
 
       if (String(playerData.status || '').toLowerCase() === 'disabled') {
@@ -98,23 +107,23 @@ export async function POST(request: Request) {
 
       const currentCash = Math.max(0, Number(playerData.cash || 0));
       const currentCoin = Math.max(0, Number(playerData.coin || 0));
-      if (currentCash < amountNpr) {
-        throw new Error('Not enough cash available for transfer.');
+      if (currentCoin < amountCoins) {
+        throw new Error('Not enough coin available for transfer.');
       }
 
       const coadminUid = String(playerData.coadminUid || playerData.createdBy || '').trim() || null;
       const maintenanceBreak = await getCoadminMaintenanceBreak(coadminUid || '');
       if (maintenanceBreak.enabled) {
         console.info('[MAINTENANCE] blocked player action', {
-          action: 'cash_to_coin',
+          action: 'coin_to_cash',
           playerUid,
           coadminUid,
         });
         throw new Error(`MAINTENANCE_BREAK:${maintenanceBreak.message}`);
       }
 
-      newCash = currentCash - amountNpr;
-      newCoin = currentCoin + coinsReceived;
+      newCoin = currentCoin - amountCoins;
+      newCash = currentCash + cashReceived;
 
       transaction.update(playerRef, {
         cash: newCash,
@@ -125,12 +134,12 @@ export async function POST(request: Request) {
         playerUid,
         playerId: playerUid,
         coadminUid,
-        transferAmount: amountNpr,
-        amountNpr,
-        feeAmount,
-        tipAmount: 0,
-        tipNpr: 0,
-        coinsReceived,
+        transferAmount: amountCoins,
+        amountCoins,
+        feeAmount: tipAmount,
+        tipAmount,
+        tipNpr: tipAmount,
+        cashReceived,
         beforeCash: currentCash,
         afterCash: newCash,
         beforeCoins: currentCoin,
@@ -146,7 +155,7 @@ export async function POST(request: Request) {
           coin: newCoin,
         },
         transferId,
-        type: 'cash_to_coin_transfer',
+        type: 'coin_to_cash_transfer',
         timestamp: FieldValue.serverTimestamp(),
         createdAt: FieldValue.serverTimestamp(),
       });
@@ -156,14 +165,14 @@ export async function POST(request: Request) {
       success: true,
       cash: newCash,
       coin: newCoin,
-      transferAmount: amountNpr,
-      feeAmount,
-      tipAmount: 0,
-      coinsReceived,
+      transferAmount: amountCoins,
+      feeAmount: tipAmount,
+      tipAmount,
+      cashReceived,
       transferId,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to transfer cash to coin.';
+    const message = error instanceof Error ? error.message : 'Failed to transfer coin to cash.';
     if (message.startsWith('MAINTENANCE_BREAK:')) {
       return maintenanceBreakApiResponse(message.replace(/^MAINTENANCE_BREAK:/, ''));
     }
@@ -173,7 +182,7 @@ export async function POST(request: Request) {
       ? 403
       : /duplicate|already/i.test(message)
       ? 409
-      : /required|valid|not found|only|amount|cash|transfer/i.test(message)
+      : /required|valid|not found|only|amount|coin|transfer/i.test(message)
       ? 400
       : 500;
 

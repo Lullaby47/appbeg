@@ -19,6 +19,7 @@ type Props = {
   handleCopyReferralCode: (event: MouseEvent) => void;
   handleOpenFirstUnreadAgent: () => void;
   openCashToCoinTransferModal: () => void;
+  openCoinToCashTransferModal: () => void;
   isBlockedPlayer: boolean;
   maintenanceBreak: { enabled: boolean };
   playerBonusEvents: BonusEvent[];
@@ -45,6 +46,7 @@ export default function Lobby(props: Props) {
     handleCopyReferralCode,
     handleOpenFirstUnreadAgent,
     openCashToCoinTransferModal,
+    openCoinToCashTransferModal,
     isBlockedPlayer,
     maintenanceBreak,
     playerBonusEvents,
@@ -99,10 +101,10 @@ export default function Lobby(props: Props) {
                         </div>
                         <button
                           type="button"
-                          onClick={openCashToCoinTransferModal}
+                          onClick={openCoinToCashTransferModal}
                           disabled={maintenanceBreak.enabled}
                           className="fire-panel fire-green flex min-h-[6.75rem] cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border border-emerald-300/60 bg-black/35 px-3 py-3 text-center shadow-[0_0_20px_-8px_rgba(74,222,128,0.55)] transition hover:border-emerald-200/80 hover:brightness-110 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-[7.25rem]"
-                          aria-label={`Transfer cash to coin. Current cash balance ${formatWalletAmount(wallet.cash)}`}
+                          aria-label={`Transfer coin to cash. Current cash balance ${formatWalletAmount(wallet.cash)}`}
                         >
                           <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-emerald-200/40 bg-emerald-200/15 text-xl">
                             💵
