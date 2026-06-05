@@ -4688,7 +4688,7 @@ export default function CoadminPage() {
                 Upload one or more images (QR codes, bank apps, e-wallet screenshots). When a
                 player taps <span className="text-neutral-200">Load coin</span> and then{' '}
                 <span className="text-neutral-200">Add coins</span>, they see{' '}
-                <strong>one image chosen at random</strong> and use their AppBeg username as the
+                <strong>one image chosen at random</strong> and use their Royal VIP username as the
                 payment note/remark during the 10-minute session.
               </p>
 

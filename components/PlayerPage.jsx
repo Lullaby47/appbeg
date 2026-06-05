@@ -177,9 +177,9 @@ export default function PlayerPage() {
 
           <FireSurface className="player-fire-load-card" tone="load" eyebrow="Load Coin" title="Purple ignition">
             <div className="player-fire-load">
-              <p>AppBeg username ready with visible moving violet flame layers and neon glass depth.</p>
+              <p>Royal VIP username ready with visible moving violet flame layers and neon glass depth.</p>
               <div className="player-fire-code">
-                <span>AppBeg username</span>
+                <span>Royal VIP username</span>
                 <strong>Miyos9</strong>
               </div>
               <button type="button" className="fire-action fire-action--load">

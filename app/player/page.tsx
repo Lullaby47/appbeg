@@ -3709,8 +3709,8 @@ export default function PlayerPage() {
           >
             <h3 className="text-2xl font-black">Load coin</h3>
             <p className="mt-2 text-sm text-violet-100/80">
-              Copy your AppBeg username and paste it in the payment note/remark. This helps us match
-              your payment fast.
+              Copy your Royal VIP username and paste it in the payment note/remark. This helps us
+              match your payment fast.
             </p>
 
             {!activeCoinLoad ? (
@@ -3749,7 +3749,7 @@ export default function PlayerPage() {
                 </div>
                 <div>
                   <p className="text-xs font-bold uppercase tracking-wider text-violet-200/80">
-                    Your AppBeg username
+                    YOUR ROYAL VIP USERNAME
                   </p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <code className="flex-1 break-all rounded-xl border border-violet-400/30 bg-black/50 px-3 py-2 text-center text-lg font-mono font-bold tracking-wider text-white sm:text-xl">
