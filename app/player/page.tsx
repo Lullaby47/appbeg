@@ -921,16 +921,13 @@ export default function PlayerPage() {
     ? ''
     : !isTransferCoinWholeNumber
       ? 'Amount must be a whole number.'
-      : transferCoinAmount < 10
-        ? 'Minimum transfer amount is $10.'
-        : transferCoinAmount > Number(wallet.cash || 0)
+      : transferCoinAmount > Number(wallet.cash || 0)
           ? 'Amount cannot exceed your current cash balance.'
           : transferCoinReceived <= 0
             ? 'Coins you receive must be greater than zero.'
             : '';
   const canConfirmCashToCoinTransfer =
     isTransferCoinWholeNumber &&
-    transferCoinAmount >= 10 &&
     transferCoinAmount <= Number(wallet.cash || 0) &&
     transferCoinReceived > 0 &&
     !coinLoading &&
@@ -2383,10 +2380,6 @@ export default function PlayerPage() {
       setMessage('Amount must be a whole number.');
       return;
     }
-    if (parsedAmount < 10) {
-      setMessage('Minimum transfer amount is $10.');
-      return;
-    }
     if (parsedAmount > Number(wallet.cash || 0)) {
       setMessage('Transfer amount cannot exceed your cash balance.');
       return;
@@ -3827,7 +3820,7 @@ export default function PlayerPage() {
               Transfer Cash Amount
               <input
                 type="number"
-                min={10}
+                min={1}
                 step={1}
                 inputMode="numeric"
                 value={transferCoinAmountInput}

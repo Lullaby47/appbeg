@@ -55,9 +55,6 @@ export async function POST(request: Request) {
     if (!amountNpr) {
       return apiError('Amount must be a positive whole number.', 400);
     }
-    if (amountNpr < 10) {
-      return apiError('Minimum transfer amount is $10.', 400);
-    }
     if (!transferId) {
       return apiError('Transfer id is required.', 400);
     }
