@@ -27,6 +27,7 @@ export type FinancialEventType =
   | 'bonus'
   | 'recharge'
   | 'redeem'
+  | 'cash_to_coin_transfer'
   | 'coadmin_coin_add'
   | 'coadmin_coin_deduct'
   | 'coadmin_cash_add'
@@ -532,7 +533,10 @@ export async function recordFinancialEventAndRefreshRisk(values: {
   await computeAndStorePlayerRiskSnapshot(values.playerUid);
 }
 
-export async function createCashToCoinTransferRequest(requestedAmountNpr?: number) {
+export async function createCashToCoinTransferRequest(
+  requestedAmountNpr?: number,
+  transferId?: string
+) {
   if (!auth.currentUser) {
     throw new Error('Not authenticated.');
   }
@@ -540,7 +544,7 @@ export async function createCashToCoinTransferRequest(requestedAmountNpr?: numbe
   const response = await fetch('/api/player/transfer/cash-to-coin', {
     method: 'POST',
     headers: await getPlayerApiHeaders(),
-    body: JSON.stringify({ amountNpr: requestedAmountNpr ?? 0 }),
+    body: JSON.stringify({ amountNpr: requestedAmountNpr ?? 0, transferId }),
   });
 
   const payload = (await response.json().catch(() => ({}))) as {
@@ -548,6 +552,9 @@ export async function createCashToCoinTransferRequest(requestedAmountNpr?: numbe
     message?: string;
     cash?: number;
     coin?: number;
+    transferAmount?: number;
+    tipAmount?: number;
+    coinsReceived?: number;
   };
 
   if (!response.ok) {
@@ -558,18 +565,13 @@ export async function createCashToCoinTransferRequest(requestedAmountNpr?: numbe
     );
   }
 
-  await createRiskAction({
-    playerUid: auth.currentUser?.uid || '',
-    playerUsername: auth.currentUser?.displayName || 'Player',
-    coadminUid: '',
-    action: 'transfer_to_coin',
-    details: `Converted NPR ${requestedAmountNpr ?? 0} cash to coin`,
-  });
-
   return {
     message: 'Cash transferred to coin.',
     cash: payload.cash ?? 0,
     coin: payload.coin ?? 0,
+    transferAmount: payload.transferAmount ?? requestedAmountNpr ?? 0,
+    tipAmount: payload.tipAmount ?? 0,
+    coinsReceived: payload.coinsReceived ?? 0,
   };
 }
 

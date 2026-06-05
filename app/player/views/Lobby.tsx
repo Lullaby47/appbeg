@@ -1,10 +1,36 @@
 'use client';
 
 import { AnimatePresence, motion } from 'motion/react';
+import type { Dispatch, MouseEvent, SetStateAction } from 'react';
 import type { BonusEvent } from '@/features/bonusEvents/bonusEvents';
+import type { PlayerView } from '../types';
 import { getPlayerBonusEventDescription } from '../utils';
 import { MAX_PLAYER_BONUS_EVENTS_DISPLAY } from '@/features/bonusEvents/bonusEvents';
-type Props = Record<string, any>;
+
+type Props = {
+  activatingBonusEventId: string | null;
+  activeBonusCarouselIndex: number;
+  agents: unknown[];
+  bonusStripPaused: boolean;
+  bonusVanishedToast: boolean;
+  formatWalletAmount: (value: number) => string;
+  gameLogins: unknown[];
+  handleActivateBonusEvent: (bonusEvent: BonusEvent) => void;
+  handleCopyReferralCode: (event: MouseEvent) => void;
+  handleOpenFirstUnreadAgent: () => void;
+  openCashToCoinTransferModal: () => void;
+  isBlockedPlayer: boolean;
+  maintenanceBreak: { enabled: boolean };
+  playerBonusEvents: BonusEvent[];
+  referralCode: string;
+  setActiveView: Dispatch<SetStateAction<PlayerView>>;
+  setBonusCarouselIndex: Dispatch<SetStateAction<number>>;
+  setBonusStripPaused: (paused: boolean) => void;
+  setMessage: (message: string) => void;
+  setShowLoadCoinPanel: (show: boolean) => void;
+  totalUnread: number;
+  wallet: { coin: number; cash: number };
+};
 
 export default function Lobby(props: Props) {
   const {
@@ -18,6 +44,7 @@ export default function Lobby(props: Props) {
     handleActivateBonusEvent,
     handleCopyReferralCode,
     handleOpenFirstUnreadAgent,
+    openCashToCoinTransferModal,
     isBlockedPlayer,
     maintenanceBreak,
     playerBonusEvents,
@@ -70,7 +97,13 @@ export default function Lobby(props: Props) {
                             {formatWalletAmount(wallet.coin)}
                           </p>
                         </div>
-                        <div className="fire-panel fire-green flex min-h-[6.75rem] flex-col items-center justify-center gap-1 rounded-2xl border border-emerald-300/60 bg-black/35 px-3 py-3 text-center backdrop-blur-md shadow-[0_0_20px_-8px_rgba(74,222,128,0.55)] sm:min-h-[7.25rem]">
+                        <button
+                          type="button"
+                          onClick={openCashToCoinTransferModal}
+                          disabled={maintenanceBreak.enabled}
+                          className="fire-panel fire-green flex min-h-[6.75rem] cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border border-emerald-300/60 bg-black/35 px-3 py-3 text-center shadow-[0_0_20px_-8px_rgba(74,222,128,0.55)] transition hover:border-emerald-200/80 hover:brightness-110 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-[7.25rem]"
+                          aria-label={`Transfer cash to coin. Current cash balance ${formatWalletAmount(wallet.cash)}`}
+                        >
                           <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-emerald-200/40 bg-emerald-200/15 text-xl">
                             💵
                           </span>
@@ -80,7 +113,7 @@ export default function Lobby(props: Props) {
                           <p className="text-xl font-black tabular-nums text-white sm:text-[1.65rem]">
                             {formatWalletAmount(wallet.cash)}
                           </p>
-                        </div>
+                        </button>
                       </div>
                       <div className="fire-panel fire-orange mx-auto flex w-full max-w-lg flex-wrap items-center justify-center gap-2 rounded-2xl border border-cyan-400/30 bg-black/35 px-3 py-2">
                         <p className="text-xs font-black uppercase tracking-wide text-cyan-200/85 sm:text-sm">

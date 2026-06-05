@@ -142,6 +142,17 @@ const GAME_VAULT_MIDNIGHT_PARTY_WARNING_MARKER =
 const GAME_VAULT_MIDNIGHT_PARTY_PLAYER_MESSAGE =
   'Recharge blocked: Please open Game Vault and choose whether to participate in the Midnight Party program for your previous deposit before depositing again.';
 
+function getCashToCoinTip(amount: number) {
+  if (amount >= 450) return 35;
+  if (amount >= 300) return 20;
+  if (amount >= 200) return 12;
+  if (amount >= 150) return 8;
+  if (amount >= 100) return 5;
+  if (amount >= 30) return 3;
+  if (amount >= 10) return 1;
+  return 0;
+}
+
 // Legacy helper retained only to avoid a broad page rewrite in this pass.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function FloatingCasinoBackdrop() {
@@ -232,6 +243,7 @@ export default function PlayerPage() {
   const [showCashoutModal, setShowCashoutModal] = useState(false);
   const [showCoinConfirmSplash, setShowCoinConfirmSplash] = useState(false);
   const [transferCoinAmountInput, setTransferCoinAmountInput] = useState('');
+  const [cashToCoinTransferId, setCashToCoinTransferId] = useState('');
   const [showLoadCoinPanel, setShowLoadCoinPanel] = useState(false);
   const [activeCoinLoad, setActiveCoinLoad] = useState<CoinLoadSession | null>(null);
   const [loadCoinTimeLeftSec, setLoadCoinTimeLeftSec] = useState(0);
@@ -891,6 +903,35 @@ export default function PlayerPage() {
   );
 
   const cashoutThisRequestNpr = Math.min(Number(wallet.cash || 0), cashoutRemainingQuotaNpr);
+  const transferCoinAmount = Number(transferCoinAmountInput);
+  const transferCoinTip = Number.isFinite(transferCoinAmount)
+    ? getCashToCoinTip(transferCoinAmount)
+    : 0;
+  const transferCoinReceived = Number.isFinite(transferCoinAmount)
+    ? transferCoinAmount - transferCoinTip
+    : 0;
+  const isTransferCoinWholeNumber =
+    transferCoinAmountInput.trim() !== '' &&
+    Number.isFinite(transferCoinAmount) &&
+    transferCoinAmount === Math.floor(transferCoinAmount);
+  const transferCoinValidationMessage = !transferCoinAmountInput.trim()
+    ? ''
+    : !isTransferCoinWholeNumber
+      ? 'Amount must be a whole number.'
+      : transferCoinAmount < 10
+        ? 'Minimum transfer amount is $10.'
+        : transferCoinAmount > Number(wallet.cash || 0)
+          ? 'Amount cannot exceed your current cash balance.'
+          : transferCoinReceived <= 0
+            ? 'Coins you receive must be greater than zero.'
+            : '';
+  const canConfirmCashToCoinTransfer =
+    isTransferCoinWholeNumber &&
+    transferCoinAmount >= 10 &&
+    transferCoinAmount <= Number(wallet.cash || 0) &&
+    transferCoinReceived > 0 &&
+    !coinLoading &&
+    !maintenanceBreak.enabled;
 
   useEffect(() => {
     let isCancelled = false;
@@ -2283,6 +2324,24 @@ export default function PlayerPage() {
     }));
   }
 
+  function createCashToCoinTransferId() {
+    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+      return crypto.randomUUID();
+    }
+    return `${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
+  }
+
+  function openCashToCoinTransferModal() {
+    if (maintenanceBreak.enabled) {
+      setMessage(maintenanceBreak.message);
+      return;
+    }
+    setCashToCoinTransferId(createCashToCoinTransferId());
+    setTransferCoinAmountInput('');
+    setMessage('');
+    setShowCoinConfirmSplash(true);
+  }
+
   async function handleCoinButtonClick() {
     if (maintenanceBreak.enabled) {
       console.info('[MAINTENANCE] blocked player action', {
@@ -2300,12 +2359,22 @@ export default function PlayerPage() {
     }
 
     const parsedAmount = Number(transferCoinAmountInput);
-    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
-      setMessage('Enter a valid transfer amount.');
+    const parsedTip = getCashToCoinTip(parsedAmount);
+    const parsedCoinsReceived = parsedAmount - parsedTip;
+    if (!Number.isFinite(parsedAmount) || parsedAmount !== Math.floor(parsedAmount)) {
+      setMessage('Amount must be a whole number.');
+      return;
+    }
+    if (parsedAmount < 10) {
+      setMessage('Minimum transfer amount is $10.');
       return;
     }
     if (parsedAmount > Number(wallet.cash || 0)) {
       setMessage('Transfer amount cannot exceed your cash balance.');
+      return;
+    }
+    if (parsedCoinsReceived <= 0) {
+      setMessage('Coins you receive must be greater than zero.');
       return;
     }
 
@@ -2313,8 +2382,17 @@ export default function PlayerPage() {
     setMessage('');
 
     try {
-      const result = await createCashToCoinTransferRequest(parsedAmount);
-      setMessage(result.message);
+      const transferId = cashToCoinTransferId || createCashToCoinTransferId();
+      setCashToCoinTransferId(transferId);
+      const result = await createCashToCoinTransferRequest(parsedAmount, transferId);
+      setMessage(
+        `Transferred $${formatWalletAmount(result.transferAmount)} cash. Tip: $${formatWalletAmount(
+          result.tipAmount
+        )}. Received ${formatWalletAmount(result.coinsReceived)} coins.`
+      );
+      setShowCoinConfirmSplash(false);
+      setTransferCoinAmountInput('');
+      setCashToCoinTransferId('');
     } catch (error) {
       setMessage(
         error instanceof Error ? error.message : 'Failed to transfer cash to coin.'
@@ -2975,10 +3053,7 @@ export default function PlayerPage() {
 
                 <button
                   type="button"
-                  onClick={() => {
-                    setTransferCoinAmountInput(String(Math.max(0, Number(wallet.cash || 0))));
-                    setShowCoinConfirmSplash(true);
-                  }}
+                  onClick={openCashToCoinTransferModal}
                   disabled={coinLoading}
                   className="fire-button fire-purple rounded-2xl border border-fuchsia-300/45 bg-gradient-to-r from-fuchsia-600 via-violet-500 to-purple-600 px-3 py-3 text-xs font-black leading-tight text-white shadow-[0_0_26px_-10px_rgba(192,38,211,0.9)] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60 md:px-4 lg:px-5 lg:text-base"
                 >
@@ -2997,7 +3072,13 @@ export default function PlayerPage() {
                   ⬇ Load coin
                 </button>
 
-                <div className="fire-panel fire-green rounded-2xl border border-emerald-300/60 bg-gradient-to-br from-emerald-400/35 to-emerald-700/25 px-4 py-3 text-right shadow-lg shadow-emerald-400/25 md:px-4 lg:px-5">
+                <button
+                  type="button"
+                  onClick={openCashToCoinTransferModal}
+                  disabled={maintenanceBreak.enabled}
+                  className="fire-panel fire-green cursor-pointer rounded-2xl border border-emerald-300/60 bg-gradient-to-br from-emerald-400/35 to-emerald-700/25 px-4 py-3 text-right shadow-lg shadow-emerald-400/25 transition hover:border-emerald-200/80 hover:brightness-110 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 md:px-4 lg:px-5"
+                  aria-label={`Transfer cash to coin. Current cash balance ${formatWalletAmount(wallet.cash)}`}
+                >
                   <div className="flex items-center justify-between gap-3">
                     <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-200/40 bg-emerald-200/15 text-2xl shadow-[0_0_18px_rgba(74,222,128,0.35)]">
                       💵
@@ -3009,7 +3090,7 @@ export default function PlayerPage() {
                   <p className="mt-1 text-2xl font-black tabular-nums text-white">
                     {formatWalletAmount(wallet.cash)}
                   </p>
-                </div>
+                </button>
                 <button
                   type="button"
                   onClick={() => setShowCashoutModal(true)}
@@ -3040,7 +3121,13 @@ export default function PlayerPage() {
                     {formatWalletAmount(wallet.coin)}
                   </p>
                 </div>
-                <div className="fire-panel fire-green rounded-2xl border border-emerald-300/60 bg-gradient-to-br from-emerald-400/35 to-emerald-700/20 p-3 text-center shadow-md shadow-emerald-400/20">
+                <button
+                  type="button"
+                  onClick={openCashToCoinTransferModal}
+                  disabled={maintenanceBreak.enabled}
+                  className="fire-panel fire-green cursor-pointer rounded-2xl border border-emerald-300/60 bg-gradient-to-br from-emerald-400/35 to-emerald-700/20 p-3 text-center shadow-md shadow-emerald-400/20 transition hover:border-emerald-200/80 hover:brightness-110 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label={`Transfer cash to coin. Current cash balance ${formatWalletAmount(wallet.cash)}`}
+                >
                   <span className="mx-auto inline-flex h-9 w-9 items-center justify-center rounded-xl border border-emerald-200/40 bg-emerald-200/15 text-xl shadow-[0_0_14px_rgba(74,222,128,0.35)]">
                     💵
                   </span>
@@ -3050,13 +3137,10 @@ export default function PlayerPage() {
                   <p className="mt-0.5 text-2xl font-black tabular-nums text-white">
                     {formatWalletAmount(wallet.cash)}
                   </p>
-                </div>
+                </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setTransferCoinAmountInput(String(Math.max(0, Number(wallet.cash || 0))));
-                    setShowCoinConfirmSplash(true);
-                  }}
+                  onClick={openCashToCoinTransferModal}
                   disabled={coinLoading || maintenanceBreak.enabled}
                   className="fire-button fire-orange min-h-[44px] rounded-2xl border border-amber-400/45 bg-amber-500/20 px-2 py-2 text-xs font-black text-amber-50 active:scale-[0.99] disabled:opacity-60"
                 >
@@ -3188,7 +3272,7 @@ export default function PlayerPage() {
             )}
             
             {/* DASHBOARD VIEW */}
-            {activeView === 'dashboard' && <Lobby activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} agents={agents} bonusStripPaused={bonusStripPaused} bonusVanishedToast={bonusVanishedToast} formatWalletAmount={formatWalletAmount} gameLogins={gameLogins} handleActivateBonusEvent={handleActivateBonusEvent} handleCopyReferralCode={handleCopyReferralCode} handleOpenFirstUnreadAgent={handleOpenFirstUnreadAgent} isBlockedPlayer={isBlockedPlayer} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} referralCode={referralCode} setActiveView={setActiveView} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} setMessage={setMessage} setShowLoadCoinPanel={setShowLoadCoinPanel} totalUnread={totalUnread} wallet={wallet} />}
+            {activeView === 'dashboard' && <Lobby activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} agents={agents} bonusStripPaused={bonusStripPaused} bonusVanishedToast={bonusVanishedToast} formatWalletAmount={formatWalletAmount} gameLogins={gameLogins} handleActivateBonusEvent={handleActivateBonusEvent} handleCopyReferralCode={handleCopyReferralCode} handleOpenFirstUnreadAgent={handleOpenFirstUnreadAgent} openCashToCoinTransferModal={openCashToCoinTransferModal} isBlockedPlayer={isBlockedPlayer} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} referralCode={referralCode} setActiveView={setActiveView} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} setMessage={setMessage} setShowLoadCoinPanel={setShowLoadCoinPanel} totalUnread={totalUnread} wallet={wallet} />}
 
             {activeView === 'bonus-events' && <Bonus activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} bonusSwipeStartXRef={bonusSwipeStartXRef} bonusVanishedToast={bonusVanishedToast} handleActivateBonusEvent={handleActivateBonusEvent} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} showBonusPanelHint={showBonusPanelHint} />}
 
@@ -3692,51 +3776,86 @@ export default function PlayerPage() {
 
       {showCoinConfirmSplash && (
         <div
-          onClick={() => setShowCoinConfirmSplash(false)}
+          onClick={() => {
+            if (!coinLoading) {
+              setShowCoinConfirmSplash(false);
+            }
+          }}
           className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[72]`}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cash-to-coin-transfer-title"
         >
           <div
             onClick={(event) => event.stopPropagation()}
             className={`${PLAYER_SPLASH_CARD} fire-panel fire-orange text-white`}
           >
-            <h3 className="text-2xl font-black">Transfer to coin?</h3>
+            <h3 id="cash-to-coin-transfer-title" className="text-2xl font-black">
+              Cash to Coin Transfer
+            </h3>
             <p className="mt-2 text-sm text-amber-100/85">
-              Enter the cash amount you want to transfer into coin balance.
+              Enter the cash amount you want to convert. A tip is deducted before coins are added.
             </p>
             <p className="mt-3 rounded-xl border border-amber-300/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-              Current cash: ${formatWalletAmount(wallet.cash)}
+              Current Cash Balance:{' '}
+              <span className="font-black text-white">${formatWalletAmount(wallet.cash)}</span>
             </p>
             <label className="mt-3 block text-sm text-amber-100/90">
-              Transfer amount
+              Transfer Cash Amount
               <input
                 type="number"
-                min={1}
+                min={10}
                 step={1}
                 inputMode="numeric"
                 value={transferCoinAmountInput}
-                onChange={(event) => setTransferCoinAmountInput(event.target.value)}
+                onChange={(event) =>
+                  setTransferCoinAmountInput(sanitizeWholeAmountText(event.target.value))
+                }
                 className="mt-2 w-full rounded-xl border border-amber-300/30 bg-black/35 px-4 py-3 text-white outline-none focus:border-amber-300/60"
                 placeholder="Enter amount"
               />
             </label>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+              <div className="rounded-xl border border-rose-300/20 bg-rose-500/10 px-3 py-2">
+                <p className="text-xs font-black uppercase tracking-wide text-rose-100/70">Tip</p>
+                <p className="mt-1 text-lg font-black text-white">
+                  ${formatWalletAmount(Math.max(0, transferCoinTip))}
+                </p>
+              </div>
+              <div className="rounded-xl border border-emerald-300/20 bg-emerald-500/10 px-3 py-2">
+                <p className="text-xs font-black uppercase tracking-wide text-emerald-100/70">
+                  Coins You Receive
+                </p>
+                <p className="mt-1 text-lg font-black text-white">
+                  {formatWalletAmount(Math.max(0, transferCoinReceived))}
+                </p>
+              </div>
+            </div>
+            {transferCoinValidationMessage ? (
+              <p className="mt-3 rounded-xl border border-rose-300/30 bg-rose-500/15 px-3 py-2 text-sm font-bold text-rose-100">
+                {transferCoinValidationMessage}
+              </p>
+            ) : (
+              <p className="mt-3 text-xs font-semibold text-amber-100/60">
+                Tip is based on the transfer amount tier.
+              </p>
+            )}
             <div className="mt-5 flex gap-3">
               <button
                 type="button"
                 onClick={() => setShowCoinConfirmSplash(false)}
+                disabled={coinLoading}
                 className="flex-1 rounded-xl bg-white/10 px-4 py-3 text-sm font-bold text-white hover:bg-white/20"
               >
                 Cancel
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setShowCoinConfirmSplash(false);
-                  void handleCoinButtonClick();
-                }}
-                disabled={coinLoading}
+                onClick={() => void handleCoinButtonClick()}
+                disabled={!canConfirmCashToCoinTransfer}
                 className="fire-button fire-orange flex-1 rounded-xl bg-amber-400 px-4 py-3 text-sm font-black text-black hover:bg-amber-300 disabled:opacity-60"
               >
-                {coinLoading ? 'Transferring...' : 'Yes, transfer'}
+                {coinLoading ? 'Transferring...' : 'Confirm Transfer'}
               </button>
             </div>
           </div>

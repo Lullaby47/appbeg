@@ -11,6 +11,7 @@ import {
 
 type Body = {
   amountNpr?: unknown;
+  transferId?: unknown;
 };
 
 function parsePositiveInteger(value: unknown) {
@@ -21,6 +22,25 @@ function parsePositiveInteger(value: unknown) {
   return parsed;
 }
 
+function parseTransferId(value: unknown) {
+  const transferId = String(value || '').trim();
+  if (!/^[A-Za-z0-9_-]{8,80}$/.test(transferId)) {
+    return '';
+  }
+  return transferId;
+}
+
+function getCashToCoinTip(amountNpr: number) {
+  if (amountNpr >= 450) return 35;
+  if (amountNpr >= 300) return 20;
+  if (amountNpr >= 200) return 12;
+  if (amountNpr >= 150) return 8;
+  if (amountNpr >= 100) return 5;
+  if (amountNpr >= 30) return 3;
+  if (amountNpr >= 10) return 1;
+  return 0;
+}
+
 export async function POST(request: Request) {
   try {
     const auth = await requireApiUser(request, ['player']);
@@ -29,16 +49,35 @@ export async function POST(request: Request) {
 
     const body = (await request.json()) as Body;
     const amountNpr = parsePositiveInteger(body.amountNpr);
+    const transferId = parseTransferId(body.transferId);
     if (!amountNpr) {
       return apiError('Amount must be a positive whole number.', 400);
+    }
+    if (amountNpr < 10) {
+      return apiError('Minimum transfer amount is $10.', 400);
+    }
+    if (!transferId) {
+      return apiError('Transfer id is required.', 400);
     }
 
     const playerUid = auth.user.uid;
     const playerRef = adminDb.collection('users').doc(playerUid);
+    const eventRef = adminDb.collection('financialEvents').doc(`cashToCoin_${playerUid}_${transferId}`);
+    const tipAmount = getCashToCoinTip(amountNpr);
+    const coinsReceived = amountNpr - tipAmount;
     let newCash = 0;
     let newCoin = 0;
 
+    if (coinsReceived <= 0) {
+      return apiError('Coins received must be greater than zero.', 400);
+    }
+
     await adminDb.runTransaction(async (transaction) => {
+      const existingEventSnap = await transaction.get(eventRef);
+      if (existingEventSnap.exists) {
+        throw new Error('Duplicate transfer id.');
+      }
+
       const playerSnap = await transaction.get(playerRef);
       if (!playerSnap.exists) {
         throw new Error('Player profile not found.');
@@ -85,24 +124,52 @@ export async function POST(request: Request) {
       }
 
       newCash = currentCash - amountNpr;
-      newCoin = currentCoin + amountNpr;
+      newCoin = currentCoin + coinsReceived;
 
       transaction.update(playerRef, {
         cash: newCash,
         coin: newCoin,
       });
 
-      const eventRef = adminDb.collection('financialEvents').doc();
       transaction.set(eventRef, {
         playerUid,
+        playerId: playerUid,
         coadminUid,
+        transferAmount: amountNpr,
         amountNpr,
-        type: 'transfer',
+        tipAmount,
+        tipNpr: tipAmount,
+        coinsReceived,
+        beforeCash: currentCash,
+        afterCash: newCash,
+        beforeCoins: currentCoin,
+        afterCoins: newCoin,
+        beforeCoin: currentCoin,
+        afterCoin: newCoin,
+        beforeBalances: {
+          cash: currentCash,
+          coin: currentCoin,
+        },
+        afterBalances: {
+          cash: newCash,
+          coin: newCoin,
+        },
+        transferId,
+        type: 'cash_to_coin_transfer',
+        timestamp: FieldValue.serverTimestamp(),
         createdAt: FieldValue.serverTimestamp(),
       });
     });
 
-    return NextResponse.json({ success: true, cash: newCash, coin: newCoin });
+    return NextResponse.json({
+      success: true,
+      cash: newCash,
+      coin: newCoin,
+      transferAmount: amountNpr,
+      tipAmount,
+      coinsReceived,
+      transferId,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to transfer cash to coin.';
     if (message.startsWith('MAINTENANCE_BREAK:')) {
@@ -112,6 +179,8 @@ export async function POST(request: Request) {
       ? 401
       : /forbidden|blocked/i.test(message)
       ? 403
+      : /duplicate|already/i.test(message)
+      ? 409
       : /required|valid|not found|only|amount|cash|transfer/i.test(message)
       ? 400
       : 500;
