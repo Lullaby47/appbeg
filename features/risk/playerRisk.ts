@@ -553,6 +553,7 @@ export async function createCashToCoinTransferRequest(
     cash?: number;
     coin?: number;
     transferAmount?: number;
+    feeAmount?: number;
     tipAmount?: number;
     coinsReceived?: number;
   };
@@ -570,6 +571,7 @@ export async function createCashToCoinTransferRequest(
     cash: payload.cash ?? 0,
     coin: payload.coin ?? 0,
     transferAmount: payload.transferAmount ?? requestedAmountNpr ?? 0,
+    feeAmount: payload.feeAmount ?? 0,
     tipAmount: payload.tipAmount ?? 0,
     coinsReceived: payload.coinsReceived ?? 0,
   };

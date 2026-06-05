@@ -30,7 +30,8 @@ function parseTransferId(value: unknown) {
   return transferId;
 }
 
-function getCashToCoinTip(amountNpr: number) {
+// Future Coin to Cash schedule only; Cash to Coin is always 1:1.
+function getCoinToCashTip(amountNpr: number) {
   if (amountNpr >= 450) return 35;
   if (amountNpr >= 300) return 20;
   if (amountNpr >= 200) return 12;
@@ -40,6 +41,7 @@ function getCashToCoinTip(amountNpr: number) {
   if (amountNpr >= 10) return 1;
   return 0;
 }
+void getCoinToCashTip;
 
 export async function POST(request: Request) {
   try {
@@ -63,14 +65,10 @@ export async function POST(request: Request) {
     const playerUid = auth.user.uid;
     const playerRef = adminDb.collection('users').doc(playerUid);
     const eventRef = adminDb.collection('financialEvents').doc(`cashToCoin_${playerUid}_${transferId}`);
-    const tipAmount = getCashToCoinTip(amountNpr);
-    const coinsReceived = amountNpr - tipAmount;
+    const feeAmount = 0;
+    const coinsReceived = amountNpr;
     let newCash = 0;
     let newCoin = 0;
-
-    if (coinsReceived <= 0) {
-      return apiError('Coins received must be greater than zero.', 400);
-    }
 
     await adminDb.runTransaction(async (transaction) => {
       const existingEventSnap = await transaction.get(eventRef);
@@ -137,8 +135,9 @@ export async function POST(request: Request) {
         coadminUid,
         transferAmount: amountNpr,
         amountNpr,
-        tipAmount,
-        tipNpr: tipAmount,
+        feeAmount,
+        tipAmount: 0,
+        tipNpr: 0,
         coinsReceived,
         beforeCash: currentCash,
         afterCash: newCash,
@@ -166,7 +165,8 @@ export async function POST(request: Request) {
       cash: newCash,
       coin: newCoin,
       transferAmount: amountNpr,
-      tipAmount,
+      feeAmount,
+      tipAmount: 0,
       coinsReceived,
       transferId,
     });

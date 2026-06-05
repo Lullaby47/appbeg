@@ -145,7 +145,8 @@ const PLAYER_BONUS_DEBUG =
   process.env.NODE_ENV !== 'production' &&
   process.env.NEXT_PUBLIC_DEBUG_PLAYER_BONUS_EVENTS === '1';
 
-function getCashToCoinTip(amount: number) {
+// Future Coin to Cash schedule only; Cash to Coin is always 1:1.
+function getCoinToCashTip(amount: number) {
   if (amount >= 450) return 35;
   if (amount >= 300) return 20;
   if (amount >= 200) return 12;
@@ -155,6 +156,7 @@ function getCashToCoinTip(amount: number) {
   if (amount >= 10) return 1;
   return 0;
 }
+void getCoinToCashTip;
 
 // Legacy helper retained only to avoid a broad page rewrite in this pass.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -908,11 +910,8 @@ export default function PlayerPage() {
 
   const cashoutThisRequestNpr = Math.min(Number(wallet.cash || 0), cashoutRemainingQuotaNpr);
   const transferCoinAmount = Number(transferCoinAmountInput);
-  const transferCoinTip = Number.isFinite(transferCoinAmount)
-    ? getCashToCoinTip(transferCoinAmount)
-    : 0;
   const transferCoinReceived = Number.isFinite(transferCoinAmount)
-    ? transferCoinAmount - transferCoinTip
+    ? transferCoinAmount
     : 0;
   const isTransferCoinWholeNumber =
     transferCoinAmountInput.trim() !== '' &&
@@ -2379,8 +2378,7 @@ export default function PlayerPage() {
     }
 
     const parsedAmount = Number(transferCoinAmountInput);
-    const parsedTip = getCashToCoinTip(parsedAmount);
-    const parsedCoinsReceived = parsedAmount - parsedTip;
+    const parsedCoinsReceived = parsedAmount;
     if (!Number.isFinite(parsedAmount) || parsedAmount !== Math.floor(parsedAmount)) {
       setMessage('Amount must be a whole number.');
       return;
@@ -2406,9 +2404,9 @@ export default function PlayerPage() {
       setCashToCoinTransferId(transferId);
       const result = await createCashToCoinTransferRequest(parsedAmount, transferId);
       setMessage(
-        `Transferred $${formatWalletAmount(result.transferAmount)} cash. Tip: $${formatWalletAmount(
-          result.tipAmount
-        )}. Received ${formatWalletAmount(result.coinsReceived)} coins.`
+        `Transferred $${formatWalletAmount(result.transferAmount)} cash. Received ${formatWalletAmount(
+          result.coinsReceived
+        )} coins.`
       );
       setShowCoinConfirmSplash(false);
       setTransferCoinAmountInput('');
@@ -3819,7 +3817,7 @@ export default function PlayerPage() {
               Cash to Coin Transfer
             </h3>
             <p className="mt-2 text-sm text-amber-100/85">
-              Enter the cash amount you want to convert. A tip is deducted before coins are added.
+              Enter the cash amount you want to convert. Cash converts to coins 1:1.
             </p>
             <p className="mt-3 rounded-xl border border-amber-300/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
               Current Cash Balance:{' '}
@@ -3841,10 +3839,12 @@ export default function PlayerPage() {
               />
             </label>
             <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-              <div className="rounded-xl border border-rose-300/20 bg-rose-500/10 px-3 py-2">
-                <p className="text-xs font-black uppercase tracking-wide text-rose-100/70">Tip</p>
+              <div className="rounded-xl border border-amber-300/20 bg-amber-500/10 px-3 py-2">
+                <p className="text-xs font-black uppercase tracking-wide text-amber-100/70">
+                  Transfer Amount
+                </p>
                 <p className="mt-1 text-lg font-black text-white">
-                  ${formatWalletAmount(Math.max(0, transferCoinTip))}
+                  ${formatWalletAmount(Math.max(0, transferCoinAmount || 0))}
                 </p>
               </div>
               <div className="rounded-xl border border-emerald-300/20 bg-emerald-500/10 px-3 py-2">
@@ -3862,7 +3862,7 @@ export default function PlayerPage() {
               </p>
             ) : (
               <p className="mt-3 text-xs font-semibold text-amber-100/60">
-                Tip is based on the transfer amount tier.
+                Coins You Receive equals Transfer Amount.
               </p>
             )}
             <div className="mt-5 flex gap-3">

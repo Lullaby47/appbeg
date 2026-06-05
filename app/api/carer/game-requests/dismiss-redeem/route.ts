@@ -1,7 +1,7 @@
 import { FieldValue } from 'firebase-admin/firestore';
-import { NextResponse } from 'next/server';
+import { after, NextResponse } from 'next/server';
 
-import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import { apiError, requireApiUser, scopedCoadminUid, type ApiUser } from '@/lib/firebase/apiAuth';
 import { adminDb } from '@/lib/firebase/admin';
 
 type Body = {
@@ -13,7 +13,24 @@ type ScopedRecord = {
   createdBy?: string | null;
 };
 
+type DismissRedeemRecord = ScopedRecord & {
+  type?: string | null;
+  status?: string | null;
+  playerUid?: string | null;
+  playerUsername?: string | null;
+  gameName?: string | null;
+  game?: string | null;
+  requestId?: string | null;
+  fakeRedeem?: boolean | null;
+  fakeRedeemReason?: string | null;
+  automationStatus?: string | null;
+  pokeMessage?: string | null;
+  dismissReasonCode?: string | null;
+  dismissReasonMessage?: string | null;
+};
+
 const DISMISSIBLE_REDEEM_STATUSES = new Set(['pending', 'poked', 'pending_review']);
+const MILKY_WAY_FAKE_REDEEM_CLEANUP_TYPE = 'MILKY_WAY_FAKE_REDEEM_CLEANUP';
 
 function ttlAfterDays(days: number) {
   const DAY_MS = 24 * 60 * 60 * 1000;
@@ -22,6 +39,134 @@ function ttlAfterDays(days: number) {
 
 function recordScope(record: ScopedRecord) {
   return String(record.coadminUid || '').trim() || String(record.createdBy || '').trim();
+}
+
+function normalizeGameKey(value: unknown) {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function isMilkyWayRecord(...records: Array<DismissRedeemRecord | null | undefined>) {
+  return records.some((record) => {
+    const gameKey = normalizeGameKey(record?.gameName || record?.game);
+    return gameKey === 'milkyway';
+  });
+}
+
+function isFakeRedeemDismissal(...records: Array<DismissRedeemRecord | null | undefined>) {
+  return records.some((record) => {
+    const automationStatus = String(record?.automationStatus || '').trim().toLowerCase();
+    const text = [
+      record?.pokeMessage,
+      record?.fakeRedeemReason,
+      record?.dismissReasonCode,
+      record?.dismissReasonMessage,
+    ]
+      .map((value) => String(value || '').toLowerCase())
+      .join(' ');
+
+    return (
+      record?.fakeRedeem === true ||
+      automationStatus === 'fake_redeem' ||
+      text.includes('fake redeem')
+    );
+  });
+}
+
+function milkyWayCleanupTaskId(requestId: string) {
+  return `milky_way_fake_redeem_cleanup__${requestId.replace(/\//g, '_')}`;
+}
+
+function buildMilkyWayCleanupPayload(values: {
+  requestId: string;
+  linkedTaskId: string;
+  playerUid: string;
+  playerUsername?: string | null;
+  gameName?: string | null;
+  coadminUid: string;
+}) {
+  return {
+    cleanupKind: 'milky_way_fake_redeem_modal',
+    game: values.gameName || 'Milky Way',
+    requestId: values.requestId,
+    linkedTaskId: values.linkedTaskId,
+    playerUid: values.playerUid,
+    playerUsername: values.playerUsername || null,
+    coadminUid: values.coadminUid,
+    backgroundOnly: true,
+    warningOnlyOnFailure: true,
+    doNotBlockJobCompletionUi: true,
+    requiredSteps: [
+      'Click the modal Close X if visible.',
+      'Wait until #DialogBySHF is gone or hidden.',
+      'Wait until #DialogBySHFLayer is gone or hidden.',
+      'Wait until no ChangeTreasure.aspx iframe remains.',
+      'Clear search input.',
+      'Submit empty search.',
+      'Verify User Management ready.',
+    ],
+    selectors: {
+      modal: '#DialogBySHF',
+      modalLayer: '#DialogBySHFLayer',
+      redeemIframe: 'iframe[src*="ChangeTreasure.aspx"]',
+      closeCandidates: [
+        '#DialogBySHF .layui-layer-close',
+        '#DialogBySHF [aria-label="Close"]',
+        '#DialogBySHF .close',
+        '.layui-layer-close',
+      ],
+    },
+  };
+}
+
+async function queueMilkyWayFakeRedeemCleanup(values: {
+  requestId: string;
+  linkedTaskId: string;
+  caller: ApiUser;
+  coadminUid: string;
+  playerUid: string;
+  playerUsername?: string | null;
+  gameName?: string | null;
+}) {
+  const cleanupTaskId = milkyWayCleanupTaskId(values.requestId);
+  const jobRef = adminDb.collection('automation_jobs').doc(cleanupTaskId);
+  const payload = buildMilkyWayCleanupPayload({
+    requestId: values.requestId,
+    linkedTaskId: values.linkedTaskId,
+    playerUid: values.playerUid,
+    playerUsername: values.playerUsername,
+    gameName: values.gameName,
+    coadminUid: values.coadminUid,
+  });
+
+  await jobRef.set(
+    {
+      carerUid: values.caller.uid,
+      coadminUid: values.coadminUid,
+      agentId: values.caller.automationAgentId || null,
+      taskId: cleanupTaskId,
+      type: MILKY_WAY_FAKE_REDEEM_CLEANUP_TYPE,
+      status: 'queued',
+      payload,
+      createdByUid: values.caller.uid,
+      createdByName: values.caller.username || 'Carer',
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      startedAt: null,
+      completedAt: null,
+      ttlExpiresAt: null,
+      error: null,
+      attempts: 0,
+      lastHeartbeatAt: null,
+    },
+    { merge: true }
+  );
+
+  console.info('[MILKY_WAY_FAKE_REDEEM_CLEANUP] queued', {
+    requestId: values.requestId,
+    jobId: jobRef.id,
+    carerUid: values.caller.uid,
+    agentId: values.caller.automationAgentId || null,
+  });
 }
 
 function errorStatus(message: string) {
@@ -68,11 +213,7 @@ export async function POST(request: Request) {
         throw new Error('Request not found.');
       }
 
-      const requestData = requestSnap.data() as ScopedRecord & {
-        type?: string;
-        status?: string;
-        playerUid?: string;
-      };
+      const requestData = requestSnap.data() as DismissRedeemRecord;
       if (String(requestData.type || '').toLowerCase() !== 'redeem') {
         throw new Error('Only redeem requests can be dismissed.');
       }
@@ -106,11 +247,12 @@ export async function POST(request: Request) {
         throw new Error('Forbidden: request is outside your scope.');
       }
 
+      let linkedTaskData: DismissRedeemRecord | null = null;
       if (taskSnap.exists) {
-        const taskData = taskSnap.data() as ScopedRecord & { requestId?: string };
-        const taskScope = recordScope(taskData);
+        linkedTaskData = taskSnap.data() as DismissRedeemRecord;
+        const taskScope = recordScope(linkedTaskData);
         if (
-          String(taskData.requestId || requestId).trim() !== requestId ||
+          String(linkedTaskData.requestId || requestId).trim() !== requestId ||
           (taskScope && taskScope !== canonicalRequestScope)
         ) {
           throw new Error('Forbidden: linked task is outside your scope.');
@@ -161,20 +303,62 @@ export async function POST(request: Request) {
         taskDeleted: taskSnap.exists,
         linkedTaskId: taskRef.id,
         retryMarkersCleared: true,
+        queueMilkyWayFakeRedeemCleanup:
+          taskSnap.exists &&
+          isMilkyWayRecord(linkedTaskData, requestData) &&
+          isFakeRedeemDismissal(linkedTaskData, requestData),
+        cleanupContext: {
+          coadminUid: canonicalRequestScope,
+          playerUid,
+          playerUsername:
+            String(linkedTaskData?.playerUsername || requestData.playerUsername || '').trim() ||
+            null,
+          gameName: String(linkedTaskData?.gameName || requestData.gameName || '').trim() || null,
+        },
       };
     });
+
+    const {
+      queueMilkyWayFakeRedeemCleanup: shouldQueueMilkyWayFakeRedeemCleanup,
+      cleanupContext,
+      ...publicOutcome
+    } = outcome;
+
+    if (shouldQueueMilkyWayFakeRedeemCleanup) {
+      const caller = auth.user;
+      after(async () => {
+        try {
+          await queueMilkyWayFakeRedeemCleanup({
+            requestId,
+            linkedTaskId: outcome.linkedTaskId,
+            caller,
+            coadminUid: cleanupContext.coadminUid,
+            playerUid: cleanupContext.playerUid,
+            playerUsername: cleanupContext.playerUsername,
+            gameName: cleanupContext.gameName,
+          });
+        } catch (cleanupError) {
+          console.warn('[MILKY_WAY_FAKE_REDEEM_CLEANUP] queue failed', {
+            requestId,
+            error:
+              cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        }
+      });
+    }
 
     console.info('DISMISS_REDEEM success', {
       requestId,
       callerUid: auth.user.uid,
       callerRole: auth.user.role,
-      ...outcome,
+      ...publicOutcome,
+      milkyWayFakeRedeemCleanupQueued: shouldQueueMilkyWayFakeRedeemCleanup,
     });
-    console.info('[REQUEST_DISMISS] requestId=%s alreadyDismissed=%s', requestId, outcome.alreadyDismissed);
-    console.info('[REQUEST_DISMISS] linkedTaskId=%s', outcome.linkedTaskId);
-    console.info('[REQUEST_DISMISS] linkedTaskDeleted=%s', outcome.taskDeleted);
-    console.info('[REQUEST_DISMISS] retryMarkersCleared=%s', outcome.retryMarkersCleared);
-    return NextResponse.json({ success: true, ...outcome });
+    console.info('[REQUEST_DISMISS] requestId=%s alreadyDismissed=%s', requestId, publicOutcome.alreadyDismissed);
+    console.info('[REQUEST_DISMISS] linkedTaskId=%s', publicOutcome.linkedTaskId);
+    console.info('[REQUEST_DISMISS] linkedTaskDeleted=%s', publicOutcome.taskDeleted);
+    console.info('[REQUEST_DISMISS] retryMarkersCleared=%s', publicOutcome.retryMarkersCleared);
+    return NextResponse.json({ success: true, ...publicOutcome });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to dismiss redeem request.';
     const status = errorStatus(message);
