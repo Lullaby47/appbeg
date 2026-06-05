@@ -420,6 +420,30 @@ function getNepalClockLabel() {
   }).format(new Date());
 }
 
+function NepalClockCard() {
+  const [nepalClock, setNepalClock] = useState(getNepalClockLabel());
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setNepalClock(getNepalClockLabel());
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  return (
+    <div className="rounded-xl border border-blue-500/20 bg-blue-500/10 p-3 sm:p-4 md:rounded-2xl md:p-6">
+      <p className="text-xs text-blue-100/80 sm:text-sm">Nepal Clock</p>
+      <p className="mt-1 text-xl font-bold text-blue-200 sm:text-2xl md:mt-2 md:text-3xl">
+        {nepalClock}
+      </p>
+      <p className="mt-1 text-[11px] text-blue-100/80 sm:text-xs md:mt-2">
+        Timezone: Asia/Kathmandu
+      </p>
+    </div>
+  );
+}
+
 function isNepalNightNow() {
   const hour = Number(
     new Intl.DateTimeFormat('en-US', {
@@ -474,7 +498,6 @@ export default function CarerPage() {
   const [loginDetailsTask, setLoginDetailsTask] = useState<CarerTask | null>(null);
   const [pendingTaskPayloadPreview, setPendingTaskPayloadPreview] = useState<CarerTask | null>(null);
   const [cashBoxNpr, setCashBoxNpr] = useState(0);
-  const [nepalClock, setNepalClock] = useState(getNepalClockLabel());
   const [cashoutLoading, setCashoutLoading] = useState(false);
   const [savingPaymentDetails, setSavingPaymentDetails] = useState(false);
   const [showPaymentDetailsPanel, setShowPaymentDetailsPanel] = useState(false);
@@ -1339,14 +1362,6 @@ export default function CarerPage() {
       void endShiftSession(id).catch(() => undefined);
     };
   }, [carerIdentity?.uid, carerIdentity?.username, coadminUid]);
-
-  useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      setNepalClock(getNepalClockLabel());
-    }, 1000);
-
-    return () => window.clearInterval(intervalId);
-  }, []);
 
   useEffect(() => {
     const pendingCount = claimablePendingTasks.length;
@@ -2655,11 +2670,7 @@ export default function CarerPage() {
             </div>
           </div>
 
-          <div className="rounded-2xl border border-blue-500/20 bg-blue-500/10 p-6">
-            <p className="text-sm text-blue-100/80">Nepal Clock</p>
-            <p className="mt-2 text-3xl font-bold text-blue-200">{nepalClock}</p>
-            <p className="mt-2 text-xs text-blue-100/80">Timezone: Asia/Kathmandu</p>
-          </div>
+          <NepalClockCard />
         </div>
 
         <div className="rounded-2xl border border-violet-500/35 bg-violet-950/30 p-6">

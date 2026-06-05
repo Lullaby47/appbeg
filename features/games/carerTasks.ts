@@ -1547,7 +1547,6 @@ export function listenToAvailableCarerTasks(
 
   const unsubscribeActive = onSnapshot(
     activeTasksQuery,
-    { includeMetadataChanges: true },
     (snapshot) => {
       const snapshotReceivedAt = new Date().toISOString();
       const docChanges = snapshot.docChanges();
@@ -1593,7 +1592,6 @@ export function listenToAvailableCarerTasks(
   );
   const unsubscribeCompleted = onSnapshot(
     completedTasksQuery,
-    { includeMetadataChanges: true },
     (snapshot) => {
       const snapshotReceivedAt = new Date().toISOString();
       const docChanges = snapshot.docChanges();

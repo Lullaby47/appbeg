@@ -177,10 +177,10 @@ export default function PlayerPage() {
 
           <FireSurface className="player-fire-load-card" tone="load" eyebrow="Load Coin" title="Purple ignition">
             <div className="player-fire-load">
-              <p>One-time code ready with visible moving violet flame layers and neon glass depth.</p>
+              <p>AppBeg username ready with visible moving violet flame layers and neon glass depth.</p>
               <div className="player-fire-code">
-                <span>16-digit code</span>
-                <strong>7744 1088 2291 5520</strong>
+                <span>AppBeg username</span>
+                <strong>Miyos9</strong>
               </div>
               <button type="button" className="fire-action fire-action--load">
                 Load Coins

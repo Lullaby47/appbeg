@@ -14,7 +14,6 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import imageCompression from 'browser-image-compression';
 import { onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
@@ -2740,6 +2739,7 @@ export default function CoadminPage() {
 
   async function handleImageSelect(file: File) {
     try {
+      const { default: imageCompression } = await import('browser-image-compression');
       const compressed = await imageCompression(file, {
         maxSizeMB: 0.7,
         maxWidthOrHeight: 1000,
@@ -2898,6 +2898,7 @@ export default function CoadminPage() {
     setPaymentDetailUploading(true);
     setMessage('');
     try {
+      const { default: imageCompression } = await import('browser-image-compression');
       const next = [...paymentDetailPhotos];
       for (const file of Array.from(files)) {
         const compressed = await imageCompression(file, {
@@ -4687,8 +4688,8 @@ export default function CoadminPage() {
                 Upload one or more images (QR codes, bank apps, e-wallet screenshots). When a
                 player taps <span className="text-neutral-200">Load coin</span> and then{' '}
                 <span className="text-neutral-200">Add coins</span>, they see{' '}
-                <strong>one image chosen at random</strong> and a 16-digit code that expires in 10
-                minutes.
+                <strong>one image chosen at random</strong> and use their AppBeg username as the
+                payment note/remark during the 10-minute session.
               </p>
 
               <div className="mt-6 rounded-2xl border border-cyan-500/25 bg-black/30 p-5">

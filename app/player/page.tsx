@@ -5,11 +5,11 @@ import '../../styles/player-fire.css';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent, TouchEvent } from 'react';
 import Link from 'next/link';
+import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { AnimatePresence, motion } from 'motion/react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, onSnapshot, updateDoc } from 'firebase/firestore';
-import imageCompression from 'browser-image-compression';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
 import ImageUploadField from '@/components/common/ImageUploadField';
@@ -129,18 +129,21 @@ import {
   sortByNewest,
 } from './utils';
 
-import Lobby from './views/Lobby';
-import Bonus from './views/Bonus';
-import Play from './views/Play';
-import Vault from './views/Vault';
-import EarnCoins from './views/EarnCoins';
-import Agents from './views/Agents';
+const Lobby = dynamic(() => import('./views/Lobby'), { loading: () => null });
+const Bonus = dynamic(() => import('./views/Bonus'), { loading: () => null });
+const Play = dynamic(() => import('./views/Play'), { loading: () => null });
+const Vault = dynamic(() => import('./views/Vault'), { loading: () => null });
+const EarnCoins = dynamic(() => import('./views/EarnCoins'), { loading: () => null });
+const Agents = dynamic(() => import('./views/Agents'), { loading: () => null });
 
 const GAME_VAULT_MIDNIGHT_PARTY_REASON = 'game_vault_midnight_party_pending';
 const GAME_VAULT_MIDNIGHT_PARTY_WARNING_MARKER =
   'players can only deposit again after selecting whether or not to participate in the midnight party program';
 const GAME_VAULT_MIDNIGHT_PARTY_PLAYER_MESSAGE =
   'Recharge blocked: Please open Game Vault and choose whether to participate in the Midnight Party program for your previous deposit before depositing again.';
+const PLAYER_BONUS_DEBUG =
+  process.env.NODE_ENV !== 'production' &&
+  process.env.NEXT_PUBLIC_DEBUG_PLAYER_BONUS_EVENTS === '1';
 
 function getCashToCoinTip(amount: number) {
   if (amount >= 450) return 35;
@@ -229,6 +232,7 @@ export default function PlayerPage() {
     normalizeMaintenanceBreak(null)
   );
   const [wallet, setWallet] = useState<PlayerWallet>({ coin: 0, cash: 0 });
+  const [playerUsername, setPlayerUsername] = useState('');
   const [referralCode, setReferralCode] = useState('');
   const [referredByPlayerName, setReferredByPlayerName] = useState('');
   const [referredByPlayerUid, setReferredByPlayerUid] = useState('');
@@ -1508,6 +1512,7 @@ export default function PlayerPage() {
       if (!nextPlayerUid) {
         setIsBlockedPlayer(false);
         setWallet({ coin: 0, cash: 0 });
+        setPlayerUsername('');
         setPlayerCoadminUid('');
         setPaymentDetailsNoticeVersion(0);
         setDismissedPaymentDetailsNoticeVersion(0);
@@ -1529,13 +1534,14 @@ export default function PlayerPage() {
       try {
         const playerSnap = await getDoc(doc(db, 'users', nextPlayerUid));
         const playerData = playerSnap.data() as
-          | { status?: string; coin?: number; cash?: number }
+          | { status?: string; coin?: number; cash?: number; username?: string }
           | undefined;
         setIsBlockedPlayer(playerData?.status === 'disabled');
         setWallet({
           coin: Number(playerData?.coin || 0),
           cash: Number(playerData?.cash || 0),
         });
+        setPlayerUsername(String(playerData?.username || '').trim());
         const resolvedCoadminUid = resolveCoadminUid({
           uid: nextPlayerUid,
           ...(playerData as Record<string, unknown>),
@@ -1547,6 +1553,7 @@ export default function PlayerPage() {
       } catch {
         setIsBlockedPlayer(false);
         setWallet({ coin: 0, cash: 0 });
+        setPlayerUsername('');
         setPlayerCoadminUid('');
         setBonusEvents([]);
         setUsernameCarersByGame({});
@@ -1747,22 +1754,26 @@ export default function PlayerPage() {
       return;
     }
 
-    console.log('[player bonusEvents] coadminUid', playerCoadminUid);
-    console.log('[player bonusEvents] listener:start');
+    if (PLAYER_BONUS_DEBUG) {
+      console.info('[player bonusEvents] coadminUid', playerCoadminUid);
+      console.info('[player bonusEvents] listener:start');
+    }
     const unsubscribe = listenBonusEventsByCoadmin(
       playerCoadminUid,
       (events) => {
-        console.log('[player bonusEvents] render-values', {
-          snapshotSize: events.length,
-          firstEventId: events[0]?.id || null,
-          firstEventPercent:
-            events.length > 0
-              ? Number(events[0].bonusPercentage || events[0].bonus_percentage || 0)
-              : null,
-          percents: events.slice(0, 10).map((event) =>
-            Number(event.bonusPercentage || event.bonus_percentage || 0)
-          ),
-        });
+        if (PLAYER_BONUS_DEBUG) {
+          console.info('[player bonusEvents] render-values', {
+            snapshotSize: events.length,
+            firstEventId: events[0]?.id || null,
+            firstEventPercent:
+              events.length > 0
+                ? Number(events[0].bonusPercentage || events[0].bonus_percentage || 0)
+                : null,
+            percents: events.slice(0, 10).map((event) =>
+              Number(event.bonusPercentage || event.bonus_percentage || 0)
+            ),
+          });
+        }
         setBonusEvents(events);
       },
       (error) => {
@@ -1772,17 +1783,21 @@ export default function PlayerPage() {
       {
         skipTimeWindowFilter: true,
         onSnapshotDebug: ({ snapshotSize, firstDocData }) => {
-          console.log('[player bonusEvents] snapshot size', snapshotSize);
-          console.log('[player bonusEvents] first doc', firstDocData);
+          if (PLAYER_BONUS_DEBUG) {
+            console.info('[player bonusEvents] snapshot size', snapshotSize);
+            console.info('[player bonusEvents] first doc', firstDocData);
+          }
         },
       }
     );
 
     return () => {
-      console.info('[player] bonus-events-listener:stop', {
-        playerCoadminUid,
-        activeView,
-      });
+      if (PLAYER_BONUS_DEBUG) {
+        console.info('[player] bonus-events-listener:stop', {
+          playerCoadminUid,
+          activeView,
+        });
+      }
       unsubscribe();
     };
   }, [activeView, playerCoadminUid, shouldListenToBonusEvents]);
@@ -1798,6 +1813,7 @@ export default function PlayerPage() {
         if (!snapshot.exists()) {
           setWallet({ coin: 0, cash: 0 });
           setIsBlockedPlayer(false);
+          setPlayerUsername('');
           return;
         }
 
@@ -1809,6 +1825,7 @@ export default function PlayerPage() {
           coadminUid?: string | null;
           createdBy?: string | null;
           referralCode?: string;
+          username?: string;
           referredByUid?: string;
           referredByUsername?: string;
           referralBonusNotice?: string;
@@ -1823,6 +1840,7 @@ export default function PlayerPage() {
         setDismissedPaymentDetailsNoticeVersion(
           Number(playerData.dismissedPaymentDetailsNoticeVersion || 0)
         );
+        setPlayerUsername(String(playerData.username || '').trim());
         const resolvedCoadminUid = resolveCoadminUid({
           uid: playerUid,
           ...playerData,
@@ -1858,6 +1876,7 @@ export default function PlayerPage() {
       },
       () => {
         setWallet({ coin: 0, cash: 0 });
+        setPlayerUsername('');
         setDismissedPaymentDetailsNoticeVersion(0);
         setReferralCode('');
         setReferredByPlayerName('');
@@ -2188,6 +2207,7 @@ export default function PlayerPage() {
 
   async function handleImageSelect(file: File) {
     try {
+      const { default: imageCompression } = await import('browser-image-compression');
       const compressed = await imageCompression(file, {
         maxSizeMB: 0.7,
         maxWidthOrHeight: 1000,
@@ -3689,9 +3709,8 @@ export default function PlayerPage() {
           >
             <h3 className="text-2xl font-black">Load coin</h3>
             <p className="mt-2 text-sm text-violet-100/80">
-              Get the one-time reference image and 16-digit code from your co-admin. When depositing,
-              you must paste this 16-digit code in the payment note/remark. If the code is missing,
-              your payment may not be matched and could be lost. The code expires in 10 minutes.
+              Copy your AppBeg username and paste it in the payment note/remark. This helps us match
+              your payment fast.
             </p>
 
             {!activeCoinLoad ? (
@@ -3730,17 +3749,22 @@ export default function PlayerPage() {
                 </div>
                 <div>
                   <p className="text-xs font-bold uppercase tracking-wider text-violet-200/80">
-                    Your 16-digit code
+                    Your AppBeg username
                   </p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <code className="flex-1 break-all rounded-xl border border-violet-400/30 bg-black/50 px-3 py-2 text-center text-lg font-mono font-bold tracking-wider text-white sm:text-xl">
-                      {activeCoinLoad.hashCode}
+                      {playerUsername || 'Username loading...'}
                     </code>
                     <button
                       type="button"
                       onClick={async (e) => {
+                        const username = playerUsername.trim();
+                        if (!username) {
+                          showClipboardToast('Username is not ready yet.', 'warn', e);
+                          return;
+                        }
                         try {
-                          await navigator.clipboard.writeText(activeCoinLoad.hashCode);
+                          await navigator.clipboard.writeText(username);
                           showClipboardToast('Copied.', 'success', e);
                         } catch {
                           showClipboardToast('Could not copy.', 'error', e);
@@ -3756,7 +3780,8 @@ export default function PlayerPage() {
                   Time left: {formatLoadCoinCountdown(loadCoinTimeLeftSec)}
                 </p>
                 <p className="text-center text-xs text-neutral-400">
-                  When the timer ends, this screen closes and the code is removed from the server.
+                  When the timer ends, this screen closes and the payment image session is removed
+                  from the server.
                 </p>
               </div>
             )}

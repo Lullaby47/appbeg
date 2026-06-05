@@ -21,6 +21,10 @@ import { upsertCarerTaskForPlayerGameRequest } from '@/features/games/carerTasks
 import type { PlayerGameRequest } from '@/features/games/playerGameRequests';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 
+const BONUS_EVENTS_DEBUG =
+  process.env.NODE_ENV !== 'production' &&
+  process.env.NEXT_PUBLIC_DEBUG_BONUS_EVENTS === '1';
+
 export type BonusEvent = {
   id: string;
   eventId?: string;
@@ -662,7 +666,9 @@ export function listenBonusEventsByCoadmin(
   }
 
   let recordedFirstSnapshot = false;
-  console.info('[bonusEvents] listener:start', { coadminUid, limit: MAX_ACTIVE_BONUS_EVENTS });
+  if (BONUS_EVENTS_DEBUG) {
+    console.info('[bonusEvents] listener:start', { coadminUid, limit: MAX_ACTIVE_BONUS_EVENTS });
+  }
   const unsubscribe = onSnapshot(
     buildActiveBonusEventsQuery(coadminUid),
     (snapshot) => {
@@ -685,20 +691,22 @@ export function listenBonusEventsByCoadmin(
         snapshotSize: snapshot.size,
         firstDocData: firstDoc ? (firstDoc.data() as Record<string, unknown>) : null,
       });
-      console.info('[bonusEvents] listener:snapshot', {
-        coadminUid,
-        snapshotSize: snapshot.size,
-        activeFilteredSize: activeEvents.length,
-        skipTimeWindowFilter: Boolean(options?.skipTimeWindowFilter),
-        firstDocId: firstDoc?.id || null,
-        firstDocStatus: String(firstData?.status || ''),
-        firstDocCoadminUid: String(firstData?.coadminUid || ''),
-        firstRenderedBonusPercentage:
-          activeEvents.length > 0 ? Number(activeEvents[0].bonusPercentage || 0) : null,
-        renderedBonusPercentages: activeEvents.slice(0, 8).map((event) =>
-          Number(event.bonusPercentage || event.bonus_percentage || 0)
-        ),
-      });
+      if (BONUS_EVENTS_DEBUG) {
+        console.info('[bonusEvents] listener:snapshot', {
+          coadminUid,
+          snapshotSize: snapshot.size,
+          activeFilteredSize: activeEvents.length,
+          skipTimeWindowFilter: Boolean(options?.skipTimeWindowFilter),
+          firstDocId: firstDoc?.id || null,
+          firstDocStatus: String(firstData?.status || ''),
+          firstDocCoadminUid: String(firstData?.coadminUid || ''),
+          firstRenderedBonusPercentage:
+            activeEvents.length > 0 ? Number(activeEvents[0].bonusPercentage || 0) : null,
+          renderedBonusPercentages: activeEvents.slice(0, 8).map((event) =>
+            Number(event.bonusPercentage || event.bonus_percentage || 0)
+          ),
+        });
+      }
       onChange(activeEvents);
     },
     (error) => {
@@ -710,7 +718,9 @@ export function listenBonusEventsByCoadmin(
     }
   );
   return () => {
-    console.info('[bonusEvents] listener:stop', { coadminUid });
+    if (BONUS_EVENTS_DEBUG) {
+      console.info('[bonusEvents] listener:stop', { coadminUid });
+    }
     unsubscribe();
   };
 }

@@ -1273,15 +1273,16 @@ export function listenAutomationUiStatusByTask(
 
   return onSnapshot(
     jobsQuery,
-    { includeMetadataChanges: true },
     (snapshot) => {
-      console.info(
-        '[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s docChanges=%s at=%s',
-        snapshot.metadata.fromCache,
-        snapshot.metadata.hasPendingWrites,
-        snapshot.docChanges().length,
-        new Date().toISOString()
-      );
+      if (process.env.NEXT_PUBLIC_DEBUG_AUTOMATION_LISTENER === '1') {
+        console.info(
+          '[FIRESTORE] snapshot fromCache=%s hasPendingWrites=%s docChanges=%s at=%s',
+          snapshot.metadata.fromCache,
+          snapshot.metadata.hasPendingWrites,
+          snapshot.docChanges().length,
+          new Date().toISOString()
+        );
+      }
       const statusByTaskId: Record<string, AutomationUiStatus> = {};
       const freshJobByTaskId: Record<string, boolean> = {};
       const seenTaskIds = new Set<string>();

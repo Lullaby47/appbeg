@@ -18,7 +18,7 @@ import { auth, db } from '@/lib/firebase/client';
 import { uploadImageToCloudinary } from '@/lib/cloudinary/uploadImage';
 
 /**
- * Firestore: collection `coinLoadSessions` (fields: playerUid, coadminUid, hashCode,
+ * Firestore: collection `coinLoadSessions` (fields: playerUid, coadminUid,
  * paymentPhotoUrl, createdAt, expiresAt). Rules should allow: create if playerUid ==
  * auth.uid; read/delete if resource.data.playerUid == auth.uid.
  * Storage path: `coadmin-payment-details/{coadminUid}/...` — allow write if auth.uid == coadminUid.
@@ -32,7 +32,6 @@ export type CoinLoadSession = {
   id: string;
   playerUid: string;
   coadminUid: string;
-  hashCode: string;
   paymentPhotoUrl: string;
   createdAt: Timestamp;
   expiresAt: Timestamp;
@@ -42,22 +41,6 @@ export type PaymentDetailPhoto = {
   imageUrl: string;
   imagePublicId: string;
 };
-
-function generate16DigitCode(): string {
-  const bytes = new Uint8Array(16);
-  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < 16; i += 1) {
-      bytes[i] = Math.floor(Math.random() * 256);
-    }
-  }
-  let out = '';
-  for (let i = 0; i < 16; i += 1) {
-    out += String(bytes[i]! % 10);
-  }
-  return out;
-}
 
 function randomItem<T>(items: T[]): T {
   return items[Math.floor(Math.random() * items.length)]!;
@@ -141,7 +124,7 @@ async function clearPlayerCoinLoadDocs(playerUid: string): Promise<void> {
 }
 
 /**
- * Create a 10-minute coin load session: random coadmin payment photo + 16-digit code.
+ * Create a 10-minute coin load session with a random coadmin payment photo.
  * Removes any previous sessions for this player.
  */
 export async function createCoinLoadSession(coadminUid: string): Promise<CoinLoadSession> {
@@ -160,7 +143,6 @@ export async function createCoinLoadSession(coadminUid: string): Promise<CoinLoa
     );
   }
   const paymentPhotoUrl = randomItem(photos).imageUrl;
-  const hashCode = generate16DigitCode();
   const now = Date.now();
   const expiresAt = Timestamp.fromMillis(now + DURATION_MS);
 
@@ -169,7 +151,6 @@ export async function createCoinLoadSession(coadminUid: string): Promise<CoinLoa
   const refDoc = await addDoc(collection(db, SESSIONS), {
     playerUid,
     coadminUid,
-    hashCode,
     paymentPhotoUrl,
     createdAt: serverTimestamp(),
     expiresAt,
@@ -179,7 +160,6 @@ export async function createCoinLoadSession(coadminUid: string): Promise<CoinLoa
     id: refDoc.id,
     playerUid,
     coadminUid,
-    hashCode,
     paymentPhotoUrl,
     createdAt: Timestamp.fromMillis(now),
     expiresAt,
@@ -220,7 +200,6 @@ export function listenCoinLoadSession(
         id: snap.id,
         playerUid: d.playerUid as string,
         coadminUid: d.coadminUid as string,
-        hashCode: d.hashCode as string,
         paymentPhotoUrl: d.paymentPhotoUrl as string,
         createdAt: d.createdAt as Timestamp,
         expiresAt: d.expiresAt as Timestamp,
