@@ -1,0 +1,354 @@
+import 'server-only';
+
+import type { DocumentSnapshot } from 'firebase-admin/firestore';
+import { Pool } from 'pg';
+
+import { adminDb } from '@/lib/firebase/admin';
+
+type AutomationJobMirrorRow = {
+  jobId: string;
+  taskId: string;
+  linkedTaskId: string;
+  coadminUid: string;
+  carerUid: string;
+  playerUid: string;
+  agentId: string;
+  createdByUid: string;
+  createdByName: string;
+  gameId: string;
+  game: string;
+  type: string;
+  requestType: string;
+  status: string;
+  claimedStatus: string;
+  payload: unknown;
+  result: unknown;
+  errorMessage: string;
+  cancelledReason: string;
+  needsManualReview: boolean | null;
+  partialSuccess: boolean | null;
+  attempts: number | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  failedAt: string | null;
+  lastHeartbeatAt: string | null;
+  ttlExpiresAt: string | null;
+  rawFirestoreData: unknown;
+};
+
+let pool: Pool | null = null;
+const SQL_TIMEOUT_MS = 5_000;
+
+function databaseUrl() {
+  return String(process.env.DATABASE_URL || process.env.POSTGRES_URL || '').trim();
+}
+
+function getPool() {
+  const connectionString = databaseUrl();
+  if (!connectionString) return null;
+  if (!pool) {
+    pool = new Pool({
+      connectionString,
+      connectionTimeoutMillis: SQL_TIMEOUT_MS,
+      idleTimeoutMillis: 10_000,
+      query_timeout: SQL_TIMEOUT_MS,
+      statement_timeout: SQL_TIMEOUT_MS,
+    });
+  }
+  return pool;
+}
+
+function cleanText(value: unknown) {
+  return String(value || '').trim();
+}
+
+function toDate(value: unknown): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (typeof value === 'string') {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  if (typeof value === 'object') {
+    const maybe = value as { toDate?: () => Date; toMillis?: () => number; seconds?: number; _seconds?: number };
+    if (typeof maybe.toDate === 'function') return maybe.toDate();
+    if (typeof maybe.toMillis === 'function') return new Date(maybe.toMillis());
+    if (typeof maybe.seconds === 'number') return new Date(maybe.seconds * 1000);
+    if (typeof maybe._seconds === 'number') return new Date(maybe._seconds * 1000);
+  }
+  return null;
+}
+
+function toIsoString(value: unknown): string | null {
+  return toDate(value)?.toISOString() || null;
+}
+
+function normalizeJson(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (value === null) return null;
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(normalizeJson);
+  if (typeof value === 'object') {
+    const date = toDate(value);
+    if (date) return date.toISOString();
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, child]) => [
+        key,
+        normalizeJson(child),
+      ])
+    );
+  }
+  return value;
+}
+
+function boolOrNull(value: unknown) {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function intOrNull(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+}
+
+function nestedObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+export function normalizeAutomationJobForCache(
+  jobId: string,
+  data: Record<string, unknown>
+): AutomationJobMirrorRow {
+  const payload = nestedObject(data.payload);
+  const originalTask = nestedObject(payload.originalTask);
+  const result = data.result === undefined ? null : data.result;
+  const type = cleanText(data.type || data.taskType || payload.type || originalTask.type);
+  const game = cleanText(
+    data.game ||
+      data.gameName ||
+      payload.game ||
+      payload.gameName ||
+      originalTask.gameName ||
+      originalTask.game
+  );
+
+  return {
+    jobId: cleanText(jobId),
+    taskId: cleanText(data.taskId || payload.taskId || originalTask.id),
+    linkedTaskId: cleanText(data.linkedTaskId || payload.linkedTaskId),
+    coadminUid: cleanText(data.coadminUid || payload.coadminUid || originalTask.coadminUid),
+    carerUid: cleanText(data.carerUid || data.createdByUid),
+    playerUid: cleanText(data.playerUid || payload.playerUid || originalTask.playerUid),
+    agentId: cleanText(data.agentId),
+    createdByUid: cleanText(data.createdByUid || data.carerUid),
+    createdByName: cleanText(data.createdByName || data.carerName || data.assignedCarerUsername),
+    gameId: cleanText(data.gameId || payload.gameId || originalTask.gameId),
+    game,
+    type,
+    requestType: cleanText(data.requestType || payload.requestType || payload.type || type),
+    status: cleanText(data.status),
+    claimedStatus: cleanText(data.claimedStatus),
+    payload: normalizeJson(data.payload) || null,
+    result: normalizeJson(result),
+    errorMessage: cleanText(data.error || data.errorMessage),
+    cancelledReason: cleanText(data.cancelledReason),
+    needsManualReview: boolOrNull(data.needsManualReview),
+    partialSuccess: boolOrNull(data.partial_success || data.partialSuccess),
+    attempts: intOrNull(data.attempts),
+    createdAt: toIsoString(data.createdAt),
+    updatedAt: toIsoString(data.updatedAt),
+    startedAt: toIsoString(data.startedAt),
+    completedAt: toIsoString(data.completedAt),
+    failedAt: toIsoString(data.failedAt),
+    lastHeartbeatAt: toIsoString(data.lastHeartbeatAt),
+    ttlExpiresAt: toIsoString(data.ttlExpiresAt),
+    rawFirestoreData: normalizeJson(data) || {},
+  };
+}
+
+export async function mirrorAutomationJobCache(
+  jobId: string,
+  data: Record<string, unknown>,
+  source = 'appbeg'
+) {
+  const db = getPool();
+  if (!db) return false;
+
+  try {
+    const row = normalizeAutomationJobForCache(jobId, data);
+    if (!row.jobId) throw new Error('Missing automation job id.');
+
+    await db.query(
+      `
+        INSERT INTO public.automation_jobs_cache (
+          job_id,
+          task_id,
+          linked_task_id,
+          coadmin_uid,
+          carer_uid,
+          player_uid,
+          agent_id,
+          created_by_uid,
+          created_by_name,
+          game_id,
+          game,
+          type,
+          request_type,
+          status,
+          claimed_status,
+          payload,
+          result,
+          error_message,
+          cancelled_reason,
+          needs_manual_review,
+          partial_success,
+          attempts,
+          created_at,
+          updated_at,
+          started_at,
+          completed_at,
+          failed_at,
+          last_heartbeat_at,
+          ttl_expires_at,
+          raw_firestore_data,
+          source,
+          mirrored_at,
+          deleted_at
+        )
+        VALUES (
+          $1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''),
+          NULLIF($6, ''), NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''),
+          NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, ''), NULLIF($13, ''),
+          NULLIF($14, ''), NULLIF($15, ''), $16::jsonb, $17::jsonb,
+          NULLIF($18, ''), NULLIF($19, ''), $20, $21, $22,
+          $23::timestamptz, $24::timestamptz, $25::timestamptz,
+          $26::timestamptz, $27::timestamptz, $28::timestamptz,
+          $29::timestamptz, $30::jsonb, $31, now(), NULL
+        )
+        ON CONFLICT (job_id) DO UPDATE SET
+          task_id = EXCLUDED.task_id,
+          linked_task_id = EXCLUDED.linked_task_id,
+          coadmin_uid = EXCLUDED.coadmin_uid,
+          carer_uid = EXCLUDED.carer_uid,
+          player_uid = EXCLUDED.player_uid,
+          agent_id = EXCLUDED.agent_id,
+          created_by_uid = EXCLUDED.created_by_uid,
+          created_by_name = EXCLUDED.created_by_name,
+          game_id = EXCLUDED.game_id,
+          game = EXCLUDED.game,
+          type = EXCLUDED.type,
+          request_type = EXCLUDED.request_type,
+          status = EXCLUDED.status,
+          claimed_status = EXCLUDED.claimed_status,
+          payload = EXCLUDED.payload,
+          result = EXCLUDED.result,
+          error_message = EXCLUDED.error_message,
+          cancelled_reason = EXCLUDED.cancelled_reason,
+          needs_manual_review = EXCLUDED.needs_manual_review,
+          partial_success = EXCLUDED.partial_success,
+          attempts = EXCLUDED.attempts,
+          created_at = COALESCE(public.automation_jobs_cache.created_at, EXCLUDED.created_at),
+          updated_at = EXCLUDED.updated_at,
+          started_at = EXCLUDED.started_at,
+          completed_at = EXCLUDED.completed_at,
+          failed_at = EXCLUDED.failed_at,
+          last_heartbeat_at = EXCLUDED.last_heartbeat_at,
+          ttl_expires_at = EXCLUDED.ttl_expires_at,
+          raw_firestore_data = EXCLUDED.raw_firestore_data,
+          source = EXCLUDED.source,
+          mirrored_at = now(),
+          deleted_at = NULL
+      `,
+      [
+        row.jobId,
+        row.taskId,
+        row.linkedTaskId,
+        row.coadminUid,
+        row.carerUid,
+        row.playerUid,
+        row.agentId,
+        row.createdByUid,
+        row.createdByName,
+        row.gameId,
+        row.game,
+        row.type,
+        row.requestType,
+        row.status,
+        row.claimedStatus,
+        JSON.stringify(row.payload),
+        JSON.stringify(row.result),
+        row.errorMessage,
+        row.cancelledReason,
+        row.needsManualReview,
+        row.partialSuccess,
+        row.attempts,
+        row.createdAt,
+        row.updatedAt,
+        row.startedAt,
+        row.completedAt,
+        row.failedAt,
+        row.lastHeartbeatAt,
+        row.ttlExpiresAt,
+        JSON.stringify(row.rawFirestoreData),
+        source,
+      ]
+    );
+    console.info('[AUTOMATION_JOBS_CACHE] mirror upsert ok', { jobId: row.jobId });
+    return true;
+  } catch (error) {
+    console.error('[AUTOMATION_JOBS_CACHE] mirror failed', { jobId, error });
+    return false;
+  }
+}
+
+export async function mirrorAutomationJobSnapshot(snap: DocumentSnapshot, source = 'appbeg') {
+  if (!snap.exists) return false;
+  return mirrorAutomationJobCache(snap.id, (snap.data() || {}) as Record<string, unknown>, source);
+}
+
+export async function mirrorAutomationJobById(jobId: string, source = 'appbeg') {
+  const cleanJobId = cleanText(jobId);
+  if (!cleanJobId) return false;
+  try {
+    const snap = await adminDb.collection('automation_jobs').doc(cleanJobId).get();
+    if (!snap.exists) return false;
+    return mirrorAutomationJobSnapshot(snap, source);
+  } catch (error) {
+    console.error('[AUTOMATION_JOBS_CACHE] mirror failed', { jobId: cleanJobId, error });
+    return false;
+  }
+}
+
+export async function tombstoneAutomationJobCache(jobId: string, source = 'appbeg') {
+  const db = getPool();
+  const cleanJobId = cleanText(jobId);
+  if (!db || !cleanJobId) return false;
+
+  try {
+    await db.query(
+      `
+        INSERT INTO public.automation_jobs_cache (
+          job_id,
+          raw_firestore_data,
+          source,
+          mirrored_at,
+          deleted_at
+        )
+        VALUES ($1, '{}'::jsonb, $2, now(), now())
+        ON CONFLICT (job_id) DO UPDATE SET
+          source = EXCLUDED.source,
+          mirrored_at = now(),
+          deleted_at = now()
+      `,
+      [cleanJobId, source]
+    );
+    console.info('[AUTOMATION_JOBS_CACHE] tombstone ok', { jobId: cleanJobId });
+    return true;
+  } catch (error) {
+    console.error('[AUTOMATION_JOBS_CACHE] tombstone failed', { jobId: cleanJobId, error });
+    return false;
+  }
+}

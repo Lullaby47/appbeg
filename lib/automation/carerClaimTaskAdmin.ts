@@ -15,6 +15,7 @@ import {
   resolveTaskTypeLabel,
   type GameLoginDetailsInput,
 } from '@/lib/automation/automationClaimPayload';
+import { mirrorAutomationJobById } from '@/lib/sql/automationJobsCache';
 
 const AUTOMATION_JOB_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -211,6 +212,7 @@ export async function claimCarerTaskAsAdmin(input: {
   const totalStartedAt = Date.now();
   console.info('[START_TIMING] server claim start at=%s taskId=%s source=admin_claimCarerTaskAsAdmin', new Date(totalStartedAt).toISOString(), input.taskId);
   const taskRef = adminDb.collection('carerTasks').doc(input.taskId);
+  const affectedJobIds = new Set<string>();
 
   const loadSameTaskJobRefs = async (options: { isPendingCleanTask: boolean }) => {
     const startedAt = Date.now();
@@ -598,6 +600,7 @@ export async function claimCarerTaskAsAdmin(input: {
             error: 'Stale automation job cleared while reclaiming pending task.',
             cancelledReason: isPendingCleanTask ? 'stale_returned_to_pending' : 'pending_reclaim_stale_job',
           });
+          affectedJobIds.add(job.ref.id);
           console.info('[RETURN_TO_PENDING] stale active job cancelled', {
             taskId: taskSnap.id,
             jobId: job.ref.id,
@@ -700,6 +703,7 @@ export async function claimCarerTaskAsAdmin(input: {
             ? 'failed_automation_claim_released'
             : 'stale_claim_cleared',
         });
+        affectedJobIds.add(staleOrFailedJob.ref.id);
         console.info('[automation] start-task:decision', {
           taskId: taskSnap.id,
           decision: automationError
@@ -850,6 +854,7 @@ export async function claimCarerTaskAsAdmin(input: {
         lastHeartbeatAt: null,
       };
       transaction.set(jobRef, jobData);
+      affectedJobIds.add(jobRef.id);
       console.info(
         '[START_TIMING] automation job create done at=%s jobId=%s durationMs=%s taskId=%s',
         new Date().toISOString(),
@@ -958,6 +963,10 @@ export async function claimCarerTaskAsAdmin(input: {
 
   if (!result) {
     throw lastError instanceof Error ? lastError : new Error('Failed to queue the task.');
+  }
+  affectedJobIds.add(result.jobId);
+  for (const jobId of affectedJobIds) {
+    void mirrorAutomationJobById(jobId, 'appbeg_admin');
   }
   console.info(
     '[START_TIMING] server write completed at=%s durationMs=%s taskId=%s jobId=%s status=%s source=admin_claimCarerTaskAsAdmin',

@@ -15,6 +15,7 @@ import {
 
 import { auth, db } from '@/lib/firebase/client';
 import { belongsToCoadmin, getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
+import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 
 export type GameLogin = {
   id: string;
@@ -29,6 +30,8 @@ export type GameLogin = {
   createdAt?: unknown;
 };
 
+const GAME_LOGINS_CACHE_TIMEOUT_MS = 5_000;
+
 function normalizeSiteUrl(value: string) {
   const trimmed = value.trim();
 
@@ -37,6 +40,123 @@ function normalizeSiteUrl(value: string) {
   }
 
   return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+async function fetchWithGameLoginsCacheTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit
+) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GAME_LOGINS_CACHE_TIMEOUT_MS);
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function tryReadGameLoginsCacheByCoadmin(coadminUid: string): Promise<GameLogin[] | null> {
+  try {
+    const headers = await getFirebaseApiHeaders(false);
+    const response = await fetchWithGameLoginsCacheTimeout(
+      `/api/game-logins/cache?coadminUid=${encodeURIComponent(coadminUid)}`,
+      {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+      }
+    );
+    if (!response.ok) {
+      console.info('[GAME_LOGINS_CACHE] fallback firestore', {
+        coadminUid,
+        reason: `cache_api_status_${response.status}`,
+      });
+      return null;
+    }
+
+    const payload = (await response.json()) as {
+      gameLogins?: GameLogin[];
+      source?: string;
+    };
+    if (Array.isArray(payload.gameLogins)) {
+      return payload.gameLogins;
+    }
+    return null;
+  } catch (error) {
+    console.info('[GAME_LOGINS_CACHE] fallback firestore', {
+      coadminUid,
+      reason: 'cache_api_failed',
+      error,
+    });
+    return null;
+  }
+}
+
+async function mirrorGameLoginCacheAfterFirebaseSave(gameLogin: GameLogin) {
+  try {
+    const response = await fetchWithGameLoginsCacheTimeout('/api/game-logins/cache', {
+      method: 'POST',
+      headers: await getFirebaseApiHeaders(),
+      body: JSON.stringify({
+        action: 'upsert',
+        gameLogin,
+      }),
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      console.warn('[GAME_LOGINS_CACHE] mirror failed', {
+        action: 'upsert',
+        id: gameLogin.id,
+        status: response.status,
+      });
+    }
+  } catch (error) {
+    console.warn('[GAME_LOGINS_CACHE] mirror failed', {
+      action: 'upsert',
+      id: gameLogin.id,
+      error,
+    });
+  }
+}
+
+async function mirrorGameLoginCacheDeleteAfterFirebaseSave(gameLoginId: string) {
+  try {
+    const response = await fetchWithGameLoginsCacheTimeout('/api/game-logins/cache', {
+      method: 'POST',
+      headers: await getFirebaseApiHeaders(),
+      body: JSON.stringify({
+        action: 'delete',
+        id: gameLoginId,
+      }),
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      console.warn('[GAME_LOGINS_CACHE] mirror failed', {
+        action: 'delete',
+        id: gameLoginId,
+        status: response.status,
+      });
+    }
+  } catch (error) {
+    console.warn('[GAME_LOGINS_CACHE] mirror failed', {
+      action: 'delete',
+      id: gameLoginId,
+      error,
+    });
+  }
+}
+
+function gameLoginFromDocSnapshot(docSnap: Awaited<ReturnType<typeof getDoc>>): GameLogin | null {
+  if (!docSnap.exists()) {
+    return null;
+  }
+  return {
+    id: docSnap.id,
+    ...(docSnap.data() as Omit<GameLogin, 'id'>),
+  };
 }
 
 async function getGameLoginsByField(
@@ -84,7 +204,7 @@ export async function createGameLogin(
 
   const coadminUid = await getCurrentUserCoadminUid();
 
-  await addDoc(collection(db, 'gameLogins'), {
+  const gameLoginRef = await addDoc(collection(db, 'gameLogins'), {
     gameName: cleanGameName,
     username: cleanUsername,
     password,
@@ -96,6 +216,10 @@ export async function createGameLogin(
     coadminUid,
     createdAt: serverTimestamp(),
   });
+  const gameLogin = gameLoginFromDocSnapshot(await getDoc(gameLoginRef));
+  if (gameLogin) {
+    await mirrorGameLoginCacheAfterFirebaseSave(gameLogin);
+  }
 }
 
 export async function getMyGameLogins(): Promise<GameLogin[]> {
@@ -106,6 +230,11 @@ export async function getMyGameLogins(): Promise<GameLogin[]> {
 export async function getGameLoginsByCoadmin(
   coadminUid: string
 ): Promise<GameLogin[]> {
+  const cached = await tryReadGameLoginsCacheByCoadmin(coadminUid);
+  if (cached) {
+    return cached;
+  }
+
   const [coadminOwned, legacyOwned] = await Promise.all([
     getGameLoginsByField('coadminUid', coadminUid),
     getGameLoginsByField('createdBy', coadminUid),
@@ -145,7 +274,8 @@ export async function updateGameLogin(
     throw new Error('Password is required.');
   }
 
-  await updateDoc(doc(db, 'gameLogins', gameLoginId), {
+  const gameLoginRef = doc(db, 'gameLogins', gameLoginId);
+  await updateDoc(gameLoginRef, {
     gameName: cleanGameName,
     username: cleanUsername,
     password: values.password,
@@ -153,6 +283,10 @@ export async function updateGameLogin(
     frontendUrl: cleanFrontendUrl,
     siteUrl: cleanBackendUrl,
   });
+  const gameLogin = gameLoginFromDocSnapshot(await getDoc(gameLoginRef));
+  if (gameLogin) {
+    await mirrorGameLoginCacheAfterFirebaseSave(gameLogin);
+  }
 }
 
 const BATCH_DELETE_LIMIT = 450;
@@ -258,6 +392,7 @@ export async function deleteGameLoginAndRelatedData(gameLoginId: string): Promis
   }
 
   await deleteDoc(gameRef);
+  await mirrorGameLoginCacheDeleteAfterFirebaseSave(gameLoginId);
 
   return {
     deleted: {

@@ -612,6 +612,26 @@ async function getAuthHeaders() {
   };
 }
 
+async function mirrorAutomationJobCacheBestEffort(jobId: string) {
+  const cleanJobId = String(jobId || '').trim();
+  if (!cleanJobId) return;
+  try {
+    const response = await fetch('/api/automation-jobs/cache/mirror', {
+      method: 'POST',
+      headers: await getAuthHeaders(),
+      body: JSON.stringify({ jobId: cleanJobId }),
+    });
+    if (!response.ok) {
+      console.error('[AUTOMATION_JOBS_CACHE] mirror failed', {
+        jobId: cleanJobId,
+        status: response.status,
+      });
+    }
+  } catch (error) {
+    console.error('[AUTOMATION_JOBS_CACHE] mirror failed', { jobId: cleanJobId, error });
+  }
+}
+
 function readApiError(messageFallback: string, payload: unknown) {
   if (
     payload &&
@@ -1715,6 +1735,7 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
     const jobRef = doc(db, 'automation_jobs', job.id);
     const taskRef = doc(db, 'carerTasks', taskId);
 
+    let updatedAutomationJob = false;
     await runTransaction(db, async (transaction) => {
       const [jobSnap, taskSnap] = await Promise.all([
         transaction.get(jobRef),
@@ -1756,6 +1777,7 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
           result: null,
           cancelledReason: 'returned_to_pending_timeout',
         });
+        updatedAutomationJob = true;
 
         if (taskSnap.exists()) {
           transaction.update(taskRef, {
@@ -1792,6 +1814,7 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
         updatedAt: serverTimestamp(),
         error: timeoutMessage,
       });
+      updatedAutomationJob = true;
 
       if (taskSnap.exists()) {
         const latestTask = taskSnap.data() as Omit<CarerTask, 'id'>;
@@ -1822,6 +1845,9 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
       }
     });
     await forceRefreshTaskFromServer(taskId, taskRef);
+    if (updatedAutomationJob) {
+      void mirrorAutomationJobCacheBestEffort(job.id);
+    }
   }
 
   for (const docSnap of stuckTaskSnap.docs) {

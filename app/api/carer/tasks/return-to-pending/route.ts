@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
 import { adminDb } from '@/lib/firebase/admin';
+import { mirrorAutomationJobById } from '@/lib/sql/automationJobsCache';
 
 type Body = {
   taskId?: unknown;
@@ -162,6 +163,7 @@ export async function POST(request: Request) {
     const isAdmin = caller.role === 'admin';
     const taskRef = adminDb.collection('carerTasks').doc(taskId);
 
+    const affectedJobIds = new Set<string>();
     const outcome = await adminDb.runTransaction(async (transaction) => {
       const taskSnap = await transaction.get(taskRef);
       if (!taskSnap.exists) {
@@ -259,6 +261,7 @@ export async function POST(request: Request) {
           ttlExpiresAt: ttlAfterDays(14),
           error: 'Cancelled by carer (returned_to_pending).',
         });
+        affectedJobIds.add(job.ref.id);
         cancelledJobs += 1;
       }
 
@@ -281,6 +284,9 @@ export async function POST(request: Request) {
       callerRole: auth.user.role,
       ...outcome,
     });
+    for (const jobId of affectedJobIds) {
+      void mirrorAutomationJobById(jobId, 'appbeg_return_to_pending');
+    }
     return NextResponse.json({ success: true, ...outcome });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to move task back to pending.';

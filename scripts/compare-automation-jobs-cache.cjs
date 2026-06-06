@@ -1,0 +1,193 @@
+const { cert, getApps, initializeApp } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
+const { Pool } = require('pg');
+
+function requiredEnv(name) {
+  const value = String(process.env[name] || '').trim();
+  if (!value) throw new Error(`${name} is required`);
+  return value;
+}
+
+function clean(value) {
+  return String(value || '').trim();
+}
+
+function initFirebase() {
+  const base64 = requiredEnv('FIREBASE_SERVICE_ACCOUNT_BASE64');
+  const serviceAccount = JSON.parse(Buffer.from(base64, 'base64').toString('utf8'));
+  return getApps().length === 0
+    ? initializeApp({ credential: cert(serviceAccount) })
+    : getApps()[0];
+}
+
+function createPgPool() {
+  const connectionString = clean(process.env.DATABASE_URL || process.env.POSTGRES_URL);
+  if (connectionString) {
+    return new Pool({ connectionString, connectionTimeoutMillis: 10_000 });
+  }
+  return new Pool({
+    host: clean(process.env.APPBEG_PG_HOST || '127.0.0.1'),
+    port: Number(process.env.APPBEG_PG_PORT || '5433'),
+    database: clean(process.env.APPBEG_PG_DATABASE || 'appbeg'),
+    user: clean(process.env.APPBEG_PG_USER || 'appbeg_user'),
+    password: requiredEnv('APPBEG_PG_PASSWORD'),
+    connectionTimeoutMillis: 10_000,
+  });
+}
+
+function toDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (typeof value === 'string') {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  if (typeof value.toDate === 'function') return value.toDate();
+  if (typeof value.toMillis === 'function') return new Date(value.toMillis());
+  if (typeof value.seconds === 'number') return new Date(value.seconds * 1000);
+  if (typeof value._seconds === 'number') return new Date(value._seconds * 1000);
+  return null;
+}
+
+function toIso(value) {
+  const date = toDate(value);
+  return date ? date.toISOString() : null;
+}
+
+function object(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function normalizeFirebase(doc) {
+  const data = doc.data() || {};
+  const payload = object(data.payload);
+  const originalTask = object(payload.originalTask);
+  const type = clean(data.type || data.taskType || payload.type || originalTask.type);
+  return {
+    job_id: doc.id,
+    task_id: clean(data.taskId || payload.taskId || originalTask.id),
+    linked_task_id: clean(data.linkedTaskId || payload.linkedTaskId),
+    coadmin_uid: clean(data.coadminUid || payload.coadminUid || originalTask.coadminUid),
+    carer_uid: clean(data.carerUid || data.createdByUid),
+    player_uid: clean(data.playerUid || payload.playerUid || originalTask.playerUid),
+    agent_id: clean(data.agentId),
+    created_by_uid: clean(data.createdByUid || data.carerUid),
+    game: clean(data.game || data.gameName || payload.game || payload.gameName || originalTask.gameName || originalTask.game),
+    type,
+    request_type: clean(data.requestType || payload.requestType || payload.type || type),
+    status: clean(data.status),
+    claimed_status: clean(data.claimedStatus),
+    error_message: clean(data.error || data.errorMessage),
+    cancelled_reason: clean(data.cancelledReason),
+    attempts: Number.isFinite(Number(data.attempts)) ? Math.trunc(Number(data.attempts)) : null,
+    created_at: toIso(data.createdAt),
+    updated_at: toIso(data.updatedAt),
+    started_at: toIso(data.startedAt),
+    completed_at: toIso(data.completedAt),
+    failed_at: toIso(data.failedAt),
+    last_heartbeat_at: toIso(data.lastHeartbeatAt),
+    ttl_expires_at: toIso(data.ttlExpiresAt),
+  };
+}
+
+function normalizeSql(row) {
+  return {
+    job_id: clean(row.job_id),
+    task_id: clean(row.task_id),
+    linked_task_id: clean(row.linked_task_id),
+    coadmin_uid: clean(row.coadmin_uid),
+    carer_uid: clean(row.carer_uid),
+    player_uid: clean(row.player_uid),
+    agent_id: clean(row.agent_id),
+    created_by_uid: clean(row.created_by_uid),
+    game: clean(row.game),
+    type: clean(row.type),
+    request_type: clean(row.request_type),
+    status: clean(row.status),
+    claimed_status: clean(row.claimed_status),
+    error_message: clean(row.error_message),
+    cancelled_reason: clean(row.cancelled_reason),
+    attempts: row.attempts === null || row.attempts === undefined ? null : Number(row.attempts),
+    created_at: toIso(row.created_at),
+    updated_at: toIso(row.updated_at),
+    started_at: toIso(row.started_at),
+    completed_at: toIso(row.completed_at),
+    failed_at: toIso(row.failed_at),
+    last_heartbeat_at: toIso(row.last_heartbeat_at),
+    ttl_expires_at: toIso(row.ttl_expires_at),
+  };
+}
+
+function diffFields(firebaseRow, sqlRow) {
+  const mismatch = {};
+  for (const key of Object.keys(firebaseRow)) {
+    if (firebaseRow[key] !== sqlRow[key]) {
+      mismatch[key] = { firebase: firebaseRow[key], sql: sqlRow[key] };
+    }
+  }
+  return mismatch;
+}
+
+async function main() {
+  initFirebase();
+  const db = getFirestore();
+  const pool = createPgPool();
+  const [firebaseSnap, latestSnap, sqlResult] = await Promise.all([
+    db.collection('automation_jobs').get(),
+    db.collection('automation_jobs').orderBy('createdAt', 'desc').limit(50).get(),
+    pool.query(`
+      SELECT *
+      FROM public.automation_jobs_cache
+      WHERE deleted_at IS NULL
+    `),
+  ]);
+
+  const firebaseRows = new Map(firebaseSnap.docs.map((doc) => [doc.id, normalizeFirebase(doc)]));
+  const sqlRows = new Map(sqlResult.rows.map((row) => [String(row.job_id), normalizeSql(row)]));
+  const missingInSql = [];
+  const extraInSql = [];
+  const mismatchedFields = [];
+
+  for (const [id, firebaseRow] of firebaseRows.entries()) {
+    const sqlRow = sqlRows.get(id);
+    if (!sqlRow) {
+      missingInSql.push(id);
+      continue;
+    }
+    const mismatch = diffFields(firebaseRow, sqlRow);
+    if (Object.keys(mismatch).length > 0) {
+      mismatchedFields.push({ job_id: id, fields: mismatch });
+    }
+  }
+
+  for (const id of sqlRows.keys()) {
+    if (!firebaseRows.has(id)) extraInSql.push(id);
+  }
+
+  const latest50 = [];
+  for (const doc of latestSnap.docs) {
+    const firebaseRow = normalizeFirebase(doc);
+    const sqlRow = sqlRows.get(doc.id) || null;
+    latest50.push({
+      job_id: doc.id,
+      matched: Boolean(sqlRow) && Object.keys(diffFields(firebaseRow, sqlRow)).length === 0,
+      mismatched_fields: sqlRow ? diffFields(firebaseRow, sqlRow) : { missing_in_sql: true },
+    });
+  }
+
+  await pool.end();
+  console.log(JSON.stringify({
+    collection: 'automation_jobs',
+    firebase_count: firebaseRows.size,
+    postgres_count: sqlRows.size,
+    missing_in_sql: missingInSql,
+    extra_in_sql: extraInSql,
+    mismatched_fields: mismatchedFields,
+    latest_50_field_by_field: latest50,
+  }, null, 2));
+}
+
+main().catch((error) => {
+  console.error('[COMPARE_AUTOMATION_JOBS_CACHE] fatal', error);
+  process.exitCode = 1;
+});

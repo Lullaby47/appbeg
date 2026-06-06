@@ -3,6 +3,7 @@ import { after, NextResponse } from 'next/server';
 
 import { apiError, requireApiUser, scopedCoadminUid, type ApiUser } from '@/lib/firebase/apiAuth';
 import { adminDb } from '@/lib/firebase/admin';
+import { mirrorAutomationJobById } from '@/lib/sql/automationJobsCache';
 
 type Body = {
   requestId?: unknown;
@@ -167,6 +168,7 @@ async function queueMilkyWayFakeRedeemCleanup(values: {
     carerUid: values.caller.uid,
     agentId: values.caller.automationAgentId || null,
   });
+  void mirrorAutomationJobById(jobRef.id, 'appbeg_dismiss_redeem');
 }
 
 function errorStatus(message: string) {

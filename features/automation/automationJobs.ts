@@ -146,6 +146,26 @@ async function getAuthHeaders() {
   };
 }
 
+async function mirrorAutomationJobCacheBestEffort(jobId: string) {
+  const cleanJobId = String(jobId || '').trim();
+  if (!cleanJobId) return;
+  try {
+    const response = await fetch('/api/automation-jobs/cache/mirror', {
+      method: 'POST',
+      headers: await getAuthHeaders(),
+      body: JSON.stringify({ jobId: cleanJobId }),
+    });
+    if (!response.ok) {
+      console.error('[AUTOMATION_JOBS_CACHE] mirror failed', {
+        jobId: cleanJobId,
+        status: response.status,
+      });
+    }
+  } catch (error) {
+    console.error('[AUTOMATION_JOBS_CACHE] mirror failed', { jobId: cleanJobId, error });
+  }
+}
+
 function readApiError(messageFallback: string, payload: unknown) {
   if (
     payload &&
@@ -202,6 +222,7 @@ export async function claimTaskAndCreateJob(input: {
   const firestoreDb = getClientDb('claimTaskAndCreateJob');
   const taskRef = doc(firestoreDb, 'carerTasks', input.taskId);
   const userRef = doc(firestoreDb, 'users', currentUser.uid);
+  const affectedJobIds = new Set<string>();
 
   const isRetryableConcurrencyError = (error: unknown) => {
     const code = String(
@@ -558,6 +579,7 @@ export async function claimTaskAndCreateJob(input: {
             error: 'Stale automation job cleared while reclaiming pending task.',
             cancelledReason: isPendingCleanTask ? 'stale_returned_to_pending' : 'pending_reclaim_stale_job',
           });
+          affectedJobIds.add(job.ref.id);
           console.info('[RETURN_TO_PENDING] stale active job cancelled', {
             taskId: taskSnap.id,
             jobId: job.ref.id,
@@ -653,6 +675,7 @@ export async function claimTaskAndCreateJob(input: {
           error: automationError || 'Task claim expired and was cleared before restart.',
           cancelledReason: automationError ? 'failed_automation_claim_released' : 'stale_claim_cleared',
         });
+        affectedJobIds.add(staleOrFailedJob.ref.id);
         console.info('[automation] start-task:decision', {
           taskId: taskSnap.id,
           decision: automationError
@@ -798,6 +821,7 @@ export async function claimTaskAndCreateJob(input: {
         lastHeartbeatAt: null,
       };
       transaction.set(jobRef, jobData);
+      affectedJobIds.add(jobRef.id);
       console.info(
         '[START_TIMING] automation job create done at=%s jobId=%s durationMs=%s taskId=%s',
         new Date().toISOString(),
@@ -951,6 +975,7 @@ export async function claimTaskAndCreateJob(input: {
   if (!result) {
     throw (lastError instanceof Error ? lastError : new Error('Failed to queue the task.'));
   }
+  affectedJobIds.add(result.jobId);
   console.info(
     '[START_TIMING] server write completed at=%s durationMs=%s taskId=%s jobId=%s status=%s',
     new Date().toISOString(),
@@ -974,6 +999,10 @@ export async function claimTaskAndCreateJob(input: {
       String(afterTask?.['assignedCarerUid'] || '').trim() === currentUser.uid,
     fields: taskDebugFields(afterTask),
   });
+
+  for (const jobId of affectedJobIds) {
+    void mirrorAutomationJobCacheBestEffort(jobId);
+  }
 
   return Promise.resolve(result).then((result) => {
     if (!result.reusedExistingJob) {
@@ -1215,6 +1244,7 @@ export async function startAutomationForTask(input: {
     };
   }).then(async (result) => {
     await forceRefreshTaskFromServer(input.taskId, doc(db, 'carerTasks', input.taskId));
+    void mirrorAutomationJobCacheBestEffort(result.job.id);
     recordDevUsageEstimate({
       automationJobsCreated: 1,
       estReads: 6,

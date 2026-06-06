@@ -2,6 +2,7 @@ import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import { mirrorCoadminBonusSettingsSnapshot } from '@/lib/sql/coadminBonusSettingsCache';
 
 const COADMIN_MIN_PERCENT = 5;
 const COADMIN_MAX_PERCENT = 10;
@@ -56,6 +57,29 @@ function sleep(ms: number) {
   });
 }
 
+async function mirrorCoadminBonusSettingsAfterFirebaseSave(
+  settingsRef: FirebaseFirestore.DocumentReference,
+  reason: string
+) {
+  try {
+    const snap = await settingsRef.get();
+    const mirrored = await mirrorCoadminBonusSettingsSnapshot(snap);
+    if (!mirrored) {
+      console.warn('[COADMIN_BONUS_SETTINGS_CACHE] mirror failed', {
+        firebaseId: settingsRef.id,
+        reason: 'database_url_missing_or_doc_missing',
+        source: reason,
+      });
+    }
+  } catch (error) {
+    console.warn('[COADMIN_BONUS_SETTINGS_CACHE] mirror failed', {
+      firebaseId: settingsRef.id,
+      source: reason,
+      error,
+    });
+  }
+}
+
 export async function POST(request: Request) {
   let leaseId: string | null = null;
   let leaseSettingsRef: FirebaseFirestore.DocumentReference | null = null;
@@ -96,6 +120,7 @@ export async function POST(request: Request) {
       },
       { merge: true }
     );
+    await mirrorCoadminBonusSettingsAfterFirebaseSave(settingsRef, 'range_saved');
     await adminDb.collection('users').doc(callerUid).set(
       {
         autoBonusEventMinPercent: normalized.minPercent,
@@ -145,6 +170,7 @@ export async function POST(request: Request) {
       });
     }
     leaseId = lease.leaseId || null;
+    await mirrorCoadminBonusSettingsAfterFirebaseSave(settingsRef, 'lease_acquired');
 
     console.info('[bonus-range-update:start]', {
       coadminUid: callerUid,
@@ -246,6 +272,7 @@ export async function POST(request: Request) {
             { merge: true }
           );
         })
+        .then(() => mirrorCoadminBonusSettingsAfterFirebaseSave(leaseSettingsRef!, 'lease_released'))
         .catch(() => {});
     }
   }
