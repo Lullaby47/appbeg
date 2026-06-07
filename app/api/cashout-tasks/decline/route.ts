@@ -3,6 +3,9 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
+import { mirrorPlayerCashoutTaskById } from '@/lib/sql/playerCashoutTasksCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 type Body = { taskId?: unknown };
 
@@ -18,6 +21,9 @@ export async function POST(request: Request) {
     const caller = auth.user;
     const scope = scopedCoadminUid(caller);
     const taskRef = adminDb.collection('playerCashoutTasks').doc(taskId);
+    const eventRef = adminDb.collection('financialEvents').doc();
+    let mirroredEventId = '';
+    let mirroredPlayerUid = '';
 
     await adminDb.runTransaction(async (transaction) => {
       const taskSnap = await transaction.get(taskRef);
@@ -58,7 +64,7 @@ export async function POST(request: Request) {
           },
           { merge: true }
         );
-        transaction.set(adminDb.collection('financialEvents').doc(), {
+        transaction.set(eventRef, {
           playerUid: String(task.playerUid || '').trim(),
           coadminUid: String(task.coadminUid || '').trim(),
           amountNpr,
@@ -66,9 +72,16 @@ export async function POST(request: Request) {
           cashoutTaskId: taskId,
           createdAt: FieldValue.serverTimestamp(),
         });
+        mirroredEventId = eventRef.id;
+        mirroredPlayerUid = String(task.playerUid || '').trim();
       }
     });
 
+    if (mirroredEventId) {
+      void mirrorFinancialEventById(mirroredEventId, 'appbeg_cashout_decline');
+      void mirrorUserBalanceSnapshotById(mirroredPlayerUid, 'appbeg_cashout_decline');
+    }
+    void mirrorPlayerCashoutTaskById(taskId, 'appbeg_cashout_decline');
     return NextResponse.json({ success: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to decline cashout task.';

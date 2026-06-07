@@ -15,6 +15,10 @@ import {
   type RequestLinkedGameCredential,
   requestLinkedCarerTaskId,
 } from '@/lib/games/requestLinkedCarerTask';
+import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
+import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
+import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 type RechargeBody = {
   gameName?: unknown;
@@ -75,6 +79,7 @@ export async function POST(request: Request) {
     const playerRef = adminDb.collection('users').doc(playerUid);
     const requestRef = adminDb.collection('playerGameRequests').doc();
     const taskRef = adminDb.collection('carerTasks').doc(requestLinkedCarerTaskId(requestRef.id));
+    const eventRef = adminDb.collection('financialEvents').doc();
 
     await adminDb.runTransaction(async (transaction) => {
       const [playerSnap, loginSnap, firstRechargeAppliedSnap, existingTaskSnap] = await Promise.all([
@@ -237,7 +242,7 @@ export async function POST(request: Request) {
           type: 'recharge',
         });
       }
-      transaction.set(adminDb.collection('financialEvents').doc(), {
+      transaction.set(eventRef, {
         playerUid,
         coadminUid,
         amountNpr: amount,
@@ -252,6 +257,10 @@ export async function POST(request: Request) {
       taskId: taskRef.id,
       type: 'recharge',
     });
+    void mirrorCarerTaskById(taskRef.id, 'appbeg_recharge_request');
+    void mirrorPlayerGameRequestById(requestRef.id, 'appbeg_recharge_request');
+    void mirrorFinancialEventById(eventRef.id, 'appbeg_recharge_request');
+    void mirrorUserBalanceSnapshotById(playerUid, 'appbeg_recharge_request');
 
     return NextResponse.json({
       success: true,

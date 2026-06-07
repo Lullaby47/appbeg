@@ -3,6 +3,9 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
+import { mirrorPlayerCashoutTaskById } from '@/lib/sql/playerCashoutTasksCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 type Body = {
   taskId?: unknown;
@@ -24,6 +27,8 @@ export async function POST(request: Request) {
     const callerScope = scopedCoadminUid(caller);
     const taskRef = adminDb.collection('playerCashoutTasks').doc(taskId);
     const handlerRef = adminDb.collection('users').doc(caller.uid);
+    const eventRef = adminDb.collection('financialEvents').doc();
+    const mirroredUserIds = new Set<string>();
 
     const result = await adminDb.runTransaction(async (transaction) => {
       const [taskSnap, handlerSnap] = await Promise.all([
@@ -91,6 +96,8 @@ export async function POST(request: Request) {
       const rewardNpr = Math.max(1, Math.round(requestedAmount * 0.05));
       const rewardAppliedNpr = Boolean(handlerData.rewardBlocked) ? 0 : rewardNpr;
       const handlerCreditAmount = requestedAmount + rewardAppliedNpr;
+      const cashBoxBefore = Number(handlerData.cashBoxNpr || 0);
+      const cashBoxAfter = cashBoxBefore + handlerCreditAmount;
 
       transaction.update(taskRef, {
         status: 'completed',
@@ -99,21 +106,31 @@ export async function POST(request: Request) {
         cashoutRequestedByStaffId: caller.role === 'staff' ? caller.uid : null,
         rewardNprApplied: rewardAppliedNpr,
         rewardBlockedApplied: Boolean(handlerData.rewardBlocked),
+        payoutAmountNpr: requestedAmount,
+        rewardAmountNpr: rewardAppliedNpr,
+        cashBoxBefore,
+        cashBoxAfter,
+        cashBoxDelta: cashBoxAfter - cashBoxBefore,
+        actorUid: caller.uid,
+        actorRole: caller.role,
+        sourceCashoutId: taskId,
         startedAt: task.startedAt || FieldValue.serverTimestamp(),
         expiresAt: null,
         completedAt: FieldValue.serverTimestamp(),
       });
       if (shouldDeductOnComplete && playerRef) {
         transaction.update(playerRef, { cash: playerCash - requestedAmount });
+        mirroredUserIds.add(String(task.playerUid || '').trim());
       }
       transaction.set(
         handlerRef,
         {
-          cashBoxNpr: Number(handlerData.cashBoxNpr || 0) + handlerCreditAmount,
+          cashBoxNpr: cashBoxAfter,
         },
         { merge: true }
       );
-      transaction.set(adminDb.collection('financialEvents').doc(), {
+      mirroredUserIds.add(caller.uid);
+      transaction.set(eventRef, {
         playerUid: String(task.playerUid || '').trim(),
         coadminUid: taskScope,
         amountNpr: requestedAmount,
@@ -125,6 +142,13 @@ export async function POST(request: Request) {
       return { alreadyCompleted: false };
     });
 
+    if (!result.alreadyCompleted) {
+      void mirrorFinancialEventById(eventRef.id, 'appbeg_cashout_complete');
+      void mirrorPlayerCashoutTaskById(taskId, 'appbeg_cashout_complete');
+      mirroredUserIds.forEach((uid) => {
+        void mirrorUserBalanceSnapshotById(uid, 'appbeg_cashout_complete');
+      });
+    }
     return NextResponse.json({ success: true, ...result });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to complete cashout task.';

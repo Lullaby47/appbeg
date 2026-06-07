@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
+import { mirrorPlayerById } from '@/lib/sql/playersCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 export async function POST(request: Request) {
   try {
@@ -44,6 +46,8 @@ export async function POST(request: Request) {
       },
       { merge: true }
     );
+    void mirrorPlayerById(playerUid, 'appbeg_transfer_player_coadmin');
+    void mirrorUserBalanceSnapshotById(playerUid, 'appbeg_transfer_player_coadmin');
 
     return NextResponse.json({ success: true, message: 'Player transferred successfully.' });
   } catch (error) {

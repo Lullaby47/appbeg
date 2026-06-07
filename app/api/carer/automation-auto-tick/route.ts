@@ -15,6 +15,7 @@ import {
 import { AUTOMATION_AUTO_STATE_COLLECTION } from '@/features/automation/automationAutoState';
 import { verifyAutoTickBrowserToken } from '@/lib/automation/autoTickBrowserToken';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 
 const LEASE_TTL_MS = 70_000;
 const MAX_CLAIMS_PER_TICK = 5;
@@ -434,6 +435,7 @@ export async function POST(request: Request) {
         automationJobCreated: !result.reusedExistingJob,
         originalTaskUpdatedToInProgress: true,
       });
+      void mirrorCarerTaskById(result.taskId, 'appbeg_automation_auto_tick');
       claimedJobs.push({
         taskId: result.taskId,
         jobId: result.jobId,

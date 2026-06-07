@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import { mirrorCarerCashoutById } from '@/lib/sql/carerCashoutsCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 type Body = {
   action?: unknown;
@@ -39,6 +41,8 @@ export async function POST(request: Request) {
         }
         const coadminUid = scopedCoadminUid(auth.user);
         if (!coadminUid) throw new Error('No coadmin scope found.');
+        const cashBoxBefore = Number(user.cashBoxNpr || 0);
+        const cashBoxAfter = 0;
         transaction.set(cashoutRef, {
           coadminUid,
           carerUid: auth.user.uid,
@@ -50,9 +54,19 @@ export async function POST(request: Request) {
           status: 'pending',
           createdAt: FieldValue.serverTimestamp(),
           completedAt: null,
+          payoutAmountNpr: amountNpr,
+          cashBoxBefore,
+          cashBoxAfter,
+          cashBoxDelta: cashBoxAfter - cashBoxBefore,
+          actorUid: auth.user.uid,
+          actorRole: auth.user.role,
+          sourceCashoutId: cashoutRef.id,
+          rewardReason: 'claim_pay_create',
         });
-        transaction.set(userRef, { cashBoxNpr: 0 }, { merge: true });
+        transaction.set(userRef, { cashBoxNpr: cashBoxAfter }, { merge: true });
       });
+      void mirrorCarerCashoutById(cashoutRef.id, 'appbeg_carer_cashout_create');
+      void mirrorUserBalanceSnapshotById(auth.user.uid, 'appbeg_carer_cashout_create');
       return NextResponse.json({ success: true, cashoutId: cashoutRef.id });
     }
 
@@ -65,6 +79,8 @@ export async function POST(request: Request) {
         return apiError('Forbidden: only admin or coadmin can complete cashout requests.', 403);
       }
       const doneAmountNpr = Math.max(0, Math.round(Number(body.amountNpr || 0)));
+      let mirroredCarerUid = '';
+      const mirroredCashoutIds = new Set<string>();
       await adminDb.runTransaction(async (transaction) => {
         const cashoutSnap = await transaction.get(cashoutRef);
         if (!cashoutSnap.exists) throw new Error('Cashout request not found.');
@@ -89,6 +105,12 @@ export async function POST(request: Request) {
           throw new Error('Done amount cannot be greater than claim amount.');
         }
         const remainingAmountNpr = Math.max(0, requestedAmount - resolved);
+        const userRef = adminDb.collection('users').doc(String(cashout.carerUid || '').trim());
+        const userSnap = await transaction.get(userRef);
+        const cashBoxBefore = userSnap.exists
+          ? Math.max(0, Number((userSnap.data() as { cashBoxNpr?: number }).cashBoxNpr || 0))
+          : 0;
+        const cashBoxAfter = remainingAmountNpr;
 
         const pendingSnap = await adminDb
           .collection('carerCashouts')
@@ -97,12 +119,21 @@ export async function POST(request: Request) {
           .get();
 
         pendingSnap.docs.forEach((docSnap) => {
+          mirroredCashoutIds.add(docSnap.id);
           if (docSnap.id === cashoutId) {
             transaction.update(docSnap.ref, {
               status: 'completed',
               completedAt: FieldValue.serverTimestamp(),
               completedAmountNpr: resolved,
               remainingAmountNpr,
+              payoutAmountNpr: resolved,
+              cashBoxBefore,
+              cashBoxAfter,
+              cashBoxDelta: cashBoxAfter - cashBoxBefore,
+              actorUid: auth.user.uid,
+              actorRole: auth.user.role,
+              sourceCashoutId: cashoutId,
+              rewardReason: 'claim_pay_complete',
             });
           } else {
             transaction.update(docSnap.ref, {
@@ -112,11 +143,16 @@ export async function POST(request: Request) {
           }
         });
         transaction.set(
-          adminDb.collection('users').doc(String(cashout.carerUid || '').trim()),
-          { cashBoxNpr: remainingAmountNpr },
+          userRef,
+          { cashBoxNpr: cashBoxAfter },
           { merge: true }
         );
+        mirroredCarerUid = String(cashout.carerUid || '').trim();
       });
+      mirroredCashoutIds.forEach((id) => {
+        void mirrorCarerCashoutById(id, 'appbeg_carer_cashout_complete');
+      });
+      void mirrorUserBalanceSnapshotById(mirroredCarerUid, 'appbeg_carer_cashout_complete');
       return NextResponse.json({ success: true });
     }
 
@@ -124,6 +160,7 @@ export async function POST(request: Request) {
       if (!canSettleCarerCashout(auth.user.role)) {
         return apiError('Forbidden: only admin or coadmin can decline cashout requests.', 403);
       }
+      let mirroredCarerUid = '';
       await adminDb.runTransaction(async (transaction) => {
         const cashoutSnap = await transaction.get(cashoutRef);
         if (!cashoutSnap.exists) throw new Error('Cashout request not found.');
@@ -148,14 +185,26 @@ export async function POST(request: Request) {
         const currentCashBox = userSnap.exists
           ? Math.max(0, Number((userSnap.data() as { cashBoxNpr?: number }).cashBoxNpr || 0))
           : 0;
+        const cashBoxAfter = currentCashBox + amountNpr;
         transaction.update(cashoutRef, {
           status: 'declined',
           completedAt: FieldValue.serverTimestamp(),
           completedAmountNpr: 0,
           remainingAmountNpr: amountNpr,
+          payoutAmountNpr: 0,
+          cashBoxBefore: currentCashBox,
+          cashBoxAfter,
+          cashBoxDelta: cashBoxAfter - currentCashBox,
+          actorUid: auth.user.uid,
+          actorRole: auth.user.role,
+          sourceCashoutId: cashoutId,
+          rewardReason: 'claim_pay_decline',
         });
-        transaction.set(userRef, { cashBoxNpr: currentCashBox + amountNpr }, { merge: true });
+        transaction.set(userRef, { cashBoxNpr: cashBoxAfter }, { merge: true });
+        mirroredCarerUid = String(cashout.carerUid || '').trim();
       });
+      void mirrorCarerCashoutById(cashoutId, 'appbeg_carer_cashout_decline');
+      void mirrorUserBalanceSnapshotById(mirroredCarerUid, 'appbeg_carer_cashout_decline');
       return NextResponse.json({ success: true });
     }
 

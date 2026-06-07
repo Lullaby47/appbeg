@@ -1,9 +1,13 @@
 import { NextResponse } from 'next/server';
 
 import { requireApiUser } from '@/lib/firebase/apiAuth';
-import { mirrorAutomationJobById } from '@/lib/sql/automationJobsCache';
+import {
+  mirrorAutomationJobById,
+  tombstoneAutomationJobCache,
+} from '@/lib/sql/automationJobsCache';
 
 type Body = {
+  action?: unknown;
   jobId?: unknown;
 };
 
@@ -17,7 +21,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'jobId is required.' }, { status: 400 });
     }
 
-    const mirrored = await mirrorAutomationJobById(jobId, 'appbeg_browser');
+    const action = String(body.action || 'upsert').trim().toLowerCase();
+    if (action !== 'upsert' && action !== 'tombstone') {
+      return NextResponse.json({ error: 'action must be upsert or tombstone.' }, { status: 400 });
+    }
+
+    const mirrored = action === 'tombstone'
+      ? await tombstoneAutomationJobCache(jobId, 'appbeg_browser')
+      : await mirrorAutomationJobById(jobId, 'appbeg_browser');
     return NextResponse.json({ success: true, mirrored });
   } catch (error) {
     console.error('[AUTOMATION_JOBS_CACHE] mirror failed', { error });

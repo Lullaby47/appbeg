@@ -10,6 +10,8 @@ import {
   REFERRAL_CODE_INDEX,
   setReferralCodeIndexInTransaction,
 } from '@/lib/referral/referralCodeAdmin';
+import { mirrorPlayerById } from '@/lib/sql/playersCache';
+import { mirrorReferralCodeByCode, tombstoneReferralCodeCache } from '@/lib/sql/referralsCache';
 
 /**
  * Returns a globally unique `referralCode` for the signed-in player and keeps
@@ -56,6 +58,7 @@ export async function POST(request: Request) {
               { playerUid: uid, createdAt: FieldValue.serverTimestamp() },
               { merge: true }
             );
+          void mirrorReferralCodeByCode(current, 'appbeg_ensure_referral_code');
         }
         return NextResponse.json({ success: true, referralCode: current });
       }
@@ -63,6 +66,7 @@ export async function POST(request: Request) {
 
     const candidates = buildUniqueReferralCodeCandidates(40);
     let assigned = '';
+    let deletedOldCode = '';
 
     await adminDb.runTransaction(async (t) => {
       const uSnap = await t.get(userRef);
@@ -85,12 +89,18 @@ export async function POST(request: Request) {
           String((oldIndexSnap.data() as { playerUid?: string })?.playerUid || '') === uid
         ) {
           t.delete(oldIndexRef);
+          deletedOldCode = oldRaw;
         }
       }
 
       setReferralCodeIndexInTransaction(adminDb, t, free, uid);
       t.update(userRef, { referralCode: free });
     });
+    void mirrorPlayerById(uid, 'appbeg_ensure_referral_code');
+    void mirrorReferralCodeByCode(assigned, 'appbeg_ensure_referral_code');
+    if (deletedOldCode) {
+      void tombstoneReferralCodeCache(deletedOldCode, 'appbeg_ensure_referral_code');
+    }
 
     return NextResponse.json({ success: true, referralCode: assigned });
   } catch (error: unknown) {

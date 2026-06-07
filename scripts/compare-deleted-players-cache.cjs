@@ -1,0 +1,10 @@
+const { cert, getApps, initializeApp } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
+const { Pool } = require('pg');
+const clean=v=>String(v||'').trim(); function req(n){const v=clean(process.env[n]); if(!v)throw new Error(`${n} is required`); return v;}
+function init(){const s=JSON.parse(Buffer.from(req('FIREBASE_SERVICE_ACCOUNT_BASE64'),'base64').toString('utf8')); return getApps()[0]||initializeApp({credential:cert(s)});}
+function fsrow(d){const x=d.data()||{};return {uid:d.id,username:clean(x.username),email:clean(x.email),role:clean(x.role),status:clean(x.status),created_by:clean(x.createdBy),coadmin_uid:clean(x.coadminUid)}}
+function sqlrow(r){return {uid:clean(r.uid),username:clean(r.username),email:clean(r.email),role:clean(r.role),status:clean(r.status),created_by:clean(r.created_by),coadmin_uid:clean(r.coadmin_uid)}}
+function diff(a,b){const o={}; for(const k of Object.keys(a)) if(a[k]!==b[k]) o[k]={firebase:a[k],sql:b[k]}; return o;}
+async function main(){init(); const db=getFirestore(); const pg=new Pool({connectionString:clean(process.env.DATABASE_URL||process.env.POSTGRES_URL)||req('DATABASE_URL')}); const [fs,sql]=await Promise.all([db.collection('deletedPlayers').get(),pg.query('SELECT * FROM public.deleted_players_cache WHERE deleted_at IS NULL')]); const fm=new Map(fs.docs.map(d=>[d.id,fsrow(d)])); const sm=new Map(sql.rows.map(r=>[String(r.uid),sqlrow(r)])); const missing_in_sql=[],extra_in_sql=[],mismatched_fields=[]; for(const [id,r] of fm){const s=sm.get(id); if(!s)missing_in_sql.push(id); else{const m=diff(r,s); if(Object.keys(m).length)mismatched_fields.push({uid:id,fields:m});}} for(const id of sm.keys()) if(!fm.has(id)) extra_in_sql.push(id); await pg.end(); console.log(JSON.stringify({collection:'deletedPlayers',firebase_count:fm.size,postgres_count:sm.size,missing_in_sql,extra_in_sql,mismatched_fields},null,2));}
+main().catch(e=>{console.error('[COMPARE_DELETED_PLAYERS_CACHE] fatal',e);process.exitCode=1;});

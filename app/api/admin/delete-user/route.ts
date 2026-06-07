@@ -8,6 +8,8 @@ import {
   scopedCoadminUid,
 } from '@/lib/firebase/apiAuth';
 import { deactivateGameUsername } from '@/lib/sql/usernameRegistry';
+import { mirrorDeletedPlayerById } from '@/lib/sql/deletedPlayersCache';
+import { tombstonePlayerCache } from '@/lib/sql/playersCache';
 
 function isAuthUserNotFound(error: unknown) {
   if (!error || typeof error !== 'object') {
@@ -97,10 +99,14 @@ export async function POST(request: Request) {
         deletedAt: new Date().toISOString(),
         deletedByUid,
       });
+      void mirrorDeletedPlayerById(uid, 'appbeg_delete_user');
     }
 
     await ensureAuthUserDeleted(uid, userData?.email);
     await userRef.delete();
+    if (userData?.role === 'player') {
+      void tombstonePlayerCache(uid, 'appbeg_delete_user');
+    }
     if (userData?.role === 'player') {
       await deactivatePlayerLoginUsername({
         username: String(userData?.username || '').trim(),

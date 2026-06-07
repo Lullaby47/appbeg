@@ -510,13 +510,32 @@ export async function recordFinancialEvent(values: {
   amountNpr: number;
   type: FinancialEventType;
 }) {
-  await addDoc(collection(db, 'financialEvents'), {
+  const eventRef = await addDoc(collection(db, 'financialEvents'), {
     playerUid: values.playerUid,
     coadminUid: values.coadminUid,
     amountNpr: Math.max(0, Number(values.amountNpr || 0)),
     type: values.type,
     createdAt: serverTimestamp(),
   });
+  void (async () => {
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) return;
+      await fetch('/api/financial-events/cache/mirror', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          action: 'upsert',
+          financialEventId: eventRef.id,
+        }),
+      });
+    } catch (error) {
+      console.warn('[FINANCIAL_EVENTS_CACHE] mirror failed', { firebaseId: eventRef.id, error });
+    }
+  })();
   const { recordDevUsageEstimate } = await import('@/features/dev/devUsageEstimates');
   recordDevUsageEstimate({
     financialEventsCreated: 1,
@@ -677,6 +696,22 @@ export async function rejectTransferRequest(requestId: string, reason?: string) 
     rejectionReason: reason || 'Transfer denied due to suspected misuse.',
     processedAt: serverTimestamp(),
   });
+  void (async () => {
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) return;
+      await fetch('/api/transfer-requests/cache/mirror', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ action: 'upsert', requestId }),
+      });
+    } catch (error) {
+      console.warn('[TRANSFER_REQUESTS_CACHE] mirror failed', { requestId, error });
+    }
+  })();
 
   await createRiskAction({
     playerUid: requestData.playerUid,

@@ -8,6 +8,8 @@ import {
   isReferralRechargeEligible,
   REFERRAL_REWARD_COINS,
 } from '@/lib/economy/policy';
+import { mirrorReferralRewardClaimById } from '@/lib/sql/referralRewardClaimsCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 type RewardGroup = {
   referredPlayerUid: string;
@@ -185,6 +187,7 @@ export async function POST(request: Request) {
     }
 
     let rewardCoins = 0;
+    const claimId = buildClaimDocId(referrerUid, referredPlayerUid);
 
     await adminDb.runTransaction(async (transaction) => {
       const [referrerSnap, referredSnap] = await Promise.all([
@@ -210,7 +213,7 @@ export async function POST(request: Request) {
 
       const claimRef = adminDb
         .collection('referralRewardClaims')
-        .doc(buildClaimDocId(referrerUid, referredPlayerUid));
+        .doc(claimId);
       const claimSnap = await transaction.get(claimRef);
       if (
         claimSnap.exists &&
@@ -252,6 +255,9 @@ export async function POST(request: Request) {
       });
     });
 
+    void mirrorReferralRewardClaimById(claimId, 'appbeg_referral_reward_claim');
+    void mirrorUserBalanceSnapshotById(referrerUid, 'appbeg_referral_reward_claim');
+    void mirrorUserBalanceSnapshotById(referredPlayerUid, 'appbeg_referral_reward_claim');
     return NextResponse.json({
       success: true,
       rewardCoins,

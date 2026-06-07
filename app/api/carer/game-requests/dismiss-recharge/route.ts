@@ -3,6 +3,10 @@ import { NextResponse } from 'next/server';
 
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
 import { adminDb } from '@/lib/firebase/admin';
+import { tombstoneCarerTaskCache } from '@/lib/sql/carerTasksCache';
+import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
+import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 type Body = {
   requestId?: unknown;
@@ -87,6 +91,7 @@ export async function POST(request: Request) {
         return {
           alreadyDismissed: true,
           refunded: false,
+          playerUid: '',
           taskDeleted: taskSnap.exists,
           linkedTaskId: taskRef.id,
           retryMarkersCleared: true,
@@ -159,6 +164,7 @@ export async function POST(request: Request) {
       return {
         alreadyDismissed,
         refunded: shouldRefund,
+        playerUid,
         taskDeleted: taskSnap.exists,
         linkedTaskId: taskRef.id,
         retryMarkersCleared: true,
@@ -169,6 +175,14 @@ export async function POST(request: Request) {
     console.info('[REQUEST_DISMISS] linkedTaskId=%s', outcome.linkedTaskId);
     console.info('[REQUEST_DISMISS] linkedTaskDeleted=%s', outcome.taskDeleted);
     console.info('[REQUEST_DISMISS] retryMarkersCleared=%s', outcome.retryMarkersCleared);
+    if (outcome.taskDeleted) {
+      void tombstoneCarerTaskCache(outcome.linkedTaskId, 'appbeg_dismiss_recharge');
+    }
+    void mirrorPlayerGameRequestById(requestId, 'appbeg_dismiss_recharge');
+    if (outcome.refunded) {
+      void mirrorFinancialEventById(eventRef.id, 'appbeg_dismiss_recharge');
+      void mirrorUserBalanceSnapshotById(outcome.playerUid, 'appbeg_dismiss_recharge');
+    }
     return NextResponse.json({ success: true, ...outcome });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to dismiss recharge request.';

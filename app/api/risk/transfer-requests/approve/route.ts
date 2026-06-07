@@ -3,6 +3,9 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
+import { mirrorTransferRequestById } from '@/lib/sql/transferRequestsCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 type Body = { requestId?: unknown };
 
@@ -18,6 +21,8 @@ export async function POST(request: Request) {
     const caller = auth.user;
     const callerScope = scopedCoadminUid(caller);
     const transferRef = adminDb.collection('transferRequests').doc(requestId);
+    const eventRef = adminDb.collection('financialEvents').doc();
+    let mirroredPlayerUid = '';
 
     await adminDb.runTransaction(async (transaction) => {
       const transferSnap = await transaction.get(transferRef);
@@ -59,7 +64,7 @@ export async function POST(request: Request) {
         rejectionReason: null,
         processedAt: FieldValue.serverTimestamp(),
       });
-      transaction.set(adminDb.collection('financialEvents').doc(), {
+      transaction.set(eventRef, {
         playerUid: String(transfer.playerUid || '').trim(),
         coadminUid,
         amountNpr,
@@ -67,8 +72,12 @@ export async function POST(request: Request) {
         transferRequestId: requestId,
         createdAt: FieldValue.serverTimestamp(),
       });
+      mirroredPlayerUid = String(transfer.playerUid || '').trim();
     });
 
+    void mirrorFinancialEventById(eventRef.id, 'appbeg_transfer_request_approve');
+    void mirrorTransferRequestById(requestId, 'appbeg_transfer_request_approve');
+    void mirrorUserBalanceSnapshotById(mirroredPlayerUid, 'appbeg_transfer_request_approve');
     return NextResponse.json({ success: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to approve transfer request.';

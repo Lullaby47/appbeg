@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 import { assertValidGameUsername } from '@/lib/games/gameUsernameRule';
 import { deactivateGameUsername, recordGameUsername } from '@/lib/sql/usernameRegistry';
+import { mirrorPlayerById } from '@/lib/sql/playersCache';
 
 function makeHiddenEmail(username: string) {
   return `${username}@app.local`;
@@ -196,6 +197,9 @@ export async function POST(request: Request) {
           coadminUid: callerUid,
         });
       }
+    }
+    if (role === 'player') {
+      void mirrorPlayerById(targetUid, 'appbeg_reset_worker_credentials');
     }
 
     return NextResponse.json({

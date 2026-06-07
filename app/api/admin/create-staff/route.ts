@@ -16,6 +16,10 @@ import {
 } from '@/lib/firebase/apiAuth';
 import { assertValidGameUsername } from '@/lib/games/gameUsernameRule';
 import { recordGameUsername } from '@/lib/sql/usernameRegistry';
+import { mirrorPlayerById } from '@/lib/sql/playersCache';
+import { mirrorReferralById, mirrorReferralCodeByCode } from '@/lib/sql/referralsCache';
+import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 type CreatableRole = 'staff' | 'carer' | 'player';
 
@@ -334,6 +338,8 @@ export async function POST(request: Request) {
       const gameTaskSeeds = await getGameLoginTaskSeedsForCoadmin(ownerCoadminUid);
       const now = new Date();
       let createdTaskIds: string[] = [];
+      let createdReferralCode = '';
+      const createdReferralIds: string[] = [];
 
       await adminDb.runTransaction(async (transaction) => {
         let referrerRef: FirebaseFirestore.DocumentReference | null = null;
@@ -366,6 +372,7 @@ export async function POST(request: Request) {
           throw new Error('Failed to generate a unique referral code. Please try again.');
         }
         setReferralCodeIndexInTransaction(adminDb, transaction, nextReferralCode, authUser.uid);
+        createdReferralCode = nextReferralCode;
 
         transaction.set(userRef, {
           uid: authUser.uid,
@@ -392,6 +399,7 @@ export async function POST(request: Request) {
 
         if (referrerRef && referrerData) {
           const referralLogRef = adminDb.collection('referrals').doc();
+          createdReferralIds.push(referralLogRef.id);
           transaction.set(referralLogRef, {
             referrerUid: referrerRef.id,
             referrerUsername: String(referrerData.username || 'Player'),
@@ -419,6 +427,17 @@ export async function POST(request: Request) {
       createdTaskIds.forEach((taskId) => {
         console.info('[CREATE_PLAYER_TASK] task created id=%s', taskId);
       });
+      void mirrorPlayerById(authUser.uid, 'appbeg_create_player');
+      void mirrorUserBalanceSnapshotById(authUser.uid, 'appbeg_create_player');
+      if (createdReferralCode) {
+        void mirrorReferralCodeByCode(createdReferralCode, 'appbeg_create_player');
+      }
+      createdReferralIds.forEach((referralId) => {
+        void mirrorReferralById(referralId, 'appbeg_create_player');
+      });
+      createdTaskIds.forEach((taskId) => {
+        void mirrorCarerTaskById(taskId, 'appbeg_create_player');
+      });
       await recordPlayerLoginUsernameAfterFirebaseSave({
         username,
         playerUid: authUser.uid,
@@ -436,6 +455,7 @@ export async function POST(request: Request) {
         status: 'active',
       });
       createdAuthUid = null;
+      void mirrorUserBalanceSnapshotById(authUser.uid, 'appbeg_create_worker');
     }
 
     return NextResponse.json({

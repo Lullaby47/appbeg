@@ -1,0 +1,10 @@
+const { cert, getApps, initializeApp } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
+const { Pool } = require('pg');
+const clean=v=>String(v||'').trim(); function req(n){const v=clean(process.env[n]); if(!v)throw new Error(`${n} is required`); return v;}
+function init(){const s=JSON.parse(Buffer.from(req('FIREBASE_SERVICE_ACCOUNT_BASE64'),'base64').toString('utf8')); return getApps()[0]||initializeApp({credential:cert(s)});}
+function rowFs(doc){const d=doc.data()||{}; return {uid:doc.id,username:clean(d.username),email:clean(d.email),role:clean(d.role)||'player',status:clean(d.status),created_by:clean(d.createdBy),coadmin_uid:clean(d.coadminUid),referral_code:clean(d.referralCode)};}
+function rowSql(r){return {uid:clean(r.uid),username:clean(r.username),email:clean(r.email),role:clean(r.role),status:clean(r.status),created_by:clean(r.created_by),coadmin_uid:clean(r.coadmin_uid),referral_code:clean(r.referral_code)};}
+function diff(a,b){const o={}; for(const k of Object.keys(a)) if(a[k]!==b[k]) o[k]={firebase:a[k],sql:b[k]}; return o;}
+async function main(){init(); const db=getFirestore(); const pg=new Pool({connectionString:clean(process.env.DATABASE_URL||process.env.POSTGRES_URL)||req('DATABASE_URL')}); const [fs,sql]=await Promise.all([db.collection('users').where('role','==','player').get(),pg.query('SELECT * FROM public.players_cache WHERE deleted_at IS NULL')]); const fm=new Map(fs.docs.map(d=>[d.id,rowFs(d)])); const sm=new Map(sql.rows.map(r=>[String(r.uid),rowSql(r)])); const missing_in_sql=[],extra_in_sql=[],mismatched_fields=[]; for(const [id,r] of fm){const s=sm.get(id); if(!s) missing_in_sql.push(id); else {const m=diff(r,s); if(Object.keys(m).length)mismatched_fields.push({uid:id,fields:m});}} for(const id of sm.keys()) if(!fm.has(id)) extra_in_sql.push(id); await pg.end(); console.log(JSON.stringify({collection:'users',firebase_count:fm.size,postgres_count:sm.size,missing_in_sql,extra_in_sql,mismatched_fields},null,2));}
+main().catch(e=>{console.error('[COMPARE_PLAYERS_CACHE] fatal',e);process.exitCode=1;});

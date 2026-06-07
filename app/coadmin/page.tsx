@@ -25,6 +25,7 @@ import ReachOutView from '../../components/admin/ReachOutView';
 import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 
 import { auth, db } from '@/lib/firebase/client';
+import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import {
   belongsToCoadmin,
   getCurrentUserCoadminUid,
@@ -232,6 +233,14 @@ type PlayerRecordRow = {
   sourceLabel: string;
   detailLabel: string;
   sortMs: number;
+};
+
+type SelectedPlayerHistoryResponse = {
+  source?: 'postgres' | 'firestore';
+  coadminAddedCoinTotal?: number;
+  cashoutTotalAmount?: number;
+  rows?: Partial<Record<PlayerRecordTab, PlayerRecordRow[]>>;
+  error?: string;
 };
 
 const AED_TO_USD = 0.2723;
@@ -829,175 +838,25 @@ export default function CoadminPage() {
 
     void (async () => {
       try {
-        const coadminUid = auth.currentUser?.uid || '';
-        const [financialEventsSnap, completedCashoutSnap, playerGameRequestsSnap] = await Promise.all([
-          getDocs(
-            query(
-              collection(db, 'financialEvents'),
-              where('playerUid', '==', playerUid),
-              orderBy('createdAt', 'desc'),
-              limit(SELECTED_PLAYER_RECORD_QUERY_LIMIT)
-            )
-          ),
-          getDocs(
-            query(
-              collection(db, 'playerCashoutTasks'),
-              where('playerUid', '==', playerUid),
-              where('status', '==', 'completed'),
-              orderBy('completedAt', 'desc'),
-              limit(SELECTED_PLAYER_CASHOUT_QUERY_LIMIT)
-            )
-          ),
-          getDocs(
-            query(
-              collection(db, 'playerGameRequests'),
-              where('playerUid', '==', playerUid),
-              orderBy('createdAt', 'desc'),
-              limit(SELECTED_PLAYER_RECORD_QUERY_LIMIT)
-            )
-          ),
-        ]);
-
-        const addedCoinTotal = financialEventsSnap.docs.reduce((total, docSnap) => {
-          const event = docSnap.data() as {
-            coadminUid?: string;
-            type?: string;
-            amountNpr?: number;
-          };
-          const eventType = String(event.type || '').trim();
-          const eventCoadminUid = String(event.coadminUid || '').trim();
-
-          if (eventType !== 'coadmin_coin_add') {
-            return total;
+        const response = await fetch(
+          `/api/coadmin/players/${encodeURIComponent(playerUid)}/history`,
+          {
+            headers: await getFirebaseApiHeaders(false),
           }
-          if (coadminUid && eventCoadminUid && eventCoadminUid !== coadminUid) {
-            return total;
-          }
-          return total + Math.max(0, Number(event.amountNpr || 0));
-        }, 0);
-
-        const cashoutTotal = completedCashoutSnap.docs.reduce((total, docSnap) => {
-          const task = docSnap.data() as { amountNpr?: number };
-          return total + Math.max(0, Number(task.amountNpr || 0));
-        }, 0);
-
-        const coinRechargeRows = financialEventsSnap.docs
-          .map((docSnap) => {
-            const event = docSnap.data() as {
-              coadminUid?: string;
-              type?: string;
-              amountNpr?: number;
-              createdAt?: { toDate?: () => Date; toMillis?: () => number } | null;
-            };
-            const eventType = String(event.type || '').trim();
-            const eventCoadminUid = String(event.coadminUid || '').trim();
-            if (eventType !== 'coadmin_coin_add') {
-              return null;
-            }
-            if (coadminUid && eventCoadminUid && eventCoadminUid !== coadminUid) {
-              return null;
-            }
-
-            return {
-              id: `coin-recharge-${docSnap.id}`,
-              dateLabel: formatDateTime(event.createdAt || null),
-              amountValue: Number(event.amountNpr || 0),
-              amountUnit: 'coin',
-              amountLabel: formatPlayerRecordAmount(Number(event.amountNpr || 0), 'coin'),
-              statusLabel: 'Completed',
-              sourceLabel: eventCoadminUid ? 'App / Coadmin' : 'App',
-              detailLabel: 'Manual coin recharge',
-              sortMs: toMillis(event.createdAt || null),
-            } satisfies PlayerRecordRow;
-          })
-          .filter((row) => row !== null)
-          .sort((left, right) => right.sortMs - left.sortMs);
-
-        const cashoutRows = completedCashoutSnap.docs
-          .map((docSnap) => {
-            const task = docSnap.data() as {
-              amountNpr?: number;
-              completedAt?: { toDate?: () => Date; toMillis?: () => number } | null;
-              createdAt?: { toDate?: () => Date; toMillis?: () => number } | null;
-              payoutMethod?: string | null;
-              paymentAppName?: string | null;
-            };
-            const timeValue = task.completedAt || task.createdAt || null;
-            return {
-              id: `cashout-${docSnap.id}`,
-              dateLabel: formatDateTime(timeValue),
-              amountValue: Number(task.amountNpr || 0),
-              amountUnit: 'cash',
-              amountLabel: formatPlayerRecordAmount(Number(task.amountNpr || 0), 'cash'),
-              statusLabel: 'Completed',
-              sourceLabel:
-                task.payoutMethod === 'app'
-                  ? task.paymentAppName
-                    ? `App / ${task.paymentAppName}`
-                    : 'App'
-                  : task.payoutMethod === 'qr'
-                    ? 'QR'
-                    : 'Cashout',
-              detailLabel: 'Player cashout',
-              sortMs: toMillis(timeValue),
-            } satisfies PlayerRecordRow;
-          })
-          .sort((left, right) => right.sortMs - left.sortMs);
-
-        const inGameRechargeRows: PlayerRecordRow[] = [];
-        const redeemRows: PlayerRecordRow[] = [];
-        playerGameRequestsSnap.docs.forEach((docSnap) => {
-          const request = docSnap.data() as {
-            gameName?: string;
-            amount?: number;
-            type?: string;
-            status?: string;
-            createdAt?: { toDate?: () => Date; toMillis?: () => number } | null;
-            completedAt?: { toDate?: () => Date; toMillis?: () => number } | null;
-            bonusPercentage?: number | null;
-          };
-          const type = String(request.type || '').trim();
-          const statusLabel = String(request.status || 'pending')
-            .replace(/_/g, ' ')
-            .replace(/\b\w/g, (value) => value.toUpperCase());
-          const gameName = String(request.gameName || '').trim() || 'Unknown game';
-          const timeValue = request.completedAt || request.createdAt || null;
-          const commonRow = {
-            dateLabel: formatDateTime(timeValue),
-            amountValue: Number(request.amount || 0),
-            amountUnit: 'coin' as const,
-            amountLabel: formatPlayerRecordAmount(Number(request.amount || 0), 'coin'),
-            statusLabel,
-            sourceLabel: gameName,
-            sortMs: toMillis(timeValue),
-          };
-
-          if (type === 'recharge') {
-            inGameRechargeRows.push({
-              id: `ingame-recharge-${docSnap.id}`,
-              ...commonRow,
-              detailLabel:
-                Number(request.bonusPercentage || 0) > 0
-                  ? `Bonus ${Math.round(Number(request.bonusPercentage || 0))}% applied`
-                  : 'Game recharge',
-            });
-          }
-
-          if (type === 'redeem') {
-            redeemRows.push({
-              id: `redeem-${docSnap.id}`,
-              ...commonRow,
-              detailLabel: 'Game redeem',
-            });
-          }
-        });
-
-        inGameRechargeRows.sort((left, right) => right.sortMs - left.sortMs);
-        redeemRows.sort((left, right) => right.sortMs - left.sortMs);
+        );
+        const payload = (await response.json()) as SelectedPlayerHistoryResponse;
+        if (!response.ok) {
+          throw new Error(payload.error || 'Failed to load player totals.');
+        }
+        const rows = payload.rows || {};
 
         if (!cancelled) {
-          setSelectedPlayerCoadminAddedCoinTotal(Math.round(addedCoinTotal));
-          setSelectedPlayerCashoutTotalAmount(Math.round(cashoutTotal));
+          setSelectedPlayerCoadminAddedCoinTotal(
+            Math.round(Number(payload.coadminAddedCoinTotal || 0))
+          );
+          setSelectedPlayerCashoutTotalAmount(
+            Math.round(Number(payload.cashoutTotalAmount || 0))
+          );
           setSelectedPlayerRecordPages({
             'coin-recharge': 1,
             cashout: 1,
@@ -1005,10 +864,10 @@ export default function CoadminPage() {
             redeem: 1,
           });
           setSelectedPlayerRecordRows({
-            'coin-recharge': coinRechargeRows,
-            cashout: cashoutRows,
-            'coin-recharge-ingame': inGameRechargeRows,
-            redeem: redeemRows,
+            'coin-recharge': rows['coin-recharge'] || [],
+            cashout: rows.cashout || [],
+            'coin-recharge-ingame': rows['coin-recharge-ingame'] || [],
+            redeem: rows.redeem || [],
           });
         }
       } catch (error) {

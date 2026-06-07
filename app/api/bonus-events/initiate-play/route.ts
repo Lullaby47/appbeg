@@ -13,6 +13,10 @@ import {
   findRequestLinkedGameCredential,
   requestLinkedCarerTaskId,
 } from '@/lib/games/requestLinkedCarerTask';
+import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
+import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
+import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 function getStaffBonusMultiplier(bonusPercent: number) {
   if (bonusPercent <= 8) return 1.0;
@@ -41,6 +45,8 @@ export async function POST(request: Request) {
     const bonusRef = adminDb.collection('bonusEvents').doc(bonusEventId);
     const requestRef = adminDb.collection('playerGameRequests').doc();
     const taskRef = adminDb.collection('carerTasks').doc(requestLinkedCarerTaskId(requestRef.id));
+    const eventRef = adminDb.collection('financialEvents').doc();
+    const mirroredUserIds = new Set<string>();
 
     await adminDb.runTransaction(async (transaction) => {
       const [playerSnap, bonusSnap, loginSnap, existingTaskSnap] = await Promise.all([
@@ -130,6 +136,7 @@ export async function POST(request: Request) {
         gameName
       );
       const createdAt = FieldValue.serverTimestamp();
+      let staffRewardAudit: Record<string, unknown> | null = null;
 
       if (String(bonus.createdByRole || '').toLowerCase() === 'staff') {
         const staffRef = adminDb.collection('users').doc(String(bonus.createdByUid || '').trim());
@@ -145,11 +152,25 @@ export async function POST(request: Request) {
         const multiplier = getStaffBonusMultiplier(bonusPercent);
         const minReward = bonusPercent <= 8 ? 0.2 : 0;
         const reward = multiplier === 0 ? 0 : Number(Math.max(minReward, rawReward * multiplier).toFixed(2));
+        const cashBoxBefore = Number(staffData.cashBoxNpr || 0);
+        const cashBoxAfter = cashBoxBefore + reward;
         transaction.set(
           staffRef,
-          { cashBoxNpr: Number(staffData.cashBoxNpr || 0) + reward },
+          { cashBoxNpr: cashBoxAfter },
           { merge: true }
         );
+        staffRewardAudit = {
+          rewardAmountNpr: reward,
+          rewardReason: 'bonus_staff_reward',
+          cashBoxBefore,
+          cashBoxAfter,
+          cashBoxDelta: cashBoxAfter - cashBoxBefore,
+          actorUid: auth.user.uid,
+          actorRole: auth.user.role,
+          sourceRequestId: requestRef.id,
+          bonusEventId,
+        };
+        mirroredUserIds.add(String(bonus.createdByUid || '').trim());
       }
 
       transaction.update(playerRef, {
@@ -217,22 +238,30 @@ export async function POST(request: Request) {
           bonusEventId,
         });
       }
-      transaction.set(adminDb.collection('financialEvents').doc(), {
+      transaction.set(eventRef, {
         playerUid,
         coadminUid,
         amountNpr: bonusAddAmount,
         type: 'bonus',
         bonusEventId,
         requestId: requestRef.id,
+        ...(staffRewardAudit || {}),
         createdAt: FieldValue.serverTimestamp(),
       });
       transaction.delete(bonusRef);
+      mirroredUserIds.add(playerUid);
     });
     console.info('[GAME_REQUEST_API][BONUS] request/task/financial event committed atomically', {
       requestId: requestRef.id,
       taskId: taskRef.id,
       type: 'recharge',
       bonusEventId,
+    });
+    void mirrorCarerTaskById(taskRef.id, 'appbeg_bonus_initiate_play');
+    void mirrorPlayerGameRequestById(requestRef.id, 'appbeg_bonus_initiate_play');
+    void mirrorFinancialEventById(eventRef.id, 'appbeg_bonus_initiate_play');
+    mirroredUserIds.forEach((uid) => {
+      void mirrorUserBalanceSnapshotById(uid, 'appbeg_bonus_initiate_play');
     });
 
     return NextResponse.json({ success: true, requestId: requestRef.id });

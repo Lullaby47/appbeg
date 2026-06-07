@@ -8,6 +8,8 @@ import {
   maintenanceBreakApiResponse,
   rejectIfPlayerMaintenanceBreak,
 } from '@/lib/maintenance/admin';
+import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 type Body = {
   amountNpr?: unknown;
@@ -152,6 +154,8 @@ export async function POST(request: Request) {
       });
     });
 
+    void mirrorFinancialEventById(eventRef.id, 'appbeg_cash_to_coin_transfer');
+    void mirrorUserBalanceSnapshotById(playerUid, 'appbeg_cash_to_coin_transfer');
     return NextResponse.json({
       success: true,
       cash: newCash,

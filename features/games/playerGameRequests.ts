@@ -145,7 +145,69 @@ async function upsertLinkedCarerTaskForRequest(request: PlayerGameRequest) {
   await upsertCarerTaskForPlayerGameRequest(request);
 }
 
+async function tombstoneLinkedCarerTaskCacheBestEffort(taskId: string) {
+  const cleanTaskId = String(taskId || '').trim();
+  if (!cleanTaskId) return;
+  try {
+    const token = await auth.currentUser?.getIdToken();
+    if (!token) return;
+    const response = await fetch('/api/carer-tasks/cache/mirror', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ taskId: cleanTaskId, action: 'tombstone' }),
+    });
+    if (!response.ok) {
+      console.error('[CARER_TASKS_CACHE] tombstone failed', {
+        taskId: cleanTaskId,
+        status: response.status,
+      });
+    }
+  } catch (error) {
+    console.error('[CARER_TASKS_CACHE] tombstone failed', { taskId: cleanTaskId, error });
+  }
+}
+
+async function mirrorPlayerGameRequestCacheBestEffort(
+  requestId: string,
+  action: 'upsert' | 'tombstone' = 'upsert'
+) {
+  const cleanRequestId = String(requestId || '').trim();
+  if (!cleanRequestId) return;
+  try {
+    const token = await auth.currentUser?.getIdToken();
+    if (!token) return;
+    const response = await fetch('/api/player-game-requests/cache/mirror', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ requestId: cleanRequestId, action }),
+    });
+    if (!response.ok) {
+      console.error('[PLAYER_GAME_REQUESTS_CACHE] mirror failed', {
+        requestId: cleanRequestId,
+        action,
+        status: response.status,
+      });
+    }
+  } catch (error) {
+    console.error('[PLAYER_GAME_REQUESTS_CACHE] mirror failed', {
+      requestId: cleanRequestId,
+      action,
+      error,
+    });
+  }
+}
+
 function sortByNewest(requests: PlayerGameRequest[]) {
+  return sortPlayerGameRequestsByNewest(requests);
+}
+
+export function sortPlayerGameRequestsByNewest(requests: PlayerGameRequest[]) {
   return [...requests].sort((left, right) => {
     const leftTime =
       left.pokedAt?.toMillis?.() ||
@@ -655,6 +717,7 @@ export async function markPlayerGameRequestDone(requestId: string) {
       mapRequestDoc(snap.id, snap.data() as Omit<PlayerGameRequest, 'id'>)
     );
   }
+  void mirrorPlayerGameRequestCacheBestEffort(requestId);
 }
 
 export async function dismissPlayerRedeemRequest(requestId: string) {
@@ -703,6 +766,8 @@ export async function dismissPlayerRedeemRequest(requestId: string) {
       transaction.delete(taskRef);
     }
   });
+  void mirrorPlayerGameRequestCacheBestEffort(requestId);
+  void tombstoneLinkedCarerTaskCacheBestEffort(`request__${requestId}`);
 }
 
 /**

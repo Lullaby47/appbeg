@@ -31,6 +31,11 @@ import {
   PLAYER_GAME_REDEEM_MAX_PER_24H,
   PlayerGameRequest,
 } from '@/features/games/playerGameRequests';
+import { attachPlayerRequestLiveShadowCompare } from '@/features/live/playerRequestShadowCompare';
+import {
+  attachPlayerRequestSqlReadListener,
+  PLAYER_REQUESTS_SQL_READ_ENABLED,
+} from '@/features/live/playerRequestSqlRead';
 import {
   listenToUnreadCounts,
   markConversationAsRead,
@@ -1667,20 +1672,45 @@ export default function PlayerPage() {
       }
     );
 
+    const liveShadowCompare = attachPlayerRequestLiveShadowCompare(playerUid);
+    let sqlReadDispose: (() => void) | null = null;
+    let useFirebaseForUi = !PLAYER_REQUESTS_SQL_READ_ENABLED;
+
     const unsubscribeRequests = listenToPlayerGameRequestsByPlayer(
       playerUid,
       (requests) => {
-        setRequestHistory(sortByNewest(requests));
+        if (useFirebaseForUi) {
+          setRequestHistory(sortByNewest(requests));
+        }
+        liveShadowCompare.reportFirebaseSnapshot(requests);
       },
       (error) => {
-        setMessage(error.message || 'Failed to load request history.');
+        if (useFirebaseForUi) {
+          setMessage(error.message || 'Failed to load request history.');
+        }
       }
     );
+
+    if (PLAYER_REQUESTS_SQL_READ_ENABLED) {
+      const sqlRead = attachPlayerRequestSqlReadListener(
+        playerUid,
+        (requests) => {
+          setRequestHistory(sortByNewest(requests));
+          setMessage('');
+        },
+        () => {
+          useFirebaseForUi = true;
+        }
+      );
+      sqlReadDispose = sqlRead.dispose;
+    }
 
     return () => {
       window.clearTimeout(loaderTimeoutId);
       unsubscribeLogins();
       unsubscribeRequests();
+      sqlReadDispose?.();
+      liveShadowCompare.dispose();
     };
   }, [loadAgents, playerUid, syncCredentialSidecarsForPlayer]);
 

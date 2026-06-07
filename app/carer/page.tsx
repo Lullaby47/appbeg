@@ -53,6 +53,16 @@ import {
   sendCarerCashboxInquiryAlert,
   syncCarerTasksForCoadmin,
 } from '@/features/games/carerTasks';
+import { attachCarerTaskLiveShadowCompare } from '@/features/live/carerTaskShadowCompare';
+import {
+  attachCarerTaskSqlReadListener,
+  CARER_TASKS_SQL_READ_ENABLED,
+} from '@/features/live/carerTaskSqlRead';
+import { attachAutomationJobLiveShadowCompare } from '@/features/live/automationJobShadowCompare';
+import {
+  attachAutomationJobsSqlReadListener,
+  AUTOMATION_JOBS_SQL_READ_ENABLED,
+} from '@/features/live/automationJobsSqlRead';
 import {
   flagPlayerRisk,
   getPlayerRiskSnapshot,
@@ -136,6 +146,124 @@ const WARMUP_GAME_NAMES = [
 ] as const;
 const LOCAL_WARMUP_URL =
   process.env.NEXT_PUBLIC_CARER_AGENT_WARMUP_URL || 'http://127.0.0.1:8765/warmup-browsers';
+const LOCAL_WARMUP_STATUS_URL = (() => {
+  try {
+    const url = new URL(LOCAL_WARMUP_URL);
+    url.pathname = '/warmup-browsers/status';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return 'http://127.0.0.1:8765/warmup-browsers/status';
+  }
+})();
+const WARMUP_POLL_INTERVAL_MS = 2_000;
+const WARMUP_POLL_TIMEOUT_MS = 120_000;
+
+type WarmupAgentResponse = {
+  ok?: boolean;
+  status?: string;
+  warmupId?: string;
+  statusUrl?: string;
+  error?: string;
+  reason?: string;
+  games?: Record<string, BrowserWarmupGameResult>;
+};
+
+function resolveWarmupStatusUrl(statusUrl?: string) {
+  const clean = String(statusUrl || '').trim();
+  return clean || LOCAL_WARMUP_STATUS_URL;
+}
+
+function isWarmupTerminalStatus(status: string) {
+  const normalized = status.trim().toLowerCase();
+  return normalized === 'completed' || normalized === 'failed';
+}
+
+function isWarmupInProgressStatus(status: string) {
+  const normalized = status.trim().toLowerCase();
+  return normalized === 'started' || normalized === 'queued' || normalized === 'running';
+}
+
+function sleepMs(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function applyWarmupGamesToUi(
+  games: Record<string, BrowserWarmupGameResult>,
+  setBrowserWarmupGames: (value: Record<string, BrowserWarmupGameResult>) => void,
+  setBrowserWarmupStatus: (value: WarmupStatus) => void,
+  setBrowserWarmupMessage: (value: string) => void
+) {
+  setBrowserWarmupGames(games);
+  const total = Object.keys(games).length;
+  const readyCount = Object.values(games).filter((result) => Boolean(result.ready)).length;
+  if (total > 0 && readyCount === total) {
+    setBrowserWarmupStatus('ready');
+    setBrowserWarmupMessage(`Ready (${readyCount}/${total})`);
+    return { total, readyCount, outcome: 'ready' as const };
+  }
+  if (readyCount > 0) {
+    setBrowserWarmupStatus('partial_ready');
+    setBrowserWarmupMessage(`Partial ready (${readyCount}/${total})`);
+    return { total, readyCount, outcome: 'partial_ready' as const };
+  }
+  setBrowserWarmupStatus('failed');
+  setBrowserWarmupMessage(total > 0 ? 'Failed' : 'No warmup game results returned.');
+  return { total, readyCount, outcome: 'failed' as const };
+}
+
+async function pollWarmupBrowserStatus(input: {
+  statusUrl: string;
+  agentId: string;
+  warmupId?: string;
+}): Promise<WarmupAgentResponse> {
+  const deadline = Date.now() + WARMUP_POLL_TIMEOUT_MS;
+  const expectedWarmupId = String(input.warmupId || '').trim();
+
+  while (Date.now() < deadline) {
+    await sleepMs(WARMUP_POLL_INTERVAL_MS);
+
+    let response: Response;
+    try {
+      response = await fetch(input.statusUrl, {
+        method: 'GET',
+        cache: 'no-store',
+        headers: {
+          'x-carer-agent-id': input.agentId,
+        },
+      });
+    } catch {
+      throw new Error('Carer agent is not reachable. Start carer-agent on this machine.');
+    }
+
+    const payload = (await response.json().catch(() => ({}))) as WarmupAgentResponse;
+    const status = String(payload.status || '').trim().toLowerCase();
+    console.info('[WARMUP_BROWSER_UI] poll status=%s ok=%s warmupId=%s', status || '-', payload.ok ?? '-', payload.warmupId || '-');
+
+    if (!response.ok) {
+      throw new Error(String(payload.error || `Warmup status failed (${response.status}).`));
+    }
+
+    if (
+      expectedWarmupId &&
+      String(payload.warmupId || '').trim() &&
+      String(payload.warmupId || '').trim() !== expectedWarmupId &&
+      isWarmupInProgressStatus(status)
+    ) {
+      continue;
+    }
+
+    if (isWarmupTerminalStatus(status)) {
+      return payload;
+    }
+  }
+
+  throw new Error('Warmup timed out after 2 minutes.');
+}
+
 function getTimestampMs(value: unknown) {
   if (!value) {
     return 0;
@@ -1009,6 +1137,10 @@ export default function CarerPage() {
       return;
     }
 
+    const liveShadowCompare = attachCarerTaskLiveShadowCompare(carerIdentity.uid, coadminUid);
+    let sqlReadDispose: (() => void) | null = null;
+    let useFirebaseForUi = !CARER_TASKS_SQL_READ_ENABLED;
+
     const unsubscribe = listenToAvailableCarerTasks(
       coadminUid,
       carerIdentity.uid,
@@ -1038,14 +1170,38 @@ export default function CarerPage() {
             String((task as { linkedJobId?: string | null }).linkedJobId || '').trim() || null
           );
         }
-        setTasks(sortByNewest(incomingTasks));
+        if (useFirebaseForUi) {
+          setTasks(sortByNewest(incomingTasks));
+        }
+        liveShadowCompare.reportFirebaseSnapshot(incomingTasks);
       },
       (error) => {
-        setErrorMessage(error.message || 'Failed to listen for tasks.');
+        if (useFirebaseForUi) {
+          setErrorMessage(error.message || 'Failed to listen for tasks.');
+        }
       }
     );
 
-    return () => unsubscribe();
+    if (CARER_TASKS_SQL_READ_ENABLED) {
+      const sqlRead = attachCarerTaskSqlReadListener(
+        carerIdentity.uid,
+        coadminUid,
+        (incomingTasks) => {
+          setTasks(sortByNewest(incomingTasks));
+          setErrorMessage('');
+        },
+        () => {
+          useFirebaseForUi = true;
+        }
+      );
+      sqlReadDispose = sqlRead.dispose;
+    }
+
+    return () => {
+      unsubscribe();
+      sqlReadDispose?.();
+      liveShadowCompare.dispose();
+    };
   }, [carerIdentity?.uid, coadminUid]);
 
   useEffect(() => {
@@ -1074,19 +1230,53 @@ export default function CarerPage() {
       return;
     }
 
+    const liveShadowCompare = coadminUid
+      ? attachAutomationJobLiveShadowCompare(carerIdentity.uid, coadminUid)
+      : {
+          reportFirebaseJobSnapshot: () => undefined,
+          dispose: () => undefined,
+        };
+    let sqlReadDispose: (() => void) | null = null;
+    let useFirebaseForUi = !AUTOMATION_JOBS_SQL_READ_ENABLED || !coadminUid;
+
     const unsubscribe = listenAutomationUiStatusByTask(
       carerIdentity.uid,
       (statuses, freshJobs) => {
-        setAutomationStatusByTaskId(statuses);
-        setFreshAutomationJobByTaskId(freshJobs);
+        if (useFirebaseForUi) {
+          setAutomationStatusByTaskId(statuses);
+          setFreshAutomationJobByTaskId(freshJobs);
+        }
+        liveShadowCompare.reportFirebaseJobSnapshot(statuses, freshJobs);
       },
       (error) => {
-        setErrorMessage(error.message || 'Failed to listen to automation jobs.');
+        if (useFirebaseForUi) {
+          setErrorMessage(error.message || 'Failed to listen to automation jobs.');
+        }
       }
     );
 
-    return () => unsubscribe();
-  }, [carerIdentity?.uid]);
+    if (AUTOMATION_JOBS_SQL_READ_ENABLED && coadminUid) {
+      const sqlRead = attachAutomationJobsSqlReadListener(
+        carerIdentity.uid,
+        coadminUid,
+        (statuses, freshJobs) => {
+          setAutomationStatusByTaskId(statuses);
+          setFreshAutomationJobByTaskId(freshJobs);
+          setErrorMessage('');
+        },
+        () => {
+          useFirebaseForUi = true;
+        }
+      );
+      sqlReadDispose = sqlRead.dispose;
+    }
+
+    return () => {
+      unsubscribe();
+      sqlReadDispose?.();
+      liveShadowCompare.dispose();
+    };
+  }, [carerIdentity?.uid, coadminUid]);
 
   useEffect(() => {
     if (!carerIdentity?.uid) {
@@ -1664,31 +1854,80 @@ export default function CarerPage() {
           games,
         }),
       });
-      const payload = (await response.json().catch(() => ({}))) as {
-        ok?: boolean;
-        error?: string;
-        games?: Record<string, BrowserWarmupGameResult>;
-      };
-      if (!response.ok || !payload.ok) {
-        throw new Error(payload.error || 'Warmup failed.');
+      const payload = (await response.json().catch(() => ({}))) as WarmupAgentResponse;
+
+      if (response.status === 403 || String(payload.error || '').trim() === 'agent_auth_failed') {
+        throw new Error('Agent authentication failed. Check agent ID matches carer-agent .env.');
       }
-      const readyByGame = payload.games || {};
-      setBrowserWarmupGames(readyByGame);
-      const total = Object.keys(readyByGame).length;
-      const readyCount = Object.values(readyByGame).filter((result) => Boolean(result.ready)).length;
-      if (total > 0 && readyCount === total) {
-        setBrowserWarmupStatus('ready');
-        setBrowserWarmupMessage(`Ready (${readyCount}/${total})`);
-      } else if (readyCount > 0) {
-        setBrowserWarmupStatus('partial_ready');
-        setBrowserWarmupMessage(`Partial ready (${readyCount}/${total})`);
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || `Warmup failed (${response.status}).`);
+      }
+
+      const postStatus = String(payload.status || '').trim().toLowerCase();
+      const warmupId = String(payload.warmupId || '').trim();
+      let finalPayload = payload;
+
+      if (
+        (postStatus === 'started' || postStatus === 'already_running') &&
+        (payload.statusUrl || LOCAL_WARMUP_STATUS_URL)
+      ) {
+        console.info('[WARMUP_BROWSER_UI] started warmupId=%s status=%s', warmupId || '-', postStatus || '-');
+        setBrowserWarmupStatus('warming');
+        setBrowserWarmupMessage('Warming...');
+        finalPayload = await pollWarmupBrowserStatus({
+          statusUrl: resolveWarmupStatusUrl(payload.statusUrl),
+          agentId: agentCheck.normalized,
+          warmupId: warmupId || undefined,
+        });
+      } else if (isWarmupInProgressStatus(postStatus)) {
+        console.info('[WARMUP_BROWSER_UI] started warmupId=%s status=%s', warmupId || '-', postStatus || '-');
+        setBrowserWarmupStatus('warming');
+        setBrowserWarmupMessage('Warming...');
+        finalPayload = await pollWarmupBrowserStatus({
+          statusUrl: LOCAL_WARMUP_STATUS_URL,
+          agentId: agentCheck.normalized,
+          warmupId: warmupId || undefined,
+        });
+      }
+
+      const finalStatus = String(finalPayload.status || '').trim().toLowerCase();
+      const readyByGame = finalPayload.games || {};
+      const summary = applyWarmupGamesToUi(
+        readyByGame,
+        setBrowserWarmupGames,
+        setBrowserWarmupStatus,
+        setBrowserWarmupMessage
+      );
+
+      if (finalStatus === 'failed' || summary.outcome === 'failed') {
+        const reason =
+          String(finalPayload.reason || finalPayload.error || '').trim() || 'warmup_failed';
+        console.info(
+          '[WARMUP_BROWSER_UI] failed reason=%s total=%s ok=%s',
+          reason,
+          summary.total,
+          summary.readyCount
+        );
+        if (summary.total === 0) {
+          setBrowserWarmupMessage(reason.replace(/_/g, ' ') || 'Warmup failed.');
+        }
       } else {
-        setBrowserWarmupStatus('failed');
-        setBrowserWarmupMessage('Failed');
+        console.info(
+          '[WARMUP_BROWSER_UI] completed total=%s ok=%s status=%s',
+          summary.total,
+          summary.readyCount,
+          finalStatus || postStatus || '-'
+        );
       }
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'Warmup failed.';
+      console.info('[WARMUP_BROWSER_UI] failed reason=%s', message);
       setBrowserWarmupStatus('failed');
-      setBrowserWarmupMessage(error instanceof Error ? error.message : 'Warmup failed.');
+      if (message.includes('Failed to fetch') || message.includes('NetworkError')) {
+        setBrowserWarmupMessage('Carer agent is not reachable. Start carer-agent on this machine.');
+      } else {
+        setBrowserWarmupMessage(message);
+      }
     }
   }
 

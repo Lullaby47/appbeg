@@ -13,6 +13,8 @@ import {
   findRequestLinkedGameCredential,
   requestLinkedCarerTaskId,
 } from '@/lib/games/requestLinkedCarerTask';
+import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
+import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
 
 const MIN_REDEEM_AMOUNT = 50;
 const MAX_REDEEM_AMOUNT = 350;
@@ -225,6 +227,8 @@ export async function POST(request: Request) {
       taskId: taskRef.id,
       type: 'redeem',
     });
+    void mirrorCarerTaskById(taskRef.id, 'appbeg_redeem_request');
+    void mirrorPlayerGameRequestById(requestRef.id, 'appbeg_redeem_request');
 
     return NextResponse.json({ success: true, requestId: requestRef.id });
   } catch (error) {

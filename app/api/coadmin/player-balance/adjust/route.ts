@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 type Body = {
   playerUid?: unknown;
@@ -28,6 +30,7 @@ export async function POST(request: Request) {
 
     const scope = scopedCoadminUid(auth.user);
     const playerRef = adminDb.collection('users').doc(playerUid);
+    const eventRef = adminDb.collection('financialEvents').doc();
     await adminDb.runTransaction(async (transaction) => {
       const playerSnap = await transaction.get(playerRef);
       if (!playerSnap.exists) throw new Error('Player not found.');
@@ -61,7 +64,7 @@ export async function POST(request: Request) {
       }
 
       transaction.update(playerRef, { [balanceType]: next });
-      transaction.set(adminDb.collection('financialEvents').doc(), {
+      transaction.set(eventRef, {
         playerUid,
         coadminUid: playerScope,
         amountNpr: Math.abs(delta),
@@ -77,6 +80,8 @@ export async function POST(request: Request) {
       });
     });
 
+    void mirrorFinancialEventById(eventRef.id, 'appbeg_player_balance_adjust');
+    void mirrorUserBalanceSnapshotById(playerUid, 'appbeg_player_balance_adjust');
     return NextResponse.json({ success: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to adjust player balance.';

@@ -632,6 +632,168 @@ async function mirrorAutomationJobCacheBestEffort(jobId: string) {
   }
 }
 
+async function mirrorCarerTaskCacheBestEffort(
+  taskId: string,
+  action: 'upsert' | 'tombstone' = 'upsert'
+) {
+  const cleanTaskId = String(taskId || '').trim();
+  if (!cleanTaskId) return;
+  try {
+    const token = await auth.currentUser?.getIdToken();
+    if (!token) return;
+    const response = await fetch('/api/carer-tasks/cache/mirror', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ taskId: cleanTaskId, action }),
+    });
+    if (!response.ok) {
+      const responseBody = await readCarerMirrorFailureBody(response);
+      console.error('[CARER_TASKS_CACHE] mirror failed', {
+        taskId: cleanTaskId,
+        action,
+        status: response.status,
+        taskCount: 1,
+        firstTaskId: cleanTaskId,
+        lastTaskId: cleanTaskId,
+        batchSize: 1,
+        batchIndex: 1,
+        totalBatches: 1,
+        responseBody,
+      });
+    }
+  } catch (error) {
+    console.error('[CARER_TASKS_CACHE] mirror failed', {
+      taskId: cleanTaskId,
+      action,
+      taskCount: 1,
+      firstTaskId: cleanTaskId,
+      lastTaskId: cleanTaskId,
+      batchSize: 1,
+      batchIndex: 1,
+      totalBatches: 1,
+      ...formatCarerMirrorClientError(error),
+    });
+  }
+}
+
+function formatCarerMirrorClientError(error: unknown) {
+  const record =
+    error instanceof Error
+      ? (error as Error & {
+          code?: string;
+          detail?: string;
+          constraint?: string;
+          table?: string;
+          column?: string;
+        })
+      : null;
+
+  return {
+    message: record?.message ?? String(error),
+    stack: record?.stack ?? null,
+    code: record?.code ?? null,
+    detail: record?.detail ?? null,
+    constraint: record?.constraint ?? null,
+    table: record?.table ?? null,
+    column: record?.column ?? null,
+  };
+}
+
+async function readCarerMirrorFailureBody(response: Response) {
+  try {
+    return await response.json();
+  } catch {
+    try {
+      return { rawBody: await response.text() };
+    } catch {
+      return null;
+    }
+  }
+}
+
+function carerMirrorBatchMeta(taskIds: string[]) {
+  return {
+    taskCount: taskIds.length,
+    firstTaskId: taskIds[0] ?? null,
+    lastTaskId: taskIds[taskIds.length - 1] ?? null,
+    batchSize: taskIds.length,
+    batchIndex: 1,
+    totalBatches: 1,
+  };
+}
+
+async function mirrorCarerTasksCacheBestEffort(
+  taskIds: Iterable<string>,
+  action: 'upsert' | 'tombstone' = 'upsert'
+) {
+  const cleanTaskIds = Array.from(new Set(Array.from(taskIds).map((id) => String(id || '').trim()).filter(Boolean)));
+  if (!cleanTaskIds.length) return;
+  const batchMeta = carerMirrorBatchMeta(cleanTaskIds);
+  try {
+    const token = await auth.currentUser?.getIdToken();
+    if (!token) return;
+    const response = await fetch('/api/carer-tasks/cache/mirror', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ taskIds: cleanTaskIds, action }),
+    });
+    if (!response.ok) {
+      const responseBody = await readCarerMirrorFailureBody(response);
+      console.error('[CARER_TASKS_CACHE] mirror failed', {
+        action,
+        status: response.status,
+        ...batchMeta,
+        responseBody,
+      });
+    }
+  } catch (error) {
+    console.error('[CARER_TASKS_CACHE] mirror failed', {
+      action,
+      ...batchMeta,
+      ...formatCarerMirrorClientError(error),
+    });
+  }
+}
+
+async function mirrorPlayerGameRequestCacheBestEffort(
+  requestId: string,
+  action: 'upsert' | 'tombstone' = 'upsert'
+) {
+  const cleanRequestId = String(requestId || '').trim();
+  if (!cleanRequestId) return;
+  try {
+    const token = await auth.currentUser?.getIdToken();
+    if (!token) return;
+    const response = await fetch('/api/player-game-requests/cache/mirror', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ requestId: cleanRequestId, action }),
+    });
+    if (!response.ok) {
+      console.error('[PLAYER_GAME_REQUESTS_CACHE] mirror failed', {
+        requestId: cleanRequestId,
+        action,
+        status: response.status,
+      });
+    }
+  } catch (error) {
+    console.error('[PLAYER_GAME_REQUESTS_CACHE] mirror failed', {
+      requestId: cleanRequestId,
+      action,
+      error,
+    });
+  }
+}
+
 function readApiError(messageFallback: string, payload: unknown) {
   if (
     payload &&
@@ -927,6 +1089,7 @@ export async function upsertCarerTaskForPlayerGameRequest(
     matchedGame
   );
   await setDoc(taskRef, payload, { merge: true });
+  void mirrorCarerTaskCacheBestEffort(taskRef.id);
 
   const { recordDevUsageEstimate } = await import('@/features/dev/devUsageEstimates');
   recordDevUsageEstimate({
@@ -954,7 +1117,7 @@ async function getCurrentCoadminTasks(coadminUid: string) {
   );
 }
 
-function getVisibleTaskForCarer(task: CarerTask, currentCarerUid: string) {
+export function getVisibleTaskForCarer(task: CarerTask, currentCarerUid: string) {
   const effectiveStatus = getEffectiveCarerTaskStatus(task);
 
   if (effectiveStatus === 'completed') {
@@ -1074,7 +1237,20 @@ export async function syncCarerTasks({
 
   const batch = writeBatch(db);
   let changed = false;
+  const changedTaskIds = new Set<string>();
   const resetTaskIdsToRefresh = new Set<string>();
+  const syncCandidateTaskIds = new Set<string>();
+  for (const player of players) {
+    for (const game of games) {
+      syncCandidateTaskIds.add(usernameTaskId(coadminUid, player.uid, game.gameName));
+    }
+  }
+  for (const request of allRequests) {
+    syncCandidateTaskIds.add(requestTaskId(request.id));
+  }
+  for (const taskId of existingTasks.keys()) {
+    syncCandidateTaskIds.add(taskId);
+  }
 
   for (const player of players) {
     for (const game of games) {
@@ -1091,6 +1267,7 @@ export async function syncCarerTasks({
           ...task,
           createdAt: serverTimestamp(),
         });
+        changedTaskIds.add(taskId);
         changed = true;
         continue;
       }
@@ -1132,6 +1309,7 @@ export async function syncCarerTasks({
                   null,
                 ...access,
               });
+              changedTaskIds.add(taskId);
             }
           }
         } catch (err) {
@@ -1159,6 +1337,7 @@ export async function syncCarerTasks({
               null,
             ...access,
           });
+          changedTaskIds.add(taskId);
         }
         changed = true;
         continue;
@@ -1175,6 +1354,7 @@ export async function syncCarerTasks({
           pokeMessage: null,
           ...access,
         });
+        changedTaskIds.add(taskId);
         logTaskResetPending({
           taskId,
           oldStatus: existingTask.status,
@@ -1200,6 +1380,7 @@ export async function syncCarerTasks({
           gameName: game.gameName || 'Unknown Game',
           ...access,
         });
+        changedTaskIds.add(taskId);
         changed = true;
       }
     }
@@ -1260,6 +1441,7 @@ export async function syncCarerTasks({
     );
 
     batch.set(taskRef, payload, { merge: true });
+    changedTaskIds.add(taskId);
     if (pendingTaskHasStaleAutomationState(existingTask) && String(payload.status || '') === 'pending') {
       resetTaskIdsToRefresh.add(taskId);
     }
@@ -1300,6 +1482,7 @@ export async function syncCarerTasks({
                 existingTask.assignedCarerUsername ||
                 null,
             });
+            changedTaskIds.add(existingTask.id);
             changed = true;
           }
         }
@@ -1324,6 +1507,7 @@ export async function syncCarerTasks({
             existingTask.assignedCarerUsername ||
             null,
         });
+        changedTaskIds.add(existingTask.id);
         changed = true;
       }
       continue;
@@ -1368,6 +1552,7 @@ export async function syncCarerTasks({
               existingTask.assignedCarerUsername ||
               null,
           });
+          changedTaskIds.add(existingTask.id);
           changed = true;
         }
       }
@@ -1392,12 +1577,24 @@ export async function syncCarerTasks({
           existingTask.assignedCarerUsername ||
           null,
       });
+      changedTaskIds.add(existingTask.id);
       changed = true;
     }
   }
 
   if (changed) {
     await batch.commit();
+    if (changedTaskIds.size > 0) {
+      console.info('[CARER_TASKS_SYNC] mirror changed ids', {
+        changedCount: changedTaskIds.size,
+        candidateCount: syncCandidateTaskIds.size,
+      });
+      void mirrorCarerTasksCacheBestEffort(changedTaskIds);
+    } else {
+      console.warn('[CARER_TASKS_SYNC] changed true but no changedTaskIds', {
+        candidateCount: syncCandidateTaskIds.size,
+      });
+    }
     await Promise.all(
       Array.from(resetTaskIdsToRefresh).map((taskId) =>
         forceRefreshTaskFromServer(taskId, doc(db, 'carerTasks', taskId))
@@ -1513,6 +1710,8 @@ export function listenToAvailableCarerTasks(
   );
   let activeTasks: CarerTask[] = [];
   let completedTasks: CarerTask[] = [];
+  /** Block stale cached snapshots from re-adding tasks removed via docChanges. */
+  const recentlyRemovedActiveTaskIds = new Set<string>();
   const debugLogs = isCarerTaskDebugLoggingEnabled();
 
   if (debugLogs) {
@@ -1565,6 +1764,59 @@ export function listenToAvailableCarerTasks(
       })
       .filter((task): task is CarerTask => Boolean(task));
 
+  const applyActiveTasksSnapshot = (
+    docs: Array<{ id: string; data: () => unknown }>,
+    docChanges: Array<{ type: string; doc: { id: string } }>,
+    fromCache: boolean,
+    hasPendingWrites: boolean
+  ) => {
+    const removedIdsThisSnapshot = new Set<string>();
+
+    for (const change of docChanges) {
+      if (change.type !== 'removed') {
+        continue;
+      }
+      const taskId = change.doc.id;
+      removedIdsThisSnapshot.add(taskId);
+      recentlyRemovedActiveTaskIds.add(taskId);
+      console.info(
+        '[CARER_TASKS_LISTENER] removed taskId=%s fromCache=%s hasPendingWrites=%s',
+        taskId,
+        fromCache,
+        hasPendingWrites
+      );
+    }
+
+    let nextActiveTasks = mapVisibleTasks(docs, 'active');
+
+    // Removed docChanges win over stale docs still present in snapshot.docs (cache race).
+    if (removedIdsThisSnapshot.size > 0) {
+      nextActiveTasks = nextActiveTasks.filter((task) => !removedIdsThisSnapshot.has(task.id));
+    }
+
+    if (fromCache) {
+      if (recentlyRemovedActiveTaskIds.size > 0) {
+        nextActiveTasks = nextActiveTasks.filter(
+          (task) => !recentlyRemovedActiveTaskIds.has(task.id)
+        );
+      }
+    } else {
+      const snapshotTaskIds = new Set(docs.map((docSnap) => docSnap.id));
+      for (const taskId of recentlyRemovedActiveTaskIds) {
+        if (snapshotTaskIds.has(taskId) && !removedIdsThisSnapshot.has(taskId)) {
+          // Server snapshot confirms the task still exists (re-created or status change).
+          recentlyRemovedActiveTaskIds.delete(taskId);
+        } else if (!snapshotTaskIds.has(taskId)) {
+          // Server snapshot confirms deletion.
+          recentlyRemovedActiveTaskIds.delete(taskId);
+        }
+      }
+    }
+
+    activeTasks = nextActiveTasks;
+    emit();
+  };
+
   const unsubscribeActive = onSnapshot(
     activeTasksQuery,
     (snapshot) => {
@@ -1602,8 +1854,12 @@ export function listenToAvailableCarerTasks(
           );
         });
       }
-      activeTasks = mapVisibleTasks(snapshot.docs, 'active');
-      emit();
+      applyActiveTasksSnapshot(
+        snapshot.docs,
+        docChanges,
+        snapshot.metadata.fromCache,
+        snapshot.metadata.hasPendingWrites
+      );
     },
     (error) => {
       console.error('[CARER_TASKS_LIVE] active listener error', error);
@@ -1736,6 +1992,7 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
     const taskRef = doc(db, 'carerTasks', taskId);
 
     let updatedAutomationJob = false;
+    let mirroredRequestId = '';
     await runTransaction(db, async (transaction) => {
       const [jobSnap, taskSnap] = await Promise.all([
         transaction.get(jobRef),
@@ -1760,6 +2017,7 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
         ? (taskSnap.data() as Omit<CarerTask, 'id'>)
         : null;
       const requestId = String(taskData?.requestId || '').trim();
+      mirroredRequestId = requestId;
       const requestRef = requestId ? doc(db, 'playerGameRequests', requestId) : null;
       const requestSnap = requestRef ? await transaction.get(requestRef) : null;
       const timeoutMessage = retryable
@@ -1845,6 +2103,8 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
       }
     });
     await forceRefreshTaskFromServer(taskId, taskRef);
+    void mirrorCarerTaskCacheBestEffort(taskId);
+    void mirrorPlayerGameRequestCacheBestEffort(mirroredRequestId);
     if (updatedAutomationJob) {
       void mirrorAutomationJobCacheBestEffort(job.id);
     }
@@ -1916,6 +2176,8 @@ export async function releaseExpiredCarerTasks(coadminUid: string) {
       }
     });
     await forceRefreshTaskFromServer(task.id, taskRef);
+    void mirrorCarerTaskCacheBestEffort(task.id);
+    void mirrorPlayerGameRequestCacheBestEffort(task.requestId || '');
   }
 }
 
@@ -2037,6 +2299,7 @@ export async function startCarerTask(taskId: string) {
     });
   });
   await forceRefreshTaskFromServer(taskId, taskRef);
+  void mirrorCarerTaskCacheBestEffort(taskId);
 }
 
 export async function deletePendingCarerTask(taskId: string) {
@@ -2053,6 +2316,7 @@ export async function deletePendingCarerTask(taskId: string) {
   }
 
   await forceRefreshTaskFromServer(taskId, taskRef);
+  void mirrorCarerTaskCacheBestEffort(taskId);
 }
 
 export async function completeCarerTask(taskId: string) {
@@ -2083,6 +2347,7 @@ export async function completeCarerTask(taskId: string) {
     }));
   });
   await forceRefreshTaskFromServer(taskId, taskRef);
+  void mirrorCarerTaskCacheBestEffort(taskId);
 }
 
 export async function completeUsernameTaskForPlayerGame(
@@ -2110,6 +2375,7 @@ export async function completeUsernameTaskForPlayerGame(
   }
   const taskId = usernameTaskId(coadminUid, playerUid, gameName);
   await forceRefreshTaskFromServer(taskId, doc(db, 'carerTasks', taskId));
+  void mirrorCarerTaskCacheBestEffort(taskId);
   return {
     completedTaskCount: Number(payload.completedTaskCount || 0),
     totalAwardNpr: Number(payload.totalAwardNpr || 0),
@@ -2188,6 +2454,7 @@ export async function createPlayerCredentialTask(values: {
     { merge: true }
   );
   await forceRefreshTaskFromServer(taskId, taskRef);
+  void mirrorCarerTaskCacheBestEffort(taskId);
 }
 
 export async function sendCarerEscalationAlert(task: CarerTask) {
@@ -2396,6 +2663,7 @@ export async function completeRechargeRedeemTask(task: CarerTask) {
     throw new Error(readApiError('Failed to complete task.', payload));
   }
   await forceRefreshTaskFromServer(task.id, doc(db, 'carerTasks', task.id));
+  void mirrorCarerTaskCacheBestEffort(task.id);
 
   return {
     completedTaskCount: Number(payload.completedTaskCount || 0),
@@ -2422,6 +2690,7 @@ export async function ensureUsernameTaskExists(
     ...task,
     createdAt: serverTimestamp(),
   });
+  void mirrorCarerTaskCacheBestEffort(taskId);
 }
 
 export async function completeCreateGameUsernameTask(values: {
@@ -2459,6 +2728,7 @@ export async function completeLegacyRechargeRedeemTask(taskId: string) {
     pokedAt: null,
     pokeMessage: null,
   });
+  void mirrorCarerTaskCacheBestEffort(taskId);
 }
 
 export function getClaimablePendingTaskCount(tasks: CarerTask[]) {

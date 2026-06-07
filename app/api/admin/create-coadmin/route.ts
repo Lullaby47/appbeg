@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 function makeHiddenEmail(username: string) {
   return `${username}@app.local`;
@@ -63,6 +64,7 @@ export async function POST(request: Request) {
       createdAt: new Date(),
       status: 'active',
     });
+    void mirrorUserBalanceSnapshotById(authUser.uid, 'appbeg_create_coadmin');
 
     return NextResponse.json({
       success: true,

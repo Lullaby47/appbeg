@@ -26,6 +26,69 @@ export type PlayerGameLogin = {
   createdAt?: any;
 };
 
+async function mirrorPlayerGameLoginCacheBestEffort(
+  loginId: string,
+  action: 'upsert' | 'tombstone' = 'upsert'
+) {
+  const cleanLoginId = String(loginId || '').trim();
+  if (!cleanLoginId) return;
+  try {
+    const token = await auth.currentUser?.getIdToken();
+    if (!token) return;
+    const response = await fetch('/api/player-game-logins/cache/mirror', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ loginId: cleanLoginId, action }),
+    });
+    if (!response.ok) {
+      console.error('[PLAYER_GAME_LOGINS_CACHE] mirror failed', {
+        loginId: cleanLoginId,
+        action,
+        status: response.status,
+      });
+    }
+  } catch (error) {
+    console.error('[PLAYER_GAME_LOGINS_CACHE] mirror failed', {
+      loginId: cleanLoginId,
+      action,
+      error,
+    });
+  }
+}
+
+export async function mirrorPlayerGameLoginsCacheDeleteBestEffort(loginIds: string[]) {
+  const cleanLoginIds = loginIds.map((loginId) => String(loginId || '').trim()).filter(Boolean);
+  if (!cleanLoginIds.length) return;
+  try {
+    const token = await auth.currentUser?.getIdToken();
+    if (!token) return;
+    const response = await fetch('/api/player-game-logins/cache/mirror', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ loginIds: cleanLoginIds, action: 'tombstone' }),
+    });
+    if (!response.ok) {
+      console.error('[PLAYER_GAME_LOGINS_CACHE] mirror failed', {
+        loginIds: cleanLoginIds,
+        action: 'tombstone',
+        status: response.status,
+      });
+    }
+  } catch (error) {
+    console.error('[PLAYER_GAME_LOGINS_CACHE] mirror failed', {
+      loginIds: cleanLoginIds,
+      action: 'tombstone',
+      error,
+    });
+  }
+}
+
 async function getPlayerGameLoginsByField(
   field: 'createdBy' | 'coadminUid',
   value: string
@@ -60,7 +123,7 @@ export async function createPlayerGameLogin(values: {
   if (!values.gameUsername.trim()) throw new Error('Game username is required.');
   if (!values.gamePassword.trim()) throw new Error('Game password is required.');
 
-  await addDoc(collection(db, 'playerGameLogins'), {
+  const loginRef = await addDoc(collection(db, 'playerGameLogins'), {
     playerUid: values.playerUid,
     playerUsername: values.playerUsername,
     gameName: values.gameName.trim(),
@@ -72,6 +135,7 @@ export async function createPlayerGameLogin(values: {
     createdBy: values.coadminUid,
     createdAt: serverTimestamp(),
   });
+  void mirrorPlayerGameLoginCacheBestEffort(loginRef.id);
 }
 
 export async function updatePlayerGameLogin(
@@ -95,6 +159,7 @@ export async function updatePlayerGameLogin(
     frontendUrl: String(values.frontendUrl || '').trim(),
     siteUrl: String(values.siteUrl || '').trim(),
   });
+  void mirrorPlayerGameLoginCacheBestEffort(loginId);
 }
 
 export async function getPlayerGameLoginsByPlayer(

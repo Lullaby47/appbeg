@@ -13,9 +13,11 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 
+import { getLocalPlayerSessionId, getPlayerApiHeaders } from '@/features/auth/playerSession';
 import { auth, db } from '@/lib/firebase/client';
 import { belongsToCoadmin, getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
+import { mirrorPlayerGameLoginsCacheDeleteBestEffort } from '@/features/games/playerGameLogins';
 
 export type GameLogin = {
   id: string;
@@ -42,6 +44,13 @@ function normalizeSiteUrl(value: string) {
   return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 }
 
+async function getGameLoginsCacheReadHeaders() {
+  if (getLocalPlayerSessionId()) {
+    return getPlayerApiHeaders(false);
+  }
+  return getFirebaseApiHeaders(false);
+}
+
 async function fetchWithGameLoginsCacheTimeout(
   input: RequestInfo | URL,
   init: RequestInit
@@ -60,7 +69,7 @@ async function fetchWithGameLoginsCacheTimeout(
 
 async function tryReadGameLoginsCacheByCoadmin(coadminUid: string): Promise<GameLogin[] | null> {
   try {
-    const headers = await getFirebaseApiHeaders(false);
+    const headers = await getGameLoginsCacheReadHeaders();
     const response = await fetchWithGameLoginsCacheTimeout(
       `/api/game-logins/cache?coadminUid=${encodeURIComponent(coadminUid)}`,
       {
@@ -390,6 +399,11 @@ export async function deleteGameLoginAndRelatedData(gameLoginId: string): Promis
     }
     await batch.commit();
   }
+
+  const deletedPlayerGameLoginIds = dependentRefs
+    .filter((ref) => ref.parent.id === 'playerGameLogins')
+    .map((ref) => ref.id);
+  void mirrorPlayerGameLoginsCacheDeleteBestEffort(deletedPlayerGameLoginIds);
 
   await deleteDoc(gameRef);
   await mirrorGameLoginCacheDeleteAfterFirebaseSave(gameLoginId);

@@ -4,6 +4,8 @@ import { after, NextResponse } from 'next/server';
 import { apiError, requireApiUser, scopedCoadminUid, type ApiUser } from '@/lib/firebase/apiAuth';
 import { adminDb } from '@/lib/firebase/admin';
 import { mirrorAutomationJobById } from '@/lib/sql/automationJobsCache';
+import { tombstoneCarerTaskCache } from '@/lib/sql/carerTasksCache';
+import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
 
 type Body = {
   requestId?: unknown;
@@ -360,6 +362,10 @@ export async function POST(request: Request) {
     console.info('[REQUEST_DISMISS] linkedTaskId=%s', publicOutcome.linkedTaskId);
     console.info('[REQUEST_DISMISS] linkedTaskDeleted=%s', publicOutcome.taskDeleted);
     console.info('[REQUEST_DISMISS] retryMarkersCleared=%s', publicOutcome.retryMarkersCleared);
+    if (publicOutcome.taskDeleted) {
+      void tombstoneCarerTaskCache(publicOutcome.linkedTaskId, 'appbeg_dismiss_redeem');
+    }
+    void mirrorPlayerGameRequestById(requestId, 'appbeg_dismiss_redeem');
     return NextResponse.json({ success: true, ...publicOutcome });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to dismiss redeem request.';

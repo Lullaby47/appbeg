@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
+import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 export async function POST(request: Request) {
   try {
@@ -18,8 +20,10 @@ export async function POST(request: Request) {
     const playerUid = auth.user.uid;
     const playerRef = adminDb.collection('users').doc(playerUid);
     const markerRef = adminDb.collection('freeplayPendingGifts').doc(playerUid);
+    const eventRef = adminDb.collection('financialEvents').doc();
     let amount = 0;
     let alreadyClaimed = false;
+    let mirroredEventId = '';
 
     await adminDb.runTransaction(async (transaction) => {
       const markerSnap = await transaction.get(markerRef);
@@ -85,7 +89,7 @@ export async function POST(request: Request) {
       transaction.update(playerRef, {
         coin: Math.max(0, Number(player.coin || 0)) + amount,
       });
-      transaction.set(adminDb.collection('financialEvents').doc(), {
+      transaction.set(eventRef, {
         type: 'freeplay',
         playerUid,
         coadminUid: String(gift.coadminUid || marker.coadminUid || '').trim() || null,
@@ -93,8 +97,13 @@ export async function POST(request: Request) {
         giftId: giftRef.id,
         createdAt: FieldValue.serverTimestamp(),
       });
+      mirroredEventId = eventRef.id;
     });
 
+    if (mirroredEventId) {
+      void mirrorFinancialEventById(mirroredEventId, 'appbeg_freeplay_claim');
+      void mirrorUserBalanceSnapshotById(playerUid, 'appbeg_freeplay_claim');
+    }
     return NextResponse.json({
       success: true,
       amount,

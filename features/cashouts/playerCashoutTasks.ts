@@ -359,6 +359,17 @@ export async function declinePlayerCashoutTaskForCurrentHandler(taskId: string) 
   await updateDoc(taskRef, {
     declinedByUids: arrayUnion(identity.uid),
   });
+  void (async () => {
+    try {
+      await fetch('/api/player-cashout-tasks/cache/mirror', {
+        method: 'POST',
+        headers: await getFirebaseApiHeaders(),
+        body: JSON.stringify({ action: 'upsert', taskId }),
+      });
+    } catch (error) {
+      console.warn('[PLAYER_CASHOUT_TASKS_CACHE] mirror failed', { taskId, error });
+    }
+  })();
 }
 
 export async function declinePlayerCashoutTaskByCoadmin(taskId: string) {

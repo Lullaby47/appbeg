@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
 import { adminDb } from '@/lib/firebase/admin';
+import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 
 type Body = {
   taskId?: unknown;
@@ -129,6 +130,7 @@ export async function POST(request: Request) {
       callerUid: auth.user.uid,
       callerRole: auth.user.role,
     });
+    void mirrorCarerTaskById(taskId, 'appbeg_delete_pending_task');
     return NextResponse.json({ success: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to delete pending task.';

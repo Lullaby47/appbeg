@@ -1,0 +1,10 @@
+const { cert, getApps, initializeApp } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
+const { Pool } = require('pg');
+const clean=v=>String(v||'').trim(); function req(n){const v=clean(process.env[n]); if(!v)throw new Error(`${n} is required`); return v;}
+function init(){const s=JSON.parse(Buffer.from(req('FIREBASE_SERVICE_ACCOUNT_BASE64'),'base64').toString('utf8')); return getApps()[0]||initializeApp({credential:cert(s)});}
+function fsrow(d){const x=d.data()||{};return {firebase_id:d.id,referrer_uid:clean(x.referrerUid),referred_player_uid:clean(x.referredPlayerUid),referral_code:clean(x.referralCode),status:clean(x.status)}}
+function sqlrow(r){return {firebase_id:clean(r.firebase_id),referrer_uid:clean(r.referrer_uid),referred_player_uid:clean(r.referred_player_uid),referral_code:clean(r.referral_code),status:clean(r.status)}}
+function diff(a,b){const o={}; for(const k of Object.keys(a)) if(a[k]!==b[k]) o[k]={firebase:a[k],sql:b[k]}; return o;}
+async function main(){init(); const db=getFirestore(); const pg=new Pool({connectionString:clean(process.env.DATABASE_URL||process.env.POSTGRES_URL)||req('DATABASE_URL')}); const [fs,sql]=await Promise.all([db.collection('referrals').get(),pg.query('SELECT * FROM public.referrals_cache WHERE deleted_at IS NULL')]); const fm=new Map(fs.docs.map(d=>[d.id,fsrow(d)])); const sm=new Map(sql.rows.map(r=>[String(r.firebase_id),sqlrow(r)])); const missing_in_sql=[],extra_in_sql=[],mismatched_fields=[]; for(const [id,r] of fm){const s=sm.get(id); if(!s)missing_in_sql.push(id); else{const m=diff(r,s); if(Object.keys(m).length)mismatched_fields.push({firebase_id:id,fields:m});}} for(const id of sm.keys()) if(!fm.has(id)) extra_in_sql.push(id); await pg.end(); console.log(JSON.stringify({collection:'referrals',firebase_count:fm.size,postgres_count:sm.size,missing_in_sql,extra_in_sql,mismatched_fields},null,2));}
+main().catch(e=>{console.error('[COMPARE_REFERRALS_CACHE] fatal',e);process.exitCode=1;});

@@ -8,6 +8,8 @@ import {
   computeRewardCoinsAfterFee,
   REWARD_TRANSFER_FEE_PERCENT,
 } from '@/lib/rewardCoinTransferFee';
+import { mirrorPlayerCoinRewardById } from '@/lib/sql/playerCoinRewardsCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 const MAX_REWARD_COINS_PER_TRANSFER = 50;
 
@@ -186,6 +188,9 @@ export async function POST(request: Request) {
       });
     });
 
+    void mirrorPlayerCoinRewardById(rewardRef.id, 'appbeg_player_reward_coins');
+    void mirrorUserBalanceSnapshotById(senderUid, 'appbeg_player_reward_coins');
+    void mirrorUserBalanceSnapshotById(targetUid, 'appbeg_player_reward_coins');
     return NextResponse.json({
       success: true,
       message: `Reward sent (${feeCoins}-coin fee, ${recipientCoins} credited to recipient).`,

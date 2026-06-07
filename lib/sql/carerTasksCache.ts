@@ -1,0 +1,491 @@
+import 'server-only';
+
+import type { DocumentSnapshot } from 'firebase-admin/firestore';
+
+import { adminDb } from '@/lib/firebase/admin';
+import {
+  mirrorBatchLogFields,
+  mirrorErrorLogFields,
+  runCarerTaskMirrorBatchItem,
+} from '@/lib/sql/carerTasksCacheMirrorLog';
+import {
+  runQueuedCarerTaskTombstone,
+  runQueuedCarerTaskUpsert,
+} from '@/lib/sql/carerTasksMirrorQueue';
+import { emitCarerTaskOutboxEvent } from '@/lib/sql/liveOutbox';
+import {
+  cleanText,
+  getPlayerMirrorPool,
+  isPgConnectionTimeoutError,
+  logPlayerMirrorPoolStats,
+  normalizeJson,
+  numberOrNull,
+  toIsoString,
+} from '@/lib/sql/playerMirrorCommon';
+
+export type CarerTaskCacheInput = {
+  firebaseId: string;
+  rawFirestoreData?: Record<string, unknown>;
+  source?: string;
+} & Record<string, unknown>;
+
+function normalizeGameName(value: unknown) {
+  return cleanText(value).toLowerCase().replace(/[^a-z0-9]+/g, '_');
+}
+
+function booleanOrNull(value: unknown) {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function toCacheInput(firebaseId: string, data: Record<string, unknown>, source: string) {
+  return {
+    firebaseId,
+    ...data,
+    rawFirestoreData: data,
+    source,
+  } satisfies CarerTaskCacheInput;
+}
+
+async function upsertCarerTaskCacheDirect(input: CarerTaskCacheInput) {
+  const db = getPlayerMirrorPool();
+  const firebaseId = cleanText(input.firebaseId);
+  if (!db || !firebaseId) return false;
+
+  const batchLog = mirrorBatchLogFields(firebaseId);
+  console.info('[CARER_TASKS_CACHE] starting batch', {
+    action: 'upsert',
+    ...batchLog,
+  });
+
+  try {
+    await db.query(
+      `
+        INSERT INTO public.carer_tasks_cache (
+          firebase_id, coadmin_uid, type, player_uid, player_username, game_name,
+          normalized_game_name, amount, request_id, status, assigned_carer_uid,
+          assigned_carer_username, assigned_carer, claimed_status, claimed_by_uid,
+          claimed_by_username, completed_by_carer_uid, completed_by_carer_username,
+          current_username, game_account_username, login_url, game_login_url, lobby_url,
+          site_url, base_url, game_credential_username, game_credential_password,
+          is_poked, poke_message, automation_status, automation_job_id, linked_job_id,
+          current_job_id, active_job_id, assigned_job_status, automation_error,
+          error_message, failure_reason, last_failure_reason, retry_pending, fake_redeem,
+          dismiss_type, dismissed_by_automation, completion_issue_code, completion_issue,
+          created_at, updated_at, started_at, running_at, expires_at, completed_at,
+          cancelled_at, failed_at, ttl_expires_at, claimed_at, last_heartbeat_at,
+          automation_updated_at, reset_to_pending_at, returned_to_pending_at,
+          pending_since, queued_at, deleted_from_pending_at, source, mirrored_at,
+          deleted_at, raw_firestore_data
+        )
+        VALUES (
+          $1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''),
+          NULLIF($6, ''), NULLIF($7, ''), $8, NULLIF($9, ''), NULLIF($10, ''),
+          NULLIF($11, ''), NULLIF($12, ''), NULLIF($13, ''), NULLIF($14, ''),
+          NULLIF($15, ''), NULLIF($16, ''), NULLIF($17, ''), NULLIF($18, ''),
+          NULLIF($19, ''), NULLIF($20, ''), NULLIF($21, ''), NULLIF($22, ''),
+          NULLIF($23, ''), NULLIF($24, ''), NULLIF($25, ''), NULLIF($26, ''),
+          NULLIF($27, ''), $28, NULLIF($29, ''), NULLIF($30, ''), NULLIF($31, ''),
+          NULLIF($32, ''), NULLIF($33, ''), NULLIF($34, ''), NULLIF($35, ''),
+          NULLIF($36, ''), NULLIF($37, ''), NULLIF($38, ''), NULLIF($39, ''),
+          $40, $41, NULLIF($42, ''), $43, NULLIF($44, ''), NULLIF($45, ''),
+          $46::timestamptz, $47::timestamptz, $48::timestamptz, $49::timestamptz,
+          $50::timestamptz, $51::timestamptz, $52::timestamptz, $53::timestamptz,
+          $54::timestamptz, $55::timestamptz, $56::timestamptz, $57::timestamptz,
+          $58::timestamptz, $59::timestamptz, $60::timestamptz, $61::timestamptz,
+          $62::timestamptz, $63, now(), NULL, $64::jsonb
+        )
+        ON CONFLICT (firebase_id) DO UPDATE SET
+          coadmin_uid = EXCLUDED.coadmin_uid,
+          type = EXCLUDED.type,
+          player_uid = EXCLUDED.player_uid,
+          player_username = EXCLUDED.player_username,
+          game_name = EXCLUDED.game_name,
+          normalized_game_name = EXCLUDED.normalized_game_name,
+          amount = EXCLUDED.amount,
+          request_id = EXCLUDED.request_id,
+          status = EXCLUDED.status,
+          assigned_carer_uid = EXCLUDED.assigned_carer_uid,
+          assigned_carer_username = EXCLUDED.assigned_carer_username,
+          assigned_carer = EXCLUDED.assigned_carer,
+          claimed_status = EXCLUDED.claimed_status,
+          claimed_by_uid = EXCLUDED.claimed_by_uid,
+          claimed_by_username = EXCLUDED.claimed_by_username,
+          completed_by_carer_uid = EXCLUDED.completed_by_carer_uid,
+          completed_by_carer_username = EXCLUDED.completed_by_carer_username,
+          current_username = EXCLUDED.current_username,
+          game_account_username = EXCLUDED.game_account_username,
+          login_url = EXCLUDED.login_url,
+          game_login_url = EXCLUDED.game_login_url,
+          lobby_url = EXCLUDED.lobby_url,
+          site_url = EXCLUDED.site_url,
+          base_url = EXCLUDED.base_url,
+          game_credential_username = EXCLUDED.game_credential_username,
+          game_credential_password = EXCLUDED.game_credential_password,
+          is_poked = EXCLUDED.is_poked,
+          poke_message = EXCLUDED.poke_message,
+          automation_status = EXCLUDED.automation_status,
+          automation_job_id = EXCLUDED.automation_job_id,
+          linked_job_id = EXCLUDED.linked_job_id,
+          current_job_id = EXCLUDED.current_job_id,
+          active_job_id = EXCLUDED.active_job_id,
+          assigned_job_status = EXCLUDED.assigned_job_status,
+          automation_error = EXCLUDED.automation_error,
+          error_message = EXCLUDED.error_message,
+          failure_reason = EXCLUDED.failure_reason,
+          last_failure_reason = EXCLUDED.last_failure_reason,
+          retry_pending = EXCLUDED.retry_pending,
+          fake_redeem = EXCLUDED.fake_redeem,
+          dismiss_type = EXCLUDED.dismiss_type,
+          dismissed_by_automation = EXCLUDED.dismissed_by_automation,
+          completion_issue_code = EXCLUDED.completion_issue_code,
+          completion_issue = EXCLUDED.completion_issue,
+          created_at = COALESCE(public.carer_tasks_cache.created_at, EXCLUDED.created_at),
+          updated_at = EXCLUDED.updated_at,
+          started_at = EXCLUDED.started_at,
+          running_at = EXCLUDED.running_at,
+          expires_at = EXCLUDED.expires_at,
+          completed_at = EXCLUDED.completed_at,
+          cancelled_at = EXCLUDED.cancelled_at,
+          failed_at = EXCLUDED.failed_at,
+          ttl_expires_at = EXCLUDED.ttl_expires_at,
+          claimed_at = EXCLUDED.claimed_at,
+          last_heartbeat_at = EXCLUDED.last_heartbeat_at,
+          automation_updated_at = EXCLUDED.automation_updated_at,
+          reset_to_pending_at = EXCLUDED.reset_to_pending_at,
+          returned_to_pending_at = EXCLUDED.returned_to_pending_at,
+          pending_since = EXCLUDED.pending_since,
+          queued_at = EXCLUDED.queued_at,
+          deleted_from_pending_at = EXCLUDED.deleted_from_pending_at,
+          source = EXCLUDED.source,
+          mirrored_at = now(),
+          deleted_at = NULL,
+          raw_firestore_data = EXCLUDED.raw_firestore_data
+      `,
+      [
+        firebaseId,
+        cleanText(input.coadminUid || input.createdBy),
+        cleanText(input.type || input.kind || input.action || input.taskAction),
+        cleanText(input.playerUid || input.playerId),
+        cleanText(input.playerUsername || input.username),
+        cleanText(input.gameName || input.game),
+        normalizeGameName(input.gameName || input.game),
+        numberOrNull(input.amount),
+        cleanText(input.requestId),
+        cleanText(input.status),
+        cleanText(input.assignedCarerUid),
+        cleanText(input.assignedCarerUsername),
+        cleanText(input.assignedCarer),
+        cleanText(input.claimedStatus),
+        cleanText(input.claimedByUid),
+        cleanText(input.claimedByUsername),
+        cleanText(input.completedByCarerUid),
+        cleanText(input.completedByCarerUsername),
+        cleanText(input.currentUsername),
+        cleanText(input.gameAccountUsername),
+        cleanText(input.loginUrl),
+        cleanText(input.gameLoginUrl),
+        cleanText(input.lobbyUrl),
+        cleanText(input.siteUrl),
+        cleanText(input.baseUrl),
+        cleanText(input.gameCredentialUsername),
+        cleanText(input.gameCredentialPassword),
+        booleanOrNull(input.isPoked),
+        cleanText(input.pokeMessage),
+        cleanText(input.automationStatus),
+        cleanText(input.automationJobId),
+        cleanText(input.linkedJobId),
+        cleanText(input.currentJobId),
+        cleanText(input.activeJobId),
+        cleanText(input.assignedJobStatus),
+        cleanText(input.automationError),
+        cleanText(input.error || input.errorMessage),
+        cleanText(input.failureReason),
+        cleanText(input.lastFailureReason),
+        booleanOrNull(input.retryPending),
+        booleanOrNull(input.fakeRedeem),
+        cleanText(input.dismissType),
+        booleanOrNull(input.dismissedByAutomation),
+        cleanText(input.completionIssueCode),
+        cleanText(input.completionIssue),
+        toIsoString(input.createdAt),
+        toIsoString(input.updatedAt),
+        toIsoString(input.startedAt),
+        toIsoString(input.runningAt),
+        toIsoString(input.expiresAt),
+        toIsoString(input.completedAt),
+        toIsoString(input.cancelledAt),
+        toIsoString(input.failedAt),
+        toIsoString(input.ttlExpiresAt),
+        toIsoString(input.claimedAt),
+        toIsoString(input.lastHeartbeatAt),
+        toIsoString(input.automationUpdatedAt),
+        toIsoString(input.resetToPendingAt),
+        toIsoString(input.returnedToPendingAt),
+        toIsoString(input.pendingSince),
+        toIsoString(input.queuedAt),
+        toIsoString(input.deletedFromPendingAt),
+        cleanText(input.source) || 'appbeg',
+        JSON.stringify(normalizeJson(input.rawFirestoreData || {}) || {}),
+      ]
+    );
+    console.info('[CARER_TASKS_CACHE] batch succeeded', {
+      action: 'upsert',
+      rowCount: 1,
+      ...batchLog,
+    });
+    console.info('[CARER_TASKS_CACHE] mirror upsert ok', { firebaseId });
+    void emitCarerTaskOutboxEvent({
+      firebaseId,
+      coadminUid: input.coadminUid || input.createdBy,
+      assignedCarerUid: input.assignedCarerUid,
+      claimedByUid: input.claimedByUid,
+      playerUid: input.playerUid || input.playerId,
+      type: input.type || input.kind || input.action || input.taskAction,
+      status: input.status,
+      automationStatus: input.automationStatus,
+      gameName: input.gameName || input.game,
+      amount: input.amount,
+      requestId: input.requestId,
+      updatedAt: input.updatedAt,
+      mirroredAt: new Date().toISOString(),
+      source: cleanText(input.source) || 'appbeg',
+      eventType: 'task.upserted',
+    }).catch(() => undefined);
+    return true;
+  } catch (error) {
+    console.error('[CARER_TASKS_CACHE] batch failed', {
+      action: 'upsert',
+      ...batchLog,
+      ...mirrorErrorLogFields(error),
+    });
+    if (isPgConnectionTimeoutError(error)) {
+      logPlayerMirrorPoolStats('carer_tasks_cache_upsert');
+    }
+    console.error('[CARER_TASKS_CACHE] mirror failed', {
+      firebaseId,
+      ...mirrorErrorLogFields(error),
+    });
+    return false;
+  }
+}
+
+export async function upsertCarerTaskCache(input: CarerTaskCacheInput) {
+  const firebaseId = cleanText(input.firebaseId);
+  if (!firebaseId) return false;
+  return runQueuedCarerTaskUpsert(firebaseId, input, upsertCarerTaskCacheDirect);
+}
+
+export async function mirrorCarerTaskSnapshot(snap: DocumentSnapshot, source = 'appbeg') {
+  if (!snap.exists) return false;
+  return upsertCarerTaskCache(
+    toCacheInput(snap.id, (snap.data() || {}) as Record<string, unknown>, source)
+  );
+}
+
+export async function mirrorCarerTaskById(firebaseId: string, source = 'appbeg') {
+  const cleanId = cleanText(firebaseId);
+  if (!cleanId) return false;
+  try {
+    return mirrorCarerTaskSnapshot(
+      await adminDb.collection('carerTasks').doc(cleanId).get(),
+      source
+    );
+  } catch (error) {
+    console.error('[CARER_TASKS_CACHE] mirror failed', { firebaseId: cleanId, error });
+    return false;
+  }
+}
+
+export async function mirrorCarerTaskSnapshotsBatch(
+  snaps: DocumentSnapshot[],
+  source = 'appbeg'
+) {
+  let mirrored = 0;
+  for (const snap of snaps) {
+    if (!snap.exists) continue;
+    if (await mirrorCarerTaskSnapshot(snap, source)) {
+      mirrored += 1;
+    }
+  }
+  return mirrored;
+}
+
+export async function mirrorCarerTaskIdsBatch(taskIds: string[], source = 'appbeg') {
+  const cleanIds = taskIds.map(cleanText).filter(Boolean);
+  if (!cleanIds.length) return 0;
+
+  let mirrored = 0;
+  for (let index = 0; index < cleanIds.length; index += 1) {
+    const taskId = cleanIds[index];
+    const batchIndex = index + 1;
+    const batchResult = await runCarerTaskMirrorBatchItem(cleanIds, batchIndex, taskId, async () => {
+      try {
+        const snap = await adminDb.collection('carerTasks').doc(taskId).get();
+        return mirrorCarerTaskSnapshot(snap, source);
+      } catch (error) {
+        console.error('[CARER_TASKS_CACHE] batch failed', {
+          action: 'upsert',
+          ...mirrorBatchLogFields(taskId),
+          ...mirrorErrorLogFields(error),
+        });
+        console.error('[CARER_TASKS_CACHE] mirror failed', {
+          firebaseId: taskId,
+          ...mirrorErrorLogFields(error),
+        });
+        return false;
+      }
+    });
+    if (batchResult) {
+      mirrored += 1;
+    }
+  }
+  return mirrored;
+}
+
+async function tombstoneCarerTaskCacheDirect(firebaseId: string, source = 'appbeg') {
+  const db = getPlayerMirrorPool();
+  const cleanId = cleanText(firebaseId);
+  if (!db || !cleanId) return false;
+  const batchLog = mirrorBatchLogFields(cleanId);
+  try {
+    let emitContext: {
+      coadminUid?: string;
+      assignedCarerUid?: string;
+      claimedByUid?: string;
+      playerUid?: string;
+      type?: string;
+      status?: string;
+      automationStatus?: string;
+      gameName?: string;
+      amount?: unknown;
+      requestId?: string;
+    } = {};
+    try {
+      const existing = await db.query(
+        `
+          SELECT
+            coadmin_uid,
+            assigned_carer_uid,
+            claimed_by_uid,
+            player_uid,
+            type,
+            status,
+            automation_status,
+            game_name,
+            amount,
+            request_id
+          FROM public.carer_tasks_cache
+          WHERE firebase_id = $1
+          LIMIT 1
+        `,
+        [cleanId]
+      );
+      const row = existing.rows[0] as Record<string, unknown> | undefined;
+      if (row) {
+        emitContext = {
+          coadminUid: cleanText(row.coadmin_uid),
+          assignedCarerUid: cleanText(row.assigned_carer_uid),
+          claimedByUid: cleanText(row.claimed_by_uid),
+          playerUid: cleanText(row.player_uid),
+          type: cleanText(row.type),
+          status: cleanText(row.status),
+          automationStatus: cleanText(row.automation_status),
+          gameName: cleanText(row.game_name),
+          amount: row.amount,
+          requestId: cleanText(row.request_id),
+        };
+      }
+    } catch {
+      // Best-effort lookup for live shadow emit only.
+    }
+
+    console.info('[CARER_TASKS_CACHE] starting batch', {
+      action: 'tombstone',
+      ...batchLog,
+    });
+
+    await db.query(
+      `
+        INSERT INTO public.carer_tasks_cache (
+          firebase_id, source, mirrored_at, deleted_at, raw_firestore_data
+        )
+        VALUES ($1, $2, now(), now(), '{}'::jsonb)
+        ON CONFLICT (firebase_id) DO UPDATE SET
+          source = EXCLUDED.source,
+          mirrored_at = now(),
+          deleted_at = now()
+      `,
+      [cleanId, source]
+    );
+    console.info('[CARER_TASKS_CACHE] batch succeeded', {
+      action: 'tombstone',
+      rowCount: 1,
+      ...batchLog,
+    });
+    console.info('[CARER_TASKS_CACHE] tombstone ok', { firebaseId: cleanId });
+    void emitCarerTaskOutboxEvent({
+      firebaseId: cleanId,
+      ...emitContext,
+      status: 'tombstoned',
+      updatedAt: new Date().toISOString(),
+      mirroredAt: new Date().toISOString(),
+      source,
+      eventType: 'task.tombstoned',
+    }).catch(() => undefined);
+    return true;
+  } catch (error) {
+    console.error('[CARER_TASKS_CACHE] batch failed', {
+      action: 'tombstone',
+      ...batchLog,
+      ...mirrorErrorLogFields(error),
+    });
+    if (isPgConnectionTimeoutError(error)) {
+      logPlayerMirrorPoolStats('carer_tasks_cache_tombstone');
+    }
+    console.error('[CARER_TASKS_CACHE] tombstone failed', {
+      firebaseId: cleanId,
+      ...mirrorErrorLogFields(error),
+    });
+    return false;
+  }
+}
+
+export async function tombstoneCarerTaskCache(firebaseId: string, source = 'appbeg') {
+  const cleanId = cleanText(firebaseId);
+  if (!cleanId) return false;
+  return runQueuedCarerTaskTombstone(cleanId, source, tombstoneCarerTaskCacheDirect);
+}
+
+export async function tombstoneCarerTaskIdsBatch(taskIds: string[], source = 'appbeg') {
+  const cleanIds = taskIds.map(cleanText).filter(Boolean);
+  if (!cleanIds.length) return 0;
+
+  let mirrored = 0;
+  for (let index = 0; index < cleanIds.length; index += 1) {
+    const taskId = cleanIds[index];
+    const batchIndex = index + 1;
+    const batchResult = await runCarerTaskMirrorBatchItem(cleanIds, batchIndex, taskId, async () =>
+      tombstoneCarerTaskCache(taskId, source)
+    );
+    if (batchResult) {
+      mirrored += 1;
+    }
+  }
+  return mirrored;
+}
+
+export async function getCarerTaskCacheById(firebaseId: string) {
+  const db = getPlayerMirrorPool();
+  const cleanId = cleanText(firebaseId);
+  if (!db || !cleanId) return null;
+  try {
+    const result = await db.query(
+      'SELECT * FROM public.carer_tasks_cache WHERE firebase_id = $1 LIMIT 1',
+      [cleanId]
+    );
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error('[CARER_TASKS_CACHE] mirror failed', { firebaseId: cleanId, error });
+    return null;
+  }
+}

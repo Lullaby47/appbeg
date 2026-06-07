@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { mirrorRewardCutById } from '@/lib/sql/rewardCutsCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 type Body = {
   workerUid?: unknown;
@@ -58,11 +60,20 @@ export async function POST(request: Request) {
         workerUsername,
         amountNpr: cutAmount,
         reason,
+        cashBoxBefore: oldCash,
+        cashBoxAfter: updatedCashBox,
+        cashBoxDelta: updatedCashBox - oldCash,
+        actorUid: auth.user.uid,
+        actorRole: 'coadmin',
+        sourceRewardCutId: rewardCutRef.id,
+        rewardReason: reason || 'Manual adjustment',
         createdAt: FieldValue.serverTimestamp(),
         createdByUid: auth.user.uid,
       });
     });
 
+    void mirrorRewardCutById(rewardCutRef.id, 'appbeg_worker_reward_cut');
+    void mirrorUserBalanceSnapshotById(workerUid, 'appbeg_worker_reward_cut');
     return NextResponse.json({ success: true, updatedCashBox });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to cut reward.';

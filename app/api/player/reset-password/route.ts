@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { mirrorPlayerById } from '@/lib/sql/playersCache';
 
 type Body = {
   newPassword?: unknown;
@@ -42,6 +43,7 @@ export async function POST(request: Request) {
       },
       { merge: true }
     );
+    void mirrorPlayerById(auth.user.uid, 'appbeg_player_reset_password');
 
     return NextResponse.json({
       success: true,

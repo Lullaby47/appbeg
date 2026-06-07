@@ -2,16 +2,82 @@ import type { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
-import { apiError, belongsToScope, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import {
+  apiError,
+  belongsToScope,
+  requireApiUser,
+  scopedCoadminUid,
+  verifyApiTokenIdentity,
+  type ApiUser,
+} from '@/lib/firebase/apiAuth';
 import {
   CachedGameLogin,
+  createGameLoginsSqlTiming,
   deleteGameLoginCache,
   mirrorGameLoginCache,
   readGameLoginsCacheByCoadmin,
   readGameLoginsCacheByField,
+  type GameLoginsSqlTiming,
 } from '@/lib/sql/gameLoginsCache';
 
 type GameLoginField = 'coadminUid' | 'createdBy';
+
+type AuthPath = 'token_only' | 'full';
+
+type RouteTiming = {
+  auth_ms: number;
+  auth_path: AuthPath | null;
+  token_only_eligible: boolean;
+  scope_check_ms: number;
+  sql_pool_ms: number;
+  pg_connect_ms: number;
+  pg_connect_error: string | null;
+  each_query_ms: number[];
+  fallback_check_ms: number;
+  serialization_ms: number;
+  total_ms: number;
+  poolReused: boolean | null;
+  firebaseFallback: boolean;
+  firebaseScopeRead: boolean;
+};
+
+function createRouteTiming(): RouteTiming {
+  return {
+    auth_ms: 0,
+    auth_path: null,
+    token_only_eligible: false,
+    scope_check_ms: 0,
+    sql_pool_ms: 0,
+    pg_connect_ms: 0,
+    pg_connect_error: null,
+    each_query_ms: [],
+    fallback_check_ms: 0,
+    serialization_ms: 0,
+    total_ms: 0,
+    poolReused: null,
+    firebaseFallback: false,
+    firebaseScopeRead: false,
+  };
+}
+
+function mergeSqlTiming(routeTiming: RouteTiming, sqlTiming: GameLoginsSqlTiming) {
+  routeTiming.sql_pool_ms += sqlTiming.sql_pool_ms;
+  routeTiming.pg_connect_ms += sqlTiming.pg_connect_ms;
+  routeTiming.each_query_ms.push(...sqlTiming.each_query_ms);
+  if (sqlTiming.poolReused !== null) {
+    routeTiming.poolReused = sqlTiming.poolReused;
+  }
+  if (sqlTiming.pg_connect_error) {
+    routeTiming.pg_connect_error = sqlTiming.pg_connect_error;
+  }
+}
+
+function logRouteTiming(routeTiming: RouteTiming, details: Record<string, unknown> = {}) {
+  console.info('[GAME_LOGINS_CACHE_TIMING]', {
+    ...routeTiming,
+    ...details,
+  });
+}
 
 function cleanText(value: unknown) {
   return String(value || '').trim();
@@ -64,9 +130,59 @@ async function getFirestoreGameLoginsByCoadmin(coadminUid: string): Promise<Cach
   );
 }
 
-function resolveRequestedCoadminUid(request: Request, fallback: string | null) {
+function resolveExplicitCoadminUid(request: Request) {
   const url = new URL(request.url);
-  return cleanText(url.searchParams.get('coadminUid')) || fallback;
+  return cleanText(url.searchParams.get('coadminUid'));
+}
+
+function resolveTokenOnlyScope(request: Request) {
+  const url = new URL(request.url);
+  const field = resolveRequestedField(request);
+  const fieldValue = cleanText(url.searchParams.get('value'));
+  if (field && fieldValue) {
+    return { scopeKey: fieldValue, field, mode: 'field' as const };
+  }
+
+  const explicitCoadminUid = resolveExplicitCoadminUid(request);
+  if (explicitCoadminUid) {
+    return { scopeKey: explicitCoadminUid, field: null, mode: 'coadminUid' as const };
+  }
+
+  return null;
+}
+
+async function resolveGetAuth(
+  request: Request,
+  routeTiming: RouteTiming
+): Promise<
+  | { ok: true; authPath: AuthPath; user: ApiUser | null }
+  | { ok: false; response: Response }
+> {
+  const tokenOnlyScope = resolveTokenOnlyScope(request);
+  routeTiming.token_only_eligible = Boolean(tokenOnlyScope);
+
+  const authStartedAt = Date.now();
+  if (tokenOnlyScope) {
+    const identity = await verifyApiTokenIdentity(request);
+    if ('uid' in identity && identity.uid === tokenOnlyScope.scopeKey) {
+      routeTiming.auth_ms = Date.now() - authStartedAt;
+      routeTiming.auth_path = 'token_only';
+      return { ok: true, authPath: 'token_only', user: null };
+    }
+  }
+
+  const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer', 'player']);
+  routeTiming.auth_ms = Date.now() - authStartedAt;
+  routeTiming.auth_path = 'full';
+  if ('response' in auth) {
+    return { ok: false, response: auth.response };
+  }
+
+  return { ok: true, authPath: 'full', user: auth.user };
+}
+
+function resolveRequestedCoadminUid(request: Request, fallback: string | null) {
+  return resolveExplicitCoadminUid(request) || fallback;
 }
 
 function resolveRequestedField(request: Request): GameLoginField | null {
@@ -81,28 +197,67 @@ function canAccessCoadmin(authUser: { uid: string; role: string }, requested: st
   return Boolean(scoped && requested === scoped);
 }
 
-export async function GET(request: Request) {
-  const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer', 'player']);
-  if ('response' in auth) return auth.response;
+function timedJson(
+  payload: unknown,
+  totalStartedAt: number,
+  routeTiming: RouteTiming,
+  details: Record<string, unknown> = {},
+  init?: ResponseInit
+) {
+  const serializeStartedAt = Date.now();
+  const response = NextResponse.json(payload, init);
+  routeTiming.serialization_ms = Date.now() - serializeStartedAt;
+  routeTiming.total_ms = Date.now() - totalStartedAt;
+  logRouteTiming(routeTiming, details);
+  return response;
+}
 
-  const scoped = scopedCoadminUid(auth.user);
+export async function GET(request: Request) {
+  const totalStartedAt = Date.now();
+  const routeTiming = createRouteTiming();
+
+  const auth = await resolveGetAuth(request, routeTiming);
+  if (!auth.ok) {
+    routeTiming.total_ms = Date.now() - totalStartedAt;
+    logRouteTiming(routeTiming, { reason: 'auth_response' });
+    return auth.response;
+  }
+
   const url = new URL(request.url);
   const field = resolveRequestedField(request);
   const fieldValue = cleanText(url.searchParams.get('value'));
+  const tokenOnlyAuthorized = auth.authPath === 'token_only';
+  const scoped = auth.user ? scopedCoadminUid(auth.user) : null;
+
   if (field && fieldValue) {
-    if (!canAccessCoadmin(auth.user, fieldValue, scoped)) {
-      return apiError('Forbidden.', 403);
+    if (!tokenOnlyAuthorized) {
+      const scopeStartedAt = Date.now();
+      const allowed = canAccessCoadmin(auth.user!, fieldValue, scoped);
+      routeTiming.scope_check_ms = Date.now() - scopeStartedAt;
+      if (!allowed) {
+        const response = apiError('Forbidden.', 403);
+        routeTiming.total_ms = Date.now() - totalStartedAt;
+        logRouteTiming(routeTiming, { reason: 'forbidden_field' });
+        return response;
+      }
     }
 
+    const sqlTiming = createGameLoginsSqlTiming();
+    const fallbackStartedAt = Date.now();
     try {
-      const cached = await readGameLoginsCacheByField(field, fieldValue);
+      const cached = await readGameLoginsCacheByField(field, fieldValue, sqlTiming);
+      mergeSqlTiming(routeTiming, sqlTiming);
       if (cached && cached.length > 0) {
         console.info('[GAME_LOGINS_CACHE] postgres hit', {
           field,
           value: fieldValue,
           count: cached.length,
         });
-        return NextResponse.json({ gameLogins: cached, source: 'postgres' });
+        return timedJson({ gameLogins: cached, source: 'postgres' }, totalStartedAt, routeTiming, {
+          field,
+          value: fieldValue,
+          source: 'postgres',
+        });
       }
     } catch (error) {
       console.warn('[GAME_LOGINS_CACHE] fallback firestore', {
@@ -113,31 +268,55 @@ export async function GET(request: Request) {
       });
     }
 
+    routeTiming.firebaseFallback = true;
     console.info('[GAME_LOGINS_CACHE] fallback firestore', {
       field,
       value: fieldValue,
       reason: 'cache_miss_or_unavailable',
     });
     const gameLogins = await getFirestoreGameLoginsByField(field, fieldValue);
-    return NextResponse.json({ gameLogins, source: 'firestore' });
+    routeTiming.fallback_check_ms = Date.now() - fallbackStartedAt;
+    return timedJson({ gameLogins, source: 'firestore' }, totalStartedAt, routeTiming, {
+      field,
+      value: fieldValue,
+      source: 'firestore',
+    });
   }
 
   const coadminUid = resolveRequestedCoadminUid(request, scoped);
   if (!coadminUid) {
-    return NextResponse.json({ gameLogins: [], source: 'firestore' });
-  }
-  if (!canAccessCoadmin(auth.user, coadminUid, scoped)) {
-    return apiError('Forbidden.', 403);
+    return timedJson({ gameLogins: [], source: 'firestore' }, totalStartedAt, routeTiming, {
+      reason: 'missing_coadmin_uid',
+      source: 'firestore',
+    });
   }
 
+  if (!tokenOnlyAuthorized) {
+    const scopeStartedAt = Date.now();
+    const allowed = canAccessCoadmin(auth.user!, coadminUid, scoped);
+    routeTiming.scope_check_ms = Date.now() - scopeStartedAt;
+    if (!allowed) {
+      const response = apiError('Forbidden.', 403);
+      routeTiming.total_ms = Date.now() - totalStartedAt;
+      logRouteTiming(routeTiming, { reason: 'forbidden_coadmin' });
+      return response;
+    }
+  }
+
+  const sqlTiming = createGameLoginsSqlTiming();
+  const fallbackStartedAt = Date.now();
   try {
-    const cached = await readGameLoginsCacheByCoadmin(coadminUid);
+    const cached = await readGameLoginsCacheByCoadmin(coadminUid, sqlTiming);
+    mergeSqlTiming(routeTiming, sqlTiming);
     if (cached && cached.length > 0) {
       console.info('[GAME_LOGINS_CACHE] postgres hit', {
         coadminUid,
         count: cached.length,
       });
-      return NextResponse.json({ gameLogins: cached, source: 'postgres' });
+      return timedJson({ gameLogins: cached, source: 'postgres' }, totalStartedAt, routeTiming, {
+        coadminUid,
+        source: 'postgres',
+      });
     }
   } catch (error) {
     console.warn('[GAME_LOGINS_CACHE] fallback firestore', {
@@ -147,12 +326,17 @@ export async function GET(request: Request) {
     });
   }
 
+  routeTiming.firebaseFallback = true;
   console.info('[GAME_LOGINS_CACHE] fallback firestore', {
     coadminUid,
     reason: 'cache_miss_or_unavailable',
   });
   const gameLogins = await getFirestoreGameLoginsByCoadmin(coadminUid);
-  return NextResponse.json({ gameLogins, source: 'firestore' });
+  routeTiming.fallback_check_ms = Date.now() - fallbackStartedAt;
+  return timedJson({ gameLogins, source: 'firestore' }, totalStartedAt, routeTiming, {
+    coadminUid,
+    source: 'firestore',
+  });
 }
 
 export async function POST(request: Request) {

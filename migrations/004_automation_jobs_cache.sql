@@ -72,3 +72,6 @@ CREATE INDEX IF NOT EXISTS idx_automation_jobs_cache_ttl
 
 CREATE INDEX IF NOT EXISTS idx_automation_jobs_cache_payload_gin
   ON public.automation_jobs_cache USING gin (payload);
+
+CREATE INDEX IF NOT EXISTS idx_automation_jobs_cache_raw_firestore_data_gin
+  ON public.automation_jobs_cache USING gin (raw_firestore_data);

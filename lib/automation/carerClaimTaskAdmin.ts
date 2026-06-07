@@ -16,6 +16,7 @@ import {
   type GameLoginDetailsInput,
 } from '@/lib/automation/automationClaimPayload';
 import { mirrorAutomationJobById } from '@/lib/sql/automationJobsCache';
+import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 
 const AUTOMATION_JOB_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -968,6 +969,7 @@ export async function claimCarerTaskAsAdmin(input: {
   for (const jobId of affectedJobIds) {
     void mirrorAutomationJobById(jobId, 'appbeg_admin');
   }
+  void mirrorCarerTaskById(input.taskId, 'appbeg_admin_claim');
   console.info(
     '[START_TIMING] server write completed at=%s durationMs=%s taskId=%s jobId=%s status=%s source=admin_claimCarerTaskAsAdmin',
     new Date().toISOString(),

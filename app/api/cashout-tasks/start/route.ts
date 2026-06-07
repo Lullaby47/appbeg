@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import { mirrorPlayerCashoutTaskById } from '@/lib/sql/playerCashoutTasksCache';
 
 type Body = {
   taskId?: unknown;
@@ -109,6 +110,7 @@ export async function POST(request: Request) {
       callerUid: caller.uid,
       expiresAtMs: result.expiresAtMs,
     });
+    void mirrorPlayerCashoutTaskById(taskId, 'appbeg_cashout_start');
 
     return NextResponse.json({ success: true });
   } catch (error) {

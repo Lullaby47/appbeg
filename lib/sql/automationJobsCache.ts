@@ -4,6 +4,7 @@ import type { DocumentSnapshot } from 'firebase-admin/firestore';
 import { Pool } from 'pg';
 
 import { adminDb } from '@/lib/firebase/admin';
+import { emitAutomationJobOutboxEvent } from '@/lib/sql/liveOutbox';
 
 type AutomationJobMirrorRow = {
   jobId: string;
@@ -297,12 +298,29 @@ export async function mirrorAutomationJobCache(
       ]
     );
     console.info('[AUTOMATION_JOBS_CACHE] mirror upsert ok', { jobId: row.jobId });
+    void emitAutomationJobOutboxEvent({
+      firebaseId: row.jobId,
+      taskId: row.taskId,
+      coadminUid: row.coadminUid,
+      carerUid: row.carerUid,
+      createdByUid: row.createdByUid,
+      agentId: row.agentId,
+      type: row.type || row.requestType,
+      status: row.status,
+      gameName: row.game,
+      updatedAt: row.updatedAt,
+      mirroredAt: new Date().toISOString(),
+      source,
+      eventType: 'job.upserted',
+    }).catch(() => undefined);
     return true;
   } catch (error) {
     console.error('[AUTOMATION_JOBS_CACHE] mirror failed', { jobId, error });
     return false;
   }
 }
+
+export const upsertAutomationJobCache = mirrorAutomationJobCache;
 
 export async function mirrorAutomationJobSnapshot(snap: DocumentSnapshot, source = 'appbeg') {
   if (!snap.exists) return false;
@@ -322,12 +340,80 @@ export async function mirrorAutomationJobById(jobId: string, source = 'appbeg') 
   }
 }
 
+export async function getAutomationJobCacheById(jobId: string) {
+  const db = getPool();
+  const cleanJobId = cleanText(jobId);
+  if (!db || !cleanJobId) return null;
+
+  try {
+    const result = await db.query(
+      `
+        SELECT *
+        FROM public.automation_jobs_cache
+        WHERE job_id = $1
+        LIMIT 1
+      `,
+      [cleanJobId]
+    );
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error('[AUTOMATION_JOBS_CACHE] mirror failed', { jobId: cleanJobId, error });
+    return null;
+  }
+}
+
 export async function tombstoneAutomationJobCache(jobId: string, source = 'appbeg') {
   const db = getPool();
   const cleanJobId = cleanText(jobId);
   if (!db || !cleanJobId) return false;
 
   try {
+    let emitContext: {
+      taskId?: string;
+      coadminUid?: string;
+      carerUid?: string;
+      createdByUid?: string;
+      agentId?: string;
+      type?: string;
+      status?: string;
+      gameName?: string;
+    } = {};
+    try {
+      const existing = await db.query(
+        `
+          SELECT
+            task_id,
+            coadmin_uid,
+            carer_uid,
+            created_by_uid,
+            agent_id,
+            type,
+            request_type,
+            status,
+            game
+          FROM public.automation_jobs_cache
+          WHERE job_id = $1
+          LIMIT 1
+        `,
+        [cleanJobId]
+      );
+      const row = existing.rows[0] as Record<string, unknown> | undefined;
+      if (row) {
+        emitContext = {
+          taskId: cleanText(row.task_id),
+          coadminUid: cleanText(row.coadmin_uid),
+          carerUid: cleanText(row.carer_uid),
+          createdByUid: cleanText(row.created_by_uid),
+          agentId: cleanText(row.agent_id),
+          type: cleanText(row.type) || cleanText(row.request_type),
+          status: cleanText(row.status),
+          gameName: cleanText(row.game),
+        };
+      }
+    } catch {
+      // Best-effort lookup for live shadow emit only.
+    }
+
     await db.query(
       `
         INSERT INTO public.automation_jobs_cache (
@@ -346,6 +432,15 @@ export async function tombstoneAutomationJobCache(jobId: string, source = 'appbe
       [cleanJobId, source]
     );
     console.info('[AUTOMATION_JOBS_CACHE] tombstone ok', { jobId: cleanJobId });
+    void emitAutomationJobOutboxEvent({
+      firebaseId: cleanJobId,
+      ...emitContext,
+      status: 'tombstoned',
+      updatedAt: new Date().toISOString(),
+      mirroredAt: new Date().toISOString(),
+      source,
+      eventType: 'job.tombstoned',
+    }).catch(() => undefined);
     return true;
   } catch (error) {
     console.error('[AUTOMATION_JOBS_CACHE] tombstone failed', { jobId: cleanJobId, error });

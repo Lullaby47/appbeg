@@ -9,6 +9,9 @@ import {
   maintenanceBreakApiResponse,
   rejectIfPlayerMaintenanceBreak,
 } from '@/lib/maintenance/admin';
+import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
+import { mirrorPlayerCashoutTaskById } from '@/lib/sql/playerCashoutTasksCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 const PLAYER_CASHOUT_MAX_NPR_PER_24_H = 1000;
 const PLAYER_CASHOUT_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -86,6 +89,7 @@ export async function POST(request: Request) {
     const remainingQuota = Math.max(0, PLAYER_CASHOUT_MAX_NPR_PER_24_H - rollingUsed);
     const playerRef = adminDb.collection('users').doc(playerUid);
     const taskRef = adminDb.collection('playerCashoutTasks').doc();
+    const eventRef = adminDb.collection('financialEvents').doc();
 
     await adminDb.runTransaction(async (transaction) => {
       const playerSnap = await transaction.get(playerRef);
@@ -157,7 +161,7 @@ export async function POST(request: Request) {
         createdAt: FieldValue.serverTimestamp(),
         completedAt: null,
       });
-      transaction.set(adminDb.collection('financialEvents').doc(), {
+      transaction.set(eventRef, {
         playerUid,
         coadminUid,
         amountNpr: amountThisRequest,
@@ -168,6 +172,9 @@ export async function POST(request: Request) {
       });
     });
 
+    void mirrorFinancialEventById(eventRef.id, 'appbeg_cashout_create');
+    void mirrorPlayerCashoutTaskById(taskRef.id, 'appbeg_cashout_create');
+    void mirrorUserBalanceSnapshotById(playerUid, 'appbeg_cashout_create');
     return NextResponse.json({ success: true, taskId: taskRef.id });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create cashout request.';

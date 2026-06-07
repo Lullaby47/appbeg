@@ -5,6 +5,9 @@ import { adminAuth, adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
 import { assertValidGameUsername } from '@/lib/games/gameUsernameRule';
 import { recordGameUsername } from '@/lib/sql/usernameRegistry';
+import { tombstoneDeletedPlayerCache } from '@/lib/sql/deletedPlayersCache';
+import { mirrorPlayerById } from '@/lib/sql/playersCache';
+import { mirrorReferralCodeByCode } from '@/lib/sql/referralsCache';
 import {
   findUniqueReferralCodeWithQueries,
   isReferralCodeReusableByPlayer,
@@ -186,6 +189,9 @@ export async function POST(request: Request) {
       );
 
     await deletedRef.delete();
+    void mirrorPlayerById(uid, 'appbeg_player_restore');
+    void mirrorReferralCodeByCode(referralCode, 'appbeg_player_restore');
+    void tombstoneDeletedPlayerCache(uid, 'appbeg_player_restore');
     await recordRestoredPlayerLoginUsername({
       username,
       playerUid: uid,
@@ -218,6 +224,7 @@ export async function DELETE(request: Request) {
     }
 
     await adminDb.collection('deletedPlayers').doc(uid).delete();
+    void tombstoneDeletedPlayerCache(uid, 'appbeg_deleted_player_purge');
 
     return NextResponse.json({
       success: true,

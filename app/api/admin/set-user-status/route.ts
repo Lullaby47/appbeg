@@ -7,6 +7,8 @@ import {
   requireApiUser,
   scopedCoadminUid,
 } from '@/lib/firebase/apiAuth';
+import { mirrorPlayerById } from '@/lib/sql/playersCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 type UserStatus = 'active' | 'disabled';
 
@@ -76,6 +78,10 @@ export async function POST(request: Request) {
     await userRef.update({
       status,
     });
+    if (isPlayer) {
+      void mirrorPlayerById(uid, 'appbeg_set_user_status');
+    }
+    void mirrorUserBalanceSnapshotById(uid, 'appbeg_set_user_status');
 
     return NextResponse.json({
       success: true,

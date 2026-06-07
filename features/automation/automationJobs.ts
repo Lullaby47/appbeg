@@ -166,6 +166,26 @@ async function mirrorAutomationJobCacheBestEffort(jobId: string) {
   }
 }
 
+async function mirrorCarerTaskCacheBestEffort(taskId: string) {
+  const cleanTaskId = String(taskId || '').trim();
+  if (!cleanTaskId) return;
+  try {
+    const response = await fetch('/api/carer-tasks/cache/mirror', {
+      method: 'POST',
+      headers: await getAuthHeaders(),
+      body: JSON.stringify({ taskId: cleanTaskId }),
+    });
+    if (!response.ok) {
+      console.error('[CARER_TASKS_CACHE] mirror failed', {
+        taskId: cleanTaskId,
+        status: response.status,
+      });
+    }
+  } catch (error) {
+    console.error('[CARER_TASKS_CACHE] mirror failed', { taskId: cleanTaskId, error });
+  }
+}
+
 function readApiError(messageFallback: string, payload: unknown) {
   if (
     payload &&
@@ -1003,6 +1023,7 @@ export async function claimTaskAndCreateJob(input: {
   for (const jobId of affectedJobIds) {
     void mirrorAutomationJobCacheBestEffort(jobId);
   }
+  void mirrorCarerTaskCacheBestEffort(input.taskId);
 
   return Promise.resolve(result).then((result) => {
     if (!result.reusedExistingJob) {
@@ -1245,6 +1266,7 @@ export async function startAutomationForTask(input: {
   }).then(async (result) => {
     await forceRefreshTaskFromServer(input.taskId, doc(db, 'carerTasks', input.taskId));
     void mirrorAutomationJobCacheBestEffort(result.job.id);
+    void mirrorCarerTaskCacheBestEffort(input.taskId);
     recordDevUsageEstimate({
       automationJobsCreated: 1,
       estReads: 6,
@@ -1252,6 +1274,40 @@ export async function startAutomationForTask(input: {
     });
     return result;
   });
+}
+
+export function mapAutomationJobStatusToUiStatus(
+  status: AutomationJobStatus | 'cancelled_requested' | string,
+  data?: { needsManualReview?: boolean | null }
+): AutomationUiStatus | null {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (
+    normalized === 'running' ||
+    normalized === 'in_progress' ||
+    normalized === 'processing' ||
+    normalized === 'claimed'
+  ) {
+    return mapJobStatusToUiStatus('running', data);
+  }
+  if (normalized === 'waiting') {
+    return 'waiting';
+  }
+  if (normalized === 'pending_review' || normalized === 'retrying') {
+    return data?.needsManualReview ? 'pending_review' : 'failed';
+  }
+  return mapJobStatusToUiStatus(
+    normalized as AutomationJobStatus | 'cancelled_requested',
+    data
+  );
+}
+
+export function isFreshAutomationJobUiSignal(job: {
+  status?: string | null;
+  heartbeatMs?: number;
+  hasHeartbeat?: boolean;
+  data?: Record<string, unknown> | null;
+}) {
+  return isFreshAutomationJobSignal(job);
 }
 
 function mapJobStatusToUiStatus(

@@ -3,6 +3,10 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
+import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
+import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
+import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 type Body = { taskId?: unknown };
 
@@ -54,7 +58,11 @@ export async function POST(request: Request) {
     const callerIsAdmin = caller.role === 'admin';
     const callerScope = scopedCoadminUid(caller);
     const taskRef = adminDb.collection('carerTasks').doc(taskId);
+    const eventRef = adminDb.collection('financialEvents').doc();
 
+    let mirroredRequestId = '';
+    let mirroredEventId = '';
+    const mirroredUserIds = new Set<string>();
     const result = await adminDb.runTransaction(async (transaction) => {
       const taskSnap = await transaction.get(taskRef);
       if (!taskSnap.exists) {
@@ -90,6 +98,7 @@ export async function POST(request: Request) {
       if (!requestId) {
         throw new Error('This task is not linked to a request.');
       }
+      mirroredRequestId = requestId;
 
       const requestRef = adminDb.collection('playerGameRequests').doc(requestId);
       const playerRef = adminDb.collection('users').doc(String(task.playerUid || '').trim());
@@ -156,6 +165,7 @@ export async function POST(request: Request) {
         transaction.update(playerRef, {
           cash: Number(playerData.cash || 0) + amount,
         });
+        mirroredUserIds.add(String(task.playerUid || '').trim());
       } else if (requestType === 'recharge') {
         if (
           Boolean(requestData.firstRechargeMatchApplied) &&
@@ -165,6 +175,7 @@ export async function POST(request: Request) {
             firstRechargeMatchUsed: true,
             firstRechargeMatchUsedAt: FieldValue.serverTimestamp(),
           });
+          mirroredUserIds.add(String(task.playerUid || '').trim());
         }
       } else {
         throw new Error('Unsupported request type for completion.');
@@ -200,15 +211,29 @@ export async function POST(request: Request) {
       const callerData = callerSnap.exists
         ? (callerSnap.data() as { cashBoxNpr?: number })
         : { cashBoxNpr: 0 };
+      const cashBoxBefore = Number(callerData.cashBoxNpr || 0);
+      const cashBoxAfter = cashBoxBefore + rewardNpr;
+      transaction.update(taskRef, {
+        rewardAmountNpr: rewardNpr,
+        rewardReason: 'recharge_redeem_task_completion',
+        cashBoxBefore,
+        cashBoxAfter,
+        cashBoxDelta: cashBoxAfter - cashBoxBefore,
+        actorUid: caller.uid,
+        actorRole: caller.role,
+        sourceTaskId: taskId,
+        sourceRequestId: requestId,
+      });
       transaction.set(
         callerRef,
         {
-          cashBoxNpr: Number(callerData.cashBoxNpr || 0) + rewardNpr,
+          cashBoxNpr: cashBoxAfter,
         },
         { merge: true }
       );
+      mirroredUserIds.add(caller.uid);
 
-      transaction.set(adminDb.collection('financialEvents').doc(), {
+      transaction.set(eventRef, {
         playerUid: String(task.playerUid || '').trim(),
         coadminUid: String(requestData.coadminUid || '').trim() || taskScope,
         amountNpr: amount,
@@ -216,6 +241,7 @@ export async function POST(request: Request) {
         requestId,
         createdAt: FieldValue.serverTimestamp(),
       });
+      mirroredEventId = eventRef.id;
 
       return {
         alreadyCompleted: false,
@@ -224,6 +250,14 @@ export async function POST(request: Request) {
       };
     });
 
+    void mirrorCarerTaskById(taskId, 'appbeg_complete_recharge_redeem');
+    void mirrorPlayerGameRequestById(mirroredRequestId, 'appbeg_complete_recharge_redeem');
+    if (mirroredEventId) {
+      void mirrorFinancialEventById(mirroredEventId, 'appbeg_complete_recharge_redeem');
+    }
+    mirroredUserIds.forEach((uid) => {
+      void mirrorUserBalanceSnapshotById(uid, 'appbeg_complete_recharge_redeem');
+    });
     return NextResponse.json({ success: true, ...result });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to complete task.';
