@@ -3,6 +3,15 @@ import 'server-only';
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, verifyAppSessionFromRequest } from '@/lib/firebase/apiAuth';
 import { verifyLiveCarerApiToken } from '@/lib/firebase/liveAuthTokenCache';
+import {
+  authSqlEnvErrorResponse,
+  authSqlProfileErrorResponse,
+  logAuthSqlRouteStart,
+} from '@/lib/server/authSqlReadErrors';
+import {
+  authSqlReadEnvLogFields,
+  isAuthSqlReadEnabled,
+} from '@/lib/server/authSqlRead';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import {
   lookupApiUserProfileFromSqlCache,
@@ -25,6 +34,38 @@ export async function requireFirebasePlayerUser(request: Request) {
     uid = verified.uid;
   } catch {
     return { response: apiError('Invalid or expired authorization token.', 401) } as const;
+  }
+
+  const sqlReadMode = isAuthSqlReadEnabled();
+  logAuthSqlRouteStart('requireFirebasePlayerUser', {
+    uid,
+    ...authSqlReadEnvLogFields(),
+  });
+
+  if (sqlReadMode) {
+    const env = authSqlReadEnvLogFields();
+    if (!env.database_url_configured) {
+      return { response: authSqlEnvErrorResponse({ route: 'player_session_route_auth' }) } as const;
+    }
+
+    const profileLookup = await lookupApiUserProfileFromSqlCache(uid);
+    if (!profileLookup.profile) {
+      return {
+        response: authSqlProfileErrorResponse(profileLookup, {
+          route: 'player_session_route_auth',
+        }),
+      } as const;
+    }
+
+    if (profileLookup.profile.role !== 'player') {
+      return { response: apiError('Forbidden.', 403) } as const;
+    }
+
+    return {
+      uid,
+      username: profileLookup.profile.username,
+      profile: profileLookup.profile,
+    } as const;
   }
 
   let profileLookup = await lookupApiUserProfileFromSqlCache(uid);

@@ -3,10 +3,10 @@ import { NextResponse } from 'next/server';
 import {
   mirrorPlayerSessionStartToFirestore,
 } from '@/lib/server/playerSessionFirestoreMirror';
+import { authSqlReadEnvLogFields, isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
 import { requireFirebasePlayerUser } from '@/lib/server/playerSessionRouteAuth';
 import { invalidatePlayerSessionStatusCache } from '@/lib/server/playerSessionStatus';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
-import { mirrorPlayerById } from '@/lib/sql/playersCache';
 import { startPlayerSessionInSql } from '@/lib/sql/playerSessionWrite';
 
 export const dynamic = 'force-dynamic';
@@ -39,7 +39,10 @@ export async function POST(request: Request) {
     let previousSessionIds: string[] = [];
 
     try {
-      await mirrorPlayerById(uid, 'player_session_start_hydrate');
+      if (!isAuthSqlReadEnabled()) {
+        const { mirrorPlayerById } = await import('@/lib/sql/playersCache');
+        await mirrorPlayerById(uid, 'player_session_start_hydrate');
+      }
       const result = await startPlayerSessionInSql({
         playerUid: uid,
         deviceId,
@@ -76,21 +79,31 @@ export async function POST(request: Request) {
     }
 
     let firestoreMirrorOk = false;
-    try {
-      firestoreMirrorOk = await mirrorPlayerSessionStartToFirestore({
-        playerUid: uid,
-        sessionId,
-        deviceId,
-        userAgent: cleanText(body.userAgent) || null,
-        platform: cleanText(body.platform) || null,
-        previousSessionIds,
-      });
-    } catch (error) {
-      console.warn('[PLAYER_SESSION_SQL] firestore mirror failed', {
-        action: 'start',
+    if (!isAuthSqlReadEnabled()) {
+      try {
+        firestoreMirrorOk = await mirrorPlayerSessionStartToFirestore({
+          playerUid: uid,
+          sessionId,
+          deviceId,
+          userAgent: cleanText(body.userAgent) || null,
+          platform: cleanText(body.platform) || null,
+          previousSessionIds,
+        });
+      } catch (error) {
+        console.warn('[PLAYER_SESSION_SQL] firestore mirror failed', {
+          action: 'start',
+          uid,
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } else {
+      console.info('[PLAYER_SESSION_SQL]', {
+        action: 'start_mirror_skipped',
         uid,
         sessionId,
-        error: error instanceof Error ? error.message : String(error),
+        reason: 'auth_sql_read_mode',
+        ...authSqlReadEnvLogFields(),
       });
     }
 

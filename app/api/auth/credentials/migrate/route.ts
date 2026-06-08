@@ -3,6 +3,15 @@ import { NextResponse } from 'next/server';
 import { hashPassword } from '@/lib/auth/passwordHash';
 import { apiError } from '@/lib/firebase/apiAuth';
 import { verifyLiveCarerApiToken } from '@/lib/firebase/liveAuthTokenCache';
+import {
+  authSqlEnvErrorResponse,
+  authSqlProfileErrorResponse,
+  logAuthSqlRouteStart,
+} from '@/lib/server/authSqlReadErrors';
+import {
+  authSqlReadEnvLogFields,
+  isAuthSqlReadEnabled,
+} from '@/lib/server/authSqlRead';
 import { lookupApiUserProfileFromSqlCache } from '@/lib/sql/playersCache';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { upsertUserCredentials } from '@/lib/sql/userCredentials';
@@ -27,6 +36,17 @@ function isLoginAllowedStatus(status: string | null, role: string) {
 
 export async function POST(request: Request) {
   const totalStartedAt = Date.now();
+  logAuthSqlRouteStart('credentials_migrate', authSqlReadEnvLogFields());
+
+  if (isAuthSqlReadEnabled() && !authSqlReadEnvLogFields().database_url_configured) {
+    console.info(
+      '[SQL_CREDENTIALS_MIGRATE] uid=null role=null ok=false reason=missing_database_url total_ms=%s env=%j',
+      Date.now() - totalStartedAt,
+      authSqlReadEnvLogFields()
+    );
+    return authSqlEnvErrorResponse({ route: 'credentials_migrate' });
+  }
+
   const token = bearerToken(request);
   if (!token) {
     console.info(
@@ -76,12 +96,18 @@ export async function POST(request: Request) {
 
   if (!sqlProfileLookup.profile) {
     console.info(
-      '[SQL_CREDENTIALS_MIGRATE] uid=%s role=null ok=false reason=%s sql_profile_ms=%s total_ms=%s',
+      '[SQL_CREDENTIALS_MIGRATE] uid=%s role=null ok=false reason=%s sql_profile_ms=%s total_ms=%s env=%j',
       identityUid,
       sqlProfileLookup.missReason || 'profile_missing',
       sqlProfileMs,
-      Date.now() - totalStartedAt
+      Date.now() - totalStartedAt,
+      authSqlReadEnvLogFields()
     );
+    if (isAuthSqlReadEnabled()) {
+      return authSqlProfileErrorResponse(sqlProfileLookup, {
+        route: 'credentials_migrate',
+      });
+    }
     return apiError('User profile not found.', 401);
   }
 
