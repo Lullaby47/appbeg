@@ -8,6 +8,7 @@ import {
   scopedCoadminUid,
 } from '@/lib/firebase/apiAuth';
 import { mirrorPlayerById } from '@/lib/sql/playersCache';
+import { setUserStatusInSql } from '@/lib/sql/userDirectoryWrite';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 type UserStatus = 'active' | 'disabled';
@@ -16,7 +17,43 @@ function isValidStatus(status: string): status is UserStatus {
   return status === 'active' || status === 'disabled';
 }
 
+async function mirrorFirebaseAuthStatus(uid: string, isPlayer: boolean, isDisabled: boolean) {
+  try {
+    if (isPlayer) {
+      await adminAuth.updateUser(uid, { disabled: false });
+    } else {
+      await adminAuth.updateUser(uid, { disabled: isDisabled });
+    }
+    return true;
+  } catch (error) {
+    console.warn('[USER_DIRECTORY_SQL] firebase auth mirror failed', {
+      action: 'set_status',
+      uid,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
+async function mirrorFirestoreStatus(
+  userRef: FirebaseFirestore.DocumentReference,
+  status: UserStatus
+) {
+  try {
+    await userRef.update({ status });
+    return true;
+  } catch (error) {
+    console.warn('[USER_DIRECTORY_SQL] firestore mirror failed', {
+      action: 'set_status',
+      status,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
 export async function POST(request: Request) {
+  const startedAt = Date.now();
   try {
     const auth = await requireApiUser(request, ['admin', 'coadmin']);
     if ('response' in auth) return auth.response;
@@ -64,28 +101,67 @@ export async function POST(request: Request) {
     const role = String(userData?.role || '');
     const isPlayer = role === 'player';
 
-    if (isPlayer) {
-      // App-level "blocked" for players: keep Firebase Auth enabled so they can
-      // sign in, message staff, and request unblocking. (Old records may have
-      // disabled=true; re-enable on every update.)
-      await adminAuth.updateUser(uid, { disabled: false });
-    } else {
-      await adminAuth.updateUser(uid, {
-        disabled: isDisabled,
+    let sqlResult: Awaited<ReturnType<typeof setUserStatusInSql>>;
+    try {
+      sqlResult = await setUserStatusInSql({
+        uid,
+        status,
+        actorUid: auth.user.uid,
+        actorRole: auth.user.role,
+        reason: 'status_disabled',
+        revokeSessionsOnDisable: !isPlayer,
       });
+    } catch (error) {
+      console.info('[USER_DIRECTORY_SQL]', {
+        action: 'set_status',
+        uid,
+        status,
+        actorUid: auth.user.uid,
+        sql_ok: false,
+        firebase_mirror_ok: false,
+        firestore_mirror_ok: false,
+        sessions_revoked: 0,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : 'Failed to update user status.' },
+        { status: 500 }
+      );
     }
 
-    await userRef.update({
-      status,
-    });
-    if (isPlayer) {
-      void mirrorPlayerById(uid, 'appbeg_set_user_status');
+    const firebaseMirrorOk = await mirrorFirebaseAuthStatus(uid, isPlayer, isDisabled);
+    const firestoreMirrorOk = await mirrorFirestoreStatus(userRef, status);
+
+    if (firestoreMirrorOk) {
+      if (isPlayer) {
+        void mirrorPlayerById(uid, 'appbeg_set_user_status');
+      }
+      void mirrorUserBalanceSnapshotById(uid, 'appbeg_set_user_status');
     }
-    void mirrorUserBalanceSnapshotById(uid, 'appbeg_set_user_status');
+
+    console.info('[USER_DIRECTORY_SQL]', {
+      action: 'set_status',
+      uid,
+      status,
+      actorUid: auth.user.uid,
+      sql_ok: true,
+      firebase_mirror_ok: firebaseMirrorOk,
+      firestore_mirror_ok: firestoreMirrorOk,
+      sessions_revoked: sqlResult.sessionsRevoked,
+      directory_updated: sqlResult.directoryUpdated,
+      balance_snapshot_updated: sqlResult.balanceSnapshotUpdated,
+      player_preserve_sessions: isPlayer,
+      durationMs: Date.now() - startedAt,
+    });
 
     return NextResponse.json({
       success: true,
       message: `User ${isDisabled ? 'blocked' : 'unblocked'} successfully.`,
+      sqlOk: true,
+      firebaseMirrorOk,
+      firestoreMirrorOk,
+      sessionsRevoked: sqlResult.sessionsRevoked,
     });
   } catch (error: unknown) {
     return NextResponse.json(

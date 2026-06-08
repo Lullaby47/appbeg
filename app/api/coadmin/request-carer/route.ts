@@ -1,31 +1,39 @@
+import { randomUUID } from 'crypto';
+
 import { NextResponse } from 'next/server';
 
-import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import { adminDb } from '@/lib/firebase/admin';
+import { requireApiUser } from '@/lib/firebase/apiAuth';
+import {
+  createCarerCreationRequestSql,
+  hasPendingCarerCreationRequestSql,
+} from '@/lib/sql/carerCreationRequestsCache';
+import { isActiveUsernameTakenInSql } from '@/lib/sql/userDirectoryWrite';
 
 export async function POST(request: Request) {
+  const startedAt = Date.now();
+  let requestId = '';
+
   try {
-    const header = request.headers.get('Authorization') || '';
-    const token = header.match(/^Bearer\s+(\S+)$/i)?.[1];
-    if (!token) {
-      return NextResponse.json({ error: 'Missing or invalid authorization.' }, { status: 401 });
+    const auth = await requireApiUser(request, ['coadmin']);
+    if ('response' in auth) {
+      return auth.response;
     }
-
-    const decoded = await adminAuth.verifyIdToken(token);
-    const callerSnap = await adminDb.collection('users').doc(decoded.uid).get();
-    if (!callerSnap.exists) {
-      return NextResponse.json({ error: 'User profile not found.' }, { status: 404 });
-    }
-
-    const callerData = callerSnap.data() as { role?: string; username?: string; coadminUid?: string };
-    const callerRole = String(callerData.role || '').toLowerCase();
-    if (callerRole !== 'coadmin') {
-      return NextResponse.json({ error: 'Only coadmin can request carer creation.' }, { status: 403 });
-    }
+    const callerUid = auth.user.uid;
+    console.info('[COADMIN_REQUEST_CARER_AUTH]', {
+      auth_path: auth.authPath,
+      uid: callerUid,
+      app_session_used: auth.authPath.startsWith('app_session'),
+    });
 
     const body = (await request.json()) as { username?: string };
     const requestedUsername = String(body.username || '').trim().toLowerCase();
     if (!requestedUsername) {
       return NextResponse.json({ error: 'Username is required.' }, { status: 400 });
+    }
+
+    if (await isActiveUsernameTakenInSql(requestedUsername)) {
+      return NextResponse.json({ error: 'Username already exists.' }, { status: 409 });
     }
 
     const existsSnap = await adminDb
@@ -37,39 +45,113 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Username already exists.' }, { status: 409 });
     }
 
+    if (await hasPendingCarerCreationRequestSql(callerUid, requestedUsername)) {
+      return NextResponse.json(
+        { error: 'This carer request is already pending approval.' },
+        { status: 409 }
+      );
+    }
+
     const pendingSnap = await adminDb
       .collection('carerCreationRequests')
-      .where('coadminUid', '==', decoded.uid)
+      .where('coadminUid', '==', callerUid)
       .where('requestedUsername', '==', requestedUsername)
       .where('status', '==', 'pending')
       .limit(1)
       .get();
     if (!pendingSnap.empty) {
-      return NextResponse.json({ error: 'This carer request is already pending approval.' }, { status: 409 });
+      return NextResponse.json(
+        { error: 'This carer request is already pending approval.' },
+        { status: 409 }
+      );
     }
 
-    const requestRef = adminDb.collection('carerCreationRequests').doc();
-    await requestRef.set({
-      coadminUid: decoded.uid,
-      coadminUsername: String(callerData.username || 'Coadmin'),
-      requestedUsername,
-      status: 'pending',
-      requestedAt: new Date(),
-      reviewedAt: null,
-      reviewedByUid: null,
-      reviewedByUsername: null,
-      createdCarerUid: null,
-      note: null,
+    requestId = randomUUID();
+    let sqlOk = false;
+    try {
+      await createCarerCreationRequestSql({
+        requestId,
+        coadminUid: callerUid,
+        coadminUsername: auth.user.username || 'Coadmin',
+        username: requestedUsername,
+      });
+      sqlOk = true;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to create carer request in SQL.';
+      const isDuplicate =
+        message.includes('carer_creation_requests_cache_pending_coadmin_username_idx') ||
+        message.includes('duplicate key');
+      console.info('[CARER_CREATION_REQUEST_SQL]', {
+        action: 'create',
+        requestId,
+        coadminUid: callerUid,
+        sql_ok: false,
+        firestore_mirror_ok: false,
+        durationMs: Date.now() - startedAt,
+        error: message,
+      });
+      return NextResponse.json(
+        {
+          error: isDuplicate
+            ? 'This carer request is already pending approval.'
+            : message,
+        },
+        { status: isDuplicate ? 409 : 500 }
+      );
+    }
+
+    let firestoreMirrorOk = false;
+    try {
+      await adminDb.collection('carerCreationRequests').doc(requestId).set({
+        coadminUid: callerUid,
+        coadminUsername: auth.user.username || 'Coadmin',
+        requestedUsername,
+        status: 'pending',
+        requestedAt: new Date(),
+        reviewedAt: null,
+        reviewedByUid: null,
+        reviewedByUsername: null,
+        createdCarerUid: null,
+        note: null,
+      });
+      firestoreMirrorOk = true;
+    } catch (error) {
+      console.warn('[CARER_CREATION_REQUEST_SQL] firestore mirror failed', {
+        action: 'create',
+        requestId,
+        coadminUid: callerUid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    console.info('[CARER_CREATION_REQUEST_SQL]', {
+      action: 'create',
+      requestId,
+      coadminUid: callerUid,
+      sql_ok: sqlOk,
+      firestore_mirror_ok: firestoreMirrorOk,
+      durationMs: Date.now() - startedAt,
     });
 
     return NextResponse.json({
       success: true,
-      requestId: requestRef.id,
+      requestId,
+      sqlOk,
+      firestoreMirrorOk,
       message: 'Carer request submitted for admin approval.',
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to request carer creation.';
+    console.info('[CARER_CREATION_REQUEST_SQL]', {
+      action: 'create',
+      requestId: requestId || '',
+      coadminUid: '',
+      sql_ok: false,
+      firestore_mirror_ok: false,
+      durationMs: Date.now() - startedAt,
+      error: message,
+    });
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
-

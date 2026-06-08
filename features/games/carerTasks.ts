@@ -22,8 +22,10 @@ import {
 
 import { jobCompleteGuard } from '@/lib/automation/jobCompleteGuard';
 
-import { auth, db } from '@/lib/firebase/client';
+import { getAppSessionRequestHeaders, getLocalAppSessionId } from '@/features/auth/appSession';
+import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import { assertActivePlayerSession } from '@/features/auth/playerSession';
+import { auth, db } from '@/lib/firebase/client';
 import {
   getCurrentUserCoadminUid as getScopedCurrentUserCoadminUid,
   resolveCoadminUid,
@@ -42,7 +44,7 @@ function isCarerTaskDebugLoggingEnabled() {
 import { getCoadminMaintenanceBreakClient } from '@/features/maintenance/maintenanceBreak';
 import { GameLogin, getGameLoginsByCoadmin } from '@/features/games/gameLogins';
 import {
-  getPlayerGameLoginsByCoadmin,
+  getPlayerGameLoginsByCoadminSqlFirst,
   PlayerGameLogin,
 } from '@/features/games/playerGameLogins';
 import {
@@ -52,7 +54,7 @@ import {
   PlayerGameRequestStatus,
   PlayerGameRequestType,
 } from '@/features/games/playerGameRequests';
-import { getPlayersByCoadmin, PlayerUser } from '@/features/users/adminUsers';
+import { getPlayersByCoadminSqlFirst, PlayerUser } from '@/features/users/adminUsers';
 import {
   automationJobTtl,
   completedCarerTaskTtl,
@@ -601,15 +603,7 @@ async function getCurrentCarerIdentity() {
 }
 
 async function getAuthHeaders() {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-  const token = await currentUser.getIdToken();
-  return {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${token}`,
-  };
+  return getFirebaseApiHeaders(true);
 }
 
 async function mirrorAutomationJobCacheBestEffort(jobId: string) {
@@ -646,6 +640,7 @@ async function mirrorCarerTaskCacheBestEffort(
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
+        ...getAppSessionRequestHeaders(),
       },
       body: JSON.stringify({ taskId: cleanTaskId, action }),
     });
@@ -740,6 +735,7 @@ async function mirrorCarerTasksCacheBestEffort(
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
+        ...getAppSessionRequestHeaders(),
       },
       body: JSON.stringify({ taskIds: cleanTaskIds, action }),
     });
@@ -775,6 +771,7 @@ async function mirrorPlayerGameRequestCacheBestEffort(
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
+        ...getAppSessionRequestHeaders(),
       },
       body: JSON.stringify({ requestId: cleanRequestId, action }),
     });
@@ -1637,18 +1634,162 @@ async function dropPendingRechargeRequestsWithoutEnoughCoin(
   return pendingRequests;
 }
 
+export type CarerBaseData = {
+  players: PlayerUser[];
+  games: GameLogin[];
+  logins: PlayerGameLogin[];
+};
+
+const CARER_BASE_DATA_TIMEOUT_MS = 10_000;
+
+type CombinedBaseDataReadResult =
+  | { ok: true; data: CarerBaseData }
+  | { ok: false; reason: string };
+
+const carerBaseDataInflight = new Map<string, Promise<CarerBaseData>>();
+
+async function tryReadCarerBaseDataFromCombinedApi(
+  coadminUid: string
+): Promise<CombinedBaseDataReadResult> {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CARER_BASE_DATA_TIMEOUT_MS);
+
+  try {
+    const headers = await getFirebaseApiHeaders(false);
+    const appSessionId = getLocalAppSessionId();
+    console.info('[APP_SESSION_HEADER_DEBUG]', {
+      route: '/api/carer/base-data',
+      hasHeader: Boolean(appSessionId),
+      sessionIdPrefix: appSessionId ? appSessionId.slice(0, 8) : null,
+      reason: appSessionId ? 'header_attached' : 'missing_header',
+    });
+
+    const response = await fetch(
+      `/api/carer/base-data?coadminUid=${encodeURIComponent(coadminUid)}`,
+      {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+        signal: controller.signal,
+      }
+    );
+
+    if (!response.ok) {
+      return { ok: false, reason: `api_status_${response.status}` };
+    }
+
+    const payload = (await response.json()) as {
+      players?: PlayerUser[];
+      gameLogins?: GameLogin[];
+      playerGameLogins?: PlayerGameLogin[];
+      source?: string;
+      snapshotAt?: string;
+    };
+
+    if (
+      !Array.isArray(payload.players) ||
+      !Array.isArray(payload.gameLogins) ||
+      !Array.isArray(payload.playerGameLogins)
+    ) {
+      return { ok: false, reason: 'invalid_payload' };
+    }
+
+    console.info('[CARER_BASE_DATA] client hit', {
+      coadminUid,
+      source: payload.source || 'unknown',
+      snapshotAt: payload.snapshotAt || null,
+      counts: {
+        players: payload.players.length,
+        gameLogins: payload.gameLogins.length,
+        playerGameLogins: payload.playerGameLogins.length,
+      },
+      durationMs: Date.now() - startedAt,
+    });
+
+    return {
+      ok: true,
+      data: {
+        players: payload.players,
+        games: payload.gameLogins,
+        logins: payload.playerGameLogins,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason:
+        error instanceof Error && error.name === 'AbortError' ? 'api_timeout' : 'api_failed',
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function normalizeCarerBaseData(baseData: CarerBaseData): CarerBaseData {
+  return {
+    players: dedupeById(
+      baseData.players.filter((player) => player.status !== 'disabled')
+    ),
+    games: dedupeById(baseData.games),
+    logins: dedupeById(baseData.logins),
+  };
+}
+
+export async function fetchCarerBaseDataForCoadmin(coadminUid: string): Promise<CarerBaseData> {
+  const cleanCoadminUid = String(coadminUid || '').trim();
+  if (!cleanCoadminUid) {
+    return { players: [], games: [], logins: [] };
+  }
+
+  const inflight = carerBaseDataInflight.get(cleanCoadminUid);
+  if (inflight) {
+    console.info('[CARER_BASE_DATA_CLIENT]', {
+      source: 'combined',
+      usedFallback: false,
+      reason: 'inflight_reuse',
+      coadminUid: cleanCoadminUid,
+    });
+    return inflight;
+  }
+
+  const promise = (async () => {
+    const startedAt = Date.now();
+    const combined = await tryReadCarerBaseDataFromCombinedApi(cleanCoadminUid);
+
+    if (combined.ok) {
+      console.info('[CARER_BASE_DATA_CLIENT]', {
+        source: 'combined',
+        usedFallback: false,
+        reason: 'combined_ok',
+        coadminUid: cleanCoadminUid,
+        durationMs: Date.now() - startedAt,
+      });
+      return normalizeCarerBaseData(combined.data);
+    }
+
+    console.info('[CARER_BASE_DATA_CLIENT]', {
+      source: 'combined',
+      usedFallback: false,
+      reason: combined.reason,
+      coadminUid: cleanCoadminUid,
+      durationMs: Date.now() - startedAt,
+    });
+    return normalizeCarerBaseData({ players: [], games: [], logins: [] });
+  })().finally(() => {
+    carerBaseDataInflight.delete(cleanCoadminUid);
+  });
+
+  carerBaseDataInflight.set(cleanCoadminUid, promise);
+  return promise;
+}
+
 export async function syncCarerTasksForCoadmin(
   coadminUid: string,
-  knownLogins?: PlayerGameLogin[]
+  baseData: CarerBaseData
 ) {
   const cleanCoadminUid = String(coadminUid || '').trim();
-  const players = dedupeById(
-    (await getPlayersByCoadmin(cleanCoadminUid)).filter((player) => player.status !== 'disabled')
-  );
-  const games = dedupeById(await getGameLoginsByCoadmin(cleanCoadminUid));
-  const logins = dedupeById(
-    knownLogins || (await getPlayerGameLoginsByCoadmin(cleanCoadminUid))
-  );
+  const { players, games, logins } = baseData;
   const pendingRequestsRaw = await getPendingPlayerGameRequestsByCoadmin(cleanCoadminUid);
   const pendingRequests = await dropPendingRechargeRequestsWithoutEnoughCoin(
     pendingRequestsRaw.filter((request) => players.some((player) => player.uid === request.playerUid)),

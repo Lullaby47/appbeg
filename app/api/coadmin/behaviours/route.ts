@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
-import { adminAuth, adminDb } from '@/lib/firebase/admin';
+
+import { adminDb } from '@/lib/firebase/admin';
+import { requireApiUser } from '@/lib/firebase/apiAuth';
 
 type AnyDoc = Record<string, any>;
 
@@ -28,30 +30,25 @@ function riskLevelFromScore(score: number): 'low' | 'medium' | 'high' {
 
 export async function GET(request: Request) {
   try {
-    const header = request.headers.get('Authorization') || '';
-    const token = header.match(/^Bearer\s+(\S+)$/i)?.[1];
-    if (!token) {
-      return NextResponse.json({ error: 'Missing or invalid authorization.' }, { status: 401 });
+    const auth = await requireApiUser(request, ['coadmin']);
+    if ('response' in auth) {
+      return auth.response;
     }
-
-    const decoded = await adminAuth.verifyIdToken(token);
-    const callerSnap = await adminDb.collection('users').doc(decoded.uid).get();
-    if (!callerSnap.exists) {
-      return NextResponse.json({ error: 'User profile not found.' }, { status: 404 });
-    }
-    const caller = callerSnap.data() as { role?: string };
-    if (String(caller.role || '').toLowerCase() !== 'coadmin') {
-      return NextResponse.json({ error: 'Only coadmin can view behaviours.' }, { status: 403 });
-    }
+    const callerUid = auth.user.uid;
+    console.info('[COADMIN_BEHAVIOURS_AUTH]', {
+      auth_path: auth.authPath,
+      uid: callerUid,
+      app_session_used: auth.authPath.startsWith('app_session'),
+    });
 
     const url = new URL(request.url);
     const selectedStaffId = String(url.searchParams.get('staffId') || '').trim();
 
     const [staffSnap, playersSnap, cashoutsSnap, requestsSnap] = await Promise.all([
-      adminDb.collection('users').where('role', '==', 'staff').where('coadminUid', '==', decoded.uid).get(),
-      adminDb.collection('users').where('role', '==', 'player').where('coadminUid', '==', decoded.uid).get(),
-      adminDb.collection('playerCashoutTasks').where('coadminUid', '==', decoded.uid).get(),
-      adminDb.collection('playerGameRequests').where('coadminUid', '==', decoded.uid).where('type', '==', 'redeem').get(),
+      adminDb.collection('users').where('role', '==', 'staff').where('coadminUid', '==', callerUid).get(),
+      adminDb.collection('users').where('role', '==', 'player').where('coadminUid', '==', callerUid).get(),
+      adminDb.collection('playerCashoutTasks').where('coadminUid', '==', callerUid).get(),
+      adminDb.collection('playerGameRequests').where('coadminUid', '==', callerUid).where('type', '==', 'redeem').get(),
     ]);
 
     const now = Date.now();

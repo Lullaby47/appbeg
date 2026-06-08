@@ -1,5 +1,6 @@
 import { doc, getDoc } from 'firebase/firestore';
 
+import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { auth, db } from '@/lib/firebase/client';
 
 export type CoadminScopedRecord = {
@@ -29,15 +30,56 @@ export function belongsToCoadmin(
   return item.coadminUid === coadminUid || item.createdBy === coadminUid;
 }
 
-export async function getCurrentUserCoadminUid() {
-  const currentUser = auth.currentUser;
+export async function getCoadminActorUid() {
+  const cached = getCachedSessionUser();
+  if (cached?.uid) {
+    return cached.uid;
+  }
 
+  const sessionUser = await getSessionUserOnce();
+  if (sessionUser?.uid) {
+    return sessionUser.uid;
+  }
+
+  const firebaseUid = auth.currentUser?.uid;
+  if (firebaseUid) {
+    return firebaseUid;
+  }
+
+  throw new Error('Not authenticated.');
+}
+
+function resolveCoadminUidFromSessionUser(sessionUser: {
+  uid: string;
+  role: string;
+  coadminUid?: string | null;
+}) {
+  const role = String(sessionUser.role || '').toLowerCase();
+  if (role === 'coadmin') {
+    return normalizeUid(sessionUser.uid);
+  }
+
+  return normalizeUid(sessionUser.coadminUid);
+}
+
+export async function getCurrentUserCoadminUid() {
+  const cached = getCachedSessionUser();
+  const sessionUser = cached?.uid ? cached : await getSessionUserOnce();
+
+  if (sessionUser?.uid) {
+    const coadminUid = resolveCoadminUidFromSessionUser(sessionUser);
+    if (coadminUid) {
+      return coadminUid;
+    }
+    throw new Error('No coadmin assigned to this user.');
+  }
+
+  const currentUser = auth.currentUser;
   if (!currentUser) {
     throw new Error('Not authenticated.');
   }
 
   const userSnap = await getDoc(doc(db, 'users', currentUser.uid));
-
   if (!userSnap.exists()) {
     throw new Error('Current user profile not found.');
   }

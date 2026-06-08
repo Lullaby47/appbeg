@@ -1,6 +1,11 @@
 import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 
+import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { auth, db } from '@/lib/firebase/client';
+import {
+  getApiAuthHeaders,
+  type ApiAuthHeaderAction,
+} from '@/lib/firebase/apiClient';
 import {
   CoadminScopedRecord,
   getCurrentUserCoadminUid,
@@ -80,7 +85,194 @@ export type PlayerUser = {
 };
 
 export type ManagedUser = StaffUser | CarerUser | PlayerUser;
+type DirectoryRole = 'staff' | 'carer' | 'coadmin' | 'player';
+type UsersListScopeOptions = {
+  coadminUid?: string | null;
+  all?: boolean;
+};
+
 let playerReferralBackfillAttempted = false;
+
+const USERS_CACHE_TIMEOUT_MS = 5_000;
+const PLAYERS_CACHE_TIMEOUT_MS = 5_000;
+const CARER_CREATION_REQUESTS_CACHE_TIMEOUT_MS = 5_000;
+
+async function fetchWithCacheTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number
+) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function getUsersCacheReadHeaders() {
+  return getApiAuthHeaders(false, { action: 'read' });
+}
+
+async function getAdminActionHeaders(action: ApiAuthHeaderAction) {
+  return getApiAuthHeaders(true, { action });
+}
+
+export async function getAdminActorUid() {
+  const cached = getCachedSessionUser();
+  if (cached?.uid) {
+    return cached.uid;
+  }
+  const sessionUser = await getSessionUserOnce();
+  if (sessionUser?.uid) {
+    return sessionUser.uid;
+  }
+  const firebaseUid = auth.currentUser?.uid;
+  if (firebaseUid) {
+    return firebaseUid;
+  }
+  throw new Error('Not authenticated.');
+}
+
+async function resolveUsersListScope(options?: UsersListScopeOptions) {
+  if (options?.all) {
+    return null;
+  }
+  if (options?.coadminUid) {
+    return options.coadminUid.trim() || null;
+  }
+  const scoped = await getCurrentUserCoadminUid();
+  return scoped || null;
+}
+
+async function tryReadUsersCacheByRole<T extends ManagedUser | CoadminUser>(
+  role: DirectoryRole,
+  options?: UsersListScopeOptions
+): Promise<T[] | null> {
+  const startedAt = Date.now();
+  const coadminUid = await resolveUsersListScope(options);
+  const params = new URLSearchParams({ role });
+  if (coadminUid) {
+    params.set('coadminUid', coadminUid);
+  }
+  if (role === 'player' && !params.has('status')) {
+    params.set('includeDisabled', 'true');
+  }
+
+  try {
+    const headers = await getUsersCacheReadHeaders();
+    const response = await fetchWithCacheTimeout(
+      `/api/users/cache?${params.toString()}`,
+      {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+      },
+      USERS_CACHE_TIMEOUT_MS
+    );
+    if (!response.ok) {
+      console.info('[USERS_CACHE_READ] source=firestore_fallback', {
+        role,
+        coadminUid: coadminUid || '',
+        reason: `cache_api_status_${response.status}`,
+        durationMs: Date.now() - startedAt,
+      });
+      return null;
+    }
+
+    const payload = (await response.json()) as {
+      users?: T[];
+      source?: string;
+    };
+    if (Array.isArray(payload.users)) {
+      console.info(
+        `[USERS_CACHE_READ] source=${payload.source === 'postgres' ? 'postgres' : 'firestore_fallback'} role=${role} coadminUid=${coadminUid || ''} count=${payload.users.length} durationMs=${Date.now() - startedAt}`
+      );
+      return payload.users;
+    }
+    return null;
+  } catch (error) {
+    console.info('[USERS_CACHE_READ] source=firestore_fallback', {
+      role,
+      coadminUid: coadminUid || '',
+      reason: 'cache_api_failed',
+      durationMs: Date.now() - startedAt,
+      error,
+    });
+    return null;
+  }
+}
+
+async function getUsersByRoleSqlFirst<T extends ManagedUser | CoadminUser>(
+  role: T['role'],
+  options?: UsersListScopeOptions
+): Promise<T[]> {
+  const cached = await tryReadUsersCacheByRole<T>(role as DirectoryRole, options);
+  if (cached !== null) {
+    return cached;
+  }
+
+  const startedAt = Date.now();
+  const users = await getUsersByRoleFirestore<T>(role, options);
+  const coadminUid = await resolveUsersListScope(options);
+  console.info(
+    `[USERS_CACHE_READ] source=firestore_fallback role=${role} coadminUid=${coadminUid || ''} count=${users.length} durationMs=${Date.now() - startedAt}`
+  );
+  return users;
+}
+
+async function tryReadPlayersCacheByCoadmin(coadminUid: string): Promise<PlayerUser[] | null> {
+  const cleanCoadminUid = coadminUid.trim();
+  if (!cleanCoadminUid) {
+    return [];
+  }
+
+  const startedAt = Date.now();
+  try {
+    const headers = await getUsersCacheReadHeaders();
+    const response = await fetchWithCacheTimeout(
+      `/api/players/cache?coadminUid=${encodeURIComponent(cleanCoadminUid)}`,
+      {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+      },
+      PLAYERS_CACHE_TIMEOUT_MS
+    );
+    if (!response.ok) {
+      console.info('[PLAYERS_CACHE_READ] source=firestore_fallback', {
+        coadminUid: cleanCoadminUid,
+        reason: `cache_api_status_${response.status}`,
+        durationMs: Date.now() - startedAt,
+      });
+      return null;
+    }
+
+    const payload = (await response.json()) as {
+      players?: PlayerUser[];
+      source?: string;
+    };
+    if (Array.isArray(payload.players)) {
+      console.info(
+        `[PLAYERS_CACHE_READ] source=${payload.source === 'postgres' ? 'postgres' : 'firestore_fallback'} coadminUid=${cleanCoadminUid} count=${payload.players.length} durationMs=${Date.now() - startedAt}`
+      );
+      return payload.players;
+    }
+    return null;
+  } catch (error) {
+    console.info('[PLAYERS_CACHE_READ] source=firestore_fallback', {
+      coadminUid: cleanCoadminUid,
+      reason: 'cache_api_failed',
+      durationMs: Date.now() - startedAt,
+      error,
+    });
+    return null;
+  }
+}
 
 export type CarerCreationRequest = {
   id: string;
@@ -166,16 +358,28 @@ async function normalizeUsersWithCoadminUid<
   });
 }
 
-async function getUsersByRole<T extends ManagedUser | CoadminUser>(
-  role: T['role']
+async function getUsersByRoleFirestore<T extends ManagedUser | CoadminUser>(
+  role: T['role'],
+  options?: UsersListScopeOptions
 ): Promise<T[]> {
+  const coadminUid = await resolveUsersListScope(options);
   const q = query(collection(db, 'users'), where('role', '==', role));
   const snapshot = await getDocs(q);
 
-  const users = snapshot.docs.map((docSnap) => ({
-    id: docSnap.id,
-    ...(docSnap.data() as Omit<T, 'id'>),
-  }));
+  const users = snapshot.docs
+    .map((docSnap) => ({
+      id: docSnap.id,
+      ...(docSnap.data() as Omit<T, 'id'>),
+    }))
+    .filter((user) => {
+      if (!coadminUid) {
+        return true;
+      }
+      const scopedUser = user as { coadminUid?: string | null; createdBy?: string | null };
+      return (
+        scopedUser.coadminUid === coadminUid || scopedUser.createdBy === coadminUid
+      );
+    });
 
   return normalizeUsersWithCoadminUid(users as T[]);
 }
@@ -198,14 +402,10 @@ async function backfillPlayerReferralCodesIfNeeded() {
 
   playerReferralBackfillAttempted = true;
   try {
-    const token = await auth.currentUser?.getIdToken();
-    if (!token) {
-      return;
-    }
     console.info('[player-referral-backfill] backfill started');
     await fetch('/api/admin/backfill-player-referrals', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: await getApiAuthHeaders(false, { action: 'update' }),
     });
   } catch {
     // Non-blocking best-effort backfill.
@@ -229,19 +429,11 @@ async function createManagedUser(
   }
 
   const coadminUid = await getCurrentUserCoadminUid();
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-  const creatorUid = currentUser.uid;
-  const token = await currentUser.getIdToken();
+  const creatorUid = await getAdminActorUid();
 
   const response = await fetch('/api/admin/create-staff', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getAdminActionHeaders('create'),
     body: JSON.stringify({
       username: cleanUsername,
       password,
@@ -265,17 +457,9 @@ async function createManagedUser(
 }
 
 async function deleteManagedUser(user: ManagedUser) {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/delete-user', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getAdminActionHeaders('delete'),
     body: JSON.stringify({
       uid: user.uid,
     }),
@@ -305,16 +489,9 @@ export type DeletedPlayerRecord = {
 };
 
 export async function getDeletedPlayers(): Promise<DeletedPlayerRecord[]> {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/player-archive', {
     method: 'GET',
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getApiAuthHeaders(false, { action: 'read' }),
   });
 
   const data = await parseApiResponse(response);
@@ -327,17 +504,9 @@ export async function getDeletedPlayers(): Promise<DeletedPlayerRecord[]> {
 }
 
 export async function recreateDeletedPlayer(uid: string) {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/player-archive', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getAdminActionHeaders('update'),
     body: JSON.stringify({ uid }),
   });
 
@@ -351,17 +520,9 @@ export async function recreateDeletedPlayer(uid: string) {
 }
 
 export async function deletePlayerForever(uid: string) {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/player-archive', {
     method: 'DELETE',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getAdminActionHeaders('delete'),
     body: JSON.stringify({ uid }),
   });
 
@@ -378,17 +539,9 @@ async function setManagedUserStatus(
   uid: string,
   status: 'active' | 'disabled'
 ) {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/set-user-status', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getAdminActionHeaders('status'),
     body: JSON.stringify({
       uid,
       status,
@@ -404,8 +557,8 @@ async function setManagedUserStatus(
   return data;
 }
 
-export async function getStaff(): Promise<StaffUser[]> {
-  return getUsersByRole<StaffUser>('staff');
+export async function getStaff(options?: UsersListScopeOptions): Promise<StaffUser[]> {
+  return getUsersByRoleSqlFirst<StaffUser>('staff', options);
 }
 
 export async function createStaff(username: string, password: string) {
@@ -424,8 +577,8 @@ export async function unblockStaff(staff: StaffUser) {
   return setManagedUserStatus(staff.uid, 'active');
 }
 
-export async function getCarers(): Promise<CarerUser[]> {
-  return getUsersByRole<CarerUser>('carer');
+export async function getCarers(options?: UsersListScopeOptions): Promise<CarerUser[]> {
+  return getUsersByRoleSqlFirst<CarerUser>('carer', options);
 }
 
 export async function createCarer(username: string, password: string) {
@@ -433,22 +586,14 @@ export async function createCarer(username: string, password: string) {
 }
 
 export async function requestCarerCreation(username: string) {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
   const cleanUsername = username.trim().toLowerCase();
   if (!cleanUsername) {
     throw new Error('Username is required.');
   }
 
-  const token = await currentUser.getIdToken();
   const response = await fetch('/api/coadmin/request-carer', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getAdminActionHeaders('create'),
     body: JSON.stringify({ username: cleanUsername }),
   });
   const data = await parseApiResponse(response);
@@ -459,16 +604,9 @@ export async function requestCarerCreation(username: string) {
 }
 
 export async function getPendingCarerCreationRequests(): Promise<CarerCreationRequest[]> {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/carer-creation-requests', {
     method: 'GET',
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getApiAuthHeaders(false, { action: 'read' }),
   });
   const data = await parseApiResponse(response);
   if (!response.ok) {
@@ -477,11 +615,51 @@ export async function getPendingCarerCreationRequests(): Promise<CarerCreationRe
   return (data.requests || []) as CarerCreationRequest[];
 }
 
-export async function approveCarerCreationRequest(requestId: string, password: string) {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
+export async function getMyPendingCarerCreationRequests(): Promise<CarerCreationRequest[]> {
+  const actorUid = await getAdminActorUid();
+  const startedAt = Date.now();
+  try {
+    const headers = await getUsersCacheReadHeaders();
+    const response = await fetchWithCacheTimeout(
+      '/api/carer-creation-requests/cache?scope=mine',
+      {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+      },
+      CARER_CREATION_REQUESTS_CACHE_TIMEOUT_MS
+    );
+    if (!response.ok) {
+      throw new Error('Failed to load pending carer requests.');
+    }
+
+    const data = (await parseApiResponse(response)) as {
+      requests?: CarerCreationRequest[];
+      source?: string;
+    };
+    const requests = (data.requests || []) as CarerCreationRequest[];
+    console.info('[CARER_CREATION_REQUEST_SQL]', {
+      action: 'list_mine',
+      coadminUid: actorUid,
+      source: data.source === 'postgres' ? 'postgres' : 'firestore_fallback',
+      count: requests.length,
+      durationMs: Date.now() - startedAt,
+    });
+    return requests;
+  } catch (error) {
+    console.info('[CARER_CREATION_REQUEST_SQL]', {
+      action: 'list_mine',
+      coadminUid: actorUid,
+      source: 'firestore_fallback',
+      count: 0,
+      durationMs: Date.now() - startedAt,
+      error,
+    });
+    throw error instanceof Error ? error : new Error('Failed to load pending carer requests.');
   }
+}
+
+export async function approveCarerCreationRequest(requestId: string, password: string) {
   if (!requestId.trim()) {
     throw new Error('Request id is required.');
   }
@@ -489,13 +667,9 @@ export async function approveCarerCreationRequest(requestId: string, password: s
     throw new Error('Password must be at least 6 characters.');
   }
 
-  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/carer-creation-requests', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getAdminActionHeaders('update'),
     body: JSON.stringify({
       requestId: requestId.trim(),
       password,
@@ -521,8 +695,22 @@ export async function unblockCarer(carer: CarerUser) {
   return setManagedUserStatus(carer.uid, 'active');
 }
 
-export async function getPlayers(): Promise<PlayerUser[]> {
-  return getUsersByRole<PlayerUser>('player');
+export async function getPlayers(options?: UsersListScopeOptions): Promise<PlayerUser[]> {
+  return getUsersByRoleSqlFirst<PlayerUser>('player', { all: true, ...options });
+}
+
+export async function getPlayersByCoadminSqlFirst(coadminUid: string): Promise<PlayerUser[]> {
+  const cached = await tryReadPlayersCacheByCoadmin(coadminUid);
+  if (cached) {
+    return cached;
+  }
+
+  const startedAt = Date.now();
+  const players = await getPlayersByCoadmin(coadminUid);
+  console.info(
+    `[PLAYERS_CACHE_READ] source=firestore_fallback coadminUid=${coadminUid.trim()} count=${players.length} durationMs=${Date.now() - startedAt}`
+  );
+  return players;
 }
 
 export async function getPlayersByCoadmin(coadminUid: string): Promise<PlayerUser[]> {
@@ -584,7 +772,7 @@ export async function unblockPlayer(player: PlayerUser) {
 }
 
 export async function getCoadmins(): Promise<CoadminUser[]> {
-  return getUsersByRole<CoadminUser>('coadmin');
+  return getUsersByRoleSqlFirst<CoadminUser>('coadmin', { all: true });
 }
 
 export async function createCoadmin(username: string, password: string) {
@@ -595,22 +783,15 @@ export async function createCoadmin(username: string, password: string) {
     throw new Error('Password must be at least 6 characters.');
   }
 
-  const currentUser = auth.currentUser;
-
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
+  const createdBy = await getAdminActorUid();
 
   const response = await fetch('/api/admin/create-coadmin', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${await currentUser.getIdToken()}`,
-    },
+    headers: await getAdminActionHeaders('create'),
     body: JSON.stringify({
       username: cleanUsername,
       password,
-      createdBy: currentUser.uid,
+      createdBy,
     }),
   });
 
@@ -624,17 +805,9 @@ export async function createCoadmin(username: string, password: string) {
 }
 
 export async function deleteCoadmin(coadmin: CoadminUser) {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/delete-user', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getAdminActionHeaders('delete'),
     body: JSON.stringify({
       uid: coadmin.uid,
     }),
@@ -662,10 +835,6 @@ export async function resetCoadminWorkerCredentials(
   user: StaffUser | CarerUser | PlayerUser,
   options: { newPassword?: string; newUsername?: string }
 ) {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
   if (!options.newPassword && options.newUsername === undefined) {
     throw new Error('New password or new username is required.');
   }
@@ -676,13 +845,9 @@ export async function resetCoadminWorkerCredentials(
     assertValidGameUsername(String(options.newUsername));
   }
 
-  const token = await currentUser.getIdToken();
   const response = await fetch('/api/coadmin/reset-worker-credentials', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getAdminActionHeaders('reset_password'),
     body: JSON.stringify({
       targetUid: user.uid,
       newPassword: options.newPassword,
@@ -701,20 +866,12 @@ export async function adminResetManagedPassword(
   user: CoadminUser | StaffUser,
   newPassword: string
 ) {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
   if (!newPassword || newPassword.length < 6) {
     throw new Error('Password must be at least 6 characters.');
   }
-  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/reset-user-password', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getAdminActionHeaders('reset_password'),
     body: JSON.stringify({
       targetUid: user.uid,
       newPassword,
@@ -728,17 +885,9 @@ export async function adminResetManagedPassword(
 }
 
 export async function transferPlayerToCoadmin(playerUid: string, targetCoadminUid: string) {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-  const token = await currentUser.getIdToken();
   const response = await fetch('/api/admin/transfer-player-coadmin', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getAdminActionHeaders('update'),
     body: JSON.stringify({
       playerUid,
       targetCoadminUid,

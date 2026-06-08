@@ -1,7 +1,8 @@
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
-import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import { adminDb } from '@/lib/firebase/admin';
+import { requireApiUser } from '@/lib/firebase/apiAuth';
 import { mirrorCoadminBonusSettingsSnapshot } from '@/lib/sql/coadminBonusSettingsCache';
 
 const COADMIN_MIN_PERCENT = 5;
@@ -84,22 +85,16 @@ export async function POST(request: Request) {
   let leaseId: string | null = null;
   let leaseSettingsRef: FirebaseFirestore.DocumentReference | null = null;
   try {
-    const header = request.headers.get('Authorization') || '';
-    const match = header.match(/^Bearer\s+(\S+)$/i);
-    const idToken = match?.[1];
-    if (!idToken) {
-      return NextResponse.json({ error: 'Missing or invalid authorization.' }, { status: 401 });
+    const auth = await requireApiUser(request, ['coadmin']);
+    if ('response' in auth) {
+      return auth.response;
     }
-    const decoded = await adminAuth.verifyIdToken(idToken);
-    const callerUid = decoded.uid;
-    const callerSnap = await adminDb.collection('users').doc(callerUid).get();
-    if (!callerSnap.exists) {
-      return NextResponse.json({ error: 'Current user profile not found.' }, { status: 404 });
-    }
-    const callerRole = String((callerSnap.data() as { role?: string }).role || '').toLowerCase();
-    if (callerRole !== 'coadmin') {
-      return NextResponse.json({ error: 'Only coadmin can update auto bonus ranges.' }, { status: 403 });
-    }
+    const callerUid = auth.user.uid;
+    console.info('[COADMIN_BONUS_UPDATE_RANGE_AUTH]', {
+      auth_path: auth.authPath,
+      uid: callerUid,
+      app_session_used: auth.authPath.startsWith('app_session'),
+    });
 
     const body = (await request.json()) as { minPercent?: number; maxPercent?: number } | null;
     const normalized = normalizeAutoBonusPercentRange({

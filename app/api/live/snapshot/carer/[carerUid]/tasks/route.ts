@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { apiError, requireCarerOwnedLiveAuth } from '@/lib/firebase/apiAuth';
 import { carerTaskLiveChannel, getLatestOutboxIdForChannels } from '@/lib/sql/liveOutbox';
 import {
+  acquirePlayerMirrorClient,
   cleanText,
   createPlayerMirrorSqlTiming,
   getPlayerMirrorPool,
@@ -201,23 +202,41 @@ export async function GET(
     return apiError('Carer uid is required.', 400);
   }
 
-  const db = getPlayerMirrorPool();
-  if (!db) {
-    const auth = await requireCarerOwnedLiveAuth(request, carerUid);
-    if (!auth.ok) {
-      logSnapshotTiming({
-        ...authTimingDetails(auth.timing),
-        sql_connection_acquire_ms: 0,
-        sql_tasks_ms: 0,
-        sql_latest_outbox_ms: 0,
-        merge_ms: 0,
-        total_ms: Date.now() - totalStartedAt,
-        reason: 'auth_response',
-        carerUid,
-      });
-      return auth.response;
-    }
+  const auth = await requireCarerOwnedLiveAuth(request, carerUid);
+  if (!auth.ok) {
+    logSnapshotTiming({
+      ...authTimingDetails(auth.timing),
+      sql_connection_acquire_ms: 0,
+      sql_tasks_ms: 0,
+      sql_latest_outbox_ms: 0,
+      merge_ms: 0,
+      total_ms: Date.now() - totalStartedAt,
+      reason: 'auth_response',
+      carerUid,
+    });
+    return auth.response;
+  }
 
+  if (!auth.coadminUid) {
+    logSnapshotTiming({
+      ...authTimingDetails(auth.timing),
+      sql_connection_acquire_ms: 0,
+      sql_tasks_ms: 0,
+      sql_latest_outbox_ms: 0,
+      merge_ms: 0,
+      total_ms: Date.now() - totalStartedAt,
+      reason: 'missing_coadmin_scope',
+      carerUid,
+    });
+    return NextResponse.json({
+      tasks: [],
+      snapshotAt: new Date().toISOString(),
+      latestOutboxId: 0,
+      source: 'postgres_snapshot_unscoped',
+    });
+  }
+
+  if (!getPlayerMirrorPool()) {
     logSnapshotTiming({
       ...authTimingDetails(auth.timing),
       sql_connection_acquire_ms: 0,
@@ -237,51 +256,40 @@ export async function GET(
     });
   }
 
-  const connectionAcquireStartedAt = Date.now();
-  const client = await db.connect();
-  const sqlConnectionAcquireMs = Date.now() - connectionAcquireStartedAt;
+  const acquired = await acquirePlayerMirrorClient({
+    context: 'live_carer_tasks_snapshot',
+    route: '/api/live/snapshot/carer/[carerUid]/tasks',
+  });
+  if (!acquired) {
+    logSnapshotTiming({
+      ...authTimingDetails(auth.timing),
+      sql_connection_acquire_ms: 0,
+      sql_tasks_ms: 0,
+      sql_latest_outbox_ms: 0,
+      merge_ms: 0,
+      total_ms: Date.now() - totalStartedAt,
+      reason: 'postgres_unavailable',
+      carerUid,
+      coadminUid: auth.coadminUid,
+    });
+    return NextResponse.json({
+      tasks: [],
+      snapshotAt: new Date().toISOString(),
+      latestOutboxId: 0,
+      source: 'postgres_snapshot_unavailable',
+    });
+  }
+
+  const { client } = acquired;
+  const sqlConnectionAcquireMs = acquired.timing.pool_acquire_ms;
 
   try {
-    const auth = await requireCarerOwnedLiveAuth(request, carerUid, { mirrorClient: client });
-    if (!auth.ok) {
-      logSnapshotTiming({
-        ...authTimingDetails(auth.timing),
-        sql_connection_acquire_ms: sqlConnectionAcquireMs,
-        sql_connection_shared: true,
-        sql_tasks_ms: 0,
-        sql_latest_outbox_ms: 0,
-        merge_ms: 0,
-        total_ms: Date.now() - totalStartedAt,
-        reason: 'auth_response',
-        carerUid,
-      });
-      return auth.response;
-    }
-
-    if (!auth.coadminUid) {
-      logSnapshotTiming({
-        ...authTimingDetails(auth.timing),
-        sql_connection_acquire_ms: sqlConnectionAcquireMs,
-        sql_connection_shared: true,
-        sql_tasks_ms: 0,
-        sql_latest_outbox_ms: 0,
-        merge_ms: 0,
-        total_ms: Date.now() - totalStartedAt,
-        reason: 'missing_coadmin_scope',
-        carerUid,
-      });
-      return NextResponse.json({
-        tasks: [],
-        snapshotAt: new Date().toISOString(),
-        latestOutboxId: 0,
-        source: 'postgres_snapshot_unscoped',
-      });
-    }
-
     const channel = carerTaskLiveChannel(carerUid);
 
     const snapshotPack = await fetchSnapshotRowsWithClient(client, auth.coadminUid);
-    const outboxPack = await getLatestOutboxIdForChannels([channel], { mirrorClient: client });
+    const outboxPack = await getLatestOutboxIdForChannels([channel], {
+      mirrorClient: client,
+    });
 
     const mergeStartedAt = Date.now();
     const mapped = snapshotPack.rows.map(mapSnapshotRow).filter((row) => row.id);
@@ -292,7 +300,8 @@ export async function GET(
     logSnapshotTiming({
       ...authTimingDetails(auth.timing),
       sql_connection_acquire_ms: sqlConnectionAcquireMs,
-      sql_connection_shared: true,
+      sql_connection_shared: false,
+      auth_before_snapshot_acquire: true,
       sql_tasks_ms: snapshotPack.timing.total_ms,
       sql_tasks_pool_acquire_ms: snapshotPack.timing.pool_acquire_ms,
       sql_tasks_query_exec_ms: snapshotPack.timing.query_exec_ms,

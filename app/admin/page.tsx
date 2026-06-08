@@ -13,6 +13,7 @@ import ReachOutView from '@/components/admin/ReachOutView';
 import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 
 import { auth } from '@/lib/firebase/client';
+import { getApiAuthHeaders } from '@/lib/firebase/apiClient';
 import { belongsToCoadmin } from '@/lib/coadmin/scope';
 
 import {
@@ -31,6 +32,7 @@ import {
   createStaff,
   getPendingCarerCreationRequests,
   deleteCoadmin,
+  getAdminActorUid,
   deleteStaff,
   getCoadmins,
   getDeletedPlayers,
@@ -233,16 +235,11 @@ export default function AdminPage() {
   setLoadingList(true);
 
   try {
-    const currentUser = auth.currentUser;
-
-    if (!currentUser) {
-      throw new Error('Not authenticated.');
-    }
-
+    const actorUid = await getAdminActorUid();
     const list = await getStaff();
 
     const adminStaff = list.filter(
-      (staff) => staff.createdBy === currentUser.uid
+      (staff) => staff.createdBy === actorUid
     );
 
     setStaffList(adminStaff);
@@ -257,7 +254,7 @@ export default function AdminPage() {
     setLoadingList(true);
 
     try {
-      const list = await getPlayers();
+      const list = await getPlayers({ all: true });
       setPlayers(list);
     } catch (err: any) {
       setMessage(err.message || 'Failed to load players.');
@@ -277,7 +274,7 @@ export default function AdminPage() {
 
   async function loadAllStaffForCoadmins() {
     try {
-      const list = await getStaff();
+      const list = await getStaff({ all: true });
       setAllStaffForCoadmins(list);
     } catch (err: any) {
       setMessage(err.message || 'Failed to load co-admin staff list.');
@@ -605,21 +602,12 @@ export default function AdminPage() {
       setMessage('Passwords do not match.');
       return;
     }
-    const currentUser = auth.currentUser;
-    if (!currentUser) {
-      setMessage('Not authenticated.');
-      return;
-    }
     setLoading(true);
     setMessage('');
     try {
-      const token = await currentUser.getIdToken();
       const response = await fetch('/api/admin/reset-user-password', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        headers: await getApiAuthHeaders(true, { action: 'reset_password' }),
         body: JSON.stringify({
           targetUid,
           newPassword: pw1,

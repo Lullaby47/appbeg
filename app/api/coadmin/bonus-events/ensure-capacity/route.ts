@@ -1,7 +1,8 @@
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
-import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import { adminDb } from '@/lib/firebase/admin';
+import { requireApiUser } from '@/lib/firebase/apiAuth';
 
 const MAX_ACTIVE_BONUS_EVENTS = 20;
 const COADMIN_MIN_PERCENT = 5;
@@ -316,43 +317,6 @@ async function releaseEnsureCapacityLease(values: {
   });
 }
 
-async function verifyCoadmin(request: Request) {
-  const header = request.headers.get('Authorization') || '';
-  const match = header.match(/^Bearer\s+(\S+)$/i);
-  const idToken = match?.[1];
-  if (!idToken) {
-    throw new Error('Missing or invalid authorization.');
-  }
-  const decoded = await adminAuth.verifyIdToken(idToken);
-  const uid = decoded.uid;
-  const userRef = adminDb.collection('users').doc(uid);
-  const userSnap = await userRef.get();
-  if (!userSnap.exists) {
-    throw new Error('Current user profile not found.');
-  }
-  const userData = userSnap.data() as {
-    role?: string;
-    username?: string;
-    createdBy?: string;
-    coadminUid?: string;
-    bonusEnsureCapacityLastEnsuredAt?: unknown;
-    bonusEnsureCapacityLastActiveCount?: number;
-  };
-  const role = String(userData.role || '').toLowerCase();
-  if (role !== 'coadmin') {
-    throw new Error('Only coadmin can run bonus auto-fill.');
-  }
-  // For coadmin accounts, scope must always be the coadmin's own uid.
-  const coadminUid = uid;
-  return {
-    uid,
-    coadminUid,
-    username: String(userData.username || '').trim() || 'Coadmin',
-    lastEnsuredAtMs: toMs(userData.bonusEnsureCapacityLastEnsuredAt),
-    lastActiveCount: Number(userData.bonusEnsureCapacityLastActiveCount || 0),
-  };
-}
-
 export async function POST(request: Request) {
   const reqStartedAt = Date.now();
   let leaseId: string | null = null;
@@ -374,10 +338,31 @@ export async function POST(request: Request) {
     }
 
     const authStartedAt = Date.now();
-    const caller = await verifyCoadmin(request);
+    const auth = await requireApiUser(request, ['coadmin']);
+    if ('response' in auth) {
+      return auth.response;
+    }
+    const callerUid = auth.user.uid;
+    const userSnap = await adminDb.collection('users').doc(callerUid).get();
+    if (!userSnap.exists) {
+      return NextResponse.json({ error: 'Current user profile not found.' }, { status: 404 });
+    }
+    const userData = userSnap.data() as {
+      bonusEnsureCapacityLastEnsuredAt?: unknown;
+      bonusEnsureCapacityLastActiveCount?: number;
+    };
+    const caller = {
+      uid: callerUid,
+      coadminUid: callerUid,
+      username: auth.user.username || 'Coadmin',
+      lastEnsuredAtMs: toMs(userData.bonusEnsureCapacityLastEnsuredAt),
+      lastActiveCount: Number(userData.bonusEnsureCapacityLastActiveCount || 0),
+    };
     const authElapsedMs = Date.now() - authStartedAt;
     console.info('[bonusEvents] ensure-capacity:auth-done', {
       coadminUid: caller.coadminUid,
+      auth_path: auth.authPath,
+      app_session_used: auth.authPath.startsWith('app_session'),
       authElapsedMs,
     });
 

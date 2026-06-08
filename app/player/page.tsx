@@ -15,8 +15,9 @@ import ProtectedRoute from '../../components/auth/ProtectedRoute';
 import ImageUploadField from '@/components/common/ImageUploadField';
 
 import { auth, db } from '@/lib/firebase/client';
-import { belongsToCoadmin, resolveCoadminUid } from '@/lib/coadmin/scope';
-import { getStaff } from '@/features/users/adminUsers';
+import { resolveCoadminUid } from '@/lib/coadmin/scope';
+import { getLocalAppSessionId } from '@/features/auth/appSession';
+import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { getGameLoginsByCoadmin } from '@/features/games/gameLogins';
 import {
   listenToPlayerGameLoginsByPlayer,
@@ -82,6 +83,7 @@ import {
   claimFreeplayGift,
   fetchPendingFreeplayGift,
 } from '@/features/freeplay/playerFreeplay';
+import { loadPlayerBaseData } from '@/features/player/playerBaseData';
 import {
   getCoadminMaintenanceBreakClient,
   listenCoadminMaintenanceBreak,
@@ -222,6 +224,10 @@ export default function PlayerPage() {
   const [creatorNames, setCreatorNames] = useState<Record<string, string>>({});
   const [selectedCreatorUid, setSelectedCreatorUid] = useState<string | null>(null);
   const [playerCoadminUid, setPlayerCoadminUid] = useState('');
+  const [baseDataLoaded, setBaseDataLoaded] = useState(false);
+  const [baseDataLoading, setBaseDataLoading] = useState(false);
+  const baseDataLoadedRef = useRef(false);
+  const baseDataLoadingRef = useRef(false);
   const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
 
   const [selectedGameName, setSelectedGameName] = useState('');
@@ -822,41 +828,45 @@ export default function PlayerPage() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!playerCoadminUid) {
-      setCoadminFrontendLinkByGameKey({});
-      return;
-    }
-
-    let isCancelled = false;
-
-    async function loadCoadminFrontendLinks() {
-      try {
-        const coadminGames = await getGameLoginsByCoadmin(playerCoadminUid);
-        const nextMap: Record<string, string> = {};
-        for (const game of coadminGames) {
-          const key = normalizeBackgroundKey(String(game.gameName || ''));
-          const frontendLink = normalizeExternalUrl(game.frontendUrl || '');
-          if (!key || !frontendLink) {
-            continue;
-          }
-          nextMap[key] = frontendLink;
-        }
-        if (!isCancelled) {
-          setCoadminFrontendLinkByGameKey(nextMap);
-        }
-      } catch {
-        if (!isCancelled) {
-          setCoadminFrontendLinkByGameKey({});
-        }
+  const buildCoadminFrontendLinkMap = useCallback((coadminGames: Array<{ gameName?: string; frontendUrl?: string }>) => {
+    const nextMap: Record<string, string> = {};
+    for (const game of coadminGames) {
+      const key = normalizeBackgroundKey(String(game.gameName || ''));
+      const frontendLink = normalizeExternalUrl(game.frontendUrl || '');
+      if (!key || !frontendLink) {
+        continue;
       }
+      nextMap[key] = frontendLink;
     }
+    return nextMap;
+  }, []);
 
-    void loadCoadminFrontendLinks();
-    return () => {
-      isCancelled = true;
-    };
-  }, [playerCoadminUid]);
+  const shouldSkipIndividualLoader = useCallback(
+    (loader: 'staff' | 'freeplay' | 'referral' | 'gameLogins', force = false) => {
+      if (force) {
+        return false;
+      }
+      if (baseDataLoadedRef.current) {
+        console.info('[PLAYER_INDIVIDUAL_LOADER_SKIP]', {
+          loader,
+          reason: 'base_data_loaded',
+        });
+        return true;
+      }
+      return false;
+    },
+    []
+  );
+
+  const loadCoadminGameLogins = useCallback(
+    async (coadminUid: string, options: { force?: boolean } = {}) => {
+      if (shouldSkipIndividualLoader('gameLogins', options.force)) {
+        return [];
+      }
+      return getGameLoginsByCoadmin(coadminUid);
+    },
+    [shouldSkipIndividualLoader]
+  );
 
   const selectedGameBackgroundImage = useMemo(() => {
     return getGameBackgroundImage(gameBackgroundImageByKey, selectedGameName);
@@ -1458,44 +1468,59 @@ export default function PlayerPage() {
     };
   }, [cleanupAudioElement, clearAutoplayRetry, clearInteractionListener]);
 
-  const loadAgents = useCallback(async () => {
+  useEffect(() => {
+    if (!playerCoadminUid) {
+      setCoadminFrontendLinkByGameKey({});
+    }
+  }, [playerCoadminUid]);
+
+  const loadAgents = useCallback(async (options: { force?: boolean } = {}) => {
+    if (shouldSkipIndividualLoader('staff', options.force)) {
+      return;
+    }
+
+    const startedAt = Date.now();
     try {
-      const currentUser = auth.currentUser;
-
-      if (!currentUser) {
-        return;
-      }
-
-      const playerSnap = await getDoc(doc(db, 'users', currentUser.uid));
-
-      if (!playerSnap.exists()) {
-        setAgents([]);
-        return;
-      }
-
-      const playerData = playerSnap.data();
-      const coadminUid = resolveCoadminUid({
-        uid: currentUser.uid,
-        ...(playerData as Record<string, unknown>),
+      const headers = await getPlayerApiHeaders(false);
+      const response = await fetch('/api/player/staff-list', {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
       });
-
-      if (!coadminUid) {
+      if (!response.ok) {
         setAgents([]);
+        console.info('[PLAYER_STAFF_LIST]', {
+          ok: false,
+          status: response.status,
+          durationMs: Date.now() - startedAt,
+        });
         return;
       }
 
-      const allStaff = await getStaff();
-      const relatedStaff = allStaff.filter((staff) =>
-        belongsToCoadmin(staff, String(coadminUid))
-      );
-
-      setAgents(relatedStaff);
+      const payload = (await response.json()) as {
+        staff?: AdminUser[];
+        source?: string;
+      };
+      const staff = Array.isArray(payload.staff) ? payload.staff : [];
+      setAgents(staff);
+      console.info('[PLAYER_STAFF_LIST]', {
+        ok: true,
+        count: staff.length,
+        source: payload.source || 'unknown',
+        durationMs: Date.now() - startedAt,
+      });
     } catch (error) {
+      setAgents([]);
       setMessage(
         error instanceof Error ? error.message : 'Failed to load agents.'
       );
+      console.info('[PLAYER_STAFF_LIST]', {
+        ok: false,
+        reason: error instanceof Error ? error.message : 'load_failed',
+        durationMs: Date.now() - startedAt,
+      });
     }
-  }, []);
+  }, [shouldSkipIndividualLoader]);
 
   /** Loads carer/game metadata for credential cards (logins come from realtime listener below). */
   const syncCredentialSidecarsForPlayer = useCallback(
@@ -1540,8 +1565,27 @@ export default function PlayerPage() {
   );
 
   useEffect(() => {
+    const pageLoadStartedAt = Date.now();
+    const syncPlayerUidFromSession = async () => {
+      const cached = getCachedSessionUser();
+      if (cached?.role === 'player' && cached.uid) {
+        setPlayerUid((current) => current || cached.uid);
+        return;
+      }
+      const sessionUser = await getSessionUserOnce();
+      if (sessionUser?.role === 'player' && sessionUser.uid) {
+        setPlayerUid((current) => current || sessionUser.uid);
+      }
+    };
+
+    void syncPlayerUidFromSession();
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      const nextPlayerUid = user?.uid || '';
+      let sessionUid = user?.uid || getCachedSessionUser()?.uid || '';
+      if (!sessionUid && getLocalAppSessionId()) {
+        sessionUid = (await getSessionUserOnce())?.uid || '';
+      }
+      const nextPlayerUid = user?.uid || sessionUid;
       setPlayerUid(nextPlayerUid);
 
       if (!nextPlayerUid) {
@@ -1593,6 +1637,11 @@ export default function PlayerPage() {
         setBonusEvents([]);
         setUsernameCarersByGame({});
       }
+    });
+
+    console.info('[PLAYER_PAGE_LOAD]', {
+      stage: 'init',
+      durationMs: Date.now() - pageLoadStartedAt,
     });
 
     return () => unsubscribe();
@@ -1654,10 +1703,6 @@ export default function PlayerPage() {
     setLoadingList(true);
     setMessage('');
 
-    const loaderTimeoutId = window.setTimeout(() => {
-      void loadAgents();
-    }, 0);
-
     const unsubscribeLogins = listenToPlayerGameLoginsByPlayer(
       playerUid,
       (list) => {
@@ -1706,13 +1751,12 @@ export default function PlayerPage() {
     }
 
     return () => {
-      window.clearTimeout(loaderTimeoutId);
       unsubscribeLogins();
       unsubscribeRequests();
       sqlReadDispose?.();
       liveShadowCompare.dispose();
     };
-  }, [loadAgents, playerUid, syncCredentialSidecarsForPlayer]);
+  }, [playerUid, syncCredentialSidecarsForPlayer]);
 
   useEffect(() => {
     if (!playerUid) {
@@ -1947,7 +1991,11 @@ export default function PlayerPage() {
     return () => unsubscribe();
   }, [playerUid]);
 
-  const loadReferralRewards = useCallback(async () => {
+  const loadReferralRewards = useCallback(async (options: { force?: boolean } = {}) => {
+    if (shouldSkipIndividualLoader('referral', options.force)) {
+      return;
+    }
+
     if (!playerUid) {
       setReferralRewardGroups([]);
       setReferralRewardsLoading(false);
@@ -1962,7 +2010,7 @@ export default function PlayerPage() {
     } finally {
       setReferralRewardsLoading(false);
     }
-  }, [playerUid]);
+  }, [playerUid, shouldSkipIndividualLoader]);
 
   async function handleClaimReferralReward(referredPlayerUid: string) {
     if (!referredPlayerUid || claimingReferredPlayerUid) {
@@ -1977,7 +2025,7 @@ export default function PlayerPage() {
           "Congratulations! You received referral reward coins from this player's recharge."
       );
       setEarnedRewardSplashCoins(Math.max(0, Number(result.rewardCoins || 0)));
-      await loadReferralRewards();
+      await loadReferralRewards({ force: true });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Failed to claim referral reward.');
     } finally {
@@ -1985,7 +2033,11 @@ export default function PlayerPage() {
     }
   }
 
-  const loadFreeplayGift = useCallback(async () => {
+  const loadFreeplayGift = useCallback(async (options: { force?: boolean } = {}) => {
+    if (shouldSkipIndividualLoader('freeplay', options.force)) {
+      return;
+    }
+
     if (!playerUid) {
       setHasPendingFreeplayGift(false);
       setPendingFreeplayGiftId('');
@@ -1998,7 +2050,102 @@ export default function PlayerPage() {
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Failed to load FreePlay gift.');
     }
-  }, [playerUid]);
+  }, [playerUid, shouldSkipIndividualLoader]);
+
+  useEffect(() => {
+    if (!playerUid || !playerCoadminUid) {
+      baseDataLoadedRef.current = false;
+      baseDataLoadingRef.current = false;
+      setBaseDataLoaded(false);
+      setBaseDataLoading(false);
+      return;
+    }
+
+    let isCancelled = false;
+
+    async function loadInitialPlayerBaseData() {
+      baseDataLoadingRef.current = true;
+      setBaseDataLoading(true);
+      baseDataLoadedRef.current = false;
+      setBaseDataLoaded(false);
+
+      try {
+        const baseData = await loadPlayerBaseData();
+        if (isCancelled) {
+          return;
+        }
+
+        setAgents(baseData.staff as AdminUser[]);
+        setCoadminFrontendLinkByGameKey(buildCoadminFrontendLinkMap(baseData.gameLogins));
+        setHasPendingFreeplayGift(baseData.pendingGift.hasPendingGift);
+        setPendingFreeplayGiftId(String(baseData.pendingGift.giftId || '').trim());
+        setReferralRewardGroups(baseData.referralRewards.groups);
+        setReferralRewardsLoading(false);
+
+        baseDataLoadedRef.current = true;
+        setBaseDataLoaded(true);
+      } catch (error) {
+        if (isCancelled) {
+          return;
+        }
+
+        baseDataLoadedRef.current = false;
+        setBaseDataLoaded(false);
+
+        console.info('[PLAYER_BASE_DATA_CLIENT]', {
+          stage: 'fallback',
+          deduped: false,
+          usedFallback: true,
+          reason: error instanceof Error ? error.message : 'load_failed',
+        });
+
+        await loadAgents({ force: true });
+
+        try {
+          const coadminGames = await loadCoadminGameLogins(playerCoadminUid, { force: true });
+          if (!isCancelled) {
+            setCoadminFrontendLinkByGameKey(buildCoadminFrontendLinkMap(coadminGames));
+          }
+        } catch {
+          if (!isCancelled) {
+            setCoadminFrontendLinkByGameKey({});
+          }
+        }
+
+        if (!isCancelled && playerUid) {
+          await loadFreeplayGift({ force: true });
+
+          setReferralRewardsLoading(true);
+          try {
+            await loadReferralRewards({ force: true });
+          } finally {
+            if (!isCancelled) {
+              setReferralRewardsLoading(false);
+            }
+          }
+        }
+      } finally {
+        if (!isCancelled) {
+          baseDataLoadingRef.current = false;
+          setBaseDataLoading(false);
+        }
+      }
+    }
+
+    void loadInitialPlayerBaseData();
+    return () => {
+      isCancelled = true;
+      baseDataLoadingRef.current = false;
+    };
+  }, [
+    buildCoadminFrontendLinkMap,
+    loadAgents,
+    loadCoadminGameLogins,
+    loadFreeplayGift,
+    loadReferralRewards,
+    playerCoadminUid,
+    playerUid,
+  ]);
 
   async function handleClaimFreeplayGift() {
     if (!hasPendingFreeplayGift || !pendingFreeplayGiftId || claimingFreeplayGift) {
@@ -2023,7 +2170,7 @@ export default function PlayerPage() {
       );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Failed to claim FreePlay gift.');
-      await loadFreeplayGift();
+      await loadFreeplayGift({ force: true });
     } finally {
       setClaimingFreeplayGift(false);
     }
@@ -2043,19 +2190,25 @@ export default function PlayerPage() {
     if (activeView !== 'earn-coins') {
       return;
     }
+    if (baseDataLoaded || baseDataLoading) {
+      return;
+    }
     void loadReferralRewards();
     void loadFreeplayGift();
-  }, [activeView, loadFreeplayGift, loadReferralRewards]);
+  }, [activeView, baseDataLoaded, baseDataLoading, loadFreeplayGift, loadReferralRewards]);
 
   useEffect(() => {
-    if (activeView === 'agents' && playerUid) {
-      const nextTimeoutId = window.setTimeout(() => {
-        void loadAgents();
-      }, 0);
-      return () => window.clearTimeout(nextTimeoutId);
+    if (activeView !== 'agents' || !playerUid) {
+      return undefined;
     }
-    return undefined;
-  }, [activeView, loadAgents, playerUid]);
+    if (baseDataLoaded || baseDataLoading) {
+      return undefined;
+    }
+    const nextTimeoutId = window.setTimeout(() => {
+      void loadAgents();
+    }, 0);
+    return () => window.clearTimeout(nextTimeoutId);
+  }, [activeView, baseDataLoaded, baseDataLoading, loadAgents, playerUid]);
 
   useEffect(() => {
     if (activeView !== 'play') {

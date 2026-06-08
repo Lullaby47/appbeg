@@ -160,6 +160,496 @@ export type CarerSqlProfileLookupResult = {
   missReason: 'row_missing' | 'role_mismatch' | 'postgres_unavailable' | 'lookup_failed' | null;
 };
 
+export type PlayerSqlProfileLookup = {
+  role: string;
+  coadminUid: string | null;
+  activeSessionId: string | null;
+};
+
+export type PlayerSqlProfileLookupResult = {
+  profile: PlayerSqlProfileLookup | null;
+  timing: PlayerMirrorSqlTiming;
+  missReason: 'row_missing' | 'role_mismatch' | 'postgres_unavailable' | 'lookup_failed' | null;
+};
+
+function activeSessionIdFromRawFirestore(raw: unknown) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null;
+  }
+  return cleanText((raw as Record<string, unknown>).activeSessionId) || null;
+}
+
+function resolveActiveSessionId(row: Record<string, unknown>) {
+  return cleanText(row.active_session_id) || activeSessionIdFromRawFirestore(row.raw_firestore_data);
+}
+
+function fieldFromRawFirestore(raw: unknown, field: string) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null;
+  }
+  return cleanText((raw as Record<string, unknown>)[field]) || null;
+}
+
+export type ApiUserSqlProfileLookup = {
+  uid: string;
+  role: string;
+  username: string;
+  status: string | null;
+  coadminUid: string | null;
+  createdBy: string | null;
+  automationAgentId: string | null;
+  activeSessionId: string | null;
+};
+
+export type ApiUserSqlProfileLookupResult = {
+  profile: ApiUserSqlProfileLookup | null;
+  timing: PlayerMirrorSqlTiming;
+  missReason: 'row_missing' | 'postgres_unavailable' | 'lookup_failed' | null;
+};
+
+export type CachedPlayer = {
+  id: string;
+  uid: string;
+  username: string;
+  email: string;
+  role: 'player';
+  status: 'active' | 'disabled';
+  createdBy: string | null;
+  coadminUid?: string | null;
+  coin?: number;
+  cash?: number;
+  createdAt?: string | null;
+};
+
+function mapCachedPlayerRow(
+  row: Record<string, unknown>,
+  requestedCoadminUid: string
+): CachedPlayer | null {
+  const uid = cleanText(row.uid);
+  if (!uid) {
+    return null;
+  }
+
+  const createdBy = cleanText(row.created_by) || null;
+  const storedCoadminUid = cleanText(row.coadmin_uid) || null;
+  const coadminUid =
+    storedCoadminUid ||
+    (createdBy === requestedCoadminUid ? requestedCoadminUid : null) ||
+    undefined;
+  const status = (cleanText(row.status) || 'active') as 'active' | 'disabled';
+
+  return {
+    id: uid,
+    uid,
+    username: cleanText(row.username),
+    email: cleanText(row.email),
+    role: 'player',
+    status,
+    createdBy,
+    coadminUid,
+    coin: numberOrNull(row.coin) ?? undefined,
+    cash: numberOrNull(row.cash) ?? undefined,
+    createdAt: toIsoString(row.created_at),
+  };
+}
+
+const PLAYERS_BY_COADMIN_SQL = `
+  SELECT DISTINCT ON (uid)
+    uid,
+    username,
+    email,
+    role,
+    status,
+    created_by,
+    coadmin_uid,
+    coin,
+    cash,
+    created_at,
+    updated_at,
+    mirrored_at
+  FROM public.players_cache
+  WHERE deleted_at IS NULL
+    AND role = 'player'
+    AND COALESCE(status, 'active') <> 'disabled'
+    AND (coadmin_uid = $1 OR created_by = $1)
+  ORDER BY uid, COALESCE(updated_at, created_at, mirrored_at) DESC
+`;
+
+function sortCachedPlayers(players: CachedPlayer[]) {
+  return players.sort((left, right) => {
+    const leftTime = left.createdAt ? new Date(left.createdAt).getTime() : 0;
+    const rightTime = right.createdAt ? new Date(right.createdAt).getTime() : 0;
+    return rightTime - leftTime;
+  });
+}
+
+function mapCachedPlayerRows(
+  rows: Record<string, unknown>[],
+  requestedCoadminUid: string
+): CachedPlayer[] {
+  return sortCachedPlayers(
+    rows
+      .map((row) => mapCachedPlayerRow(row, requestedCoadminUid))
+      .filter((player): player is CachedPlayer => Boolean(player))
+  );
+}
+
+export async function readPlayersCacheByCoadminWithClient(
+  client: PoolClient,
+  coadminUid: string
+): Promise<CachedPlayer[]> {
+  const cleanCoadminUid = cleanText(coadminUid);
+  const { rows } = await runMirrorClientQuery<Record<string, unknown>>(
+    client,
+    PLAYERS_BY_COADMIN_SQL,
+    [cleanCoadminUid]
+  );
+  return mapCachedPlayerRows(rows, cleanCoadminUid);
+}
+
+const PLAYERS_BY_REFERRER_SQL = `
+  SELECT DISTINCT ON (uid)
+    uid,
+    username
+  FROM public.players_cache
+  WHERE deleted_at IS NULL
+    AND role = 'player'
+    AND referred_by_uid = $1
+  ORDER BY uid, COALESCE(updated_at, created_at, mirrored_at) DESC
+`;
+
+export type ReferredPlayerCacheRow = {
+  uid: string;
+  username: string;
+};
+
+export async function readPlayersCacheByReferrerUidWithClient(
+  client: PoolClient,
+  referrerUid: string
+): Promise<ReferredPlayerCacheRow[]> {
+  const cleanReferrerUid = cleanText(referrerUid);
+  const { rows } = await runMirrorClientQuery<Record<string, unknown>>(
+    client,
+    PLAYERS_BY_REFERRER_SQL,
+    [cleanReferrerUid]
+  );
+  return rows.map((row) => ({
+    uid: cleanText(row.uid),
+    username: cleanText(row.username),
+  }));
+}
+
+export async function readPlayersCacheByReferrerUid(
+  referrerUid: string
+): Promise<ReferredPlayerCacheRow[] | null> {
+  const cleanReferrerUid = cleanText(referrerUid);
+  const db = getPlayerMirrorPool();
+  if (!db || !cleanReferrerUid) {
+    return null;
+  }
+
+  try {
+    const startedAt = Date.now();
+    const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(
+      db,
+      PLAYERS_BY_REFERRER_SQL,
+      [cleanReferrerUid]
+    );
+    console.info('[PLAYERS_CACHE] referred_by read ok', {
+      referrerUid: cleanReferrerUid,
+      count: rows.length,
+      durationMs: Date.now() - startedAt,
+    });
+    return rows.map((row) => ({
+      uid: cleanText(row.uid),
+      username: cleanText(row.username),
+    }));
+  } catch (error) {
+    console.warn('[PLAYERS_CACHE] referred_by postgres read failed', {
+      referrerUid: cleanReferrerUid,
+      error,
+    });
+    return null;
+  }
+}
+
+export async function readPlayersCacheByCoadmin(
+  coadminUid: string
+): Promise<CachedPlayer[] | null> {
+  const cleanCoadminUid = cleanText(coadminUid);
+  const db = getPlayerMirrorPool();
+  if (!db || !cleanCoadminUid) {
+    return null;
+  }
+
+  try {
+    const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(
+      db,
+      PLAYERS_BY_COADMIN_SQL,
+      [cleanCoadminUid]
+    );
+    return mapCachedPlayerRows(rows, cleanCoadminUid);
+  } catch (error) {
+    console.warn('[PLAYERS_CACHE] postgres read failed', {
+      coadminUid: cleanCoadminUid,
+      error,
+    });
+    return null;
+  }
+}
+
+export async function lookupApiUserProfileFromSqlCache(
+  uid: string,
+  mirrorClient?: PoolClient
+): Promise<ApiUserSqlProfileLookupResult> {
+  const startedAt = Date.now();
+  const cleanUid = cleanText(uid);
+  const db = getPlayerMirrorPool();
+  if (!db || !cleanUid) {
+    const timing = {
+      pool_acquire_ms: 0,
+      query_exec_ms: 0,
+      total_ms: Date.now() - startedAt,
+    };
+    console.info(
+      '[API_AUTH_SQL_PROFILE] hit=false uid=%s role=%s coadminUid=%s source=%s reason=%s',
+      cleanUid || null,
+      null,
+      null,
+      'players_cache',
+      'postgres_unavailable'
+    );
+    return { profile: null, timing, missReason: 'postgres_unavailable' };
+  }
+
+  const profileSql = `
+    SELECT uid, username, role, status, coadmin_uid, created_by, active_session_id, raw_firestore_data
+    FROM public.players_cache
+    WHERE uid = $1
+      AND deleted_at IS NULL
+    LIMIT 1
+  `;
+
+  try {
+    const { rows, timing } = mirrorClient
+      ? await runMirrorClientQuery<Record<string, unknown>>(mirrorClient, profileSql, [cleanUid])
+      : await runMirrorPoolQuery<Record<string, unknown>>(db, profileSql, [cleanUid]);
+
+    if (!rows.length) {
+      console.info(
+        '[API_AUTH_SQL_PROFILE] hit=false uid=%s role=%s coadminUid=%s source=%s reason=%s pool_acquire_ms=%s query_exec_ms=%s total_ms=%s',
+        cleanUid,
+        null,
+        null,
+        'players_cache',
+        'row_missing',
+        timing.pool_acquire_ms,
+        timing.query_exec_ms,
+        timing.total_ms
+      );
+      return { profile: null, timing, missReason: 'row_missing' };
+    }
+
+    const row = rows[0];
+    const raw = row.raw_firestore_data;
+    const profile = {
+      uid: cleanText(row.uid) || cleanUid,
+      role: cleanText(row.role).toLowerCase(),
+      username: cleanText(row.username),
+      status: cleanText(row.status) || null,
+      coadminUid: cleanText(row.coadmin_uid) || cleanText(row.created_by) || null,
+      createdBy: cleanText(row.created_by) || null,
+      automationAgentId: fieldFromRawFirestore(raw, 'automationAgentId'),
+      activeSessionId: resolveActiveSessionId(row),
+    } satisfies ApiUserSqlProfileLookup;
+
+    console.info(
+      '[API_AUTH_SQL_PROFILE] hit=true uid=%s role=%s coadminUid=%s source=%s pool_acquire_ms=%s query_exec_ms=%s total_ms=%s shared_client=%s',
+      profile.uid,
+      profile.role,
+      profile.coadminUid,
+      'players_cache',
+      timing.pool_acquire_ms,
+      timing.query_exec_ms,
+      timing.total_ms,
+      Boolean(mirrorClient)
+    );
+    return { profile, timing, missReason: null };
+  } catch (error) {
+    const timing = {
+      pool_acquire_ms: 0,
+      query_exec_ms: 0,
+      total_ms: Date.now() - startedAt,
+    };
+    console.info(
+      '[API_AUTH_SQL_PROFILE] hit=false uid=%s role=%s coadminUid=%s source=%s reason=%s error=%s',
+      cleanUid,
+      null,
+      null,
+      'players_cache',
+      'lookup_failed',
+      error instanceof Error ? error.message : String(error)
+    );
+    return { profile: null, timing, missReason: 'lookup_failed' };
+  }
+}
+
+export async function lookupApiUserProfileByUsernameFromSqlCache(
+  username: string
+): Promise<ApiUserSqlProfileLookupResult> {
+  const startedAt = Date.now();
+  const cleanUsername = cleanText(username);
+  const db = getPlayerMirrorPool();
+  if (!db || !cleanUsername) {
+    const timing = {
+      pool_acquire_ms: 0,
+      query_exec_ms: 0,
+      total_ms: Date.now() - startedAt,
+    };
+    return { profile: null, timing, missReason: 'postgres_unavailable' };
+  }
+
+  const profileSql = `
+    SELECT uid, username, role, status, coadmin_uid, created_by, active_session_id, raw_firestore_data
+    FROM public.players_cache
+    WHERE deleted_at IS NULL
+      AND LOWER(username) = LOWER($1)
+    LIMIT 1
+  `;
+
+  try {
+    const { rows, timing } = await runMirrorPoolQuery<Record<string, unknown>>(db, profileSql, [
+      cleanUsername,
+    ]);
+
+    if (!rows.length) {
+      return { profile: null, timing, missReason: 'row_missing' };
+    }
+
+    const row = rows[0];
+    const raw = row.raw_firestore_data;
+    const profile = {
+      uid: cleanText(row.uid),
+      role: cleanText(row.role).toLowerCase(),
+      username: cleanText(row.username),
+      status: cleanText(row.status) || null,
+      coadminUid: cleanText(row.coadmin_uid) || cleanText(row.created_by) || null,
+      createdBy: cleanText(row.created_by) || null,
+      automationAgentId: fieldFromRawFirestore(raw, 'automationAgentId'),
+      activeSessionId: resolveActiveSessionId(row),
+    } satisfies ApiUserSqlProfileLookup;
+
+    return { profile, timing, missReason: null };
+  } catch {
+    const timing = {
+      pool_acquire_ms: 0,
+      query_exec_ms: 0,
+      total_ms: Date.now() - startedAt,
+    };
+    return { profile: null, timing, missReason: 'lookup_failed' };
+  }
+}
+
+export async function lookupPlayerProfileFromSqlCache(
+  playerUid: string,
+  mirrorClient?: PoolClient
+): Promise<PlayerSqlProfileLookupResult> {
+  const startedAt = Date.now();
+  const cleanUid = cleanText(playerUid);
+  const db = getPlayerMirrorPool();
+  if (!db || !cleanUid) {
+    const timing = {
+      pool_acquire_ms: 0,
+      query_exec_ms: 0,
+      total_ms: Date.now() - startedAt,
+    };
+    console.info(
+      '[LIVE_AUTH_PLAYER_SQL] hit=false uid=%s reason=%s pool_acquire_ms=%s query_exec_ms=%s total_ms=%s',
+      cleanUid || null,
+      'postgres_unavailable',
+      timing.pool_acquire_ms,
+      timing.query_exec_ms,
+      timing.total_ms
+    );
+    return { profile: null, timing, missReason: 'postgres_unavailable' };
+  }
+
+  const profileSql = `
+    SELECT role, coadmin_uid, created_by, active_session_id, raw_firestore_data
+    FROM public.players_cache
+    WHERE uid = $1
+      AND deleted_at IS NULL
+    LIMIT 1
+  `;
+
+  try {
+    const { rows, timing } = mirrorClient
+      ? await runMirrorClientQuery<Record<string, unknown>>(mirrorClient, profileSql, [cleanUid])
+      : await runMirrorPoolQuery<Record<string, unknown>>(db, profileSql, [cleanUid]);
+
+    if (!rows.length) {
+      console.info(
+        '[LIVE_AUTH_PLAYER_SQL] hit=false uid=%s reason=%s pool_acquire_ms=%s query_exec_ms=%s total_ms=%s',
+        cleanUid,
+        'row_missing',
+        timing.pool_acquire_ms,
+        timing.query_exec_ms,
+        timing.total_ms
+      );
+      return { profile: null, timing, missReason: 'row_missing' };
+    }
+
+    const row = rows[0];
+    const profile = {
+      role: cleanText(row.role).toLowerCase(),
+      coadminUid:
+        cleanText(row.coadmin_uid) || cleanText(row.created_by) || null,
+      activeSessionId: resolveActiveSessionId(row),
+    } satisfies PlayerSqlProfileLookup;
+
+    if (profile.role !== 'player') {
+      console.info(
+        '[LIVE_AUTH_PLAYER_SQL] hit=false uid=%s role=%s coadminUid=%s reason=%s pool_acquire_ms=%s query_exec_ms=%s total_ms=%s',
+        cleanUid,
+        profile.role || null,
+        profile.coadminUid,
+        'role_mismatch',
+        timing.pool_acquire_ms,
+        timing.query_exec_ms,
+        timing.total_ms
+      );
+      return { profile, timing, missReason: 'role_mismatch' };
+    }
+
+    console.info(
+      '[LIVE_AUTH_PLAYER_SQL] hit=true uid=%s role=%s coadminUid=%s activeSessionId=%s pool_acquire_ms=%s query_exec_ms=%s total_ms=%s shared_client=%s',
+      cleanUid,
+      profile.role,
+      profile.coadminUid,
+      profile.activeSessionId,
+      timing.pool_acquire_ms,
+      timing.query_exec_ms,
+      timing.total_ms,
+      Boolean(mirrorClient)
+    );
+    return { profile, timing, missReason: null };
+  } catch (error) {
+    const timing = {
+      pool_acquire_ms: 0,
+      query_exec_ms: 0,
+      total_ms: Date.now() - startedAt,
+    };
+    console.info(
+      '[LIVE_AUTH_PLAYER_SQL] hit=false uid=%s reason=%s total_ms=%s error=%s',
+      cleanUid,
+      'lookup_failed',
+      timing.total_ms,
+      error instanceof Error ? error.message : String(error)
+    );
+    return { profile: null, timing, missReason: 'lookup_failed' };
+  }
+}
+
 export async function lookupCarerProfileFromSqlCache(
   carerUid: string,
   mirrorClient?: PoolClient

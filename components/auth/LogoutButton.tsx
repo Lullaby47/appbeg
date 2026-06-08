@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { signOut } from 'firebase/auth';
 
+import { revokeAppSessionOnLogout } from '@/features/auth/appSession';
 import { auth } from '@/lib/firebase/client';
 
 type LogoutButtonProps = {
@@ -29,7 +30,10 @@ export default function LogoutButton({
   async function confirmLogout() {
     setLoading(true);
     try {
-      await signOut(auth);
+      await revokeAppSessionOnLogout();
+      if (auth.currentUser) {
+        await signOut(auth);
+      }
       setOpen(false);
       router.replace('/login');
     } catch {

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
-import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import { adminDb } from '@/lib/firebase/admin';
+import { requireApiUser } from '@/lib/firebase/apiAuth';
 
 type BonusEvent = {
   id: string;
@@ -103,18 +104,6 @@ function hashText(input: string) {
   return hash;
 }
 
-function resolveCoadminUidForRole(userDoc: {
-  uid?: string;
-  role?: string;
-  createdBy?: string;
-  coadminUid?: string;
-}) {
-  const role = String(userDoc.role || '').toLowerCase();
-  const uid = String(userDoc.uid || '').trim();
-  if (role === 'coadmin') return uid;
-  return String(userDoc.coadminUid || userDoc.createdBy || '').trim();
-}
-
 function resolveVisibleCoadminUid(values: {
   role: string;
   requestedCoadminUid: string;
@@ -130,32 +119,23 @@ export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const requestedCoadminUid = String(url.searchParams.get('coadminUid') || '').trim();
-    const header = request.headers.get('Authorization') || '';
-    const token = header.match(/^Bearer\s+(\S+)$/i)?.[1];
-    if (!token) {
-      return NextResponse.json({ error: 'Missing or invalid authorization.' }, { status: 401 });
+    const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer', 'player']);
+    if ('response' in auth) {
+      return auth.response;
     }
-
-    const decoded = await adminAuth.verifyIdToken(token);
-    const userRef = adminDb.collection('users').doc(decoded.uid);
-    const userSnap = await userRef.get();
-    if (!userSnap.exists) {
-      return NextResponse.json({ error: 'User profile not found.' }, { status: 404 });
-    }
-    const userData = userSnap.data() as {
-      uid?: string;
-      role?: string;
-      createdBy?: string;
-      coadminUid?: string;
-    };
-
-    const derivedCoadminUid = resolveCoadminUidForRole({
-      uid: decoded.uid,
-      ...userData,
+    console.info('[BONUS_EVENTS_LIST_AUTH]', {
+      auth_path: auth.authPath,
+      uid: auth.user.uid,
+      role: auth.user.role,
+      app_session_used: auth.authPath.startsWith('app_session'),
     });
-    const role = String(userData.role || '').toLowerCase();
+
+    const derivedCoadminUid =
+      auth.user.role === 'coadmin'
+        ? auth.user.uid
+        : String(auth.user.coadminUid || auth.user.createdBy || '').trim();
     const coadminUid = resolveVisibleCoadminUid({
-      role,
+      role: auth.user.role,
       requestedCoadminUid,
       derivedCoadminUid,
     });

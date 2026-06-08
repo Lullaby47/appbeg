@@ -1,4 +1,4 @@
-import { FieldValue, Timestamp } from 'firebase-admin/firestore';
+import { FieldValue, Timestamp, type DocumentReference } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
@@ -14,8 +14,30 @@ import {
 } from '@/lib/automation/carerClaimTaskAdmin';
 import { AUTOMATION_AUTO_STATE_COLLECTION } from '@/features/automation/automationAutoState';
 import { verifyAutoTickBrowserToken } from '@/lib/automation/autoTickBrowserToken';
-import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
-import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
+import {
+  apiError,
+  requireApiUser,
+  type ApiUser,
+  type ApiUserAuthPath,
+} from '@/lib/firebase/apiAuth';
+import {
+  acquireAutomationAutoTickLeaseSql,
+  disableAutomationAutoStateSql,
+  lookupAutomationAutoStateFromSqlCache,
+  mirrorAutomationAutoStateById,
+  mirrorAutomationAutoStateSnapshot,
+} from '@/lib/sql/automationAutoStateCache';
+import {
+  getPendingCarerTaskCandidatesFromSql,
+  hasAutoTickTaskRecheckFields,
+  lookupAutoTickTaskRecheckFromSql,
+  mirrorCarerTaskById,
+  type AutoTickPendingTaskCandidate,
+} from '@/lib/sql/carerTasksCache';
+import {
+  lookupApiUserProfileFromSqlCache,
+  mirrorPlayerById,
+} from '@/lib/sql/playersCache';
 
 const LEASE_TTL_MS = 70_000;
 const MAX_CLAIMS_PER_TICK = 5;
@@ -51,6 +73,393 @@ function validateAutomationAgentId(agentId: string): {
   return { valid: true, normalized: trimmed };
 }
 
+type AutoTickCarerProfile = {
+  username: string;
+  coadminUid: string;
+  automationAgentId: string;
+};
+
+type AutoTickAuthSource = 'api_user_sql' | 'api_user_sql_session_sql' | 'firestore_fallback';
+
+function mapAutoTickAuthSource(authPath: ApiUserAuthPath | null): AutoTickAuthSource {
+  if (authPath === 'api_user_sql') return 'api_user_sql';
+  if (authPath === 'api_user_sql_session_sql') return 'api_user_sql_session_sql';
+  return 'firestore_fallback';
+}
+
+function carerProfileFieldsFromApiUser(user: ApiUser) {
+  return {
+    role: user.role,
+    username: String(user.username || '').trim(),
+    coadminUid: String(user.coadminUid || user.createdBy || '').trim(),
+    automationAgentId: String(user.automationAgentId || '').trim(),
+  };
+}
+
+function carerProfileFromSqlProfile(profile: {
+  role: string;
+  username: string;
+  coadminUid: string | null;
+  createdBy: string | null;
+  automationAgentId: string | null;
+}): AutoTickCarerProfile {
+  return {
+    username: String(profile.username || '').trim(),
+    coadminUid: String(profile.coadminUid || profile.createdBy || '').trim(),
+    automationAgentId: String(profile.automationAgentId || '').trim(),
+  };
+}
+
+function hasAutoTickCarerProfileFields(fields: {
+  role: string;
+  coadminUid: string;
+  automationAgentId: string;
+}) {
+  return (
+    String(fields.role || '').toLowerCase() === 'carer' &&
+    Boolean(fields.coadminUid) &&
+    Boolean(fields.automationAgentId)
+  );
+}
+
+async function resolveAutoTickCarerProfile(params: {
+  carerUid: string;
+  authUser: ApiUser | null;
+  authPath: ApiUserAuthPath | null;
+}): Promise<
+  | { ok: true; profile: AutoTickCarerProfile; authSource: AutoTickAuthSource }
+  | { ok: false; response: NextResponse }
+> {
+  const { carerUid, authUser, authPath } = params;
+  const userReadStartedAt = Date.now();
+
+  if (authUser) {
+    const fields = carerProfileFieldsFromApiUser(authUser);
+    if (!hasAutoTickCarerProfileFields(fields)) {
+      logAutoTickTiming('user_read_fallback', userReadStartedAt, {
+        carerUid,
+        reason: 'missing_field',
+        missingAutomationAgentId: !fields.automationAgentId,
+        missingCoadminUid: !fields.coadminUid,
+        role: fields.role,
+      });
+    } else {
+      logAutoTickTiming('user_read', userReadStartedAt, {
+        carerUid,
+        skipped: true,
+        source: authPath === 'api_user_sql' ? 'auth_sql' : 'auth_user',
+        durationMs: 0,
+      });
+      const authSource = mapAutoTickAuthSource(authPath);
+      console.info('[AUTO_TICK_AUTH_SOURCE] source=%s authPath=%s', authSource, authPath);
+      return {
+        ok: true,
+        profile: {
+          username: fields.username,
+          coadminUid: fields.coadminUid,
+          automationAgentId: fields.automationAgentId,
+        },
+        authSource,
+      };
+    }
+  }
+
+  const sqlLookup = await lookupApiUserProfileFromSqlCache(carerUid);
+  if (sqlLookup.profile) {
+    const fields = {
+      role: sqlLookup.profile.role,
+      coadminUid: String(sqlLookup.profile.coadminUid || sqlLookup.profile.createdBy || '').trim(),
+      automationAgentId: String(sqlLookup.profile.automationAgentId || '').trim(),
+    };
+    if (hasAutoTickCarerProfileFields(fields)) {
+      logAutoTickTiming('user_read', userReadStartedAt, {
+        carerUid,
+        skipped: true,
+        source: 'sql_cache',
+        durationMs: Date.now() - userReadStartedAt,
+      });
+      console.info('[AUTO_TICK_AUTH_SOURCE] source=%s authPath=%s', 'api_user_sql', authPath);
+      return {
+        ok: true,
+        profile: carerProfileFromSqlProfile(sqlLookup.profile),
+        authSource: 'api_user_sql',
+      };
+    }
+    logAutoTickTiming('user_read_fallback', userReadStartedAt, {
+      carerUid,
+      reason: 'missing_field',
+      sqlRole: sqlLookup.profile.role,
+      missingAutomationAgentId: !fields.automationAgentId,
+      missingCoadminUid: !fields.coadminUid,
+    });
+  } else if (sqlLookup.missReason) {
+    logAutoTickTiming('user_read_fallback', userReadStartedAt, {
+      carerUid,
+      reason: 'sql_miss',
+      missReason: sqlLookup.missReason,
+    });
+  }
+
+  const userSnap = await adminDb.collection('users').doc(carerUid).get();
+  logAutoTickTiming('user_read', userReadStartedAt, {
+    carerUid,
+    exists: userSnap.exists,
+    skipped: false,
+    durationMs: Date.now() - userReadStartedAt,
+  });
+  if (!userSnap.exists) {
+    return { ok: false, response: apiError('User not found.', 404) };
+  }
+
+  const userData = userSnap.data() as {
+    automationAgentId?: string | null;
+    username?: string | null;
+    role?: string | null;
+    coadminUid?: string | null;
+    createdBy?: string | null;
+  };
+  if (String(userData.role || '').toLowerCase() !== 'carer') {
+    return {
+      ok: false,
+      response: apiError('Automation auto-tick is only available for carer accounts.', 403),
+    };
+  }
+
+  try {
+    await mirrorPlayerById(carerUid, 'automation_auto_tick_hydrate');
+  } catch (error) {
+    logAutoTickTiming('user_read_fallback', userReadStartedAt, {
+      carerUid,
+      reason: 'hydrate_failed',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  console.info('[AUTO_TICK_AUTH_SOURCE] source=%s authPath=%s', 'firestore_fallback', authPath);
+  return {
+    ok: true,
+    profile: {
+      username: String(userData.username || '').trim(),
+      coadminUid:
+        String(userData.coadminUid || '').trim() || String(userData.createdBy || '').trim(),
+      automationAgentId: String(userData.automationAgentId || '').trim(),
+    },
+    authSource: 'firestore_fallback',
+  };
+}
+
+type AutoTickStateTiming = {
+  state_source: 'sql' | 'firestore';
+  state_sql_ms: number;
+  state_doc_ms: number;
+  lease_source: 'sql' | 'firestore' | 'skipped';
+  lease_sql_ms: number;
+  lease_transaction_ms: number;
+};
+
+function createAutoTickStateTiming(): AutoTickStateTiming {
+  return {
+    state_source: 'firestore',
+    state_sql_ms: 0,
+    state_doc_ms: 0,
+    lease_source: 'skipped',
+    lease_sql_ms: 0,
+    lease_transaction_ms: 0,
+  };
+}
+
+async function acquireAutomationAutoTickLeaseFirestore(
+  stateRef: DocumentReference,
+  instanceId: string
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  try {
+    await adminDb.runTransaction(async (tx) => {
+      const snap = await tx.get(stateRef);
+      if (!snap.exists) {
+        throw new Error('STATE_GONE');
+      }
+      const d = snap.data() as {
+        enabled?: boolean;
+        tickLeaseHolderId?: string;
+        tickLeaseExpiresAt?: { toMillis?: () => number } | null;
+      };
+      if (!d.enabled) {
+        throw new Error('DISABLED');
+      }
+      const now = Date.now();
+      const exp =
+        typeof d.tickLeaseExpiresAt?.toMillis === 'function'
+          ? d.tickLeaseExpiresAt.toMillis()
+          : 0;
+      const holder = String(d.tickLeaseHolderId || '');
+      if (holder && holder !== instanceId && exp > now) {
+        throw new Error('LEASE_HELD');
+      }
+      tx.update(stateRef, {
+        tickLeaseHolderId: instanceId,
+        tickLeaseExpiresAt: Timestamp.fromMillis(now + LEASE_TTL_MS),
+        automationTickLastAt: FieldValue.serverTimestamp(),
+      });
+    });
+    void mirrorAutomationAutoStateById(stateRef.id, 'automation_auto_tick_lease_hydrate');
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+async function resolveAutomationAutoTickState(
+  carerUid: string,
+  stateRef: DocumentReference,
+  stateTiming: AutoTickStateTiming
+): Promise<
+  | {
+      ok: true;
+      enabled: boolean;
+      stateExists: boolean;
+      stateCoadminUidIgnored: string | null;
+      usedSqlState: boolean;
+    }
+  | { ok: false; response: NextResponse }
+> {
+  const stateReadStartedAt = Date.now();
+  const sqlStateLookup = await lookupAutomationAutoStateFromSqlCache(carerUid);
+  stateTiming.state_sql_ms = Date.now() - stateReadStartedAt;
+
+  if (sqlStateLookup.state) {
+    stateTiming.state_source = 'sql';
+    logAutoTickTiming('state_read', stateReadStartedAt, {
+      carerUid,
+      exists: true,
+      state_source: stateTiming.state_source,
+      state_sql_ms: stateTiming.state_sql_ms,
+      state_doc_ms: 0,
+      enabled: sqlStateLookup.state.enabled,
+    });
+    return {
+      ok: true,
+      enabled: sqlStateLookup.state.enabled,
+      stateExists: true,
+      stateCoadminUidIgnored: sqlStateLookup.state.coadminUid,
+      usedSqlState: true,
+    };
+  }
+
+  if (sqlStateLookup.missReason) {
+    console.info(
+      '[AUTO_TICK_STATE_FALLBACK] reason=%s carerUid=%s',
+      sqlStateLookup.missReason,
+      carerUid
+    );
+  }
+
+  const stateDocStartedAt = Date.now();
+  const stateSnap = await stateRef.get();
+  stateTiming.state_doc_ms = Date.now() - stateDocStartedAt;
+  stateTiming.state_source = 'firestore';
+  logAutoTickTiming('state_read', stateReadStartedAt, {
+    carerUid,
+    exists: stateSnap.exists,
+    state_source: stateTiming.state_source,
+    state_sql_ms: stateTiming.state_sql_ms,
+    state_doc_ms: stateTiming.state_doc_ms,
+  });
+
+  if (stateSnap.exists) {
+    try {
+      const mirrored = await mirrorAutomationAutoStateSnapshot(
+        stateSnap,
+        'automation_auto_tick_state_hydrate'
+      );
+      if (!mirrored) {
+        console.info(
+          '[AUTO_TICK_STATE_FALLBACK] reason=hydrate_failed carerUid=%s context=state_read',
+          carerUid
+        );
+      }
+    } catch (error) {
+      console.info(
+        '[AUTO_TICK_STATE_FALLBACK] reason=hydrate_failed carerUid=%s error=%s context=state_read',
+        carerUid,
+        error
+      );
+    }
+  }
+
+  const state = stateSnap.exists
+    ? (stateSnap.data() as { enabled?: boolean; coadminUid?: string })
+    : null;
+
+  return {
+    ok: true,
+    enabled: Boolean(state?.enabled),
+    stateExists: stateSnap.exists,
+    stateCoadminUidIgnored: String(state?.coadminUid || '').trim() || null,
+    usedSqlState: false,
+  };
+}
+
+type AutoTickPendingTiming = {
+  pending_source: 'sql' | 'firestore';
+  pending_sql_ms: number;
+  pending_firestore_ms: number;
+};
+
+async function resolveAutoTickPendingCandidates(
+  coadminUid: string,
+  carerUid: string,
+  limit: number
+): Promise<{
+  candidates: AutoTickPendingTaskCandidate[];
+  timing: AutoTickPendingTiming;
+}> {
+  const sqlStartedAt = Date.now();
+  const sqlResult = await getPendingCarerTaskCandidatesFromSql(coadminUid, limit, carerUid);
+  const pending_sql_ms = Date.now() - sqlStartedAt;
+
+  if (sqlResult.hit) {
+    return {
+      candidates: sqlResult.candidates,
+      timing: {
+        pending_source: 'sql',
+        pending_sql_ms,
+        pending_firestore_ms: 0,
+      },
+    };
+  }
+
+  console.info(
+    '[AUTO_TICK_PENDING_FALLBACK] reason=%s coadminUid=%s carerUid=%s',
+    sqlResult.missReason || 'lookup_failed',
+    coadminUid,
+    carerUid
+  );
+
+  const firestoreStartedAt = Date.now();
+  const pendingSnap = await adminDb
+    .collection('carerTasks')
+    .where('coadminUid', '==', coadminUid)
+    .where('status', '==', 'pending')
+    .orderBy('createdAt', 'desc')
+    .limit(limit)
+    .get();
+  const pending_firestore_ms = Date.now() - firestoreStartedAt;
+
+  const candidates = pendingSnap.docs.map((docSnap) => ({
+    id: docSnap.id,
+    ...(docSnap.data() as Record<string, unknown>),
+  }));
+
+  return {
+    candidates,
+    timing: {
+      pending_source: 'firestore',
+      pending_sql_ms,
+      pending_firestore_ms,
+    },
+  };
+}
+
 function taskDebugFields(task: Record<string, unknown>) {
   return {
     status: String(task['status'] || '').trim() || null,
@@ -58,6 +467,80 @@ function taskDebugFields(task: Record<string, unknown>) {
     assignedCarerUsername: String(task['assignedCarerUsername'] || task['assignedCarer'] || '').trim() || null,
     claimedByUid: String(task['claimedByUid'] || '').trim() || null,
     automationJobId: String(task['automationJobId'] || '').trim() || null,
+  };
+}
+
+type AutoTickTaskRecheckTiming = {
+  task_recheck_source: 'candidate' | 'sql' | 'firestore' | 'none';
+  task_recheck_sql_ms: number;
+  task_recheck_firestore_ms: number;
+};
+
+async function resolveAutoTickTaskRecheck(
+  taskId: string,
+  candidateTask: AutoTickPendingTaskCandidate,
+  pendingSource: AutoTickPendingTiming['pending_source']
+): Promise<{
+  latestFields: ReturnType<typeof taskDebugFields> | null;
+  timing: AutoTickTaskRecheckTiming;
+}> {
+  const timing: AutoTickTaskRecheckTiming = {
+    task_recheck_source: 'none',
+    task_recheck_sql_ms: 0,
+    task_recheck_firestore_ms: 0,
+  };
+
+  if (hasAutoTickTaskRecheckFields(candidateTask)) {
+    timing.task_recheck_source = 'candidate';
+    console.info('[AUTO_TICK_TASK_RECHECK_SQL]', {
+      taskId,
+      source: 'candidate',
+      pending_source: pendingSource,
+      durationMs: 0,
+    });
+    return {
+      latestFields: taskDebugFields(candidateTask),
+      timing,
+    };
+  }
+
+  const sqlStartedAt = Date.now();
+  const sqlResult = await lookupAutoTickTaskRecheckFromSql(taskId);
+  timing.task_recheck_sql_ms = Date.now() - sqlStartedAt;
+
+  if (sqlResult.hit && sqlResult.task) {
+    timing.task_recheck_source = 'sql';
+    console.info('[AUTO_TICK_TASK_RECHECK_SQL]', {
+      taskId,
+      source: 'sql',
+      pending_source: pendingSource,
+      durationMs: timing.task_recheck_sql_ms,
+      pool_acquire_ms: sqlResult.timing.pool_acquire_ms,
+      query_exec_ms: sqlResult.timing.query_exec_ms,
+    });
+    return {
+      latestFields: taskDebugFields(sqlResult.task),
+      timing,
+    };
+  }
+
+  const firestoreStartedAt = Date.now();
+  const latestTaskSnap = await adminDb.collection('carerTasks').doc(taskId).get();
+  timing.task_recheck_firestore_ms = Date.now() - firestoreStartedAt;
+  timing.task_recheck_source = 'firestore';
+  const latestTask = latestTaskSnap.exists
+    ? (latestTaskSnap.data() as Record<string, unknown>)
+    : null;
+  console.info('[AUTO_TICK_TASK_RECHECK_FALLBACK]', {
+    taskId,
+    pending_source: pendingSource,
+    durationMs: timing.task_recheck_firestore_ms,
+    sql_miss_reason: sqlResult.missReason,
+    exists: latestTaskSnap.exists,
+  });
+  return {
+    latestFields: latestTask ? taskDebugFields(latestTask) : null,
+    timing,
   };
 }
 
@@ -108,27 +591,16 @@ export async function POST(request: Request) {
     return apiError('Forbidden: cannot tick automation for another carer.', 403);
   }
 
-  const userReadStartedAt = Date.now();
-  const userSnap = await adminDb.collection('users').doc(carerUid).get();
-  logAutoTickTiming('user_read', userReadStartedAt, {
+  const profileResult = await resolveAutoTickCarerProfile({
     carerUid,
-    exists: userSnap.exists,
+    authUser: auth && 'user' in auth ? auth.user : null,
+    authPath: auth && 'authPath' in auth ? auth.authPath : null,
   });
-  if (!userSnap.exists) {
-    return apiError('User not found.', 404);
+  if (!profileResult.ok) {
+    return profileResult.response;
   }
-  const userData = userSnap.data() as {
-    automationAgentId?: string | null;
-    username?: string | null;
-    role?: string | null;
-    coadminUid?: string | null;
-    createdBy?: string | null;
-  };
-  if (String(userData.role || '').toLowerCase() !== 'carer') {
-    return apiError('Automation auto-tick is only available for carer accounts.', 403);
-  }
-  const coadminUid =
-    String(userData.coadminUid || '').trim() || String(userData.createdBy || '').trim();
+  const { profile: carerProfile } = profileResult;
+  const coadminUid = carerProfile.coadminUid;
   if (!coadminUid) {
     console.info('[AUTO_TICK] skipped auto tick', {
       carerUid,
@@ -138,11 +610,11 @@ export async function POST(request: Request) {
   }
   console.info('[AUTO_TICK] request received', {
     carerUid,
-    carerUsername: String(userData.username || '').trim() || null,
+    carerUsername: carerProfile.username || null,
     agentId,
     instanceId,
   });
-  const linked = validateAutomationAgentId(String(userData.automationAgentId || '').trim());
+  const linked = validateAutomationAgentId(carerProfile.automationAgentId);
   const bodyAgent = validateAutomationAgentId(agentId);
   if (
     !linked.valid ||
@@ -155,31 +627,32 @@ export async function POST(request: Request) {
   }
 
   const stateRef = adminDb.collection(AUTOMATION_AUTO_STATE_COLLECTION).doc(carerUid);
-  const stateReadStartedAt = Date.now();
-  const stateSnap = await stateRef.get();
-  logAutoTickTiming('state_read', stateReadStartedAt, {
-    carerUid,
-    exists: stateSnap.exists,
-  });
-  const state = stateSnap.exists ? (stateSnap.data() as { enabled?: boolean; coadminUid?: string }) : null;
+  const stateTiming = createAutoTickStateTiming();
+  const stateResult = await resolveAutomationAutoTickState(carerUid, stateRef, stateTiming);
+  if (!stateResult.ok) {
+    return stateResult.response;
+  }
   console.info('[AUTO_TICK] automation enabled state', {
     carerUid,
-    carerUsername: String(userData.username || '').trim() || null,
-    stateExists: stateSnap.exists,
-    enabled: Boolean(state?.enabled),
-    stateCoadminUidIgnored: String(state?.coadminUid || '').trim() || null,
+    carerUsername: carerProfile.username || null,
+    stateExists: stateResult.stateExists,
+    enabled: stateResult.enabled,
+    stateCoadminUidIgnored: stateResult.stateCoadminUidIgnored,
     coadminUid,
+    state_source: stateTiming.state_source,
   });
-  if (!state?.enabled) {
+  if (!stateResult.enabled) {
     console.info('[AUTO_TICK] skipped auto tick', {
       carerUid,
       reason: 'automation_disabled',
     });
     return NextResponse.json({ ok: true, claimed: false, reason: 'disabled' });
   }
+
   const leaseStartedAt = Date.now();
   const isBrowserAutoTick = !hasValidSecret && instanceId.startsWith('carer-ui-');
   if (isBrowserAutoTick) {
+    stateTiming.lease_source = 'skipped';
     logAutoTickTiming('lease_transaction', leaseStartedAt, {
       carerUid,
       coadminUid,
@@ -187,53 +660,118 @@ export async function POST(request: Request) {
       acquired: true,
       skipped: true,
       mode: 'browser_claim_transaction_guard',
+      lease_source: stateTiming.lease_source,
+      lease_sql_ms: 0,
+      lease_transaction_ms: 0,
     });
-  } else {
-    try {
-      await adminDb.runTransaction(async (tx) => {
-        const snap = await tx.get(stateRef);
-        if (!snap.exists) {
-          throw new Error('STATE_GONE');
-        }
-        const d = snap.data() as {
-          enabled?: boolean;
-          tickLeaseHolderId?: string;
-          tickLeaseExpiresAt?: { toMillis?: () => number } | null;
-        };
-        if (!d.enabled) {
-          throw new Error('DISABLED');
-        }
-        const now = Date.now();
-        const exp =
-          typeof d.tickLeaseExpiresAt?.toMillis === 'function'
-            ? d.tickLeaseExpiresAt.toMillis()
-            : 0;
-        const holder = String(d.tickLeaseHolderId || '');
-        if (holder && holder !== instanceId && exp > now) {
-          throw new Error('LEASE_HELD');
-        }
-        tx.update(stateRef, {
-          tickLeaseHolderId: instanceId,
-          tickLeaseExpiresAt: Timestamp.fromMillis(now + LEASE_TTL_MS),
-          automationTickLastAt: FieldValue.serverTimestamp(),
-        });
-      });
+  } else if (stateResult.usedSqlState) {
+    const sqlLeaseResult = await acquireAutomationAutoTickLeaseSql(
+      carerUid,
+      instanceId,
+      LEASE_TTL_MS
+    );
+    stateTiming.lease_sql_ms = sqlLeaseResult.timing.total_ms;
+    if (sqlLeaseResult.ok) {
+      stateTiming.lease_source = 'sql';
       logAutoTickTiming('lease_transaction', leaseStartedAt, {
         carerUid,
         coadminUid,
         instanceId,
         acquired: true,
-        mode: 'transaction',
+        mode: 'sql',
+        lease_source: stateTiming.lease_source,
+        lease_sql_ms: stateTiming.lease_sql_ms,
+        lease_transaction_ms: 0,
       });
-    } catch (e) {
+    } else if (
+      sqlLeaseResult.reason === 'postgres_unavailable' ||
+      sqlLeaseResult.reason === 'lookup_failed'
+    ) {
+      console.info(
+        '[AUTO_TICK_STATE_FALLBACK] reason=%s carerUid=%s context=lease',
+        sqlLeaseResult.reason,
+        carerUid
+      );
+      const firestoreLease = await acquireAutomationAutoTickLeaseFirestore(stateRef, instanceId);
+      stateTiming.lease_transaction_ms = Date.now() - leaseStartedAt;
+      stateTiming.lease_source = 'firestore';
+      logAutoTickTiming('lease_transaction', leaseStartedAt, {
+        carerUid,
+        coadminUid,
+        instanceId,
+        acquired: firestoreLease.ok,
+        mode: 'transaction',
+        lease_source: stateTiming.lease_source,
+        lease_sql_ms: stateTiming.lease_sql_ms,
+        lease_transaction_ms: stateTiming.lease_transaction_ms,
+        error: firestoreLease.ok ? null : firestoreLease.reason,
+      });
+      if (!firestoreLease.ok) {
+        const msg = firestoreLease.reason;
+        if (msg === 'LEASE_HELD') {
+          console.info('[AUTO_TICK] skipped auto tick', {
+            carerUid,
+            reason: 'lease_held',
+            instanceId,
+          });
+          return NextResponse.json({ ok: true, claimed: false, reason: 'lease_held' });
+        }
+        if (msg === 'DISABLED' || msg === 'STATE_GONE') {
+          console.info('[AUTO_TICK] skipped auto tick', {
+            carerUid,
+            reason: msg === 'STATE_GONE' ? 'state_gone' : 'disabled_during_lease',
+          });
+          return NextResponse.json({ ok: true, claimed: false, reason: 'disabled' });
+        }
+        throw new Error(msg);
+      }
+    } else {
+      stateTiming.lease_source = 'sql';
       logAutoTickTiming('lease_transaction', leaseStartedAt, {
         carerUid,
         coadminUid,
         instanceId,
         acquired: false,
-        error: e instanceof Error ? e.message : String(e),
+        mode: 'sql',
+        lease_source: stateTiming.lease_source,
+        lease_sql_ms: stateTiming.lease_sql_ms,
+        lease_transaction_ms: 0,
+        error: sqlLeaseResult.reason,
       });
-      const msg = e instanceof Error ? e.message : String(e);
+      if (sqlLeaseResult.reason === 'LEASE_HELD') {
+        console.info('[AUTO_TICK] skipped auto tick', {
+          carerUid,
+          reason: 'lease_held',
+          instanceId,
+        });
+        return NextResponse.json({ ok: true, claimed: false, reason: 'lease_held' });
+      }
+      if (sqlLeaseResult.reason === 'DISABLED' || sqlLeaseResult.reason === 'STATE_GONE') {
+        console.info('[AUTO_TICK] skipped auto tick', {
+          carerUid,
+          reason:
+            sqlLeaseResult.reason === 'STATE_GONE' ? 'state_gone' : 'disabled_during_lease',
+        });
+        return NextResponse.json({ ok: true, claimed: false, reason: 'disabled' });
+      }
+    }
+  } else {
+    const firestoreLease = await acquireAutomationAutoTickLeaseFirestore(stateRef, instanceId);
+    stateTiming.lease_transaction_ms = Date.now() - leaseStartedAt;
+    stateTiming.lease_source = 'firestore';
+    logAutoTickTiming('lease_transaction', leaseStartedAt, {
+      carerUid,
+      coadminUid,
+      instanceId,
+      acquired: firestoreLease.ok,
+      mode: 'transaction',
+      lease_source: stateTiming.lease_source,
+      lease_sql_ms: 0,
+      lease_transaction_ms: stateTiming.lease_transaction_ms,
+      error: firestoreLease.ok ? null : firestoreLease.reason,
+    });
+    if (!firestoreLease.ok) {
+      const msg = firestoreLease.reason;
       if (msg === 'LEASE_HELD') {
         console.info('[AUTO_TICK] skipped auto tick', {
           carerUid,
@@ -249,7 +787,7 @@ export async function POST(request: Request) {
         });
         return NextResponse.json({ ok: true, claimed: false, reason: 'disabled' });
       }
-      throw e;
+      throw new Error(msg);
     }
   }
 
@@ -264,7 +802,7 @@ export async function POST(request: Request) {
 
   console.info('[AUTO_TICK] pending candidates and in-progress snapshot', {
     carerUid,
-    carerUsername: String(userData.username || '').trim() || null,
+    carerUsername: carerProfile.username || null,
     coadminUid,
     maxClaimsPerTick: MAX_CLAIMS_PER_TICK,
     pendingQueryLimit: PENDING_QUERY_LIMIT,
@@ -275,24 +813,27 @@ export async function POST(request: Request) {
   });
 
   const pendingStartedAt = Date.now();
-  const pendingSnap = await adminDb
-    .collection('carerTasks')
-    .where('coadminUid', '==', coadminUid)
-    .where('status', '==', 'pending')
-    .orderBy('createdAt', 'desc')
-    .limit(PENDING_QUERY_LIMIT)
-    .get();
+  const pendingResult = await resolveAutoTickPendingCandidates(
+    coadminUid,
+    carerUid,
+    PENDING_QUERY_LIMIT
+  );
+  const pendingCandidates = pendingResult.candidates;
   logAutoTickTiming('pending_query', pendingStartedAt, {
     carerUid,
     coadminUid,
-    resultCount: pendingSnap.docs.length,
+    resultCount: pendingCandidates.length,
+    pending_source: pendingResult.timing.pending_source,
+    pending_sql_ms: pendingResult.timing.pending_sql_ms,
+    pending_firestore_ms: pendingResult.timing.pending_firestore_ms,
   });
 
   console.info('[AUTO_TICK] pending query result', {
     carerUid,
     coadminUid,
-    candidateCount: pendingSnap.docs.length,
-    candidateTaskIds: pendingSnap.docs.map((d) => d.id),
+    candidateCount: pendingCandidates.length,
+    candidateTaskIds: pendingCandidates.map((task) => task.id),
+    pending_source: pendingResult.timing.pending_source,
   });
 
   const claimedJobs: Array<{
@@ -307,7 +848,8 @@ export async function POST(request: Request) {
     mapped?: string;
   }> = [];
 
-  for (const docSnap of pendingSnap.docs) {
+  for (const task of pendingCandidates) {
+    const taskId = task.id;
     if (claimedJobs.length >= MAX_CLAIMS_PER_TICK) {
       console.info('[AUTO_TICK] claim batch limit reached', {
         carerUid,
@@ -318,23 +860,20 @@ export async function POST(request: Request) {
       break;
     }
 
-    const task: Record<string, unknown> & { id: string } = {
-      id: docSnap.id,
-      ...(docSnap.data() as Record<string, unknown>),
-    };
     console.info('[AUTO_TICK] pending task from query', {
-      taskId: docSnap.id,
+      taskId,
       fields: taskDebugFields(task),
+      pending_source: pendingResult.timing.pending_source,
     });
     const mapped = mapTaskType(resolveTaskTypeLabel(task));
     if (!isAgentSupportedAutomationType(mapped)) {
       console.info('[AUTO_TICK] skipped task (unsupported type)', {
-        taskId: docSnap.id,
+        taskId,
         reason: 'unsupported_automation_type',
         mapped,
       });
       skippedTasks.push({
-        taskId: docSnap.id,
+        taskId,
         reason: 'unsupported_automation_type',
         mapped,
       });
@@ -344,11 +883,11 @@ export async function POST(request: Request) {
     const playerUid = String(task['playerUid'] || '').trim();
     if (!gameName || !playerUid) {
       console.info('[AUTO_TICK] skipped task (missing game or player)', {
-        taskId: docSnap.id,
+        taskId,
         reason: 'missing_game_or_player',
       });
       skippedTasks.push({
-        taskId: docSnap.id,
+        taskId,
         reason: 'missing_game_or_player',
       });
       continue;
@@ -364,11 +903,20 @@ export async function POST(request: Request) {
     const gameLoginDetails = hasEmbeddedGameLoginDetails
       ? null
       : await resolveGameLoginDetailsForCoadminGame(coadminUid, gameName);
+    if (hasEmbeddedGameLoginDetails) {
+      console.info(
+        '[AUTO_TICK_RESOLVER_SQL] type=game_login hit=true source=task_embedded durationMs=0 coadminUid=%s playerUid=%s gameName=%s taskId=%s',
+        coadminUid,
+        playerUid,
+        gameName,
+        taskId
+      );
+    }
     logAutoTickTiming('resolve_game_login_details', gameLoginStartedAt, {
-      taskId: docSnap.id,
+      taskId,
       coadminUid,
       gameName,
-      found: Boolean(gameLoginDetails),
+      found: Boolean(gameLoginDetails) || hasEmbeddedGameLoginDetails,
       skipped: hasEmbeddedGameLoginDetails,
       reason: hasEmbeddedGameLoginDetails ? 'task_already_has_access_fields' : null,
     });
@@ -382,8 +930,17 @@ export async function POST(request: Request) {
     const fromLogin = embeddedCurrentUsername
       ? null
       : await resolveCurrentUsernameForTask(coadminUid, playerUid, gameName);
+    if (embeddedCurrentUsername) {
+      console.info(
+        '[AUTO_TICK_RESOLVER_SQL] type=username hit=true source=task_embedded durationMs=0 coadminUid=%s playerUid=%s gameName=%s taskId=%s',
+        coadminUid,
+        playerUid,
+        gameName,
+        taskId
+      );
+    }
     logAutoTickTiming('resolve_current_username', usernameStartedAt, {
-      taskId: docSnap.id,
+      taskId,
       coadminUid,
       playerUid,
       gameName,
@@ -396,11 +953,11 @@ export async function POST(request: Request) {
       fromLogin ||
       null;
 
-    const carerName = String(userData.username || '').trim() || 'Carer';
+    const carerName = carerProfile.username || 'Carer';
 
     console.info('[AUTO_TICK] attempting claim for pending task', {
-      taskId: docSnap.id,
-      selectedTaskId: docSnap.id,
+      taskId,
+      selectedTaskId: taskId,
       gameName,
       playerUid,
       beforeFields: taskDebugFields(task),
@@ -411,17 +968,17 @@ export async function POST(request: Request) {
       const result = await claimCarerTaskAsAdmin({
         carerUid,
         carerCoadminUid: coadminUid,
-        taskId: docSnap.id,
+        taskId,
         currentUsername,
         carerName,
         gameLoginDetails,
         trustedUser: {
-          username: String(userData.username || '').trim() || null,
+          username: carerProfile.username || null,
           automationAgentId: linked.normalized,
         },
       });
       logAutoTickTiming('claimCarerTaskAsAdmin_total', claimStartedAt, {
-        taskId: docSnap.id,
+        taskId,
         carerUid,
         ok: true,
         jobId: result.jobId,
@@ -443,7 +1000,7 @@ export async function POST(request: Request) {
       });
     } catch (err) {
       logAutoTickTiming('claimCarerTaskAsAdmin_total', claimStartedAt, {
-        taskId: docSnap.id,
+        taskId,
         carerUid,
         ok: false,
         error: err instanceof Error ? err.message : String(err),
@@ -456,16 +1013,22 @@ export async function POST(request: Request) {
         message.includes('unsupported') ||
         message.includes('No automation agent')
       ) {
-        const latestTaskSnap = await adminDb.collection('carerTasks').doc(docSnap.id).get();
-        const latestTask = latestTaskSnap.exists ? (latestTaskSnap.data() as Record<string, unknown>) : null;
+        const taskRecheck = await resolveAutoTickTaskRecheck(
+          taskId,
+          task,
+          pendingResult.timing.pending_source
+        );
         console.info('[AUTO_TICK] skipped task after claim attempt', {
-          taskId: docSnap.id,
+          taskId,
           reason: 'claim_rejected',
           message,
-          latestFields: latestTask ? taskDebugFields(latestTask) : null,
+          latestFields: taskRecheck.latestFields,
+          task_recheck_source: taskRecheck.timing.task_recheck_source,
+          task_recheck_sql_ms: taskRecheck.timing.task_recheck_sql_ms,
+          task_recheck_firestore_ms: taskRecheck.timing.task_recheck_firestore_ms,
         });
         skippedTasks.push({
-          taskId: docSnap.id,
+          taskId,
           reason: 'claim_rejected',
           message,
         });
@@ -482,9 +1045,11 @@ export async function POST(request: Request) {
           },
           { merge: true }
         );
+        void disableAutomationAutoStateSql(carerUid, 'firestore_quota');
+        void mirrorAutomationAutoStateById(carerUid, 'automation_auto_tick_quota_hydrate');
         return NextResponse.json({ ok: false, claimed: false, reason: 'quota', error: message }, { status: 429 });
       }
-      console.error('[AUTO_TICK] unexpected claim error', { taskId: docSnap.id, message });
+      console.error('[AUTO_TICK] unexpected claim error', { taskId, message });
       return NextResponse.json({ ok: false, claimed: false, error: message }, { status: 500 });
     }
   }
@@ -522,7 +1087,7 @@ export async function POST(request: Request) {
   }
 
   console.info('[AUTO_TICK] no claimable pending task after scanning candidates', {
-    candidateCount: pendingSnap.docs.length,
+    candidateCount: pendingCandidates.length,
     skippedCount: skippedTasks.length,
     skippedTasks,
   });

@@ -6,7 +6,11 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
-import { UserRole } from '@/lib/auth/roles';
+import { isValidRole, UserRole } from '@/lib/auth/roles';
+import { getLocalAppSessionId } from '@/features/auth/appSession';
+import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
+import { discardStalePlayerSessionIdForRole } from '@/features/auth/playerSession';
+import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { recordDevActiveSession } from '@/features/dev/devUsageEstimates';
 import UserPresenceSync from '@/components/presence/UserPresenceSync';
 import IdleLogoutSync from '@/components/auth/IdleLogoutSync';
@@ -16,13 +20,26 @@ import {
   getLocalPlayerSessionId,
   isPlayerForcedLogout,
   listenForPlayerSessionReplacement,
+  startPlayerSessionStatusPolling,
   touchPlayerSession,
+  seedPlayerSessionVerifyCache,
+  verifyActivePlayerSession,
 } from '@/features/auth/playerSession';
 
 type ProtectedRouteProps = {
   allowedRoles: UserRole[];
   children: React.ReactNode;
 };
+
+const SQL_GUARD_ROLES: UserRole[] = ['admin', 'coadmin', 'staff', 'carer'];
+
+function routeSupportsSqlSessionGuard(allowedRoles: UserRole[]) {
+  return allowedRoles.some((role) => SQL_GUARD_ROLES.includes(role));
+}
+
+function routeIsPlayerOnly(allowedRoles: UserRole[]) {
+  return allowedRoles.length === 1 && allowedRoles[0] === 'player';
+}
 
 export default function ProtectedRoute({
   allowedRoles,
@@ -34,112 +51,306 @@ export default function ProtectedRoute({
   const [forcedLogout, setForcedLogout] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (forcedLogout || isPlayerForcedLogout()) {
-        setCurrentRole(null);
-        setChecking(false);
-        return;
+    let cancelled = false;
+    let unsubscribeFirebase: (() => void) | undefined;
+
+    async function tryPlayerAppSessionGuard(): Promise<'allowed' | 'fallback' | 'denied'> {
+      if (!routeIsPlayerOnly(allowedRoles) || !isSqlPlayerLoginEnabled()) {
+        return 'fallback';
       }
 
-      if (!firebaseUser) {
-        setCurrentRole(null);
-        router.replace('/login');
-        return;
+      if (!getLocalAppSessionId() || !getLocalPlayerSessionId()) {
+        console.info('[PROTECTED_ROUTE_AUTH]', {
+          source: 'player_app_session',
+          ok: false,
+          reason: 'missing_session_ids',
+        });
+        return 'fallback';
       }
 
-      const userRef = doc(db, 'users', firebaseUser.uid);
-      const userSnap = await getDoc(userRef);
-
-      if (!userSnap.exists()) {
-        setCurrentRole(null);
-        router.replace('/login');
-        return;
+      const cachedUser = getCachedSessionUser();
+      const usedCachedSession = Boolean(cachedUser && cachedUser.role === 'player');
+      const sessionUser = usedCachedSession
+        ? cachedUser
+        : await getSessionUserOnce();
+      if (cancelled) {
+        return 'denied';
       }
 
-      const userData = userSnap.data();
-      const role = userData.role as UserRole;
-
-      if (!allowedRoles.includes(role)) {
-        setCurrentRole(null);
-        router.replace('/login');
-        return;
+      if (!sessionUser || sessionUser.role !== 'player') {
+        console.info('[PROTECTED_ROUTE_AUTH]', {
+          source: 'player_app_session',
+          ok: false,
+          reason: 'missing_or_invalid_session',
+        });
+        return 'fallback';
       }
 
-      const localPlayerSessionId = role === 'player' ? getLocalPlayerSessionId() : '';
-      const activePlayerSessionId = String(userData.activeSessionId || '').trim();
-      if (
-        role === 'player' &&
-        (!localPlayerSessionId || localPlayerSessionId !== activePlayerSessionId)
-      ) {
-        if (localPlayerSessionId && activePlayerSessionId) {
+      const sessionStatus = await verifyActivePlayerSession();
+      if (!sessionStatus.ok) {
+        if (sessionStatus.reason === 'session_replaced' && sessionStatus.activeSessionId) {
           console.info('[SESSION_GUARD] old device kicked because session mismatch', {
-            uid: firebaseUser.uid,
-            localSessionId: localPlayerSessionId,
-            activeSessionId: activePlayerSessionId,
+            uid: sessionUser.uid,
+            localSessionId: getLocalPlayerSessionId() || null,
+            activeSessionId: sessionStatus.activeSessionId,
           });
         }
-        console.info('[SESSION_GUARD] protected render blocked', {
-          uid: firebaseUser.uid,
-          reason: !localPlayerSessionId
-            ? 'missing_local_session_id'
-            : !activePlayerSessionId
-              ? 'missing_active_session_id'
-              : 'session_mismatch',
-          localSessionId: localPlayerSessionId || null,
-          activeSessionId: activePlayerSessionId || null,
+        console.info('[PROTECTED_ROUTE_AUTH]', {
+          source: 'player_app_session',
+          ok: false,
+          uid: sessionUser.uid,
+          reason: sessionStatus.reason,
         });
         setCurrentRole(null);
         setForcedLogout(true);
         setChecking(false);
         void forcePlayerSessionLogout({
           redirect: (url) => router.replace(url),
-          markSessionInactive: false,
+          markSessionInactive:
+            sessionStatus.reason === 'session_replaced' ||
+            sessionStatus.reason === 'session_inactive',
         });
+        return 'denied';
+      }
+
+      seedPlayerSessionVerifyCache(sessionStatus);
+      console.info('[PROTECTED_ROUTE_AUTH]', {
+        source: usedCachedSession ? 'cached_app_session' : 'player_app_session',
+        ok: true,
+        uid: sessionUser.uid,
+        role: 'player',
+      });
+      setCurrentRole('player');
+      recordDevActiveSession('player', sessionUser.uid);
+      setChecking(false);
+      return 'allowed';
+    }
+
+    async function tryAppSessionGuard(): Promise<'allowed' | 'fallback' | 'denied'> {
+      if (!routeSupportsSqlSessionGuard(allowedRoles)) {
+        return 'fallback';
+      }
+
+      const cachedUser = getCachedSessionUser();
+      const usedCachedSession = Boolean(cachedUser && isValidRole(cachedUser.role));
+      const sessionUser = usedCachedSession
+        ? cachedUser
+        : await getSessionUserOnce();
+      if (cancelled) {
+        return 'denied';
+      }
+
+      if (!sessionUser || !isValidRole(sessionUser.role)) {
+        console.info('[PROTECTED_ROUTE_AUTH]', {
+          source: 'app_session',
+          ok: false,
+          reason: 'missing_or_invalid_session',
+        });
+        return 'fallback';
+      }
+
+      if (!allowedRoles.includes(sessionUser.role)) {
+        console.info('[PROTECTED_ROUTE_AUTH]', {
+          source: 'app_session',
+          ok: false,
+          role: sessionUser.role,
+          reason: 'role_not_allowed',
+        });
+        setCurrentRole(null);
+        router.replace('/login');
+        return 'denied';
+      }
+
+      console.info('[PROTECTED_ROUTE_AUTH]', {
+        source: usedCachedSession ? 'cached_app_session' : 'app_session',
+        ok: true,
+        role: sessionUser.role,
+        uid: sessionUser.uid,
+      });
+
+      setCurrentRole(sessionUser.role);
+      if (sessionUser.role === 'carer') {
+        discardStalePlayerSessionIdForRole(sessionUser.role, 'protected_route_carer');
+        recordDevActiveSession(sessionUser.role, sessionUser.uid);
+      }
+      setChecking(false);
+      return 'allowed';
+    }
+
+    function startFirebaseGuard() {
+      unsubscribeFirebase = onAuthStateChanged(auth, async (firebaseUser) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (forcedLogout || isPlayerForcedLogout()) {
+          setCurrentRole(null);
+          setChecking(false);
+          return;
+        }
+
+        if (!firebaseUser) {
+          console.info('[PROTECTED_ROUTE_AUTH]', {
+            source: 'firebase',
+            ok: false,
+            reason: 'missing_firebase_user',
+          });
+          setCurrentRole(null);
+          router.replace('/login');
+          return;
+        }
+
+        const userRef = doc(db, 'users', firebaseUser.uid);
+        const userSnap = await getDoc(userRef);
+
+        if (!userSnap.exists()) {
+          console.info('[PROTECTED_ROUTE_AUTH]', {
+            source: 'firebase',
+            ok: false,
+            uid: firebaseUser.uid,
+            reason: 'firestore_user_missing',
+          });
+          setCurrentRole(null);
+          router.replace('/login');
+          return;
+        }
+
+        const userData = userSnap.data();
+        const role = userData.role as UserRole;
+
+        if (!allowedRoles.includes(role)) {
+          console.info('[PROTECTED_ROUTE_AUTH]', {
+            source: 'firebase',
+            ok: false,
+            uid: firebaseUser.uid,
+            role,
+            reason: 'role_not_allowed',
+          });
+          setCurrentRole(null);
+          router.replace('/login');
+          return;
+        }
+
+        if (role === 'player') {
+          const sessionStatus = await verifyActivePlayerSession();
+          if (!sessionStatus.ok) {
+            if (sessionStatus.reason === 'session_replaced' && sessionStatus.activeSessionId) {
+              console.info('[SESSION_GUARD] old device kicked because session mismatch', {
+                uid: firebaseUser.uid,
+                localSessionId: getLocalPlayerSessionId() || null,
+                activeSessionId: sessionStatus.activeSessionId,
+              });
+            }
+            console.info('[SESSION_GUARD] protected render blocked', {
+              uid: firebaseUser.uid,
+              reason: sessionStatus.reason,
+              activeSessionId: sessionStatus.activeSessionId || null,
+              source: sessionStatus.source || null,
+            });
+            setCurrentRole(null);
+            setForcedLogout(true);
+            setChecking(false);
+            void forcePlayerSessionLogout({
+              redirect: (url) => router.replace(url),
+              markSessionInactive:
+                sessionStatus.reason === 'session_replaced' ||
+                sessionStatus.reason === 'session_inactive',
+            });
+            return;
+          }
+
+          seedPlayerSessionVerifyCache(sessionStatus);
+          console.info('[SESSION_GUARD] protected render allowed', {
+            uid: firebaseUser.uid,
+            reason: 'session_match',
+            source: sessionStatus.source || 'sql',
+          });
+        }
+
+        console.info('[PROTECTED_ROUTE_AUTH]', {
+          source: 'firebase',
+          ok: true,
+          uid: firebaseUser.uid,
+          role,
+        });
+
+        setCurrentRole(role);
+
+        if (role === 'player' || role === 'carer') {
+          recordDevActiveSession(role, firebaseUser.uid);
+        }
+
+        setChecking(false);
+      });
+    }
+
+    void (async () => {
+      if (forcedLogout || isPlayerForcedLogout()) {
+        setCurrentRole(null);
+        setChecking(false);
         return;
       }
 
-      setCurrentRole(role);
-      if (role === 'player') {
-        console.info('[SESSION_GUARD] protected render allowed', {
-          uid: firebaseUser.uid,
-          sessionId: localPlayerSessionId,
-          reason: 'session_match',
-        });
+      const playerSqlResult = await tryPlayerAppSessionGuard();
+      if (cancelled || playerSqlResult === 'allowed' || playerSqlResult === 'denied') {
+        return;
       }
 
-      if (role === 'player' || role === 'carer') {
-        recordDevActiveSession(role, firebaseUser.uid);
+      const sqlResult = await tryAppSessionGuard();
+      if (cancelled || sqlResult === 'allowed' || sqlResult === 'denied') {
+        return;
       }
 
-      setChecking(false);
-    });
+      startFirebaseGuard();
+    })();
 
-    return () => unsubscribe();
-  }, [allowedRoles, forcedLogout, router]);
+    return () => {
+      cancelled = true;
+      unsubscribeFirebase?.();
+    };
+  }, [allowedRoles, forcedLogout]);
 
   useEffect(() => {
     if (currentRole !== 'player') {
       return;
     }
 
-    const currentUser = auth.currentUser;
-    if (!currentUser) {
+    const sessionId = getLocalPlayerSessionId();
+    if (!sessionId) {
       return;
     }
 
+    const currentUser = auth.currentUser;
     let stopSessionListener = () => {};
-    const triggerForcedLogout = () => {
+
+    const handlePollKick = () => {
       setForcedLogout(true);
       setCurrentRole(null);
       stopSessionListener();
-      void forcePlayerSessionLogout({
-        redirect: (url) => router.replace(url),
-      });
     };
-    stopSessionListener = listenForPlayerSessionReplacement(currentUser, triggerForcedLogout);
+
+    const stopPolling = startPlayerSessionStatusPolling({
+      intervalMs: 12_000,
+      redirect: (url) => router.replace(url),
+      onReplaced: handlePollKick,
+      onInactive: handlePollKick,
+    });
+
+    if (currentUser) {
+      stopSessionListener = listenForPlayerSessionReplacement(currentUser, () => {
+        setForcedLogout(true);
+        setCurrentRole(null);
+        stopSessionListener();
+        stopPolling();
+        void forcePlayerSessionLogout({
+          redirect: (url) => router.replace(url),
+        });
+      });
+    }
+
     void touchPlayerSession(currentUser);
     const heartbeat = window.setInterval(() => {
-      void touchPlayerSession(currentUser);
+      void touchPlayerSession(auth.currentUser);
     }, 45_000);
     const markInactive = () => {
       void endLocalPlayerSession('browser_closed');
@@ -149,6 +360,7 @@ export default function ProtectedRoute({
 
     return () => {
       stopSessionListener();
+      stopPolling();
       window.clearInterval(heartbeat);
       window.removeEventListener('pagehide', markInactive);
       window.removeEventListener('beforeunload', markInactive);

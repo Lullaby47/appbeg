@@ -1,6 +1,7 @@
 import 'server-only';
 
 import type { DocumentSnapshot } from 'firebase-admin/firestore';
+import type { PoolClient } from 'pg';
 
 import { adminDb } from '@/lib/firebase/admin';
 import {
@@ -8,6 +9,7 @@ import {
   getPlayerMirrorPool,
   normalizeJson,
   numberOrNull,
+  runMirrorClientQuery,
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
 
@@ -137,15 +139,37 @@ export async function tombstoneReferralRewardClaimCache(firebaseId: string, sour
   }
 }
 
+const REFERRAL_REWARD_CLAIM_BY_ID_SQL =
+  'SELECT * FROM public.referral_reward_claims_cache WHERE firebase_id = $1 LIMIT 1';
+
+export async function getReferralRewardClaimCacheByIdWithClient(
+  client: PoolClient,
+  firebaseId: string
+) {
+  const cleanId = cleanText(firebaseId);
+  if (!cleanId) return null;
+  try {
+    const { rows } = await runMirrorClientQuery<Record<string, unknown>>(
+      client,
+      REFERRAL_REWARD_CLAIM_BY_ID_SQL,
+      [cleanId]
+    );
+    return rows[0] || null;
+  } catch (error) {
+    console.error('[REFERRAL_REWARD_CLAIMS_CACHE] read failed', {
+      firebaseId: cleanId,
+      error,
+    });
+    return null;
+  }
+}
+
 export async function getReferralRewardClaimCacheById(firebaseId: string) {
   const db = getPlayerMirrorPool();
   const cleanId = cleanText(firebaseId);
   if (!db || !cleanId) return null;
   try {
-    const result = await db.query(
-      'SELECT * FROM public.referral_reward_claims_cache WHERE firebase_id = $1 LIMIT 1',
-      [cleanId]
-    );
+    const result = await db.query(REFERRAL_REWARD_CLAIM_BY_ID_SQL, [cleanId]);
     return result.rows[0] || null;
   } catch (error) {
     console.error('[REFERRAL_REWARD_CLAIMS_CACHE] mirror failed', {

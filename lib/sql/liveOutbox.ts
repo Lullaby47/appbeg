@@ -9,6 +9,7 @@ import {
   getPlayerMirrorPool,
   runMirrorClientQuery,
   runMirrorPoolQuery,
+  type PlayerMirrorAcquireContext,
   type PlayerMirrorSqlTiming,
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
@@ -548,7 +549,7 @@ export type LatestOutboxLookupResult = {
 
 export async function getLatestOutboxIdForChannels(
   channels: string[],
-  options?: { mirrorClient?: PoolClient }
+  options?: { mirrorClient?: PoolClient; acquireContext?: PlayerMirrorAcquireContext }
 ): Promise<LatestOutboxLookupResult> {
   const db = getPlayerMirrorPool();
   const cleanChannels = channels.map(cleanText).filter(Boolean);
@@ -575,7 +576,12 @@ export async function getLatestOutboxIdForChannels(
           [channel]
         );
       }
-      return runMirrorPoolQuery<{ outbox_id?: unknown }>(db, latestSql, [channel]);
+      return runMirrorPoolQuery<{ outbox_id?: unknown }>(
+        db,
+        latestSql,
+        [channel],
+        options?.acquireContext
+      );
     };
 
     if (cleanChannels.length === 1) {

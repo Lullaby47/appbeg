@@ -1,16 +1,9 @@
-import { auth } from '@/lib/firebase/client';
+import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 
 export async function giveFreeplayGift() {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-
   const response = await fetch('/api/coadmin/freeplay/give', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${await currentUser.getIdToken()}`,
-    },
+    headers: await getFirebaseApiHeaders(false),
   });
   const payload = (await response.json().catch(() => ({}))) as {
     error?: string;

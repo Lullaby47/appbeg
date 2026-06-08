@@ -17,13 +17,23 @@ import {
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
 import LogoutButton from '../../components/auth/LogoutButton';
+import { getAppSessionRequestHeaders, getLocalAppSessionId } from '@/features/auth/appSession';
+import { discardStalePlayerSessionIdForRole } from '@/features/auth/playerSession';
+import { getCachedSessionUser, getSessionUserOnce, type SessionUser } from '@/features/auth/sessionUser';
+import { fetchCarerDashboardProfile } from '@/features/carer/carerProfileClient';
+import { logCarerPageStartup, logCarerPageTaskSync, resetCarerPageStartupTiming, tryLogCarerPageStartupReady } from '@/features/carer/carerStartupLogs';
 import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 import ImageUploadField from '@/components/common/ImageUploadField';
 import { auth, db, getClientDb } from '@/lib/firebase/client';
-import { GameLogin, getGameLoginsByCoadmin } from '@/features/games/gameLogins';
+import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
+import {
+  firestoreErrorCode,
+  isFirestoreQuotaExhausted,
+  logCarerStartupFirestore,
+} from '@/lib/firestore/quota';
+import { GameLogin } from '@/features/games/gameLogins';
 import {
   createPlayerGameLogin,
-  getPlayerGameLoginsByCoadmin,
   listenToPlayerGameLoginsByCoadmin,
   PlayerGameLogin,
   updatePlayerGameLogin,
@@ -41,6 +51,7 @@ import {
 import {
   CarerRechargeRedeemTotals,
   CarerTask,
+  type CarerBaseData,
   completeRechargeRedeemTask,
   completeUsernameTaskForPlayerGame,
   deletePendingCarerTask,
@@ -51,6 +62,7 @@ import {
   releaseExpiredCarerTasks,
   sendCarerEscalationAlert,
   sendCarerCashboxInquiryAlert,
+  fetchCarerBaseDataForCoadmin,
   syncCarerTasksForCoadmin,
 } from '@/features/games/carerTasks';
 import { attachCarerTaskLiveShadowCompare } from '@/features/live/carerTaskShadowCompare';
@@ -159,6 +171,9 @@ const LOCAL_WARMUP_STATUS_URL = (() => {
 })();
 const WARMUP_POLL_INTERVAL_MS = 2_000;
 const WARMUP_POLL_TIMEOUT_MS = 120_000;
+const LIVE_SHADOW_COMPARE_ENABLED =
+  String(process.env.NEXT_PUBLIC_LIVE_SHADOW_COMPARE || '').trim() === '1';
+const CARER_PROFILE_FIRESTORE_ENRICH_MS = 5_000;
 
 type WarmupAgentResponse = {
   ok?: boolean;
@@ -605,6 +620,9 @@ export default function CarerPage() {
 
   const [bootstrapping, setBootstrapping] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [taskSyncRunning, setTaskSyncRunning] = useState(false);
+  const [taskSyncError, setTaskSyncError] = useState<string | null>(null);
+  const [taskSyncLastDoneAt, setTaskSyncLastDoneAt] = useState<number | null>(null);
   const [savingUsername, setSavingUsername] = useState(false);
   const [blockingPlayerUid, setBlockingPlayerUid] = useState<string | null>(null);
   const [taskLoadingId, setTaskLoadingId] = useState<string | null>(null);
@@ -660,6 +678,7 @@ export default function CarerPage() {
   const [agentInputDraft, setAgentInputDraft] = useState('');
   const [agentPanelNotice, setAgentPanelNotice] = useState('');
   const [agentPanelError, setAgentPanelError] = useState('');
+  const [automationTokenWarning, setAutomationTokenWarning] = useState('');
   const [agentSaving, setAgentSaving] = useState(false);
   const [browserWarmupStatus, setBrowserWarmupStatus] = useState<WarmupStatus>('not_warmed');
   const [browserWarmupMessage, setBrowserWarmupMessage] = useState('Not warmed');
@@ -890,14 +909,30 @@ export default function CarerPage() {
   const autoTickBrowserTokenRef = useRef<{ token: string; expiresAt: number } | null>(null);
   const autoQueueDrainInFlightRef = useRef(false);
   const autoAutomationEnabledRef = useRef(false);
+  const pageInitInFlightUidRef = useRef<string | null>(null);
+  const startupMountStartedAtRef = useRef<number>(Date.now());
+
+  useEffect(() => {
+    if (bootstrapping || refreshing) {
+      return;
+    }
+    tryLogCarerPageStartupReady({
+      bootstrapping,
+      refreshing,
+      spinner_visible: false,
+    });
+  }, [bootstrapping, refreshing]);
 
   useEffect(() => {
     autoAutomationEnabledRef.current = autoAutomationEnabled;
   }, [autoAutomationEnabled]);
 
   async function refreshAutoTickBrowserToken(agentId: string) {
-    const currentUser = auth.currentUser;
-    if (!currentUser || !agentId) {
+    if (!agentId) {
+      autoTickBrowserTokenRef.current = null;
+      return null;
+    }
+    if (!getLocalAppSessionId() && !auth.currentUser) {
       autoTickBrowserTokenRef.current = null;
       return null;
     }
@@ -905,14 +940,20 @@ export default function CarerPage() {
     if (existing && existing.expiresAt > Date.now() + 15_000) {
       return existing.token;
     }
+    const tokenRequestStartedAt = Date.now();
+    logCarerPageStartup({
+      stage: 'auto_tick_token_start',
+      ok: true,
+      uid: carerIdentity?.uid ?? null,
+      role: 'carer',
+    });
     try {
-      const tokenRequestStartedAt = Date.now();
       console.info('[START_TIMING] auto tick token request start at=%s', new Date(tokenRequestStartedAt).toISOString());
-      const token = await currentUser.getIdToken();
+      const headers = await getFirebaseApiHeaders(false);
       const response = await fetch('/api/carer/automation-auto-tick-token', {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${token}`,
+          ...headers,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ agentId }),
@@ -928,12 +969,31 @@ export default function CarerPage() {
           reason: 'token_request_failed',
         });
         autoTickBrowserTokenRef.current = null;
+        setAutomationTokenWarning(
+          'Automation browser token unavailable. Auto-tick may not work until Firestore/API recovers.'
+        );
+        logCarerPageStartup({
+          stage: 'auto_tick_token_done',
+          ok: false,
+          uid: carerIdentity?.uid ?? null,
+          role: 'carer',
+          durationMs: Date.now() - tokenRequestStartedAt,
+          reason: `token_http_${response.status}`,
+        });
         return null;
       }
       autoTickBrowserTokenRef.current = {
         token: payload.token,
         expiresAt: payload.expiresAt,
       };
+      setAutomationTokenWarning('');
+      logCarerPageStartup({
+        stage: 'auto_tick_token_done',
+        ok: true,
+        uid: carerIdentity?.uid ?? null,
+        role: 'carer',
+        durationMs: Date.now() - tokenRequestStartedAt,
+      });
       return payload.token;
     } catch (error) {
       console.info('[AUTO_UI] browser auto tick token skipped', {
@@ -941,12 +1001,22 @@ export default function CarerPage() {
         error: error instanceof Error ? error.message : String(error),
       });
       autoTickBrowserTokenRef.current = null;
+      setAutomationTokenWarning(
+        'Automation browser token unavailable. Auto-tick may not work until connectivity recovers.'
+      );
+      logCarerPageStartup({
+        stage: 'auto_tick_token_done',
+        ok: false,
+        uid: carerIdentity?.uid ?? null,
+        role: 'carer',
+        durationMs: Date.now() - tokenRequestStartedAt,
+        reason: error instanceof Error ? error.message : 'network_error',
+      });
       return null;
     }
   }
 
   async function fireAutomationAutoTick(source: 'immediate' | 'listener' | 'queue') {
-    const currentUser = auth.currentUser;
     const linkedAgentId =
       String(carerIdentity?.automationAgentId || '').trim() ||
       String(agentInputDraft || '').trim();
@@ -957,10 +1027,9 @@ export default function CarerPage() {
           ? '[AUTO_UI] listener auto tick'
           : '[AUTO_UI] queue drain auto tick';
 
-    if (!currentUser || !carerIdentity?.uid || !linkedAgentId) {
+    if (!carerIdentity?.uid || !linkedAgentId) {
       console.info(`${logPrefix} skipped`, {
-        reason: 'missing_auth_carer_or_agent',
-        hasCurrentUser: Boolean(currentUser),
+        reason: 'missing_carer_or_agent',
         carerUid: carerIdentity?.uid || null,
         hasAgentId: Boolean(linkedAgentId),
       });
@@ -996,15 +1065,14 @@ export default function CarerPage() {
     let response: Response;
     try {
       const browserTickToken = await refreshAutoTickBrowserToken(linkedAgentId);
-      const token = browserTickToken ? null : await currentUser.getIdToken();
+      const apiHeaders = await getFirebaseApiHeaders(false);
       const autoTickStartedAt = Date.now();
       console.info('[START_TIMING] auto tick request start at=%s', new Date(autoTickStartedAt).toISOString());
       response = await fetch('/api/carer/automation-auto-tick', {
         method: 'POST',
         headers: {
-          ...(browserTickToken
-            ? { 'x-carer-auto-tick-token': browserTickToken }
-            : { Authorization: `Bearer ${token}` }),
+          ...apiHeaders,
+          ...(browserTickToken ? { 'x-carer-auto-tick-token': browserTickToken } : {}),
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
@@ -1114,22 +1182,63 @@ export default function CarerPage() {
   }, [autoDrainRequestId]);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (!firebaseUser) {
-        autoAutomationEnabledRef.current = false;
-        setBootstrapping(false);
-        setCarerIdentity(null);
-        setCoadminUid('');
-        setAgentInputDraft('');
-        setAgentPanelNotice('');
-        setAgentPanelError('');
+    let cancelled = false;
+    let firebaseUnsubscribe: (() => void) | undefined;
+
+    logCarerPageStartup({ stage: 'mount', ok: true });
+    resetCarerPageStartupTiming();
+    startupMountStartedAtRef.current = Date.now();
+
+    void (async () => {
+      const sessionStartedAt = Date.now();
+      let sessionUser = getCachedSessionUser();
+      if (!sessionUser?.uid) {
+        sessionUser = await getSessionUserOnce();
+      }
+      if (cancelled) {
         return;
       }
 
-      await initializePage(firebaseUser);
-    });
+      logCarerPageStartup({
+        stage: 'session_user_loaded',
+        ok: Boolean(sessionUser?.uid && sessionUser.role === 'carer'),
+        uid: sessionUser?.uid ?? null,
+        role: sessionUser?.role ?? null,
+        reason:
+          sessionUser?.role === 'carer'
+            ? null
+            : sessionUser?.uid
+              ? 'not_carer_role'
+              : 'missing_session_user',
+        durationMs: Date.now() - sessionStartedAt,
+      });
 
-    return () => unsubscribe();
+      if (sessionUser?.role === 'carer' && sessionUser.uid) {
+        discardStalePlayerSessionIdForRole(sessionUser.role, 'carer_page_startup');
+        await initializePageFromAppSession(sessionUser);
+        return;
+      }
+
+      const firebaseUser = auth.currentUser;
+      if (firebaseUser) {
+        await initializePageFromFirebase(firebaseUser);
+        return;
+      }
+
+      firebaseUnsubscribe = onAuthStateChanged(auth, (user) => {
+        if (cancelled || !user) {
+          return;
+        }
+        firebaseUnsubscribe?.();
+        firebaseUnsubscribe = undefined;
+        void initializePageFromFirebase(user);
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+      firebaseUnsubscribe?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -1139,48 +1248,52 @@ export default function CarerPage() {
 
     const liveShadowCompare = attachCarerTaskLiveShadowCompare(carerIdentity.uid, coadminUid);
     let sqlReadDispose: (() => void) | null = null;
-    let useFirebaseForUi = !CARER_TASKS_SQL_READ_ENABLED;
+    let firebaseUnsubscribe: (() => void) | null = null;
+    const attachFirebaseListener =
+      !CARER_TASKS_SQL_READ_ENABLED || LIVE_SHADOW_COMPARE_ENABLED;
 
-    const unsubscribe = listenToAvailableCarerTasks(
-      coadminUid,
-      carerIdentity.uid,
-      (incomingTasks) => {
-        for (const task of incomingTasks) {
-          const status = String(task.status || '').trim().toLowerCase();
-          const uid = carerIdentity.uid;
-          const eligible =
-            status === 'in_progress' &&
-            (task.assignedCarerUid === uid || task.claimedByUid === uid);
-          const reason =
-            status !== 'in_progress'
-              ? `status_${status || 'missing'}`
-              : task.assignedCarerUid !== uid && task.claimedByUid !== uid
-                ? `assigned_carer_mismatch_current_${uid}`
-                : null;
-          console.info(
-            '[START_TIMING] appears in progress eligible=%s reason=%s taskId=%s status=%s automationStatus=%s assignedCarerUid=%s claimedByUid=%s automationJobId=%s linkedJobId=%s',
-            eligible,
-            reason,
-            task.id,
-            status || null,
-            String(task.automationStatus || '').trim() || null,
-            task.assignedCarerUid || null,
-            task.claimedByUid || null,
-            task.automationJobId || null,
-            String((task as { linkedJobId?: string | null }).linkedJobId || '').trim() || null
-          );
+    if (attachFirebaseListener) {
+      firebaseUnsubscribe = listenToAvailableCarerTasks(
+        coadminUid,
+        carerIdentity.uid,
+        (incomingTasks) => {
+          for (const task of incomingTasks) {
+            const status = String(task.status || '').trim().toLowerCase();
+            const uid = carerIdentity.uid;
+            const eligible =
+              status === 'in_progress' &&
+              (task.assignedCarerUid === uid || task.claimedByUid === uid);
+            const reason =
+              status !== 'in_progress'
+                ? `status_${status || 'missing'}`
+                : task.assignedCarerUid !== uid && task.claimedByUid !== uid
+                  ? `assigned_carer_mismatch_current_${uid}`
+                  : null;
+            console.info(
+              '[START_TIMING] appears in progress eligible=%s reason=%s taskId=%s status=%s automationStatus=%s assignedCarerUid=%s claimedByUid=%s automationJobId=%s linkedJobId=%s',
+              eligible,
+              reason,
+              task.id,
+              status || null,
+              String(task.automationStatus || '').trim() || null,
+              task.assignedCarerUid || null,
+              task.claimedByUid || null,
+              task.automationJobId || null,
+              String((task as { linkedJobId?: string | null }).linkedJobId || '').trim() || null
+            );
+          }
+          if (!CARER_TASKS_SQL_READ_ENABLED) {
+            setTasks(sortByNewest(incomingTasks));
+          }
+          liveShadowCompare.reportFirebaseSnapshot(incomingTasks);
+        },
+        (error) => {
+          if (!CARER_TASKS_SQL_READ_ENABLED) {
+            setErrorMessage(error.message || 'Failed to listen for tasks.');
+          }
         }
-        if (useFirebaseForUi) {
-          setTasks(sortByNewest(incomingTasks));
-        }
-        liveShadowCompare.reportFirebaseSnapshot(incomingTasks);
-      },
-      (error) => {
-        if (useFirebaseForUi) {
-          setErrorMessage(error.message || 'Failed to listen for tasks.');
-        }
-      }
-    );
+      );
+    }
 
     if (CARER_TASKS_SQL_READ_ENABLED) {
       const sqlRead = attachCarerTaskSqlReadListener(
@@ -1190,15 +1303,15 @@ export default function CarerPage() {
           setTasks(sortByNewest(incomingTasks));
           setErrorMessage('');
         },
-        () => {
-          useFirebaseForUi = true;
+        (reason) => {
+          console.warn('[CARER_PAGE_STARTUP] tasks live read degraded reason=%s', reason);
         }
       );
       sqlReadDispose = sqlRead.dispose;
     }
 
     return () => {
-      unsubscribe();
+      firebaseUnsubscribe?.();
       sqlReadDispose?.();
       liveShadowCompare.dispose();
     };
@@ -1237,23 +1350,29 @@ export default function CarerPage() {
           dispose: () => undefined,
         };
     let sqlReadDispose: (() => void) | null = null;
-    let useFirebaseForUi = !AUTOMATION_JOBS_SQL_READ_ENABLED || !coadminUid;
+    let firebaseUnsubscribe: (() => void) | null = null;
+    const attachFirebaseListener =
+      !AUTOMATION_JOBS_SQL_READ_ENABLED ||
+      !coadminUid ||
+      LIVE_SHADOW_COMPARE_ENABLED;
 
-    const unsubscribe = listenAutomationUiStatusByTask(
-      carerIdentity.uid,
-      (statuses, freshJobs) => {
-        if (useFirebaseForUi) {
-          setAutomationStatusByTaskId(statuses);
-          setFreshAutomationJobByTaskId(freshJobs);
+    if (attachFirebaseListener) {
+      firebaseUnsubscribe = listenAutomationUiStatusByTask(
+        carerIdentity.uid,
+        (statuses, freshJobs) => {
+          if (!AUTOMATION_JOBS_SQL_READ_ENABLED || !coadminUid) {
+            setAutomationStatusByTaskId(statuses);
+            setFreshAutomationJobByTaskId(freshJobs);
+          }
+          liveShadowCompare.reportFirebaseJobSnapshot(statuses, freshJobs);
+        },
+        (error) => {
+          if (!AUTOMATION_JOBS_SQL_READ_ENABLED || !coadminUid) {
+            setErrorMessage(error.message || 'Failed to listen to automation jobs.');
+          }
         }
-        liveShadowCompare.reportFirebaseJobSnapshot(statuses, freshJobs);
-      },
-      (error) => {
-        if (useFirebaseForUi) {
-          setErrorMessage(error.message || 'Failed to listen to automation jobs.');
-        }
-      }
-    );
+      );
+    }
 
     if (AUTOMATION_JOBS_SQL_READ_ENABLED && coadminUid) {
       const sqlRead = attachAutomationJobsSqlReadListener(
@@ -1264,15 +1383,15 @@ export default function CarerPage() {
           setFreshAutomationJobByTaskId(freshJobs);
           setErrorMessage('');
         },
-        () => {
-          useFirebaseForUi = true;
+        (reason) => {
+          console.warn('[CARER_PAGE_STARTUP] jobs live read degraded reason=%s', reason);
         }
       );
       sqlReadDispose = sqlRead.dispose;
     }
 
     return () => {
-      unsubscribe();
+      firebaseUnsubscribe?.();
       sqlReadDispose?.();
       liveShadowCompare.dispose();
     };
@@ -1634,49 +1753,390 @@ export default function CarerPage() {
     });
   }, [automationStatusByTaskId, tasks]);
 
-  async function initializePage(firebaseUser: User) {
-    setBootstrapping(true);
-    setErrorMessage('');
-
+  async function enrichCarerProfileFromFirestoreOptional(uid: string) {
+    const startedAt = Date.now();
+    const path = `users/${uid}`;
     try {
-      const userSnap = await getDoc(doc(db, 'users', firebaseUser.uid));
-
-      if (!userSnap.exists()) {
-        throw new Error('Carer profile not found.');
+      const snap = await Promise.race([
+        getDoc(doc(db, 'users', uid)),
+        new Promise<never>((_, reject) => {
+          window.setTimeout(
+            () => reject(new Error('firestore_profile_enrich_timeout')),
+            CARER_PROFILE_FIRESTORE_ENRICH_MS
+          );
+        }),
+      ]);
+      logCarerStartupFirestore({
+        collection: 'users',
+        path,
+        reason: 'payment_fields_enrich',
+        durationMs: Date.now() - startedAt,
+        ok: true,
+      });
+      if (!snap.exists()) {
+        return;
       }
-
-      const userData = userSnap.data() as {
-        username?: string;
+      const userData = snap.data() as {
         paymentQrUrl?: string;
         paymentQrPublicId?: string;
         paymentDetails?: string;
         cashBoxNpr?: number;
         automationAgentId?: string | null;
       };
-      const resolvedCoadminUid = await getCurrentUserCoadminUid();
       const linkedAgent = String(userData.automationAgentId || '').trim() || null;
+      setCarerIdentity((prev) =>
+        prev
+          ? {
+              ...prev,
+              paymentQrUrl: userData.paymentQrUrl?.trim() || prev.paymentQrUrl,
+              paymentQrPublicId: userData.paymentQrPublicId?.trim() || prev.paymentQrPublicId,
+              paymentDetails: userData.paymentDetails?.trim() || prev.paymentDetails,
+              automationAgentId: linkedAgent || prev.automationAgentId,
+            }
+          : prev
+      );
+      if (userData.paymentQrUrl?.trim()) {
+        setPaymentQrUrl(userData.paymentQrUrl.trim());
+      }
+      if (userData.paymentQrPublicId?.trim()) {
+        setPaymentQrPublicId(userData.paymentQrPublicId.trim());
+      }
+      if (userData.paymentDetails?.trim()) {
+        setPaymentDetails(userData.paymentDetails.trim());
+      }
+      if (Number.isFinite(Number(userData.cashBoxNpr))) {
+        setCashBoxNpr(Number(userData.cashBoxNpr));
+      }
+      if (linkedAgent) {
+        setAgentInputDraft(linkedAgent);
+      }
+    } catch (error) {
+      logCarerStartupFirestore({
+        collection: 'users',
+        path,
+        reason: 'payment_fields_enrich',
+        durationMs: Date.now() - startedAt,
+        ok: false,
+        error_code: firestoreErrorCode(error) || (error instanceof Error ? error.message : 'enrich_failed'),
+      });
+    }
+  }
 
-      setCarerIdentity({
+  function applyCarerProfileToState(
+    profile: {
+      uid: string;
+      username: string;
+      automationAgentId?: string | null;
+      paymentQrUrl?: string;
+      paymentQrPublicId?: string;
+      paymentDetails?: string;
+      cashBoxNpr?: number;
+    },
+    firebaseUid: string
+  ) {
+    const linkedAgent = String(profile.automationAgentId || '').trim() || null;
+    setCarerIdentity({
+      uid: firebaseUid,
+      username: profile.username?.trim() || 'Carer',
+      paymentQrUrl: profile.paymentQrUrl?.trim() || '',
+      paymentQrPublicId: profile.paymentQrPublicId?.trim() || '',
+      paymentDetails: profile.paymentDetails?.trim() || '',
+      automationAgentId: linkedAgent,
+    });
+    setAgentInputDraft(linkedAgent || '');
+    setPaymentQrUrl(profile.paymentQrUrl?.trim() || '');
+    setPaymentQrPublicId(profile.paymentQrPublicId?.trim() || '');
+    setPaymentDetails(profile.paymentDetails?.trim() || '');
+    setCashBoxNpr(Number(profile.cashBoxNpr || 0));
+  }
+
+  async function loadCarerProfileFromFirestoreFallback(firebaseUser: User) {
+    const startedAt = Date.now();
+    const path = `users/${firebaseUser.uid}`;
+    const userSnap = await getDoc(doc(db, 'users', firebaseUser.uid));
+    logCarerStartupFirestore({
+      collection: 'users',
+      path,
+      reason: 'initialize_page_profile',
+      durationMs: Date.now() - startedAt,
+      ok: userSnap.exists(),
+      error_code: userSnap.exists() ? null : 'profile_not_found',
+    });
+
+    if (!userSnap.exists()) {
+      throw new Error('Carer profile not found.');
+    }
+
+    const userData = userSnap.data() as {
+      username?: string;
+      paymentQrUrl?: string;
+      paymentQrPublicId?: string;
+      paymentDetails?: string;
+      cashBoxNpr?: number;
+      automationAgentId?: string | null;
+    };
+    const resolvedCoadminUid = await getCurrentUserCoadminUid();
+    applyCarerProfileToState(
+      {
         uid: firebaseUser.uid,
         username: userData.username?.trim() || 'Carer',
-        paymentQrUrl: userData.paymentQrUrl?.trim() || '',
-        paymentQrPublicId: userData.paymentQrPublicId?.trim() || '',
-        paymentDetails: userData.paymentDetails?.trim() || '',
-        automationAgentId: linkedAgent,
-      });
-      setAgentInputDraft(linkedAgent || '');
-      setPaymentQrUrl(userData.paymentQrUrl?.trim() || '');
-      setPaymentQrPublicId(userData.paymentQrPublicId?.trim() || '');
-      setPaymentDetails(userData.paymentDetails?.trim() || '');
-      setCashBoxNpr(Number(userData.cashBoxNpr || 0));
+        automationAgentId: userData.automationAgentId,
+        paymentQrUrl: userData.paymentQrUrl,
+        paymentQrPublicId: userData.paymentQrPublicId,
+        paymentDetails: userData.paymentDetails,
+        cashBoxNpr: userData.cashBoxNpr,
+      },
+      firebaseUser.uid
+    );
+    setCoadminUid(resolvedCoadminUid);
+
+    const baseDataStartedAt = Date.now();
+    await refreshPageData(true, resolvedCoadminUid);
+    logCarerPageStartup({
+      stage: 'base_data_done',
+      ok: true,
+      uid: firebaseUser.uid,
+      role: 'carer',
+      durationMs: Date.now() - baseDataStartedAt,
+      reason: 'firebase_fallback',
+    });
+  }
+
+  async function initializePageFromAppSession(sessionUser: SessionUser) {
+    if (pageInitInFlightUidRef.current === sessionUser.uid) {
+      return;
+    }
+    pageInitInFlightUidRef.current = sessionUser.uid;
+
+    setBootstrapping(true);
+    setErrorMessage('');
+    setAutomationTokenWarning('');
+
+    try {
+      const profileStartedAt = Date.now();
+      const profile = await fetchCarerDashboardProfile();
+      const actorUid = sessionUser.uid;
+
+      let resolvedCoadminUid = String(sessionUser.coadminUid || profile?.coadminUid || '').trim();
+      if (!resolvedCoadminUid) {
+        try {
+          resolvedCoadminUid = await getCurrentUserCoadminUid();
+        } catch {
+          resolvedCoadminUid = '';
+        }
+      }
+      if (!resolvedCoadminUid) {
+        throw new Error('No coadmin assigned to this user.');
+      }
+
+      const identityProfile = profile ?? {
+        uid: actorUid,
+        username: sessionUser.username || 'Carer',
+        automationAgentId: null,
+        paymentQrUrl: '',
+        paymentQrPublicId: '',
+        paymentDetails: '',
+        cashBoxNpr: 0,
+      };
+
+      applyCarerProfileToState(identityProfile, actorUid);
       setCoadminUid(resolvedCoadminUid);
+
+      logCarerPageStartup({
+        stage: 'actor_ready',
+        ok: true,
+        uid: actorUid,
+        role: 'carer',
+        durationMs: Date.now() - profileStartedAt,
+        extra: {
+          coadminUid: resolvedCoadminUid,
+          profile_source: profile?.source || 'session_only',
+        },
+      });
+
+      void enrichCarerProfileFromFirestoreOptional(actorUid);
+
+      const linkedAgent = String(identityProfile.automationAgentId || '').trim();
+      if (linkedAgent) {
+        void refreshAutoTickBrowserToken(linkedAgent);
+      }
 
       await refreshPageData(true, resolvedCoadminUid);
     } catch (error) {
+      logCarerPageStartup({
+        stage: 'base_data_done',
+        ok: false,
+        uid: sessionUser.uid,
+        role: 'carer',
+        reason: error instanceof Error ? error.message : 'initialize_failed',
+        firestore_code: firestoreErrorCode(error),
+      });
       setErrorMessage(
         error instanceof Error ? error.message : 'Failed to load the carer page.'
       );
     } finally {
+      pageInitInFlightUidRef.current = null;
+      logCarerPageStartup({
+        stage: 'bootstrap_complete',
+        ok: true,
+        uid: sessionUser.uid,
+        role: 'carer',
+        durationMs: Date.now() - startupMountStartedAtRef.current,
+        extra: {
+          path: 'app_session',
+          refreshing_still_blocking: false,
+        },
+      });
+      setBootstrapping(false);
+    }
+  }
+
+  async function runBackgroundCarerTaskSync(nextCoadminUid: string, baseData: CarerBaseData) {
+    const taskSyncStartedAt = Date.now();
+    setTaskSyncRunning(true);
+    setTaskSyncError(null);
+
+    logCarerPageTaskSync({
+      stage: 'start',
+      coadminUid: nextCoadminUid,
+    });
+    logCarerPageStartup({
+      stage: 'task_sync_start',
+      ok: true,
+      uid: carerIdentity?.uid ?? null,
+      role: 'carer',
+      extra: {
+        coadminUid: nextCoadminUid,
+        task_sync_background: true,
+        blocks_refreshing_spinner: false,
+        carer_tasks_sql_read: CARER_TASKS_SQL_READ_ENABLED,
+        automation_jobs_sql_read: AUTOMATION_JOBS_SQL_READ_ENABLED,
+      },
+    });
+
+    try {
+      await releaseExpiredCarerTasks(nextCoadminUid);
+      const synced = await syncCarerTasksForCoadmin(nextCoadminUid, baseData);
+
+      setPendingRequests(sortByNewest(synced.pendingRequests));
+      setTaskSyncLastDoneAt(Date.now());
+      setTaskSyncError(null);
+
+      const durationMs = Date.now() - taskSyncStartedAt;
+      logCarerPageTaskSync({
+        stage: 'done',
+        ok: true,
+        durationMs,
+        coadminUid: nextCoadminUid,
+        pendingRequestsCount: synced.pendingRequests.length,
+      });
+      logCarerPageStartup({
+        stage: 'task_sync_done',
+        ok: true,
+        uid: carerIdentity?.uid ?? null,
+        role: 'carer',
+        durationMs,
+        extra: {
+          pendingRequestsCount: synced.pendingRequests.length,
+          task_sync_background: true,
+          blocks_refreshing_spinner: false,
+        },
+      });
+
+      console.info(
+        `[CARER_BOOTSTRAP_TIMING] stage='task_sync_done' durationMs=${durationMs}`
+      );
+    } catch (error) {
+      const durationMs = Date.now() - taskSyncStartedAt;
+      const quotaExhausted = isFirestoreQuotaExhausted(error);
+      const message = error instanceof Error ? error.message : 'task_sync_failed';
+      const firestoreCode =
+        firestoreErrorCode(error) ||
+        (error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'number'
+          ? (error as { code: number }).code
+          : null);
+
+      setTaskSyncError(
+        quotaExhausted
+          ? 'Task sync skipped because Firebase quota is exhausted'
+          : message
+      );
+
+      logCarerPageTaskSync({
+        stage: 'error',
+        ok: false,
+        durationMs,
+        error_code: quotaExhausted ? 'RESOURCE_EXHAUSTED' : 'task_sync_failed',
+        firestore_code: firestoreCode,
+        coadminUid: nextCoadminUid,
+      });
+      logCarerPageStartup({
+        stage: 'task_sync_done',
+        ok: false,
+        uid: carerIdentity?.uid ?? null,
+        role: 'carer',
+        durationMs,
+        reason: message,
+        error_code: quotaExhausted ? 'RESOURCE_EXHAUSTED' : 'task_sync_failed',
+        firestore_code: typeof firestoreCode === 'number' ? String(firestoreCode) : firestoreCode,
+        extra: {
+          task_sync_background: true,
+          blocks_refreshing_spinner: false,
+        },
+      });
+      console.error(
+        `[CARER_BOOTSTRAP_TIMING] stage='task_sync_failed' durationMs=${durationMs}`,
+        error
+      );
+    } finally {
+      setTaskSyncRunning(false);
+    }
+  }
+
+  async function initializePageFromFirebase(firebaseUser: User) {
+    if (pageInitInFlightUidRef.current === firebaseUser.uid) {
+      return;
+    }
+    pageInitInFlightUidRef.current = firebaseUser.uid;
+
+    setBootstrapping(true);
+    setErrorMessage('');
+    setAutomationTokenWarning('');
+
+    try {
+      await loadCarerProfileFromFirestoreFallback(firebaseUser);
+      logCarerPageStartup({
+        stage: 'actor_ready',
+        ok: true,
+        uid: firebaseUser.uid,
+        role: 'carer',
+        reason: 'firebase_fallback',
+      });
+    } catch (error) {
+      logCarerPageStartup({
+        stage: 'actor_ready',
+        ok: false,
+        uid: firebaseUser.uid,
+        role: 'carer',
+        reason: error instanceof Error ? error.message : 'initialize_failed',
+        firestore_code: firestoreErrorCode(error),
+      });
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Failed to load the carer page.'
+      );
+    } finally {
+      pageInitInFlightUidRef.current = null;
+      logCarerPageStartup({
+        stage: 'bootstrap_complete',
+        ok: true,
+        uid: firebaseUser.uid,
+        role: 'carer',
+        durationMs: Date.now() - startupMountStartedAtRef.current,
+        extra: {
+          path: 'firebase',
+          refreshing_still_blocking: false,
+        },
+      });
       setBootstrapping(false);
     }
   }
@@ -1690,24 +2150,70 @@ export default function CarerPage() {
       setRefreshing(true);
     }
 
-    try {
-      await releaseExpiredCarerTasks(nextCoadminUid);
+    const bootstrapStartedAt = Date.now();
+    logCarerPageStartup({
+      stage: 'base_data_start',
+      ok: true,
+      uid: carerIdentity?.uid ?? null,
+      role: 'carer',
+      extra: { coadminUid: nextCoadminUid },
+    });
 
-      const synced = await syncCarerTasksForCoadmin(nextCoadminUid);
-      const latestLogins = sortByNewest(
-        await getPlayerGameLoginsByCoadmin(nextCoadminUid)
+    try {
+      const baseData = await fetchCarerBaseDataForCoadmin(nextCoadminUid);
+
+      setPlayers(sortByNewest(baseData.players));
+      setGameOptions(sortByNewest(baseData.games));
+      setAllPlayerLogins(sortByNewest(baseData.logins));
+      setErrorMessage('');
+
+      logCarerPageStartup({
+        stage: 'base_data_done',
+        ok: true,
+        uid: carerIdentity?.uid ?? null,
+        role: 'carer',
+        durationMs: Date.now() - bootstrapStartedAt,
+        extra: {
+          playersCount: baseData.players.length,
+          gameOptionsCount: baseData.games.length,
+          playerGameLoginsCount: baseData.logins.length,
+        },
+      });
+
+      console.info(
+        `[CARER_BOOTSTRAP_TIMING] stage='base_data_loaded' playersCount=${baseData.players.length} gameOptionsCount=${baseData.games.length} playerGameLoginsCount=${baseData.logins.length} durationMs=${Date.now() - bootstrapStartedAt}`
       );
 
-      setPlayers(sortByNewest(synced.players));
-      setGameOptions(sortByNewest(synced.games));
-      setAllPlayerLogins(latestLogins);
-      setPendingRequests(sortByNewest(synced.pendingRequests));
-      setErrorMessage('');
+      if (showLoader) {
+        setRefreshing(false);
+      }
+
+      logCarerPageStartup({
+        stage: 'ready_after_base_data',
+        ok: true,
+        uid: carerIdentity?.uid ?? null,
+        role: 'carer',
+        durationMs: Date.now() - bootstrapStartedAt,
+        extra: {
+          refreshing: false,
+          task_sync_background: true,
+        },
+      });
+
+      void runBackgroundCarerTaskSync(nextCoadminUid, baseData);
     } catch (error) {
+      logCarerPageStartup({
+        stage: 'base_data_done',
+        ok: false,
+        uid: carerIdentity?.uid ?? null,
+        role: 'carer',
+        durationMs: Date.now() - bootstrapStartedAt,
+        reason: error instanceof Error ? error.message : 'base_data_failed',
+      });
       setErrorMessage(
         error instanceof Error ? error.message : 'Failed to refresh carer data.'
       );
-    } finally {
+
       if (showLoader) {
         setRefreshing(false);
       }
@@ -1820,9 +2326,8 @@ export default function CarerPage() {
     setBrowserWarmupMessage('Warming...');
     setBrowserWarmupGames({});
     try {
-      const logins = await getGameLoginsByCoadmin(coadminUid);
       const byGame = new Map(
-        logins.map((login) => [normalizeWarmupGameName(login.gameName), login])
+        gameOptions.map((login) => [normalizeWarmupGameName(login.gameName), login])
       );
       const games = WARMUP_GAME_NAMES.flatMap((gameName) => {
         const login = byGame.get(normalizeWarmupGameName(gameName));
@@ -3030,6 +3535,9 @@ export default function CarerPage() {
           {agentPanelNotice ? (
             <p className="mt-2 text-sm font-semibold text-emerald-300">{agentPanelNotice}</p>
           ) : null}
+          {automationTokenWarning ? (
+            <p className="mt-2 text-sm font-semibold text-amber-300">{automationTokenWarning}</p>
+          ) : null}
 
           <p className="mt-3 text-[11px] text-violet-200/55">
             Firestore job document id format:{' '}
@@ -4108,6 +4616,14 @@ export default function CarerPage() {
           {(bootstrapping || refreshing) && (
             <div className="mb-6 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-neutral-300">
               {bootstrapping ? 'Loading carer page...' : 'Refreshing data...'}
+            </div>
+          )}
+
+          {!bootstrapping && !refreshing && (taskSyncRunning || taskSyncError) && (
+            <div className="mb-4 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-neutral-400">
+              {taskSyncRunning
+                ? 'Syncing old Firestore tasks...'
+                : taskSyncError}
             </div>
           )}
 

@@ -20,6 +20,7 @@ import { getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
 import { upsertCarerTaskForPlayerGameRequest } from '@/features/games/carerTasks';
 import type { PlayerGameRequest } from '@/features/games/playerGameRequests';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 
 const BONUS_EVENTS_DEBUG =
   process.env.NODE_ENV !== 'production' &&
@@ -618,13 +619,9 @@ export async function setCoadminAutoBonusPercentRange(values: {
   }
 
   const normalizedRange = normalizeAutoBonusPercentRange(values);
-  const idToken = await currentUser.getIdToken();
   const response = await fetch('/api/coadmin/bonus-events/update-range', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${idToken}`,
-    },
+    headers: await getFirebaseApiHeaders(),
     body: JSON.stringify({
       minPercent: normalizedRange.minPercent,
       maxPercent: normalizedRange.maxPercent,

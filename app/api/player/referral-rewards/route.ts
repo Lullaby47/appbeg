@@ -2,29 +2,23 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
-import { requireApiUser } from '@/lib/firebase/apiAuth';
+import {
+  apiUserAuthFirestoreMs,
+  apiUserAuthSqlMs,
+  requireApiUser,
+} from '@/lib/firebase/apiAuth';
 import {
   getLockedPromoCoins,
   isReferralRechargeEligible,
   REFERRAL_REWARD_COINS,
 } from '@/lib/economy/policy';
+import {
+  buildReferralClaimDocId,
+  loadReferralRewardGroups,
+} from '@/lib/server/playerReferralRewardsRead';
+import { logPlayerRouteTiming } from '@/lib/server/playerRouteTiming';
 import { mirrorReferralRewardClaimById } from '@/lib/sql/referralRewardClaimsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
-
-type RewardGroup = {
-  referredPlayerUid: string;
-  referredPlayerName: string;
-  pendingRewardCoins: number;
-  hasClaimableReward: boolean;
-};
-
-type RechargeLite = {
-  id: string;
-  amount: number;
-  createdAtMs: number;
-  bonusEventId: string;
-  bonusPercentage: number | null;
-};
 
 function getNumber(value: unknown) {
   const n = Number(value || 0);
@@ -48,34 +42,24 @@ function toMs(value: unknown) {
   return 0;
 }
 
-function buildClaimDocId(referrerUid: string, referredPlayerUid: string) {
-  return `${referrerUid}__${referredPlayerUid}`;
-}
-
 async function verifyPlayerFromAuthHeader(request: Request) {
   const auth = await requireApiUser(request, ['player']);
   if ('response' in auth) {
     const payload = (await auth.response.json().catch(() => ({}))) as { error?: string };
-    throw new Error(payload.error || 'Missing or invalid authorization.');
-  }
-  const referrerUid = auth.user.uid;
-  const referrerRef = adminDb.collection('users').doc(referrerUid);
-  const referrerSnap = await referrerRef.get();
-  if (!referrerSnap.exists) {
-    throw new Error('Player profile not found.');
+    const error = new Error(payload.error || 'Missing or invalid authorization.');
+    (error as Error & { authTiming?: typeof auth.timing }).authTiming = auth.timing;
+    throw error;
   }
 
-  const referrerData = referrerSnap.data() as { role?: string };
-  if (String(referrerData.role || '').toLowerCase() !== 'player') {
-    throw new Error('Only players can access referral rewards.');
-  }
-
-  return { referrerUid, referrerRef };
+  return {
+    referrerUid: auth.user.uid,
+    referrerRef: adminDb.collection('users').doc(auth.user.uid),
+    authTiming: auth.timing,
+  };
 }
 
-async function loadQualifiedRechargeForReferredPlayer(
-  referredPlayerUid: string
-): Promise<RechargeLite | null> {
+/** POST claim path: Firestore authority for eligibility + money writes. */
+async function loadQualifiedRechargeForReferredPlayer(referredPlayerUid: string) {
   const rechargesSnap = await adminDb
     .collection('playerGameRequests')
     .where('playerUid', '==', referredPlayerUid)
@@ -99,7 +83,7 @@ async function loadQualifiedRechargeForReferredPlayer(
         createdAtMs: Math.max(toMs(data.completedAt), toMs(data.createdAt)),
         bonusEventId: String(data.bonusEventId || '').trim(),
         bonusPercentage: data.bonusEventId ? getNumber(data.bonusPercentage) : null,
-      } satisfies RechargeLite;
+      };
     })
     .filter(
       (recharge) =>
@@ -114,57 +98,52 @@ async function loadQualifiedRechargeForReferredPlayer(
   return recharges[0] || null;
 }
 
-async function loadRewardGroups(referrerUid: string): Promise<RewardGroup[]> {
-  const referredSnap = await adminDb
-    .collection('users')
-    .where('role', '==', 'player')
-    .where('referredByUid', '==', referrerUid)
-    .get();
-
-  if (referredSnap.empty) {
-    return [];
-  }
-
-  const groups = await Promise.all(
-    referredSnap.docs.map(async (referredDoc) => {
-      const referredPlayerUid = referredDoc.id;
-      const referredData = referredDoc.data() as { username?: string };
-      const referredPlayerName =
-        String(referredData.username || '').trim() || 'Unnamed Player';
-
-      const [claimSnap, qualifiedRecharge] = await Promise.all([
-        adminDb
-          .collection('referralRewardClaims')
-          .doc(buildClaimDocId(referrerUid, referredPlayerUid))
-          .get(),
-        loadQualifiedRechargeForReferredPlayer(referredPlayerUid),
-      ]);
-
-      const alreadyClaimed =
-        claimSnap.exists &&
-        String((claimSnap.data() as { status?: string }).status || '').toLowerCase() ===
-          'claimed';
-      const isPending = Boolean(qualifiedRecharge) && !alreadyClaimed;
-
-      return {
-        referredPlayerUid,
-        referredPlayerName,
-        pendingRewardCoins: isPending ? REFERRAL_REWARD_COINS : 0,
-        hasClaimableReward: isPending,
-      } satisfies RewardGroup;
-    })
-  );
-
-  return groups.filter((group) => group.pendingRewardCoins > 0);
-}
-
 export async function GET(request: Request) {
+  const startedAt = Date.now();
+  let authMs = 0;
+  let authSqlMs = 0;
+  let authFirestoreMs = 0;
+
   try {
-    const { referrerUid } = await verifyPlayerFromAuthHeader(request);
-    const groups = await loadRewardGroups(referrerUid);
+    const { referrerUid, authTiming } = await verifyPlayerFromAuthHeader(request);
+    authMs = authTiming.auth_ms;
+    authSqlMs = apiUserAuthSqlMs(authTiming);
+    authFirestoreMs = apiUserAuthFirestoreMs(authTiming);
+
+    const { groups, trace } = await loadReferralRewardGroups(referrerUid);
+    const totalMs = Date.now() - startedAt;
+
+    logPlayerRouteTiming('[PLAYER_REFERRAL_REWARDS]', {
+      method: 'GET',
+      ok: true,
+      uid: referrerUid,
+      groupCount: groups.length,
+      auth_ms: authMs,
+      sql_ms: authSqlMs + trace.sqlMs,
+      firestore_ms: authFirestoreMs + trace.firestoreMs,
+      total_ms: totalMs,
+      trace,
+    });
     return NextResponse.json({ success: true, groups });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to load referral rewards.';
+    const authTiming = (error as Error & { authTiming?: { auth_ms: number; sql_profile_ms: number; sql_session_ms: number; session_doc_ms: number; user_doc_ms: number } })
+      .authTiming;
+    if (authTiming) {
+      authMs = authTiming.auth_ms;
+      authSqlMs = authTiming.sql_profile_ms + authTiming.sql_session_ms;
+      authFirestoreMs = authTiming.session_doc_ms + authTiming.user_doc_ms;
+    }
+    const totalMs = Date.now() - startedAt;
+    logPlayerRouteTiming('[PLAYER_REFERRAL_REWARDS]', {
+      method: 'GET',
+      ok: false,
+      error: message,
+      auth_ms: authMs,
+      sql_ms: authSqlMs,
+      firestore_ms: authFirestoreMs,
+      total_ms: totalMs,
+    });
     return NextResponse.json(
       { error: message },
       { status: /authorization|token|logged out/i.test(message) ? 401 : 400 }
@@ -173,8 +152,18 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const startedAt = Date.now();
+  let authMs = 0;
+  let authSqlMs = 0;
+  let authFirestoreMs = 0;
+  let firestoreMs = 0;
+
   try {
-    const { referrerUid, referrerRef } = await verifyPlayerFromAuthHeader(request);
+    const { referrerUid, referrerRef, authTiming } = await verifyPlayerFromAuthHeader(request);
+    authMs = authTiming.auth_ms;
+    authSqlMs = apiUserAuthSqlMs(authTiming);
+    authFirestoreMs = apiUserAuthFirestoreMs(authTiming);
+
     const body = (await request.json()) as { referredPlayerUid?: string };
     const referredPlayerUid = String(body.referredPlayerUid || '').trim();
     if (!referredPlayerUid) {
@@ -187,7 +176,8 @@ export async function POST(request: Request) {
     }
 
     let rewardCoins = 0;
-    const claimId = buildClaimDocId(referrerUid, referredPlayerUid);
+    const claimId = buildReferralClaimDocId(referrerUid, referredPlayerUid);
+    const transactionStartedAt = Date.now();
 
     await adminDb.runTransaction(async (transaction) => {
       const [referrerSnap, referredSnap] = await Promise.all([
@@ -211,9 +201,7 @@ export async function POST(request: Request) {
         throw new Error('This player is not in your referral list.');
       }
 
-      const claimRef = adminDb
-        .collection('referralRewardClaims')
-        .doc(claimId);
+      const claimRef = adminDb.collection('referralRewardClaims').doc(claimId);
       const claimSnap = await transaction.get(claimRef);
       if (
         claimSnap.exists &&
@@ -255,9 +243,38 @@ export async function POST(request: Request) {
       });
     });
 
+    firestoreMs = Date.now() - transactionStartedAt;
+
     void mirrorReferralRewardClaimById(claimId, 'appbeg_referral_reward_claim');
     void mirrorUserBalanceSnapshotById(referrerUid, 'appbeg_referral_reward_claim');
     void mirrorUserBalanceSnapshotById(referredPlayerUid, 'appbeg_referral_reward_claim');
+
+    const totalMs = Date.now() - startedAt;
+    logPlayerRouteTiming('[PLAYER_REFERRAL_REWARDS]', {
+      method: 'POST',
+      ok: true,
+      uid: referrerUid,
+      referredPlayerUid,
+      auth_ms: authMs,
+      sql_ms: authSqlMs,
+      firestore_ms: authFirestoreMs + firestoreMs,
+      total_ms: totalMs,
+      firestore_reads: [
+        {
+          collection: 'playerGameRequests',
+          path: `playerGameRequests?playerUid=${referredPlayerUid}&type=recharge&status=completed`,
+          kind: 'query',
+          source: 'firestore',
+        },
+        {
+          collection: 'users|referralRewardClaims',
+          path: 'runTransaction(users + referralRewardClaims)',
+          kind: 'transaction',
+          durationMs: firestoreMs,
+          source: 'firestore',
+        },
+      ],
+    });
     return NextResponse.json({
       success: true,
       rewardCoins,
@@ -266,6 +283,16 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to claim referral reward.';
+    const totalMs = Date.now() - startedAt;
+    logPlayerRouteTiming('[PLAYER_REFERRAL_REWARDS]', {
+      method: 'POST',
+      ok: false,
+      error: message,
+      auth_ms: authMs,
+      sql_ms: authSqlMs,
+      firestore_ms: authFirestoreMs + firestoreMs,
+      total_ms: totalMs,
+    });
     return NextResponse.json(
       { error: message },
       { status: /authorization|token|logged out/i.test(message) ? 401 : 400 }

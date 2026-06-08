@@ -20,6 +20,10 @@ import { mirrorPlayerById } from '@/lib/sql/playersCache';
 import { mirrorReferralById, mirrorReferralCodeByCode } from '@/lib/sql/referralsCache';
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
+import {
+  createUserDirectoryInSql,
+  isActiveUsernameTakenInSql,
+} from '@/lib/sql/userDirectoryWrite';
 
 type CreatableRole = 'staff' | 'carer' | 'player';
 
@@ -293,7 +297,10 @@ export async function POST(request: Request) {
       .limit(1)
       .get();
 
-    if (!usernameSnap.empty) {
+    if (
+      !usernameSnap.empty ||
+      (role !== 'player' && (await isActiveUsernameTakenInSql(username)))
+    ) {
       return NextResponse.json({ error: 'Username already exists.' }, { status: 409 });
     }
 
@@ -444,7 +451,7 @@ export async function POST(request: Request) {
         coadminUid: ownerCoadminUid,
       });
     } else {
-      await userRef.set({
+      const workerUser = {
         uid: authUser.uid,
         username,
         email,
@@ -453,9 +460,80 @@ export async function POST(request: Request) {
         coadminUid: ownerCoadminUid,
         createdAt: new Date(),
         status: 'active',
-      });
+      };
+      const workerStartedAt = Date.now();
+
+      try {
+        await createUserDirectoryInSql({
+          uid: authUser.uid,
+          username,
+          email,
+          role,
+          status: 'active',
+          coadminUid: ownerCoadminUid,
+          createdBy: ownerCoadminUid,
+          password,
+          rawData: workerUser,
+          actorUid: auth.user.uid,
+          actorRole: auth.user.role,
+        });
+      } catch (error) {
+        console.info('[USER_DIRECTORY_SQL]', {
+          action: 'create_user',
+          route: 'create_staff',
+          uid: authUser.uid,
+          role,
+          actorUid: auth.user.uid,
+          sql_ok: false,
+          firebase_create_ok: true,
+          firestore_mirror_ok: false,
+          durationMs: Date.now() - workerStartedAt,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+
+      let firestoreMirrorOk = false;
+      try {
+        await userRef.set(workerUser);
+        firestoreMirrorOk = true;
+        void mirrorUserBalanceSnapshotById(authUser.uid, 'appbeg_create_worker');
+      } catch (error) {
+        console.warn('[USER_DIRECTORY_SQL] firestore mirror failed', {
+          action: 'create_user',
+          route: 'create_staff',
+          uid: authUser.uid,
+          role,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
       createdAuthUid = null;
-      void mirrorUserBalanceSnapshotById(authUser.uid, 'appbeg_create_worker');
+
+      console.info('[USER_DIRECTORY_SQL]', {
+        action: 'create_user',
+        route: 'create_staff',
+        uid: authUser.uid,
+        role,
+        actorUid: auth.user.uid,
+        sql_ok: true,
+        firebase_create_ok: true,
+        firestore_mirror_ok: firestoreMirrorOk,
+        durationMs: Date.now() - workerStartedAt,
+      });
+
+      return NextResponse.json({
+        success: true,
+        uid: authUser.uid,
+        message: `${role} created.`,
+        referralApplied,
+        referralBonusCoins,
+        referredByUid,
+        referredByUsername,
+        sqlOk: true,
+        firebaseMirrorOk: true,
+        firestoreMirrorOk,
+      });
     }
 
     return NextResponse.json({

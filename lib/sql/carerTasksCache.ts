@@ -15,12 +15,15 @@ import {
 import { emitCarerTaskOutboxEvent } from '@/lib/sql/liveOutbox';
 import {
   cleanText,
+  createPlayerMirrorSqlTiming,
   getPlayerMirrorPool,
   isPgConnectionTimeoutError,
   logPlayerMirrorPoolStats,
   normalizeJson,
   numberOrNull,
+  runMirrorPoolQuery,
   toIsoString,
+  type PlayerMirrorSqlTiming,
 } from '@/lib/sql/playerMirrorCommon';
 
 export type CarerTaskCacheInput = {
@@ -487,5 +490,353 @@ export async function getCarerTaskCacheById(firebaseId: string) {
   } catch (error) {
     console.error('[CARER_TASKS_CACHE] mirror failed', { firebaseId: cleanId, error });
     return null;
+  }
+}
+
+export type AutoTickPendingTaskCandidate = Record<string, unknown> & { id: string };
+
+export type PendingCarerTaskCandidatesSqlResult = {
+  candidates: AutoTickPendingTaskCandidate[];
+  timing: PlayerMirrorSqlTiming;
+  hit: boolean;
+  missReason: 'postgres_unavailable' | 'lookup_failed' | 'missing_required_fields' | null;
+};
+
+function mapSqlRowToAutoTickPendingTask(row: Record<string, unknown>): AutoTickPendingTaskCandidate | null {
+  const taskId = cleanText(row.firebase_id);
+  if (!taskId) {
+    return null;
+  }
+
+  const raw =
+    row.raw_firestore_data &&
+    typeof row.raw_firestore_data === 'object' &&
+    !Array.isArray(row.raw_firestore_data)
+      ? { ...(row.raw_firestore_data as Record<string, unknown>) }
+      : {};
+
+  const gameName = cleanText(row.game_name) || cleanText(raw.gameName) || cleanText(raw.game);
+  const playerUid = cleanText(row.player_uid) || cleanText(raw.playerUid) || cleanText(raw.playerId);
+  const taskType =
+    cleanText(row.type) ||
+    cleanText(raw.type) ||
+    cleanText(raw.kind) ||
+    cleanText(raw.action) ||
+    cleanText(raw.taskAction);
+
+  return {
+    ...raw,
+    id: taskId,
+    coadminUid: cleanText(row.coadmin_uid) || cleanText(raw.coadminUid) || cleanText(raw.createdBy),
+    status: cleanText(row.status) || cleanText(raw.status),
+    type: taskType,
+    kind: taskType || raw.kind,
+    playerUid,
+    playerId: playerUid || raw.playerId,
+    playerUsername: cleanText(row.player_username) || cleanText(raw.playerUsername) || cleanText(raw.player),
+    player: cleanText(row.player_username) || cleanText(raw.player) || cleanText(raw.playerUsername),
+    gameName,
+    game: gameName,
+    currentUsername: cleanText(row.current_username) || cleanText(raw.currentUsername),
+    gameAccountUsername:
+      cleanText(row.game_account_username) || cleanText(raw.gameAccountUsername),
+    loginUrl: cleanText(row.login_url) || cleanText(raw.loginUrl),
+    gameLoginUrl: cleanText(row.game_login_url) || cleanText(raw.gameLoginUrl),
+    siteUrl: cleanText(row.site_url) || cleanText(raw.siteUrl),
+    baseUrl: cleanText(row.base_url) || cleanText(raw.baseUrl),
+    lobbyUrl: cleanText(row.lobby_url) || cleanText(raw.lobbyUrl),
+    gameCredentialUsername:
+      cleanText(row.game_credential_username) || cleanText(raw.gameCredentialUsername),
+    gameCredentialPassword:
+      cleanText(row.game_credential_password) || cleanText(raw.gameCredentialPassword),
+    assignedCarerUid: cleanText(row.assigned_carer_uid) || cleanText(raw.assignedCarerUid),
+    assignedCarerUsername:
+      cleanText(row.assigned_carer_username) || cleanText(raw.assignedCarerUsername),
+    assignedCarer: cleanText(row.assigned_carer) || cleanText(raw.assignedCarer),
+    claimedByUid: cleanText(row.claimed_by_uid) || cleanText(raw.claimedByUid),
+    automationJobId: cleanText(row.automation_job_id) || cleanText(raw.automationJobId),
+    createdAt: row.created_at || raw.createdAt,
+    updatedAt: row.updated_at || raw.updatedAt,
+  };
+}
+
+function hasAutoTickPendingTaskFields(task: AutoTickPendingTaskCandidate) {
+  return Boolean(
+    cleanText(task.id) &&
+      (cleanText(task.type) ||
+        cleanText(task.kind) ||
+        cleanText(task.action) ||
+        cleanText(task.taskAction) ||
+        (task.raw_firestore_data && typeof task.raw_firestore_data === 'object'))
+  );
+}
+
+export function hasAutoTickTaskRecheckFields(task: Record<string, unknown>) {
+  if (!cleanText(task.id)) {
+    return false;
+  }
+  return Boolean(
+    cleanText(task.status) ||
+      cleanText(task.assignedCarerUid) ||
+      cleanText(task.claimedByUid) ||
+      cleanText(task.automationJobId)
+  );
+}
+
+const AUTO_TICK_TASK_RECHECK_SQL = `
+  SELECT
+    firebase_id,
+    coadmin_uid,
+    type,
+    player_uid,
+    player_username,
+    game_name,
+    status,
+    current_username,
+    game_account_username,
+    login_url,
+    game_login_url,
+    lobby_url,
+    site_url,
+    base_url,
+    game_credential_username,
+    game_credential_password,
+    assigned_carer_uid,
+    assigned_carer_username,
+    assigned_carer,
+    claimed_by_uid,
+    automation_job_id,
+    created_at,
+    updated_at,
+    raw_firestore_data
+  FROM public.carer_tasks_cache
+  WHERE firebase_id = $1
+    AND deleted_at IS NULL
+  LIMIT 1
+`;
+
+export type AutoTickTaskRecheckSqlResult = {
+  task: AutoTickPendingTaskCandidate | null;
+  timing: PlayerMirrorSqlTiming;
+  hit: boolean;
+  missReason:
+    | 'postgres_unavailable'
+    | 'lookup_failed'
+    | 'not_found'
+    | 'missing_required_fields'
+    | null;
+};
+
+export async function lookupAutoTickTaskRecheckFromSql(
+  taskId: string
+): Promise<AutoTickTaskRecheckSqlResult> {
+  const startedAt = Date.now();
+  const cleanTaskId = cleanText(taskId);
+  const db = getPlayerMirrorPool();
+  const emptyTiming = createPlayerMirrorSqlTiming({
+    total_ms: Date.now() - startedAt,
+  });
+
+  if (!db || !cleanTaskId) {
+    return {
+      task: null,
+      timing: emptyTiming,
+      hit: false,
+      missReason: 'postgres_unavailable',
+    };
+  }
+
+  try {
+    const { rows, timing } = await runMirrorPoolQuery<Record<string, unknown>>(db, AUTO_TICK_TASK_RECHECK_SQL, [
+      cleanTaskId,
+    ]);
+    const row = rows[0];
+    if (!row) {
+      return {
+        task: null,
+        timing,
+        hit: false,
+        missReason: 'not_found',
+      };
+    }
+
+    const task = mapSqlRowToAutoTickPendingTask(row);
+    if (!task || !hasAutoTickTaskRecheckFields(task)) {
+      return {
+        task,
+        timing,
+        hit: false,
+        missReason: 'missing_required_fields',
+      };
+    }
+
+    return {
+      task,
+      timing,
+      hit: true,
+      missReason: null,
+    };
+  } catch (error) {
+    console.info(
+      '[AUTO_TICK_TASK_RECHECK_SQL] hit=false taskId=%s durationMs=%s reason=lookup_failed error=%s',
+      cleanTaskId,
+      Date.now() - startedAt,
+      error instanceof Error ? error.message : String(error)
+    );
+    return {
+      task: null,
+      timing: createPlayerMirrorSqlTiming({
+        total_ms: Date.now() - startedAt,
+      }),
+      hit: false,
+      missReason: 'lookup_failed',
+    };
+  }
+}
+
+export async function getPendingCarerTaskCandidatesFromSql(
+  coadminUid: string,
+  limit: number,
+  carerUid?: string
+): Promise<PendingCarerTaskCandidatesSqlResult> {
+  const startedAt = Date.now();
+  const cleanCoadminUid = cleanText(coadminUid);
+  const cleanCarerUid = cleanText(carerUid);
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 15, 50));
+  const db = getPlayerMirrorPool();
+  const emptyTiming = createPlayerMirrorSqlTiming({
+    total_ms: Date.now() - startedAt,
+  });
+
+  if (!db || !cleanCoadminUid) {
+    console.info(
+      '[AUTO_TICK_PENDING_SQL] hit=false candidateCount=%s coadminUid=%s carerUid=%s durationMs=%s reason=%s',
+      0,
+      cleanCoadminUid || null,
+      cleanCarerUid || null,
+      emptyTiming.total_ms,
+      'postgres_unavailable'
+    );
+    return {
+      candidates: [],
+      timing: emptyTiming,
+      hit: false,
+      missReason: 'postgres_unavailable',
+    };
+  }
+
+  const pendingSql = `
+    SELECT
+      firebase_id,
+      coadmin_uid,
+      type,
+      player_uid,
+      player_username,
+      game_name,
+      status,
+      current_username,
+      game_account_username,
+      login_url,
+      game_login_url,
+      lobby_url,
+      site_url,
+      base_url,
+      game_credential_username,
+      game_credential_password,
+      assigned_carer_uid,
+      assigned_carer_username,
+      assigned_carer,
+      claimed_by_uid,
+      automation_job_id,
+      created_at,
+      updated_at,
+      raw_firestore_data
+    FROM public.carer_tasks_cache
+    WHERE coadmin_uid = $1
+      AND status = 'pending'
+      AND deleted_at IS NULL
+    ORDER BY created_at DESC NULLS LAST
+    LIMIT $2
+  `;
+
+  try {
+    const { rows, timing } = await runMirrorPoolQuery<Record<string, unknown>>(db, pendingSql, [
+      cleanCoadminUid,
+      safeLimit,
+    ]);
+
+    const candidates = rows
+      .map((row) => mapSqlRowToAutoTickPendingTask(row))
+      .filter((task): task is AutoTickPendingTaskCandidate => task !== null);
+
+    if (rows.length > 0 && candidates.length === 0) {
+      console.info(
+        '[AUTO_TICK_PENDING_SQL] hit=false candidateCount=%s coadminUid=%s carerUid=%s durationMs=%s reason=%s rowCount=%s',
+        0,
+        cleanCoadminUid,
+        cleanCarerUid || null,
+        timing.total_ms,
+        'missing_required_fields',
+        rows.length
+      );
+      return {
+        candidates: [],
+        timing,
+        hit: false,
+        missReason: 'missing_required_fields',
+      };
+    }
+
+    if (candidates.some((task) => !hasAutoTickPendingTaskFields(task))) {
+      console.info(
+        '[AUTO_TICK_PENDING_SQL] hit=false candidateCount=%s coadminUid=%s carerUid=%s durationMs=%s reason=%s',
+        candidates.length,
+        cleanCoadminUid,
+        cleanCarerUid || null,
+        timing.total_ms,
+        'missing_required_fields'
+      );
+      return {
+        candidates: [],
+        timing,
+        hit: false,
+        missReason: 'missing_required_fields',
+      };
+    }
+
+    console.info(
+      '[AUTO_TICK_PENDING_SQL] hit=true candidateCount=%s coadminUid=%s carerUid=%s durationMs=%s pool_acquire_ms=%s query_exec_ms=%s',
+      candidates.length,
+      cleanCoadminUid,
+      cleanCarerUid || null,
+      timing.total_ms,
+      timing.pool_acquire_ms,
+      timing.query_exec_ms
+    );
+    return {
+      candidates,
+      timing,
+      hit: true,
+      missReason: null,
+    };
+  } catch (error) {
+    const timing = createPlayerMirrorSqlTiming({
+      total_ms: Date.now() - startedAt,
+    });
+    console.info(
+      '[AUTO_TICK_PENDING_SQL] hit=false candidateCount=%s coadminUid=%s carerUid=%s durationMs=%s reason=%s error=%s',
+      0,
+      cleanCoadminUid,
+      cleanCarerUid || null,
+      timing.total_ms,
+      'lookup_failed',
+      error instanceof Error ? error.message : String(error)
+    );
+    return {
+      candidates: [],
+      timing,
+      hit: false,
+      missReason: 'lookup_failed',
+    };
   }
 }

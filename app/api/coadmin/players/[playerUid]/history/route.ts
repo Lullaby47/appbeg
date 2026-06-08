@@ -1,16 +1,44 @@
+import type { PoolClient } from 'pg';
 import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
 import {
+  acquirePlayerMirrorClient,
   cleanText,
-  getPlayerMirrorPool,
   toDate,
-  type PlayerMirrorPoolTiming,
 } from '@/lib/sql/playerMirrorCommon';
 
 const SELECTED_PLAYER_RECORD_QUERY_LIMIT = 100;
 const SELECTED_PLAYER_CASHOUT_QUERY_LIMIT = 50;
+
+const FINANCIAL_EVENTS_HISTORY_COLUMNS = `
+  firebase_id,
+  type,
+  coadmin_uid,
+  amount_npr,
+  created_at
+`.trim();
+
+const CASHOUT_TASKS_HISTORY_COLUMNS = `
+  firebase_id,
+  completed_at,
+  created_at,
+  amount_npr,
+  payout_method,
+  payment_app_name
+`.trim();
+
+const GAME_REQUESTS_HISTORY_COLUMNS = `
+  firebase_id,
+  type,
+  game_name,
+  completed_at,
+  created_at,
+  amount,
+  status,
+  bonus_percentage
+`.trim();
 
 type PlayerRecordTab = 'coin-recharge' | 'cashout' | 'coin-recharge-ingame' | 'redeem';
 
@@ -42,6 +70,7 @@ type RouteTiming = {
   auth_ms: number;
   scope_check_ms: number;
   sql_pool_ms: number;
+  client_acquire_ms: number;
   pg_connect_ms: number;
   each_query_ms: number[];
   fallback_check_ms: number;
@@ -50,6 +79,8 @@ type RouteTiming = {
   poolReused: boolean | null;
   firebaseFallback: boolean;
   firebaseScopeRead: boolean;
+  shared_client: boolean;
+  row_width_mode: 'narrow' | 'wide';
 };
 
 function createRouteTiming(): RouteTiming {
@@ -57,6 +88,7 @@ function createRouteTiming(): RouteTiming {
     auth_ms: 0,
     scope_check_ms: 0,
     sql_pool_ms: 0,
+    client_acquire_ms: 0,
     pg_connect_ms: 0,
     each_query_ms: [],
     fallback_check_ms: 0,
@@ -65,14 +97,9 @@ function createRouteTiming(): RouteTiming {
     poolReused: null,
     firebaseFallback: false,
     firebaseScopeRead: false,
+    shared_client: false,
+    row_width_mode: 'narrow',
   };
-}
-
-function mergePoolTiming(routeTiming: RouteTiming, poolTiming: PlayerMirrorPoolTiming) {
-  routeTiming.sql_pool_ms += poolTiming.sql_pool_ms;
-  if (poolTiming.poolReused !== null) {
-    routeTiming.poolReused = poolTiming.poolReused;
-  }
 }
 
 function logRouteTiming(routeTiming: RouteTiming, details: Record<string, unknown> = {}) {
@@ -148,15 +175,13 @@ function baseRows(): Record<PlayerRecordTab, PlayerRecordRow[]> {
 async function playerBelongsToCoadminScope(
   playerUid: string,
   coadminUid: string,
+  client: PoolClient | null,
   routeTiming: RouteTiming
 ) {
-  const poolTiming: PlayerMirrorPoolTiming = { sql_pool_ms: 0, poolReused: null };
-  const db = getPlayerMirrorPool(poolTiming);
-  mergePoolTiming(routeTiming, poolTiming);
-  if (db) {
+  if (client) {
     try {
       const queryStartedAt = Date.now();
-      const result = await db.query(
+      const result = await client.query(
         `
           SELECT coadmin_uid, created_by
           FROM public.user_balance_snapshots_cache
@@ -319,19 +344,15 @@ function buildHistoryPayload(
 async function getPostgresHistory(
   playerUid: string,
   callerCoadminUid: string | null,
+  client: PoolClient,
   routeTiming: RouteTiming
 ) {
-  const poolTiming: PlayerMirrorPoolTiming = { sql_pool_ms: 0, poolReused: null };
-  const db = getPlayerMirrorPool(poolTiming);
-  mergePoolTiming(routeTiming, poolTiming);
-  if (!db) return null;
-
   const [financialEvents, completedCashouts, playerGameRequests] = await Promise.all([
     (async () => {
       const queryStartedAt = Date.now();
-      const result = await db.query(
+      const result = await client.query(
         `
-          SELECT *
+          SELECT ${FINANCIAL_EVENTS_HISTORY_COLUMNS}
           FROM public.financial_events_cache
           WHERE player_uid = $1 AND deleted_at IS NULL
           ORDER BY created_at DESC NULLS LAST
@@ -344,9 +365,9 @@ async function getPostgresHistory(
     })(),
     (async () => {
       const queryStartedAt = Date.now();
-      const result = await db.query(
+      const result = await client.query(
         `
-          SELECT *
+          SELECT ${CASHOUT_TASKS_HISTORY_COLUMNS}
           FROM public.player_cashout_tasks_cache
           WHERE player_uid = $1 AND status = 'completed' AND deleted_at IS NULL
           ORDER BY completed_at DESC NULLS LAST
@@ -359,9 +380,9 @@ async function getPostgresHistory(
     })(),
     (async () => {
       const queryStartedAt = Date.now();
-      const result = await db.query(
+      const result = await client.query(
         `
-          SELECT *
+          SELECT ${GAME_REQUESTS_HISTORY_COLUMNS}
           FROM public.player_game_requests_cache
           WHERE player_uid = $1 AND deleted_at IS NULL
           ORDER BY created_at DESC NULLS LAST
@@ -453,71 +474,99 @@ export async function GET(
   }
 
   const callerCoadminUid = auth.user.role === 'coadmin' ? auth.user.uid : null;
-  if (callerCoadminUid) {
-    const scopeStartedAt = Date.now();
-    const inScope = await playerBelongsToCoadminScope(playerUid, callerCoadminUid, routeTiming);
-    routeTiming.scope_check_ms = Date.now() - scopeStartedAt;
-    if (!inScope) {
-      routeTiming.total_ms = Date.now() - totalStartedAt;
-      logRouteTiming(routeTiming, { reason: 'forbidden', playerUid });
-      return apiError('Forbidden.', 403);
-    }
-  }
+
+  const clientAcquireStartedAt = Date.now();
+  const acquired = await acquirePlayerMirrorClient({
+    context: 'coadmin_player_history',
+    route: '/api/coadmin/players/[playerUid]/history',
+  });
+  routeTiming.client_acquire_ms = Date.now() - clientAcquireStartedAt;
+  routeTiming.sql_pool_ms = routeTiming.client_acquire_ms;
+  routeTiming.shared_client = Boolean(acquired);
+  const sharedClient = acquired?.client ?? null;
 
   try {
-    const postgresPayload = await getPostgresHistory(playerUid, callerCoadminUid, routeTiming);
-    if (postgresPayload) {
-      console.info('[COADMIN_PLAYER_HISTORY] postgres hit', {
+    if (callerCoadminUid) {
+      const scopeStartedAt = Date.now();
+      const inScope = await playerBelongsToCoadminScope(
         playerUid,
-        rowCount: rowCount(postgresPayload),
-      });
+        callerCoadminUid,
+        sharedClient,
+        routeTiming
+      );
+      routeTiming.scope_check_ms = Date.now() - scopeStartedAt;
+      if (!inScope) {
+        routeTiming.total_ms = Date.now() - totalStartedAt;
+        logRouteTiming(routeTiming, { reason: 'forbidden', playerUid });
+        return apiError('Forbidden.', 403);
+      }
+    }
 
-      if (rowCount(postgresPayload) === 0) {
-        const fallbackStartedAt = Date.now();
-        try {
-          const firestorePayload = await getFirestoreHistory(playerUid, callerCoadminUid);
-          routeTiming.fallback_check_ms = Date.now() - fallbackStartedAt;
-          if (rowCount(firestorePayload) > 0) {
-            routeTiming.firebaseFallback = true;
-            console.info('[COADMIN_PLAYER_HISTORY] postgres fallback firestore', {
+    if (sharedClient) {
+      try {
+        const postgresPayload = await getPostgresHistory(
+          playerUid,
+          callerCoadminUid,
+          sharedClient,
+          routeTiming
+        );
+        console.info('[COADMIN_PLAYER_HISTORY] postgres hit', {
+          playerUid,
+          rowCount: rowCount(postgresPayload),
+        });
+
+        if (rowCount(postgresPayload) === 0) {
+          const fallbackStartedAt = Date.now();
+          try {
+            const firestorePayload = await getFirestoreHistory(playerUid, callerCoadminUid);
+            routeTiming.fallback_check_ms = Date.now() - fallbackStartedAt;
+            if (rowCount(firestorePayload) > 0) {
+              routeTiming.firebaseFallback = true;
+              routeTiming.row_width_mode = 'wide';
+              console.info('[COADMIN_PLAYER_HISTORY] postgres fallback firestore', {
+                playerUid,
+                reason: 'postgres_empty_firestore_has_rows',
+                rowCount: rowCount(firestorePayload),
+              });
+              return timedJson(firestorePayload, totalStartedAt, routeTiming, {
+                playerUid,
+                source: 'firestore',
+                reason: 'postgres_empty_firestore_has_rows',
+              });
+            }
+          } catch (error) {
+            routeTiming.fallback_check_ms = Date.now() - fallbackStartedAt;
+            console.warn('[COADMIN_PLAYER_HISTORY] firestore fallback failed', {
               playerUid,
-              reason: 'postgres_empty_firestore_has_rows',
-              rowCount: rowCount(firestorePayload),
-            });
-            return timedJson(firestorePayload, totalStartedAt, routeTiming, {
-              playerUid,
-              source: 'firestore',
-              reason: 'postgres_empty_firestore_has_rows',
+              error,
             });
           }
-        } catch (error) {
-          routeTiming.fallback_check_ms = Date.now() - fallbackStartedAt;
-          console.warn('[COADMIN_PLAYER_HISTORY] firestore fallback failed', {
-            playerUid,
-            error,
-          });
         }
-      }
 
-      return timedJson(postgresPayload, totalStartedAt, routeTiming, {
+        return timedJson(postgresPayload, totalStartedAt, routeTiming, {
+          playerUid,
+          source: 'postgres',
+        });
+      } catch (error) {
+        console.info('[COADMIN_PLAYER_HISTORY] postgres fallback firestore', {
+          playerUid,
+          reason: 'postgres_read_failed',
+          error,
+        });
+      }
+    } else {
+      console.info('[COADMIN_PLAYER_HISTORY] postgres fallback firestore', {
         playerUid,
-        source: 'postgres',
+        reason: 'postgres_unavailable',
       });
     }
-    console.info('[COADMIN_PLAYER_HISTORY] postgres fallback firestore', {
-      playerUid,
-      reason: 'postgres_unavailable',
-    });
-  } catch (error) {
-    console.info('[COADMIN_PLAYER_HISTORY] postgres fallback firestore', {
-      playerUid,
-      reason: 'postgres_read_failed',
-      error,
-    });
+  } finally {
+    sharedClient?.release();
   }
 
   const fallbackStartedAt = Date.now();
   routeTiming.firebaseFallback = true;
+  routeTiming.row_width_mode = 'wide';
   try {
     const firestorePayload = await getFirestoreHistory(playerUid, callerCoadminUid);
     routeTiming.fallback_check_ms = Date.now() - fallbackStartedAt;

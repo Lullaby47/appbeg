@@ -17,11 +17,16 @@ import {
 
 import { auth, db } from '@/lib/firebase/client';
 import { DASHBOARD_BY_ROLE, isValidRole } from '@/lib/auth/roles';
+import { bootstrapAppSessionAfterFirebaseLogin, getLocalAppSessionId } from '@/features/auth/appSession';
+import { migrateCredentialsAfterFirebaseLogin } from '@/features/auth/credentialsMigrate';
 import {
   getLocalPlayerSessionId,
   PLAYER_REPLACED_LOGIN_MESSAGE,
   startPlayerSession,
 } from '@/features/auth/playerSession';
+import { attemptSqlLogin, isSqlLoginFirstEnabled } from '@/features/auth/sqlLogin';
+import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
+import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { rememberPlayerLoginCredentials } from '@/features/auth/rememberedPlayerLogin';
 
 export default function LoginPage() {
@@ -75,6 +80,27 @@ export default function LoginPage() {
       }
 
       if (!user) {
+        if (
+          isSqlPlayerLoginEnabled() &&
+          getLocalAppSessionId() &&
+          getLocalPlayerSessionId()
+        ) {
+          try {
+            const cached = getCachedSessionUser();
+            const sessionUser =
+              cached?.role === 'player' ? cached : await getSessionUserOnce();
+            if (sessionUser?.role === 'player') {
+              console.info('[PLAYER_LOGIN_SESSION] login-page redirect allowed', {
+                uid: sessionUser.uid,
+                role: 'player',
+                reason: 'sql_app_session',
+              });
+              router.replace(DASHBOARD_BY_ROLE.player);
+            }
+          } catch {
+            // ignore; user can still use the form
+          }
+        }
         return;
       }
 
@@ -128,6 +154,53 @@ export default function LoginPage() {
     return null;
   }
 
+  async function performFirebaseLogin(cleanUsername: string) {
+    const userDoc = await findLoginUserDoc(cleanUsername);
+    if (!userDoc) {
+      throw new Error('User not found.');
+    }
+
+    const userData = userDoc.data();
+
+    const userRole = String(userData.role || '');
+    const isActive = userData.status === 'active';
+    const isBlockedPlayer = userData.status === 'disabled' && userRole === 'player';
+    if (!isActive && !isBlockedPlayer) {
+      throw new Error('Account is not active.');
+    }
+
+    const hiddenEmail = userData.email;
+
+    const credential = await signInWithEmailAndPassword(auth, hiddenEmail, password);
+
+    await migrateCredentialsAfterFirebaseLogin(password);
+
+    const role = userData.role;
+
+    if (!isValidRole(role)) {
+      throw new Error('Invalid role.');
+    }
+
+    let playerSessionId: string | undefined;
+    if (role === 'player') {
+      const playerSession = await startPlayerSession(credential.user);
+      playerSessionId = playerSession.sessionId;
+      rememberPlayerLoginCredentials(cleanUsername, password);
+      console.info('[PLAYER_LOGIN_SESSION] player login allowed after session write', {
+        uid: credential.user.uid,
+        sessionId: playerSession.sessionId,
+        reason: 'active_session_saved',
+      });
+    }
+
+    await bootstrapAppSessionAfterFirebaseLogin({
+      roleHint: role,
+      playerSessionId,
+    });
+
+    router.push(DASHBOARD_BY_ROLE[role]);
+  }
+
   async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
@@ -143,41 +216,33 @@ export default function LoginPage() {
     loginInProgressRef.current = true;
 
     try {
-      const userDoc = await findLoginUserDoc(cleanUsername);
-      if (!userDoc) {
-        throw new Error('User not found.');
-      }
+      if (isSqlLoginFirstEnabled()) {
+        const sqlLoginResult = await attemptSqlLogin({
+          username: cleanUsername,
+          password,
+        });
 
-      const userData = userDoc.data();
+        if (sqlLoginResult.ok) {
+          if (!isValidRole(sqlLoginResult.role)) {
+            throw new Error('Invalid role.');
+          }
+          if (sqlLoginResult.role === 'player') {
+            rememberPlayerLoginCredentials(cleanUsername, password);
+          }
+          router.push(DASHBOARD_BY_ROLE[sqlLoginResult.role]);
+          return;
+        }
 
-      const userRole = String(userData.role || '');
-      const isActive = userData.status === 'active';
-      const isBlockedPlayer = userData.status === 'disabled' && userRole === 'player';
-      if (!isActive && !isBlockedPlayer) {
-        throw new Error('Account is not active.');
-      }
+        if (!sqlLoginResult.fallbackToFirebase) {
+          throw new Error('Invalid username or password.');
+        }
 
-      const hiddenEmail = userData.email;
-
-      const credential = await signInWithEmailAndPassword(auth, hiddenEmail, password);
-
-      const role = userData.role;
-
-      if (!isValidRole(role)) {
-        throw new Error('Invalid role.');
-      }
-
-      if (role === 'player') {
-        const { sessionId } = await startPlayerSession(credential.user);
-        rememberPlayerLoginCredentials(cleanUsername, password);
-        console.info('[PLAYER_LOGIN_SESSION] player login allowed after session write', {
-          uid: credential.user.uid,
-          sessionId,
-          reason: 'active_session_saved',
+        console.info('[SQL_AUTH_LOGIN] client_fallback_firebase', {
+          reason: sqlLoginResult.reason,
         });
       }
 
-      router.push(DASHBOARD_BY_ROLE[role]);
+      await performFirebaseLogin(cleanUsername);
     } catch (err) {
       console.error(err);
       setError('Invalid username or password.');

@@ -13,6 +13,11 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 
+import {
+  ensureAppSessionBootstrapped,
+  getAppSessionRequestHeaders,
+  getLocalAppSessionId,
+} from '@/features/auth/appSession';
 import { getLocalPlayerSessionId, getPlayerApiHeaders } from '@/features/auth/playerSession';
 import { auth, db } from '@/lib/firebase/client';
 import { belongsToCoadmin, getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
@@ -47,6 +52,10 @@ function normalizeSiteUrl(value: string) {
 async function getGameLoginsCacheReadHeaders() {
   if (getLocalPlayerSessionId()) {
     return getPlayerApiHeaders(false);
+  }
+  await ensureAppSessionBootstrapped();
+  if (getLocalAppSessionId()) {
+    return getAppSessionRequestHeaders();
   }
   return getFirebaseApiHeaders(false);
 }

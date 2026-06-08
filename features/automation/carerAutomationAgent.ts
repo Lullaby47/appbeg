@@ -1,6 +1,7 @@
 import { doc, getDoc } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
+import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 
 const AGENT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
@@ -36,13 +37,9 @@ async function postAutomationAgentUpdate(body: Record<string, unknown>) {
   if (!current) {
     throw new Error('Not authenticated.');
   }
-  const token = await current.getIdToken();
   const response = await fetch('/api/carer/automation-agent', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getFirebaseApiHeaders(),
     body: JSON.stringify(body),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };

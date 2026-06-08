@@ -17,6 +17,14 @@ import {
 } from '@/lib/automation/automationClaimPayload';
 import { mirrorAutomationJobById } from '@/lib/sql/automationJobsCache';
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
+import {
+  lookupGameLoginDetailsForCoadminGameFromSql,
+  mirrorGameLoginCache,
+} from '@/lib/sql/gameLoginsCache';
+import {
+  lookupCurrentUsernameForTaskFromSql,
+  mirrorPlayerGameLoginSnapshot,
+} from '@/lib/sql/playerGameLoginsCache';
 
 const AUTOMATION_JOB_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -1002,10 +1010,65 @@ export function normalizeGameNameForAutomation(gameName: string) {
   return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
 }
 
+function logAutoTickResolverSql(
+  type: 'game_login' | 'username',
+  details: {
+    hit: boolean;
+    source: 'sql' | 'fallback';
+    durationMs: number;
+    coadminUid?: string;
+    playerUid?: string;
+    gameName?: string;
+  }
+) {
+  console.info(
+    '[AUTO_TICK_RESOLVER_SQL] type=%s hit=%s source=%s durationMs=%s coadminUid=%s playerUid=%s gameName=%s',
+    type,
+    details.hit,
+    details.source,
+    details.durationMs,
+    details.coadminUid || null,
+    details.playerUid || null,
+    details.gameName || null
+  );
+}
+
+function logAutoTickResolverFallback(
+  type: 'game_login' | 'username',
+  reason: string,
+  details: { coadminUid?: string; playerUid?: string; gameName?: string }
+) {
+  console.info(
+    '[AUTO_TICK_RESOLVER_FALLBACK] type=%s reason=%s coadminUid=%s playerUid=%s gameName=%s',
+    type,
+    reason,
+    details.coadminUid || null,
+    details.playerUid || null,
+    details.gameName || null
+  );
+}
+
 export async function resolveGameLoginDetailsForCoadminGame(
   coadminUid: string,
   gameName: string
 ): Promise<GameLoginDetailsInput> {
+  const sqlLookup = await lookupGameLoginDetailsForCoadminGameFromSql(coadminUid, gameName);
+  if (sqlLookup.hit && sqlLookup.details) {
+    logAutoTickResolverSql('game_login', {
+      hit: true,
+      source: 'sql',
+      durationMs: sqlLookup.durationMs,
+      coadminUid,
+      gameName,
+    });
+    return sqlLookup.details;
+  }
+
+  if (sqlLookup.missReason) {
+    logAutoTickResolverFallback('game_login', sqlLookup.missReason, { coadminUid, gameName });
+  }
+
+  const fallbackStartedAt = Date.now();
   const target = normalizeGameNameForAutomation(gameName);
   for (const field of ['coadminUid', 'createdBy'] as const) {
     const snap = await adminDb
@@ -1021,10 +1084,37 @@ export async function resolveGameLoginDetailsForCoadminGame(
         backendUrl?: string;
         frontendUrl?: string;
         siteUrl?: string;
+        createdBy?: string;
+        coadminUid?: string;
+        createdAt?: unknown;
       };
       if (normalizeGameNameForAutomation(String(row.gameName || '')) !== target) {
         continue;
       }
+      try {
+        await mirrorGameLoginCache({
+          id: docSnap.id,
+          gameName: String(row.gameName || ''),
+          username: String(row.username || ''),
+          password: String(row.password || ''),
+          backendUrl: String(row.backendUrl || ''),
+          frontendUrl: String(row.frontendUrl || ''),
+          siteUrl: String(row.siteUrl || row.backendUrl || ''),
+          createdBy: String(row.createdBy || coadminUid),
+          coadminUid: String(row.coadminUid || coadminUid),
+          raw: row as Record<string, unknown>,
+        });
+      } catch (error) {
+        logAutoTickResolverFallback('game_login', 'hydrate_failed', { coadminUid, gameName });
+        console.info('[AUTO_TICK_RESOLVER_FALLBACK] hydrate_error=%s', error);
+      }
+      logAutoTickResolverSql('game_login', {
+        hit: true,
+        source: 'fallback',
+        durationMs: Date.now() - fallbackStartedAt,
+        coadminUid,
+        gameName,
+      });
       return {
         username: row.username || null,
         password: row.password || null,
@@ -1034,6 +1124,14 @@ export async function resolveGameLoginDetailsForCoadminGame(
       };
     }
   }
+
+  logAutoTickResolverSql('game_login', {
+    hit: false,
+    source: 'fallback',
+    durationMs: Date.now() - fallbackStartedAt,
+    coadminUid,
+    gameName,
+  });
   return null;
 }
 
@@ -1042,6 +1140,28 @@ export async function resolveCurrentUsernameForTask(
   playerUid: string,
   gameName: string
 ): Promise<string | null> {
+  const sqlLookup = await lookupCurrentUsernameForTaskFromSql(coadminUid, playerUid, gameName);
+  if (sqlLookup.hit && sqlLookup.username) {
+    logAutoTickResolverSql('username', {
+      hit: true,
+      source: 'sql',
+      durationMs: sqlLookup.durationMs,
+      coadminUid,
+      playerUid,
+      gameName,
+    });
+    return sqlLookup.username;
+  }
+
+  if (sqlLookup.missReason) {
+    logAutoTickResolverFallback('username', sqlLookup.missReason, {
+      coadminUid,
+      playerUid,
+      gameName,
+    });
+  }
+
+  const fallbackStartedAt = Date.now();
   const snap = await adminDb
     .collection('playerGameLogins')
     .where('playerUid', '==', playerUid)
@@ -1060,8 +1180,26 @@ export async function resolveCurrentUsernameForTask(
     if (normalizeGameNameForAutomation(String(row.gameName || '')) !== target) {
       continue;
     }
-    const u = String(row.gameUsername || '').trim();
-    return u || null;
+    void mirrorPlayerGameLoginSnapshot(docSnap, 'auto_tick_username_hydrate');
+    const username = String(row.gameUsername || '').trim();
+    logAutoTickResolverSql('username', {
+      hit: Boolean(username),
+      source: 'fallback',
+      durationMs: Date.now() - fallbackStartedAt,
+      coadminUid,
+      playerUid,
+      gameName,
+    });
+    return username || null;
   }
+
+  logAutoTickResolverSql('username', {
+    hit: false,
+    source: 'fallback',
+    durationMs: Date.now() - fallbackStartedAt,
+    coadminUid,
+    playerUid,
+    gameName,
+  });
   return null;
 }

@@ -1,0 +1,96 @@
+import { NextResponse } from 'next/server';
+
+import { mirrorPlayerSessionEndToFirestore } from '@/lib/server/playerSessionFirestoreMirror';
+import { requirePlayerSessionActor } from '@/lib/server/playerSessionRouteAuth';
+import { invalidatePlayerSessionStatusCache } from '@/lib/server/playerSessionStatus';
+import { cleanText } from '@/lib/sql/playerMirrorCommon';
+import { endPlayerSessionInSql } from '@/lib/sql/playerSessionWrite';
+
+export const dynamic = 'force-dynamic';
+
+type EndBody = {
+  sessionId?: unknown;
+  reason?: unknown;
+};
+
+export async function POST(request: Request) {
+  const startedAt = Date.now();
+  let uid = '';
+  let sessionId = '';
+
+  try {
+    const auth = await requirePlayerSessionActor(request);
+    if ('response' in auth) {
+      return auth.response;
+    }
+    uid = auth.uid;
+
+    const body = (await request.json().catch(() => ({}))) as EndBody;
+    sessionId = cleanText(body.sessionId);
+    if (!sessionId) {
+      return NextResponse.json({ error: 'sessionId is required.' }, { status: 400 });
+    }
+
+    const reason = cleanText(body.reason) || 'logout';
+    invalidatePlayerSessionStatusCache({
+      playerSessionId: sessionId,
+      uid,
+      appSessionId: cleanText(request.headers.get('X-App-Session-Id')),
+      reason: reason === 'logout' ? 'logout' : 'end',
+    });
+    const endResult = await endPlayerSessionInSql({
+      playerUid: uid,
+      sessionId,
+      reason,
+    });
+
+    let firestoreMirrorOk = false;
+    if (endResult.ok) {
+      try {
+        firestoreMirrorOk = await mirrorPlayerSessionEndToFirestore({
+          playerUid: uid,
+          sessionId,
+          reason,
+        });
+      } catch (error) {
+        console.warn('[PLAYER_SESSION_SQL] firestore mirror failed', {
+          action: 'end',
+          uid,
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    console.info('[PLAYER_SESSION_SQL]', {
+      action: 'end',
+      uid,
+      sessionId,
+      sql_ok: endResult.ok,
+      firestore_mirror_ok: firestoreMirrorOk,
+      previousSessionCount: 0,
+      durationMs: Date.now() - startedAt,
+      reason: endResult.reason || reason,
+    });
+
+    return NextResponse.json({
+      ok: endResult.ok,
+      reason: endResult.reason || null,
+      sqlOk: endResult.ok,
+      firestoreMirrorOk,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to end player session.';
+    console.info('[PLAYER_SESSION_SQL]', {
+      action: 'end',
+      uid,
+      sessionId,
+      sql_ok: false,
+      firestore_mirror_ok: false,
+      previousSessionCount: 0,
+      durationMs: Date.now() - startedAt,
+      error: message,
+    });
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}

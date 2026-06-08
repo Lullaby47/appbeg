@@ -3,6 +3,7 @@ import {
   mapAutomationJobStatusToUiStatus,
   type AutomationUiStatus,
 } from '@/features/automation/automationJobs';
+import { logCarerPageStartup, markCarerPageStartupStreamConnected } from '@/features/carer/carerStartupLogs';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 
 export const AUTOMATION_JOBS_SQL_READ_ENABLED =
@@ -307,6 +308,7 @@ export function attachAutomationJobsSqlReadListener(
     if (!response.ok || !response.body) {
       throw new Error(`sse_http_${response.status}`);
     }
+    markCarerPageStartupStreamConnected('automation_jobs');
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -334,8 +336,16 @@ export function attachAutomationJobsSqlReadListener(
 
   const bootstrap = async () => {
     console.info('[AUTOMATION_JOBS_SQL_READ] enabled');
+    const bootstrapStartedAt = Date.now();
     try {
       const headers = await getFirebaseApiHeaders(false);
+      const snapshotStartedAt = Date.now();
+      logCarerPageStartup({
+        stage: 'jobs_snapshot_start',
+        ok: true,
+        uid: cleanCarerUid,
+        role: 'carer',
+      });
       const snapshotResponse = await fetch(
         `/api/live/snapshot/carer/${encodeURIComponent(cleanCarerUid)}/automation-jobs`,
         {
@@ -351,6 +361,14 @@ export function attachAutomationJobsSqlReadListener(
         source === 'postgres_snapshot_failed' ||
         source === 'postgres_snapshot_unavailable'
       ) {
+        logCarerPageStartup({
+          stage: 'jobs_snapshot_done',
+          ok: false,
+          uid: cleanCarerUid,
+          role: 'carer',
+          durationMs: Date.now() - snapshotStartedAt,
+          reason: `snapshot_http_${snapshotResponse.status}_${source || 'unknown'}`,
+        });
         triggerFallback(`snapshot_http_${snapshotResponse.status}_${source || 'unknown'}`);
         return;
       }
@@ -365,6 +383,18 @@ export function attachAutomationJobsSqlReadListener(
         jobsById.set(mapped.jobId, mapped);
       }
 
+      logCarerPageStartup({
+        stage: 'jobs_snapshot_done',
+        ok: true,
+        uid: cleanCarerUid,
+        role: 'carer',
+        durationMs: Date.now() - snapshotStartedAt,
+        extra: {
+          count: jobsById.size,
+          latestOutboxId: lastEventId,
+          source: source || 'unknown',
+        },
+      });
       console.info(
         '[AUTOMATION_JOBS_SQL_READ] snapshot_loaded count=%s latestOutboxId=%s source=%s',
         jobsById.size,
@@ -374,13 +404,31 @@ export function attachAutomationJobsSqlReadListener(
       emitUiState();
 
       abortController = new AbortController();
+      const sseStartedAt = Date.now();
       await connectStream(headers);
+      logCarerPageStartup({
+        stage: 'sse_start',
+        ok: !fellBack,
+        uid: cleanCarerUid,
+        role: 'carer',
+        durationMs: Date.now() - sseStartedAt,
+        reason: fellBack ? 'sse_stream_closed' : null,
+        extra: { channel: 'automation_jobs', bootstrapMs: Date.now() - bootstrapStartedAt },
+      });
       if (!disposed && !fellBack) {
         triggerFallback('sse_stream_closed');
       }
     } catch (error) {
       if (!disposed) {
         const reason = error instanceof Error ? error.message : 'bootstrap_or_sse_failed';
+        logCarerPageStartup({
+          stage: 'jobs_snapshot_done',
+          ok: false,
+          uid: cleanCarerUid,
+          role: 'carer',
+          durationMs: Date.now() - bootstrapStartedAt,
+          reason,
+        });
         triggerFallback(reason);
       }
     }

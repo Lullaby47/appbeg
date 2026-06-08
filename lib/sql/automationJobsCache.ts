@@ -39,25 +39,115 @@ type AutomationJobMirrorRow = {
   rawFirestoreData: unknown;
 };
 
-let pool: Pool | null = null;
 const SQL_TIMEOUT_MS = 5_000;
+const AUTOMATION_JOBS_POOL_MAX = 4;
+const AUTOMATION_JOBS_POOL_IDLE_TIMEOUT_MS = 120_000;
+
+type AutomationJobsPoolCache = {
+  connectionString: string;
+  pool: Pool;
+};
+
+const globalSqlPool = globalThis as typeof globalThis & {
+  __appbegAutomationJobsCachePool?: AutomationJobsPoolCache;
+};
 
 function databaseUrl() {
   return String(process.env.DATABASE_URL || process.env.POSTGRES_URL || '').trim();
 }
 
+export type AutomationJobsAcquireContext = {
+  context: string;
+  route?: string;
+  request_id?: string;
+};
+
+function shouldLogAutomationJobsPoolAcquire(
+  acquireMs: number,
+  waitingBefore: number,
+  idleBefore: number
+) {
+  return (
+    process.env.SQL_POOL_DEBUG === '1' ||
+    acquireMs >= 10 ||
+    waitingBefore > 0 ||
+    idleBefore === 0
+  );
+}
+
+export function getAutomationJobsPool() {
+  return getPool();
+}
+
+export async function acquireAutomationJobsClient(
+  acquireContext?: AutomationJobsAcquireContext
+) {
+  const pool = getPool();
+  if (!pool) {
+    return null;
+  }
+  const statsBefore = {
+    totalCount: pool.totalCount,
+    idleCount: pool.idleCount,
+    waitingCount: pool.waitingCount,
+  };
+  const acquireStartedAt = Date.now();
+  const client = await pool.connect();
+  const acquire_ms = Date.now() - acquireStartedAt;
+  if (
+    shouldLogAutomationJobsPoolAcquire(
+      acquire_ms,
+      statsBefore.waitingCount,
+      statsBefore.idleCount
+    )
+  ) {
+    console.info('[SQL_POOL_ACQUIRE]', {
+      name: 'automationJobsCache',
+      context: acquireContext?.context ?? 'unspecified',
+      acquire_ms,
+      totalCount: pool.totalCount,
+      idleCount: pool.idleCount,
+      waitingCount: pool.waitingCount,
+      max: AUTOMATION_JOBS_POOL_MAX,
+      request_id: acquireContext?.request_id ?? null,
+      route: acquireContext?.route ?? null,
+      idle_before: statsBefore.idleCount,
+      waiting_before: statsBefore.waitingCount,
+    });
+  }
+  return {
+    client,
+    pool_acquire_ms: acquire_ms,
+  };
+}
+
 function getPool() {
   const connectionString = databaseUrl();
   if (!connectionString) return null;
-  if (!pool) {
-    pool = new Pool({
-      connectionString,
-      connectionTimeoutMillis: SQL_TIMEOUT_MS,
-      idleTimeoutMillis: 10_000,
-      query_timeout: SQL_TIMEOUT_MS,
-      statement_timeout: SQL_TIMEOUT_MS,
-    });
+  const cached = globalSqlPool.__appbegAutomationJobsCachePool;
+  if (cached?.connectionString === connectionString) {
+    if (process.env.SQL_POOL_DEBUG === '1') {
+      console.info('[SQL_POOL] reused', { name: 'automationJobsCache', global: true });
+    }
+    return cached.pool;
   }
+  const pool = new Pool({
+    connectionString,
+    max: AUTOMATION_JOBS_POOL_MAX,
+    connectionTimeoutMillis: SQL_TIMEOUT_MS,
+    idleTimeoutMillis: AUTOMATION_JOBS_POOL_IDLE_TIMEOUT_MS,
+    query_timeout: SQL_TIMEOUT_MS,
+    statement_timeout: SQL_TIMEOUT_MS,
+  });
+  pool.on('error', (error) => {
+    console.warn('[SQL_POOL] idle client error', { name: 'automationJobsCache', error });
+  });
+  globalSqlPool.__appbegAutomationJobsCachePool = { connectionString, pool };
+  console.info('[SQL_POOL] created', {
+    name: 'automationJobsCache',
+    max: AUTOMATION_JOBS_POOL_MAX,
+    global: true,
+  });
   return pool;
 }
 

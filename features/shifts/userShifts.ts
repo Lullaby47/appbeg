@@ -13,6 +13,7 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
+import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 
 export type ShiftRole = 'staff' | 'carer';
 
@@ -144,13 +145,9 @@ export async function cutWorkerReward(values: {
   if (!currentUser) {
     throw new Error('Not authenticated.');
   }
-  const token = await currentUser.getIdToken();
   const response = await fetch('/api/coadmin/workers/cut-reward', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: await getFirebaseApiHeaders(),
     body: JSON.stringify(values),
   });
   const payload = (await response.json().catch(() => ({}))) as {

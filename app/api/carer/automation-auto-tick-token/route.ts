@@ -28,11 +28,11 @@ export async function POST(request: Request) {
     stage = 'verify_user';
     const auth = await requireApiUser(request, ['carer']);
     if ('response' in auth) {
-      console.info('[AUTO_TICK_TOKEN] carerDocExists=%s', false);
+      console.info('[AUTO_TICK_TOKEN] auth_failed=true authPath=unknown');
       return auth.response;
     }
-    console.info('[AUTO_TICK_TOKEN] userVerified uid=%s', auth.user.uid);
-    console.info('[AUTO_TICK_TOKEN] carerDocExists=%s', true);
+    console.info('[AUTO_TICK_TOKEN] userVerified uid=%s authPath=%s', auth.user.uid, auth.authPath);
+    console.info('[AUTO_TICK_TOKEN] carerProfileSource=sql');
 
     let body: { agentId?: unknown };
     stage = 'parse_body';

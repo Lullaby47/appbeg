@@ -2,9 +2,11 @@ import type { DocumentData } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import { requireApiUser } from '@/lib/firebase/apiAuth';
 import { assertValidGameUsername } from '@/lib/games/gameUsernameRule';
-import { deactivateGameUsername, recordGameUsername } from '@/lib/sql/usernameRegistry';
 import { mirrorPlayerById } from '@/lib/sql/playersCache';
+import { setUserPasswordInSql } from '@/lib/sql/userDirectoryWrite';
+import { deactivateGameUsername, recordGameUsername } from '@/lib/sql/usernameRegistry';
 
 function makeHiddenEmail(username: string) {
   return `${username}@app.local`;
@@ -65,28 +67,40 @@ async function recordPlayerLoginUsernameChange(input: {
  * Coadmin-only: set a new password and/or login username for a staff, carer, or player
  * that belongs to the calling coadmin.
  */
-export async function POST(request: Request) {
+async function mirrorFirebaseAuthUpdate(
+  targetUid: string,
+  authUpdate: { password?: string; email?: string; displayName?: string }
+) {
+  if (Object.keys(authUpdate).length === 0) {
+    return true;
+  }
   try {
-    const header = request.headers.get('Authorization') || '';
-    const match = header.match(/^Bearer\s+(\S+)$/i);
-    const idToken = match?.[1];
-    if (!idToken) {
-      return NextResponse.json({ error: 'Missing or invalid authorization.' }, { status: 401 });
-    }
+    await adminAuth.updateUser(targetUid, authUpdate);
+    return true;
+  } catch (error) {
+    console.warn('[USER_DIRECTORY_SQL] firebase mirror failed', {
+      action: 'password_reset',
+      route: 'coadmin_reset_worker_credentials',
+      uid: targetUid,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
 
-    const decoded = await adminAuth.verifyIdToken(idToken);
-    const callerUid = decoded.uid;
-    const callerSnap = await adminDb.collection('users').doc(callerUid).get();
-
-    if (!callerSnap.exists) {
-      return NextResponse.json({ error: 'User profile not found.' }, { status: 404 });
+export async function POST(request: Request) {
+  const startedAt = Date.now();
+  try {
+    const auth = await requireApiUser(request, ['coadmin']);
+    if ('response' in auth) {
+      return auth.response;
     }
-    if (String(callerSnap.data()?.role) !== 'coadmin') {
-      return NextResponse.json(
-        { error: 'Only coadmin can perform this action.' },
-        { status: 403 }
-      );
-    }
+    const callerUid = auth.user.uid;
+    console.info('[COADMIN_RESET_WORKER_CREDENTIALS_AUTH]', {
+      auth_path: auth.authPath,
+      uid: callerUid,
+      app_session_used: auth.authPath.startsWith('app_session'),
+    });
 
     const body = await request.json();
     const targetUid = String(body.targetUid || '').trim();
@@ -171,6 +185,40 @@ export async function POST(request: Request) {
       }
     }
 
+    let firebaseMirrorOk = true;
+    let sessionsRevoked = 0;
+    let directoryUpdated = false;
+
+    if (newPassword && role === 'staff') {
+      try {
+        const sqlResult = await setUserPasswordInSql({
+          uid: targetUid,
+          password: newPassword,
+          actorUid: callerUid,
+          actorRole: auth.user.role,
+          reason: 'password_reset',
+        });
+        sessionsRevoked = sqlResult.sessionsRevoked;
+        directoryUpdated = sqlResult.directoryUpdated;
+      } catch (error) {
+        console.info('[USER_DIRECTORY_SQL]', {
+          action: 'password_reset',
+          route: 'coadmin_reset_worker_credentials',
+          uid: targetUid,
+          actorUid: callerUid,
+          sql_ok: false,
+          firebase_mirror_ok: false,
+          sessions_revoked: 0,
+          durationMs: Date.now() - startedAt,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return NextResponse.json(
+          { error: error instanceof Error ? error.message : 'Password update failed.' },
+          { status: 500 }
+        );
+      }
+    }
+
     const authUpdate: { password?: string; email?: string; displayName?: string } = {};
     if (newPassword) {
       authUpdate.password = newPassword;
@@ -182,8 +230,23 @@ export async function POST(request: Request) {
     }
 
     if (Object.keys(authUpdate).length > 0) {
-      await adminAuth.updateUser(targetUid, authUpdate);
+      firebaseMirrorOk = await mirrorFirebaseAuthUpdate(targetUid, authUpdate);
     }
+
+    if (newPassword && role === 'staff') {
+      console.info('[USER_DIRECTORY_SQL]', {
+        action: 'password_reset',
+        route: 'coadmin_reset_worker_credentials',
+        uid: targetUid,
+        actorUid: callerUid,
+        sql_ok: true,
+        firebase_mirror_ok: firebaseMirrorOk,
+        sessions_revoked: sessionsRevoked,
+        directory_updated: directoryUpdated,
+        durationMs: Date.now() - startedAt,
+      });
+    }
+
     if (newUsername) {
       await targetRef.update({
         username: newUsername,

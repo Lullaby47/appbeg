@@ -1,8 +1,14 @@
 import { NextResponse } from 'next/server';
 
 import { apiError, requireCarerOwnedLiveAuth } from '@/lib/firebase/apiAuth';
+import { acquireAutomationJobsClient } from '@/lib/sql/automationJobsCache';
 import { carerJobLiveChannel, getLatestOutboxIdForChannels } from '@/lib/sql/liveOutbox';
-import { cleanText, getPlayerMirrorPool, toIsoString } from '@/lib/sql/playerMirrorCommon';
+import {
+  cleanText,
+  createPlayerMirrorSqlTiming,
+  runMirrorClientQuery,
+  toIsoString,
+} from '@/lib/sql/playerMirrorCommon';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,12 +26,56 @@ const AUTOMATION_JOB_ACTIVE_STATUSES = [
   'waiting',
 ];
 
+const AUTOMATION_JOB_SNAPSHOT_SELECT = `
+  job_id,
+  task_id,
+  coadmin_uid,
+  carer_uid,
+  created_by_uid,
+  agent_id,
+  type,
+  request_type,
+  status,
+  game,
+  created_at,
+  updated_at,
+  started_at,
+  last_heartbeat_at,
+  needs_manual_review,
+  error_message
+`;
+
 const RECOMMENDED_SNAPSHOT_INDEXES = [
-  'automation_jobs_cache(created_by_uid, created_at DESC) WHERE deleted_at IS NULL',
-  'automation_jobs_cache(carer_uid, created_at DESC) WHERE deleted_at IS NULL',
-  'automation_jobs_cache(created_by_uid, status, updated_at DESC) WHERE deleted_at IS NULL',
-  'live_outbox(channel, outbox_id) WHERE deleted_at IS NULL',
+  'idx_automation_jobs_cache_created_by_recent (created_by_uid, created_at DESC) WHERE deleted_at IS NULL',
+  'automation_jobs_cache_carer_created_idx (carer_uid, created_at DESC) WHERE deleted_at IS NULL',
+  'automation_jobs_cache_created_by_status_updated_idx (created_by_uid, status, updated_at DESC) WHERE deleted_at IS NULL',
+  'automation_jobs_cache_carer_status_updated_idx (carer_uid, status, updated_at DESC) WHERE deleted_at IS NULL',
+  'live_outbox_channel_outbox_id_active_idx (channel, outbox_id DESC) WHERE deleted_at IS NULL',
 ];
+
+function createdAtSortKey(row: Record<string, unknown>) {
+  const iso = toIsoString(row.created_at);
+  return iso ? new Date(iso).getTime() : 0;
+}
+
+function mergeRecentJobRows(
+  createdByRows: Record<string, unknown>[],
+  carerRows: Record<string, unknown>[],
+  limit: number
+) {
+  const merged = new Map<string, Record<string, unknown>>();
+  for (const row of [...createdByRows, ...carerRows]) {
+    const jobId = cleanText(row.job_id);
+    if (!jobId) continue;
+    const existing = merged.get(jobId);
+    if (!existing || createdAtSortKey(row) > createdAtSortKey(existing)) {
+      merged.set(jobId, row);
+    }
+  }
+  return Array.from(merged.values())
+    .sort((left, right) => createdAtSortKey(right) - createdAtSortKey(left))
+    .slice(0, limit);
+}
 
 type SnapshotJob = {
   id: string;
@@ -98,50 +148,119 @@ function logSnapshotTiming(details: Record<string, unknown>) {
   });
 }
 
-async function fetchSnapshotRowsParallel(
-  db: NonNullable<ReturnType<typeof getPlayerMirrorPool>>,
+function authTimingDetails(timing: {
+  auth_path: string;
+  auth_ms: number;
+  verify_token_ms: number;
+  sql_profile_ms: number;
+  sql_profile_query_ms: number;
+  sql_profile_pool_acquire_ms: number;
+  sql_profile_query_exec_ms: number;
+  sql_profile_total_ms: number;
+  user_doc_ms: number;
+  token_cache_hit: boolean;
+}) {
+  return {
+    auth_path: timing.auth_path,
+    auth_ms: timing.auth_ms,
+    verify_token_ms: timing.verify_token_ms,
+    token_cache_hit: timing.token_cache_hit,
+    sql_profile_ms: timing.sql_profile_ms,
+    sql_profile_query_ms: timing.sql_profile_query_ms,
+    sql_profile_pool_acquire_ms: timing.sql_profile_pool_acquire_ms,
+    sql_profile_query_exec_ms: timing.sql_profile_query_exec_ms,
+    sql_profile_total_ms: timing.sql_profile_total_ms,
+    user_doc_ms: timing.user_doc_ms,
+  };
+}
+
+async function fetchSnapshotRowsWithClient(
+  client: import('pg').PoolClient,
   carerUid: string
 ) {
-  const startedAt = Date.now();
-  const [recentResult, activeResult] = await Promise.all([
-    db.query(
-      `
-        SELECT *
-        FROM public.automation_jobs_cache
-        WHERE deleted_at IS NULL
-          AND (created_by_uid = $1 OR carer_uid = $1)
-        ORDER BY created_at DESC NULLS LAST
-        LIMIT $2
-      `,
-      [carerUid, AUTOMATION_JOB_HISTORY_LIMIT]
-    ),
-    db.query(
-      `
-        SELECT *
-        FROM public.automation_jobs_cache
-        WHERE deleted_at IS NULL
-          AND (created_by_uid = $1 OR carer_uid = $1)
-          AND status = ANY($2::text[])
-        ORDER BY updated_at DESC NULLS LAST
-      `,
-      [carerUid, AUTOMATION_JOB_ACTIVE_STATUSES]
-    ),
-  ]);
+  const totalStartedAt = Date.now();
+  const recentByCreatedByPack = await runMirrorClientQuery<Record<string, unknown>>(
+    client,
+    `
+      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}
+      FROM public.automation_jobs_cache
+      WHERE deleted_at IS NULL
+        AND created_by_uid = $1
+      ORDER BY created_at DESC NULLS LAST
+      LIMIT $2
+    `,
+    [carerUid, AUTOMATION_JOB_HISTORY_LIMIT]
+  );
+  const recentByCarerPack = await runMirrorClientQuery<Record<string, unknown>>(
+    client,
+    `
+      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}
+      FROM public.automation_jobs_cache
+      WHERE deleted_at IS NULL
+        AND carer_uid = $1
+      ORDER BY created_at DESC NULLS LAST
+      LIMIT $2
+    `,
+    [carerUid, AUTOMATION_JOB_HISTORY_LIMIT]
+  );
+  const activeByCreatedByPack = await runMirrorClientQuery<Record<string, unknown>>(
+    client,
+    `
+      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}
+      FROM public.automation_jobs_cache
+      WHERE deleted_at IS NULL
+        AND created_by_uid = $1
+        AND status = ANY($2::text[])
+      ORDER BY updated_at DESC NULLS LAST
+    `,
+    [carerUid, AUTOMATION_JOB_ACTIVE_STATUSES]
+  );
+  const activeByCarerPack = await runMirrorClientQuery<Record<string, unknown>>(
+    client,
+    `
+      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}
+      FROM public.automation_jobs_cache
+      WHERE deleted_at IS NULL
+        AND carer_uid = $1
+        AND status = ANY($2::text[])
+      ORDER BY updated_at DESC NULLS LAST
+    `,
+    [carerUid, AUTOMATION_JOB_ACTIVE_STATUSES]
+  );
+
+  const recentRows = mergeRecentJobRows(
+    recentByCreatedByPack.rows,
+    recentByCarerPack.rows,
+    AUTOMATION_JOB_HISTORY_LIMIT
+  );
+  const activeRows = [...activeByCreatedByPack.rows, ...activeByCarerPack.rows];
+  const recentQueryExecMs =
+    recentByCreatedByPack.timing.query_exec_ms + recentByCarerPack.timing.query_exec_ms;
+  const activeQueryExecMs =
+    activeByCreatedByPack.timing.query_exec_ms + activeByCarerPack.timing.query_exec_ms;
+
+  const timing = createPlayerMirrorSqlTiming({
+    pool_acquire_ms: 0,
+    query_exec_ms: recentQueryExecMs + activeQueryExecMs,
+    total_ms: Date.now() - totalStartedAt,
+  });
 
   const merged = new Map<string, Record<string, unknown>>();
-  for (const row of [...recentResult.rows, ...activeResult.rows]) {
-    const jobId = cleanText((row as Record<string, unknown>).job_id);
+  for (const row of [...recentRows, ...activeRows]) {
+    const jobId = cleanText(row.job_id);
     if (jobId) {
-      merged.set(jobId, row as Record<string, unknown>);
+      merged.set(jobId, row);
     }
   }
 
   return {
     rows: Array.from(merged.values()),
-    durationMs: Date.now() - startedAt,
-    recentRowCount: recentResult.rows.length,
-    activeRowCount: activeResult.rows.length,
+    timing,
+    recentRowCount: recentRows.length,
+    activeRowCount: activeRows.length,
     rawRowCount: merged.size,
+    recent_query_exec_ms: recentQueryExecMs,
+    active_query_exec_ms: activeQueryExecMs,
   };
 }
 
@@ -155,9 +274,11 @@ export async function GET(
   const carerUid = cleanText(decodeURIComponent(rawCarerUid || ''));
   if (!carerUid || carerUid.includes('/')) {
     logSnapshotTiming({
-      auth_ms: 0,
-      sql_jobs_ms: 0,
-      sql_latest_outbox_ms: 0,
+      shared_client: false,
+      client_acquire_ms: 0,
+      auth_sql_ms: 0,
+      jobs_sql_ms: 0,
+      outbox_sql_ms: 0,
       merge_ms: 0,
       total_ms: Date.now() - totalStartedAt,
       reason: 'invalid_carer_uid',
@@ -168,9 +289,12 @@ export async function GET(
   const auth = await requireCarerOwnedLiveAuth(request, carerUid);
   if (!auth.ok) {
     logSnapshotTiming({
-      auth_ms: auth.timing.auth_ms,
-      sql_jobs_ms: 0,
-      sql_latest_outbox_ms: 0,
+      ...authTimingDetails(auth.timing),
+      shared_client: false,
+      client_acquire_ms: 0,
+      auth_sql_ms: auth.timing.sql_profile_total_ms,
+      jobs_sql_ms: 0,
+      outbox_sql_ms: 0,
       merge_ms: 0,
       total_ms: Date.now() - totalStartedAt,
       reason: 'auth_response',
@@ -179,16 +303,23 @@ export async function GET(
     return auth.response;
   }
 
-  const db = getPlayerMirrorPool();
-  if (!db) {
+  const jobsPoolAcquire = await acquireAutomationJobsClient({
+    context: 'live_automation_jobs_snapshot',
+    route: '/api/live/snapshot/carer/[carerUid]/jobs',
+  });
+  if (!jobsPoolAcquire) {
     logSnapshotTiming({
-      auth_ms: auth.timing.auth_ms,
-      sql_jobs_ms: 0,
-      sql_latest_outbox_ms: 0,
+      ...authTimingDetails(auth.timing),
+      shared_client: false,
+      client_acquire_ms: 0,
+      auth_sql_ms: auth.timing.sql_profile_total_ms,
+      jobs_sql_ms: 0,
+      outbox_sql_ms: 0,
       merge_ms: 0,
       total_ms: Date.now() - totalStartedAt,
       reason: 'postgres_unavailable',
       carerUid,
+      coadminUid: auth.coadminUid,
     });
     return NextResponse.json({
       jobs: [],
@@ -198,30 +329,42 @@ export async function GET(
     });
   }
 
+  const { client } = jobsPoolAcquire;
+  const clientAcquireMs = jobsPoolAcquire.pool_acquire_ms;
+
   try {
     const channel = carerJobLiveChannel(carerUid);
 
-    const sqlJobsStartedAt = Date.now();
-    const sqlOutboxStartedAt = Date.now();
-    const [snapshotPack, outboxPack] = await Promise.all([
-      fetchSnapshotRowsParallel(db, carerUid).then((result) => ({
-        ...result,
-        durationMs: Date.now() - sqlJobsStartedAt,
-      })),
-      getLatestOutboxIdForChannels([channel]).then((outbox) => ({
-        latestOutboxId: outbox.latestOutboxId,
-        durationMs: Date.now() - sqlOutboxStartedAt,
-      })),
-    ]);
+    const jobsSqlStartedAt = Date.now();
+    const snapshotPack = await fetchSnapshotRowsWithClient(client, carerUid);
+    const jobsSqlMs = Date.now() - jobsSqlStartedAt;
+
+    const outboxSqlStartedAt = Date.now();
+    const outboxPack = await getLatestOutboxIdForChannels([channel], {
+      acquireContext: {
+        context: 'live_automation_jobs_outbox',
+        route: '/api/live/snapshot/carer/[carerUid]/jobs',
+      },
+    });
+    const outboxSqlMs = Date.now() - outboxSqlStartedAt;
 
     const mergeStartedAt = Date.now();
     const jobs = sortByNewest(snapshotPack.rows.map(mapSnapshotRow).filter((row) => row.id));
     const mergeMs = Date.now() - mergeStartedAt;
 
     logSnapshotTiming({
-      auth_ms: auth.timing.auth_ms,
-      sql_jobs_ms: snapshotPack.durationMs,
-      sql_latest_outbox_ms: outboxPack.durationMs,
+      ...authTimingDetails(auth.timing),
+      shared_client: false,
+      jobs_pool: 'automationJobsCache',
+      row_width_mode: 'narrow',
+      client_acquire_ms: clientAcquireMs,
+      auth_sql_ms: auth.timing.sql_profile_total_ms,
+      jobs_sql_ms: jobsSqlMs,
+      jobs_query_exec_ms: snapshotPack.timing.query_exec_ms,
+      jobs_recent_query_exec_ms: snapshotPack.recent_query_exec_ms,
+      jobs_active_query_exec_ms: snapshotPack.active_query_exec_ms,
+      outbox_sql_ms: outboxSqlMs,
+      outbox_query_exec_ms: outboxPack.timing.query_exec_ms,
       merge_ms: mergeMs,
       total_ms: Date.now() - totalStartedAt,
       carerUid,
@@ -242,9 +385,12 @@ export async function GET(
   } catch (error) {
     console.info('[LIVE_OUTBOX] failed', { reason: 'automation_jobs_snapshot', carerUid, error });
     logSnapshotTiming({
-      auth_ms: auth.timing.auth_ms,
-      sql_jobs_ms: 0,
-      sql_latest_outbox_ms: 0,
+      shared_client: false,
+      jobs_pool: 'automationJobsCache',
+      client_acquire_ms: clientAcquireMs,
+      auth_sql_ms: auth.timing.sql_profile_total_ms,
+      jobs_sql_ms: 0,
+      outbox_sql_ms: 0,
       merge_ms: 0,
       total_ms: Date.now() - totalStartedAt,
       reason: 'postgres_snapshot_failed',
@@ -257,5 +403,7 @@ export async function GET(
       latestOutboxId: 0,
       source: 'postgres_snapshot_failed',
     });
+  } finally {
+    client.release();
   }
 }

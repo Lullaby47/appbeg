@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
+import { requireApiUser } from '@/lib/firebase/apiAuth';
+import { setUserPasswordInSql } from '@/lib/sql/userDirectoryWrite';
 
 type AllowedRole = 'admin' | 'staff' | 'coadmin';
 
@@ -8,24 +10,33 @@ function isAllowedRole(role: string): role is AllowedRole {
   return role === 'admin' || role === 'staff' || role === 'coadmin';
 }
 
-export async function POST(request: Request) {
+async function mirrorFirebasePassword(targetUid: string, newPassword: string) {
   try {
-    const header = request.headers.get('Authorization') || '';
-    const token = header.match(/^Bearer\s+(\S+)$/i)?.[1];
-    if (!token) {
-      return NextResponse.json({ error: 'Missing or invalid authorization.' }, { status: 401 });
-    }
+    await adminAuth.updateUser(targetUid, { password: newPassword });
+    return true;
+  } catch (error) {
+    console.warn('[USER_DIRECTORY_SQL] firebase mirror failed', {
+      action: 'password_reset',
+      route: 'admin_reset_user_password',
+      uid: targetUid,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
 
-    const decoded = await adminAuth.verifyIdToken(token);
-    const callerUid = decoded.uid;
-    const callerSnap = await adminDb.collection('users').doc(callerUid).get();
-    if (!callerSnap.exists) {
-      return NextResponse.json({ error: 'User profile not found.' }, { status: 404 });
+export async function POST(request: Request) {
+  const startedAt = Date.now();
+  try {
+    const auth = await requireApiUser(request, ['admin']);
+    if ('response' in auth) {
+      return auth.response;
     }
-    const callerRole = String(callerSnap.data()?.role || '').toLowerCase();
-    if (callerRole !== 'admin') {
-      return NextResponse.json({ error: 'Only admin can reset these passwords.' }, { status: 403 });
-    }
+    console.info('[ADMIN_RESET_USER_PASSWORD_AUTH]', {
+      auth_path: auth.authPath,
+      uid: auth.user.uid,
+      app_session_used: auth.authPath.startsWith('app_session'),
+    });
 
     const body = (await request.json()) as {
       targetUid?: string;
@@ -52,8 +63,50 @@ export async function POST(request: Request) {
       );
     }
 
-    await adminAuth.updateUser(targetUid, { password: newPassword });
-    return NextResponse.json({ success: true, message: 'Password reset successfully.' });
+    let sqlResult: Awaited<ReturnType<typeof setUserPasswordInSql>>;
+    try {
+      sqlResult = await setUserPasswordInSql({
+        uid: targetUid,
+        password: newPassword,
+        actorUid: auth.user.uid,
+        actorRole: auth.user.role,
+        reason: 'password_reset',
+      });
+    } catch (error) {
+      console.info('[USER_DIRECTORY_SQL]', {
+        action: 'password_reset',
+        route: 'admin_reset_user_password',
+        uid: targetUid,
+        actorUid: auth.user.uid,
+        sql_ok: false,
+        firebase_mirror_ok: false,
+        sessions_revoked: 0,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      const message = error instanceof Error ? error.message : 'Password reset failed.';
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
+
+    const firebaseMirrorOk = await mirrorFirebasePassword(targetUid, newPassword);
+
+    console.info('[USER_DIRECTORY_SQL]', {
+      action: 'password_reset',
+      route: 'admin_reset_user_password',
+      uid: targetUid,
+      actorUid: auth.user.uid,
+      sql_ok: true,
+      firebase_mirror_ok: firebaseMirrorOk,
+      sessions_revoked: sqlResult.sessionsRevoked,
+      directory_updated: sqlResult.directoryUpdated,
+      durationMs: Date.now() - startedAt,
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: 'Password reset successfully.',
+      firebaseMirrorOk,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Password reset failed.';
     return NextResponse.json({ error: message }, { status: 500 });

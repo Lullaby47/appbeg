@@ -135,6 +135,7 @@ async function forceRefreshTaskFromServer(taskId: string, taskRef = doc(db, 'car
 }
 
 async function getAuthHeaders() {
+  const { getAppSessionRequestHeaders } = await import('@/features/auth/appSession');
   const currentUser = auth.currentUser;
   if (!currentUser) {
     throw new Error('Not authenticated.');
@@ -143,6 +144,7 @@ async function getAuthHeaders() {
   return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${token}`,
+    ...getAppSessionRequestHeaders(),
   };
 }
 

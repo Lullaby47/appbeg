@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { mirrorFreeplayPendingGiftByPlayerUid } from '@/lib/sql/freeplayPendingGiftsCache';
 
 type PlayerCandidate = {
   uid: string;
@@ -105,6 +106,18 @@ export async function POST(request: Request) {
       transaction.set(markerRef, {
         ...gift,
         giftId: giftRef.id,
+      });
+    });
+
+    void mirrorFreeplayPendingGiftByPlayerUid(
+      selectedPlayer.uid,
+      'coadmin_freeplay_give'
+    ).then((mirrorOk) => {
+      console.info('[FREEPLAY_PENDING_CACHE]', {
+        source: 'firestore_write',
+        playerUid: selectedPlayer.uid,
+        mirror_ok: mirrorOk,
+        action: 'give',
       });
     });
 

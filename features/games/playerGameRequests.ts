@@ -15,8 +15,14 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 
+import { getAppSessionRequestHeaders } from '@/features/auth/appSession';
+import {
+  assertActivePlayerSession,
+  getPlayerApiHeaders,
+  resolvePlayerApiHeaderMode,
+} from '@/features/auth/playerSession';
+import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { auth, db } from '@/lib/firebase/client';
-import { assertActivePlayerSession, getPlayerApiHeaders } from '@/features/auth/playerSession';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import {
   belongsToCoadmin,
@@ -156,6 +162,7 @@ async function tombstoneLinkedCarerTaskCacheBestEffort(taskId: string) {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
+        ...getAppSessionRequestHeaders(),
       },
       body: JSON.stringify({ taskId: cleanTaskId, action: 'tombstone' }),
     });
@@ -184,6 +191,7 @@ async function mirrorPlayerGameRequestCacheBestEffort(
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
+        ...getAppSessionRequestHeaders(),
       },
       body: JSON.stringify({ requestId: cleanRequestId, action }),
     });
@@ -226,6 +234,29 @@ export function sortPlayerGameRequestsByNewest(requests: PlayerGameRequest[]) {
 
 async function getPlayerRequestAuthHeaders() {
   return getPlayerApiHeaders();
+}
+
+async function resolvePlayerActorUid(): Promise<string> {
+  const cached = getCachedSessionUser();
+  const sessionUser =
+    cached?.uid && cached.role === 'player' ? cached : await getSessionUserOnce();
+  if (sessionUser?.role === 'player' && sessionUser.uid) {
+    return sessionUser.uid;
+  }
+  const firebaseUid = auth.currentUser?.uid;
+  if (firebaseUid) {
+    return firebaseUid;
+  }
+  throw new Error('Not authenticated.');
+}
+
+function logPlayerRechargeRequestAuth(headers: Record<string, string>) {
+  console.info('[PLAYER_RECHARGE_REQUEST_AUTH]', {
+    hasAppSession: Boolean(headers['X-App-Session-Id']),
+    hasPlayerSession: Boolean(headers['X-Player-Session-Id']),
+    hasFirebaseUser: Boolean(auth.currentUser),
+    headerMode: resolvePlayerApiHeaderMode(headers),
+  });
 }
 
 function readApiError(messageFallback: string, payload: unknown) {
@@ -437,6 +468,20 @@ async function getRequestsByCoadminAndStatuses(
 }
 
 async function assertCurrentPlayerIsActive(playerUid: string) {
+  const cached = getCachedSessionUser();
+  const sessionUser =
+    cached?.uid === playerUid ? cached : (await getSessionUserOnce()) ?? null;
+  if (sessionUser?.uid === playerUid) {
+    if (sessionUser.status === 'disabled') {
+      throw new Error(
+        'Your account is blocked. Recharge and redeem features are disabled.'
+      );
+    }
+    if (sessionUser.status === 'active') {
+      return;
+    }
+  }
+
   const playerSnap = await getDoc(doc(db, 'users', playerUid));
 
   if (!playerSnap.exists()) {
@@ -460,14 +505,10 @@ export async function createPlayerGameRequest(values: {
   bonusPercentage?: number;
   bonusEventId?: string;
 }) {
-  const currentUser = auth.currentUser;
-
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
+  const playerUid = await resolvePlayerActorUid();
 
   await assertActivePlayerSession();
-  await assertCurrentPlayerIsActive(currentUser.uid);
+  await assertCurrentPlayerIsActive(playerUid);
 
   if (!values.gameName.trim()) {
     throw new Error('Game is required.');
@@ -483,9 +524,11 @@ export async function createPlayerGameRequest(values: {
   }
   const cleanGameName = values.gameName.trim();
   if (values.type === 'recharge') {
+    const headers = await getPlayerRequestAuthHeaders();
+    logPlayerRechargeRequestAuth(headers);
     const response = await fetch('/api/player/game-requests/recharge', {
       method: 'POST',
-      headers: await getPlayerRequestAuthHeaders(),
+      headers,
       body: JSON.stringify({
         gameName: cleanGameName,
         amount: requestAmount,
@@ -532,7 +575,7 @@ export async function createPlayerGameRequest(values: {
   }
 
   const rollingRedeemUsed = await fetchRolling24hRedeemUsageForPlayerGame(
-    currentUser.uid,
+    playerUid,
     cleanGameName
   );
   const redeemRemaining = Math.max(
@@ -775,26 +818,6 @@ export async function dismissPlayerRedeemRequest(requestId: string) {
  * Marks the request dismissed and removes the linked carer task.
  */
 export async function dismissPendingRedeemAsCarer(requestId: string) {
-  const currentUser = auth.currentUser;
-
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-
-  const carerSnap = await getDoc(doc(db, 'users', currentUser.uid));
-
-  if (!carerSnap.exists()) {
-    throw new Error('Profile not found.');
-  }
-
-  const carerRole = String(
-    (carerSnap.data() as { role?: string }).role || ''
-  ).toLowerCase();
-
-  if (carerRole !== 'carer') {
-    throw new Error('Only carers can dismiss pending redeem tasks this way.');
-  }
-
   const response = await fetch('/api/carer/game-requests/dismiss-redeem', {
     method: 'POST',
     headers: await getFirebaseApiHeaders(),
@@ -811,26 +834,6 @@ export async function dismissPendingRedeemAsCarer(requestId: string) {
  * Marks the request dismissed and removes the linked carer task.
  */
 export async function dismissPendingRechargeAsCarer(requestId: string) {
-  const currentUser = auth.currentUser;
-
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-
-  const carerSnap = await getDoc(doc(db, 'users', currentUser.uid));
-
-  if (!carerSnap.exists()) {
-    throw new Error('Profile not found.');
-  }
-
-  const carerRole = String(
-    (carerSnap.data() as { role?: string }).role || ''
-  ).toLowerCase();
-
-  if (carerRole !== 'carer') {
-    throw new Error('Only carers can dismiss pending recharge tasks this way.');
-  }
-
   const response = await fetch('/api/carer/game-requests/dismiss-recharge', {
     method: 'POST',
     headers: await getFirebaseApiHeaders(),

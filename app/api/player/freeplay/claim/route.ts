@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
+import { mirrorFreeplayPendingGiftByPlayerUid } from '@/lib/sql/freeplayPendingGiftsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 export async function POST(request: Request) {
@@ -104,6 +105,15 @@ export async function POST(request: Request) {
       void mirrorFinancialEventById(mirroredEventId, 'appbeg_freeplay_claim');
       void mirrorUserBalanceSnapshotById(playerUid, 'appbeg_freeplay_claim');
     }
+    void mirrorFreeplayPendingGiftByPlayerUid(playerUid, 'appbeg_freeplay_claim').then((mirrorOk) => {
+      console.info('[FREEPLAY_PENDING_CACHE]', {
+        source: 'firestore_write',
+        playerUid,
+        mirror_ok: mirrorOk,
+        action: 'claim',
+        alreadyClaimed,
+      });
+    });
     return NextResponse.json({
       success: true,
       amount,

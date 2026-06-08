@@ -2,6 +2,12 @@ import 'server-only';
 
 import { Pool, type PoolClient, type QueryResult } from 'pg';
 
+import {
+  getPlayerMirrorPool,
+  runMirrorClientQuery,
+  runMirrorPoolQuery,
+} from '@/lib/sql/playerMirrorCommon';
+
 export type CachedGameLogin = {
   id: string;
   gameName: string;
@@ -59,6 +65,7 @@ export type GameLoginsSqlTiming = {
   each_query_ms: number[];
   poolReused: boolean | null;
   pg_connect_error: string | null;
+  pool?: 'playerMirror' | 'gameLoginsCache';
 };
 
 export function createGameLoginsSqlTiming(): GameLoginsSqlTiming {
@@ -217,6 +224,45 @@ function recordSqlConnectError(sqlTiming: GameLoginsSqlTiming | undefined, error
     error instanceof Error ? error.message : cleanText(error) || 'postgres_connect_failed';
 }
 
+const GAME_LOGINS_BY_FIELD_SQL = {
+  coadminUid: `
+    SELECT
+      id,
+      game_name,
+      username,
+      password,
+      backend_url,
+      frontend_url,
+      site_url,
+      created_by,
+      coadmin_uid,
+      created_at,
+      status
+    FROM public.game_logins_cache
+    WHERE coadmin_uid = $1
+      AND status = 'active'
+    ORDER BY COALESCE(created_at, updated_at, mirrored_at) DESC
+  `,
+  createdBy: `
+    SELECT
+      id,
+      game_name,
+      username,
+      password,
+      backend_url,
+      frontend_url,
+      site_url,
+      created_by,
+      coadmin_uid,
+      created_at,
+      status
+    FROM public.game_logins_cache
+    WHERE created_by = $1
+      AND status = 'active'
+    ORDER BY COALESCE(created_at, updated_at, mirrored_at) DESC
+  `,
+} as const;
+
 export async function readGameLoginsCacheByField(
   field: 'coadminUid' | 'createdBy',
   value: string,
@@ -233,60 +279,42 @@ export async function readGameLoginsCacheByField(
     return memoryCached;
   }
 
-  const db = getPool(sqlTiming);
-  if (!db) {
+  const pool = getPlayerMirrorPool();
+  if (!pool) {
     return null;
   }
 
-  const column = field === 'coadminUid' ? 'coadmin_uid' : 'created_by';
-  const connectStartedAt = Date.now();
-  let client: PoolClient | null = null;
-  let destroyClient = false;
-  try {
-    client = await db.connect();
-    if (sqlTiming) {
-      sqlTiming.pg_connect_ms += Date.now() - connectStartedAt;
-    }
+  if (sqlTiming) {
+    sqlTiming.pool = 'playerMirror';
+  }
 
-    const queryStartedAt = Date.now();
-    const result = await queryWithTimeout<Record<string, unknown>>(
-      client,
-      `
-        SELECT
-          id,
-          game_name,
-          username,
-          password,
-          backend_url,
-          frontend_url,
-          site_url,
-          created_by,
-          coadmin_uid,
-          created_at,
-          status
-        FROM public.game_logins_cache
-        WHERE ${column} = $1
-          AND status = 'active'
-        ORDER BY COALESCE(created_at, updated_at, mirrored_at) DESC
-      `,
+  const poolStartedAt = Date.now();
+  try {
+    const { rows, timing } = await runMirrorPoolQuery<Record<string, unknown>>(
+      pool,
+      GAME_LOGINS_BY_FIELD_SQL[field],
       [value]
     );
     if (sqlTiming) {
-      sqlTiming.each_query_ms.push(Date.now() - queryStartedAt);
+      sqlTiming.sql_pool_ms += Date.now() - poolStartedAt;
+      sqlTiming.pg_connect_ms += timing.pool_acquire_ms;
+      sqlTiming.each_query_ms.push(timing.query_exec_ms);
+      sqlTiming.poolReused = timing.pool_acquire_ms < 50;
     }
 
-    const rows = result.rows.map(mapRow);
-    writeMemoryCache(cacheKey, rows);
-    return rows;
+    const mapped = rows.map(mapRow);
+    writeMemoryCache(cacheKey, mapped);
+    console.info('[GAME_LOGINS_CACHE] postgres read', {
+      pool: 'playerMirror',
+      field,
+      value,
+      count: mapped.length,
+      pg_connect_ms: timing.pool_acquire_ms,
+      poolReused: timing.pool_acquire_ms < 50,
+    });
+    return mapped;
   } catch (error) {
-    destroyClient = true;
-    if (!client) {
-      if (sqlTiming) {
-        sqlTiming.pg_connect_ms += Date.now() - connectStartedAt;
-      }
-      recordSqlConnectError(sqlTiming, error);
-    }
-    resetPoolAfterError(error);
+    recordSqlConnectError(sqlTiming, error);
     console.warn('[GAME_LOGINS_CACHE] fallback firestore', {
       field,
       value,
@@ -294,9 +322,50 @@ export async function readGameLoginsCacheByField(
       error,
     });
     return null;
-  } finally {
-    releaseClientSafely(client, destroyClient);
   }
+}
+
+const GAME_LOGINS_BY_COADMIN_SQL = `
+  SELECT DISTINCT ON (id)
+    id,
+    game_name,
+    username,
+    password,
+    backend_url,
+    frontend_url,
+    site_url,
+    created_by,
+    coadmin_uid,
+    created_at,
+    status,
+    updated_at,
+    mirrored_at
+  FROM public.game_logins_cache
+  WHERE status = 'active'
+    AND deleted_at IS NULL
+    AND (coadmin_uid = $1 OR created_by = $1)
+  ORDER BY id, COALESCE(created_at, updated_at, mirrored_at) DESC
+`;
+
+function sortCachedGameLogins(rows: CachedGameLogin[]) {
+  return rows.sort((left, right) => {
+    const leftTime = left.createdAt ? new Date(left.createdAt).getTime() : 0;
+    const rightTime = right.createdAt ? new Date(right.createdAt).getTime() : 0;
+    return rightTime - leftTime;
+  });
+}
+
+export async function readGameLoginsCacheByCoadminWithClient(
+  client: PoolClient,
+  coadminUid: string
+): Promise<CachedGameLogin[]> {
+  const cleanCoadminUid = cleanText(coadminUid);
+  const { rows } = await runMirrorClientQuery<Record<string, unknown>>(
+    client,
+    GAME_LOGINS_BY_COADMIN_SQL,
+    [cleanCoadminUid]
+  );
+  return sortCachedGameLogins(rows.map(mapRow));
 }
 
 export async function readGameLoginsCacheByCoadmin(
@@ -313,76 +382,48 @@ export async function readGameLoginsCacheByCoadmin(
     return memoryCached;
   }
 
-  const db = getPool(sqlTiming);
-  if (!db) {
+  const pool = getPlayerMirrorPool();
+  if (!pool) {
     return null;
   }
 
-  const connectStartedAt = Date.now();
-  let client: PoolClient | null = null;
-  let destroyClient = false;
-  try {
-    client = await db.connect();
-    if (sqlTiming) {
-      sqlTiming.pg_connect_ms += Date.now() - connectStartedAt;
-    }
+  if (sqlTiming) {
+    sqlTiming.pool = 'playerMirror';
+  }
 
-    const queryStartedAt = Date.now();
-    const result = await queryWithTimeout<Record<string, unknown>>(
-      client,
-      `
-        SELECT DISTINCT ON (id)
-          id,
-          game_name,
-          username,
-          password,
-          backend_url,
-          frontend_url,
-          site_url,
-          created_by,
-          coadmin_uid,
-          created_at,
-          status,
-          updated_at,
-          mirrored_at
-        FROM public.game_logins_cache
-        WHERE status = 'active'
-          AND deleted_at IS NULL
-          AND (coadmin_uid = $1 OR created_by = $1)
-        ORDER BY id, COALESCE(created_at, updated_at, mirrored_at) DESC
-      `,
-      [coadminUid]
+  const poolStartedAt = Date.now();
+  const cleanCoadminUid = cleanText(coadminUid);
+  try {
+    const { rows, timing } = await runMirrorPoolQuery<Record<string, unknown>>(
+      pool,
+      GAME_LOGINS_BY_COADMIN_SQL,
+      [cleanCoadminUid]
     );
     if (sqlTiming) {
-      sqlTiming.each_query_ms.push(Date.now() - queryStartedAt);
+      sqlTiming.sql_pool_ms += Date.now() - poolStartedAt;
+      sqlTiming.pg_connect_ms += timing.pool_acquire_ms;
+      sqlTiming.each_query_ms.push(timing.query_exec_ms);
+      sqlTiming.poolReused = timing.pool_acquire_ms < 50;
     }
 
-    const rows = result.rows
-      .map(mapRow)
-      .sort((left: CachedGameLogin, right: CachedGameLogin) => {
-        const leftTime = left.createdAt ? new Date(left.createdAt).getTime() : 0;
-        const rightTime = right.createdAt ? new Date(right.createdAt).getTime() : 0;
-        return rightTime - leftTime;
-      });
-    writeMemoryCache(cacheKey, rows);
-    return rows;
+    const mapped = sortCachedGameLogins(rows.map(mapRow));
+    writeMemoryCache(cacheKey, mapped);
+    console.info('[GAME_LOGINS_CACHE] postgres read', {
+      pool: 'playerMirror',
+      coadminUid: cleanCoadminUid,
+      count: mapped.length,
+      pg_connect_ms: timing.pool_acquire_ms,
+      poolReused: timing.pool_acquire_ms < 50,
+    });
+    return mapped;
   } catch (error) {
-    destroyClient = true;
-    if (!client) {
-      if (sqlTiming) {
-        sqlTiming.pg_connect_ms += Date.now() - connectStartedAt;
-      }
-      recordSqlConnectError(sqlTiming, error);
-    }
-    resetPoolAfterError(error);
+    recordSqlConnectError(sqlTiming, error);
     console.warn('[GAME_LOGINS_CACHE] fallback firestore', {
-      coadminUid,
+      coadminUid: cleanCoadminUid,
       reason: 'postgres_read_failed',
       error,
     });
     return null;
-  } finally {
-    releaseClientSafely(client, destroyClient);
   }
 }
 
@@ -463,4 +504,81 @@ export async function deleteGameLoginCache(id: string) {
 
   await db.query('DELETE FROM public.game_logins_cache WHERE id = $1', [id]);
   return true;
+}
+
+export type GameLoginDetailsSqlLookup = {
+  username: string | null;
+  password: string | null;
+  backendUrl: string | null;
+  frontendUrl: string | null;
+  siteUrl: string | null;
+};
+
+export type GameLoginDetailsSqlLookupResult = {
+  details: GameLoginDetailsSqlLookup | null;
+  hit: boolean;
+  missReason: 'postgres_unavailable' | 'lookup_failed' | 'row_missing' | 'missing_field' | null;
+  durationMs: number;
+};
+
+function normalizeGameNameForAutomation(gameName: string) {
+  return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+}
+
+function mapCachedGameLoginToDetails(row: CachedGameLogin): GameLoginDetailsSqlLookup {
+  return {
+    username: row.username || null,
+    password: row.password || null,
+    backendUrl: row.backendUrl || null,
+    frontendUrl: row.frontendUrl || null,
+    siteUrl: row.siteUrl || null,
+  };
+}
+
+export async function lookupGameLoginDetailsForCoadminGameFromSql(
+  coadminUid: string,
+  gameName: string
+): Promise<GameLoginDetailsSqlLookupResult> {
+  const startedAt = Date.now();
+  const cleanCoadminUid = cleanText(coadminUid);
+  const target = normalizeGameNameForAutomation(String(gameName || ''));
+  if (!cleanCoadminUid || !target) {
+    return {
+      details: null,
+      hit: false,
+      missReason: 'missing_field',
+      durationMs: Date.now() - startedAt,
+    };
+  }
+
+  const rows = await readGameLoginsCacheByCoadmin(cleanCoadminUid);
+  const durationMs = Date.now() - startedAt;
+
+  if (rows === null) {
+    return {
+      details: null,
+      hit: false,
+      missReason: 'postgres_unavailable',
+      durationMs,
+    };
+  }
+
+  for (const row of rows) {
+    if (normalizeGameNameForAutomation(String(row.gameName || '')) !== target) {
+      continue;
+    }
+    return {
+      details: mapCachedGameLoginToDetails(row),
+      hit: true,
+      missReason: null,
+      durationMs,
+    };
+  }
+
+  return {
+    details: null,
+    hit: false,
+    missReason: rows.length === 0 ? 'row_missing' : 'row_missing',
+    durationMs,
+  };
 }

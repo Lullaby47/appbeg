@@ -1,6 +1,7 @@
 import 'server-only';
 
 import type { DocumentSnapshot } from 'firebase-admin/firestore';
+import type { PoolClient } from 'pg';
 
 import { adminDb } from '@/lib/firebase/admin';
 import {
@@ -8,6 +9,8 @@ import {
   getPlayerMirrorPool,
   normalizeJson,
   numberOrNull,
+  runMirrorClientQuery,
+  runMirrorPoolQuery,
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
 import { emitPlayerRequestOutboxEvent } from '@/lib/sql/liveOutbox';
@@ -286,6 +289,152 @@ export async function tombstonePlayerGameRequestCache(firebaseId: string, source
   } catch (error) {
     console.error('[PLAYER_GAME_REQUESTS_CACHE] mirror failed', { firebaseId: cleanId, error });
     return false;
+  }
+}
+
+export type CompletedRechargeCacheRow = {
+  firebaseId: string;
+  amount: number;
+  createdAtMs: number;
+  bonusEventId: string;
+  bonusPercentage: number | null;
+};
+
+const COMPLETED_RECHARGES_BY_PLAYER_SQL = `
+  SELECT
+    firebase_id,
+    amount,
+    bonus_event_id,
+    bonus_percentage,
+    completed_at,
+    created_at
+  FROM public.player_game_requests_cache
+  WHERE deleted_at IS NULL
+    AND player_uid = $1
+    AND type = 'recharge'
+    AND status = 'completed'
+  ORDER BY COALESCE(completed_at, created_at, mirrored_at) ASC
+`;
+
+function rechargeCreatedAtMs(row: Record<string, unknown>) {
+  const completedAt = toIsoString(row.completed_at);
+  const createdAt = toIsoString(row.created_at);
+  const completedMs = completedAt ? Date.parse(completedAt) : 0;
+  const createdMs = createdAt ? Date.parse(createdAt) : 0;
+  return Math.max(completedMs, createdMs);
+}
+
+const FIRST_RECHARGE_MATCH_APPLIED_SQL = `
+  SELECT 1
+  FROM public.player_game_requests_cache
+  WHERE deleted_at IS NULL
+    AND player_uid = $1
+    AND type = 'recharge'
+    AND first_recharge_match_applied = TRUE
+    AND LOWER(COALESCE(status, '')) NOT IN ('failed', 'dismissed')
+  LIMIT 1
+`;
+
+export async function hasFirstRechargeMatchAppliedFromSqlWithClient(
+  client: PoolClient,
+  playerUid: string
+): Promise<boolean> {
+  const cleanPlayerUid = cleanText(playerUid);
+  const { rows } = await runMirrorClientQuery<Record<string, unknown>>(
+    client,
+    FIRST_RECHARGE_MATCH_APPLIED_SQL,
+    [cleanPlayerUid]
+  );
+  return rows.length > 0;
+}
+
+export async function hasFirstRechargeMatchAppliedFromSql(
+  playerUid: string
+): Promise<boolean | null> {
+  const cleanPlayerUid = cleanText(playerUid);
+  const db = getPlayerMirrorPool();
+  if (!db || !cleanPlayerUid) {
+    return null;
+  }
+
+  try {
+    const startedAt = Date.now();
+    const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(
+      db,
+      FIRST_RECHARGE_MATCH_APPLIED_SQL,
+      [cleanPlayerUid]
+    );
+    console.info('[PLAYER_GAME_REQUESTS_CACHE] first_recharge_match_applied read ok', {
+      playerUid: cleanPlayerUid,
+      hasApplied: rows.length > 0,
+      durationMs: Date.now() - startedAt,
+    });
+    return rows.length > 0;
+  } catch (error) {
+    console.warn('[PLAYER_GAME_REQUESTS_CACHE] first_recharge_match_applied postgres read failed', {
+      playerUid: cleanPlayerUid,
+      error,
+    });
+    return null;
+  }
+}
+
+/** Alias for recharge Finance Layer 1 first-recharge eligibility reads. */
+export const hasCompletedRechargeRequestInCache = hasFirstRechargeMatchAppliedFromSql;
+
+function mapCompletedRechargeRows(rows: Record<string, unknown>[]): CompletedRechargeCacheRow[] {
+  return rows.map((row) => ({
+    firebaseId: cleanText(row.firebase_id),
+    amount: Math.max(0, numberOrNull(row.amount) ?? 0),
+    createdAtMs: rechargeCreatedAtMs(row),
+    bonusEventId: cleanText(row.bonus_event_id),
+    bonusPercentage: cleanText(row.bonus_event_id)
+      ? numberOrNull(row.bonus_percentage)
+      : null,
+  }));
+}
+
+export async function readCompletedRechargeRequestsForPlayerWithClient(
+  client: PoolClient,
+  playerUid: string
+): Promise<CompletedRechargeCacheRow[]> {
+  const cleanPlayerUid = cleanText(playerUid);
+  const { rows } = await runMirrorClientQuery<Record<string, unknown>>(
+    client,
+    COMPLETED_RECHARGES_BY_PLAYER_SQL,
+    [cleanPlayerUid]
+  );
+  return mapCompletedRechargeRows(rows);
+}
+
+export async function readCompletedRechargeRequestsForPlayer(
+  playerUid: string
+): Promise<CompletedRechargeCacheRow[] | null> {
+  const cleanPlayerUid = cleanText(playerUid);
+  const db = getPlayerMirrorPool();
+  if (!db || !cleanPlayerUid) {
+    return null;
+  }
+
+  try {
+    const startedAt = Date.now();
+    const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(
+      db,
+      COMPLETED_RECHARGES_BY_PLAYER_SQL,
+      [cleanPlayerUid]
+    );
+    console.info('[PLAYER_GAME_REQUESTS_CACHE] completed_recharges read ok', {
+      playerUid: cleanPlayerUid,
+      count: rows.length,
+      durationMs: Date.now() - startedAt,
+    });
+    return mapCompletedRechargeRows(rows);
+  } catch (error) {
+    console.warn('[PLAYER_GAME_REQUESTS_CACHE] completed_recharges postgres read failed', {
+      playerUid: cleanPlayerUid,
+      error,
+    });
+    return null;
   }
 }
 

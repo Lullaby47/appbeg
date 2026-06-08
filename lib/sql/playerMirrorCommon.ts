@@ -3,9 +3,165 @@ import 'server-only';
 import { Pool, type PoolClient } from 'pg';
 
 const SQL_TIMEOUT_MS = 5_000;
-const PLAYER_MIRROR_POOL_MAX = 8;
 /** Keep idle connections longer so remote VPS snapshots avoid repeated TLS handshakes. */
 const PLAYER_MIRROR_IDLE_TIMEOUT_MS = 120_000;
+
+function resolvePlayerMirrorPoolMax() {
+  const fromEnv = Number(process.env.PLAYER_MIRROR_POOL_MAX || 12);
+  if (!Number.isFinite(fromEnv)) {
+    return 12;
+  }
+  return Math.min(32, Math.max(4, Math.trunc(fromEnv)));
+}
+
+const PLAYER_MIRROR_POOL_MAX = resolvePlayerMirrorPoolMax();
+
+function resolvePlayerMirrorPoolWarmMin() {
+  const fromEnv = Number(process.env.PLAYER_MIRROR_POOL_WARM_MIN || 2);
+  if (!Number.isFinite(fromEnv)) {
+    return 2;
+  }
+  return Math.min(PLAYER_MIRROR_POOL_MAX, Math.max(0, Math.trunc(fromEnv)));
+}
+
+function isPlayerMirrorPoolWarmEnabled() {
+  const env = cleanText(process.env.PLAYER_MIRROR_POOL_WARM_ENABLED).toLowerCase();
+  if (env === '0' || env === 'false' || env === 'no') {
+    return false;
+  }
+  if (env === '1' || env === 'true' || env === 'yes') {
+    return true;
+  }
+  return process.env.NODE_ENV !== 'production';
+}
+
+type PlayerMirrorWarmState = {
+  inflight: Promise<void> | null;
+  completed: boolean;
+};
+
+const globalSqlPoolWarm = globalThis as typeof globalThis & {
+  __appbegPlayerMirrorWarmState?: PlayerMirrorWarmState;
+};
+
+function playerMirrorWarmState(): PlayerMirrorWarmState {
+  if (!globalSqlPoolWarm.__appbegPlayerMirrorWarmState) {
+    globalSqlPoolWarm.__appbegPlayerMirrorWarmState = {
+      inflight: null,
+      completed: false,
+    };
+  }
+  return globalSqlPoolWarm.__appbegPlayerMirrorWarmState;
+}
+
+export function warmPlayerMirrorPool(reason: string) {
+  if (!isPlayerMirrorPoolWarmEnabled()) {
+    return;
+  }
+
+  const pool = getPlayerMirrorPool();
+  if (!pool) {
+    return;
+  }
+
+  const warmState = playerMirrorWarmState();
+  if (warmState.completed || warmState.inflight) {
+    return;
+  }
+
+  const requested = resolvePlayerMirrorPoolWarmMin();
+  if (requested <= 0) {
+    return;
+  }
+
+  warmState.inflight = (async () => {
+    const startedAt = Date.now();
+    let ok = 0;
+    let failed = 0;
+    const warmCount = Math.min(requested, PLAYER_MIRROR_POOL_MAX);
+
+    const warmOne = async () => {
+      try {
+        const client = await pool.connect();
+        try {
+          await client.query('SELECT 1');
+          ok += 1;
+        } finally {
+          client.release();
+        }
+      } catch {
+        failed += 1;
+      }
+    };
+
+    await Promise.all(Array.from({ length: warmCount }, () => warmOne()));
+
+    console.info('[SQL_POOL_WARMUP]', {
+      name: 'playerMirror',
+      reason,
+      requested: warmCount,
+      ok,
+      failed,
+      durationMs: Date.now() - startedAt,
+    });
+    warmState.completed = true;
+  })()
+    .catch((error) => {
+      console.warn('[SQL_POOL_WARMUP] failed', {
+        name: 'playerMirror',
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    })
+    .finally(() => {
+      warmState.inflight = null;
+    });
+}
+
+export type PlayerMirrorAcquireContext = {
+  context: string;
+  route?: string;
+  request_id?: string;
+};
+
+function shouldLogPoolAcquire(acquireMs: number, waitingBefore: number, idleBefore: number) {
+  return (
+    process.env.SQL_POOL_DEBUG === '1' ||
+    acquireMs >= 10 ||
+    waitingBefore > 0 ||
+    idleBefore === 0
+  );
+}
+
+function logSqlPoolAcquire(
+  pool: Pool,
+  acquireMs: number,
+  statsBefore: { totalCount: number; idleCount: number; waitingCount: number },
+  acquireContext?: PlayerMirrorAcquireContext
+) {
+  if (
+    !shouldLogPoolAcquire(
+      acquireMs,
+      statsBefore.waitingCount,
+      statsBefore.idleCount
+    )
+  ) {
+    return;
+  }
+  console.info('[SQL_POOL_ACQUIRE]', {
+    name: 'playerMirror',
+    context: acquireContext?.context ?? 'unspecified',
+    acquire_ms: acquireMs,
+    totalCount: pool.totalCount,
+    idleCount: pool.idleCount,
+    waitingCount: pool.waitingCount,
+    max: PLAYER_MIRROR_POOL_MAX,
+    request_id: acquireContext?.request_id ?? null,
+    route: acquireContext?.route ?? null,
+    idle_before: statsBefore.idleCount,
+    waiting_before: statsBefore.waitingCount,
+  });
+}
 
 export type PlayerMirrorSqlTiming = {
   pool_acquire_ms: number;
@@ -45,12 +201,22 @@ export async function runMirrorClientQuery<T extends Record<string, unknown>>(
 export async function runMirrorPoolQuery<T extends Record<string, unknown>>(
   pool: Pool,
   sql: string,
-  params: unknown[] = []
+  params: unknown[] = [],
+  acquireContext?: PlayerMirrorAcquireContext
 ): Promise<{ rows: T[]; timing: PlayerMirrorSqlTiming }> {
   const totalStartedAt = Date.now();
-  const acquireStartedAt = Date.now();
-  const client = await pool.connect();
-  const pool_acquire_ms = Date.now() - acquireStartedAt;
+  const acquired = await acquirePlayerMirrorClient(acquireContext);
+  if (!acquired) {
+    return {
+      rows: [],
+      timing: createPlayerMirrorSqlTiming({
+        pool_acquire_ms: 0,
+        query_exec_ms: 0,
+        total_ms: Date.now() - totalStartedAt,
+      }),
+    };
+  }
+  const { client, timing: acquireTiming } = acquired;
   try {
     const queryStartedAt = Date.now();
     const result = await client.query(sql, params);
@@ -58,7 +224,7 @@ export async function runMirrorPoolQuery<T extends Record<string, unknown>>(
     return {
       rows: result.rows as T[],
       timing: createPlayerMirrorSqlTiming({
-        pool_acquire_ms,
+        pool_acquire_ms: acquireTiming.pool_acquire_ms,
         query_exec_ms,
         total_ms: Date.now() - totalStartedAt,
       }),
@@ -68,7 +234,9 @@ export async function runMirrorPoolQuery<T extends Record<string, unknown>>(
   }
 }
 
-export async function acquirePlayerMirrorClient(): Promise<{
+export async function acquirePlayerMirrorClient(
+  acquireContext?: PlayerMirrorAcquireContext
+): Promise<{
   client: PoolClient;
   timing: PlayerMirrorSqlTiming;
 } | null> {
@@ -77,12 +245,19 @@ export async function acquirePlayerMirrorClient(): Promise<{
     return null;
   }
   const totalStartedAt = Date.now();
+  const statsBefore = {
+    totalCount: pool.totalCount,
+    idleCount: pool.idleCount,
+    waitingCount: pool.waitingCount,
+  };
   const acquireStartedAt = Date.now();
   const client = await pool.connect();
+  const pool_acquire_ms = Date.now() - acquireStartedAt;
+  logSqlPoolAcquire(pool, pool_acquire_ms, statsBefore, acquireContext);
   return {
     client,
     timing: createPlayerMirrorSqlTiming({
-      pool_acquire_ms: Date.now() - acquireStartedAt,
+      pool_acquire_ms,
       query_exec_ms: 0,
       total_ms: Date.now() - totalStartedAt,
     }),
@@ -109,26 +284,43 @@ export function isPgConnectionTimeoutError(error: unknown) {
   );
 }
 
-export function logPlayerMirrorPoolStats(context: string) {
+export type PlayerMirrorPoolStats = {
+  totalCount: number;
+  idleCount: number;
+  waitingCount: number;
+  max: number;
+};
+
+export function getPlayerMirrorPoolStats(): PlayerMirrorPoolStats | null {
   const pool = globalSqlPool.__appbegPlayerRegistrationMirrorPool?.pool;
   if (!pool) {
+    return null;
+  }
+  return {
+    totalCount: pool.totalCount,
+    idleCount: pool.idleCount,
+    waitingCount: pool.waitingCount,
+    max: PLAYER_MIRROR_POOL_MAX,
+  };
+}
+
+export function logPlayerMirrorPoolStats(context: string) {
+  const stats = getPlayerMirrorPoolStats();
+  if (!stats) {
     console.info('[SQL_POOL] stats unavailable', { name: 'playerMirror', context });
     return;
   }
   console.info('[SQL_POOL] stats', {
     name: 'playerMirror',
     context,
-    totalCount: pool.totalCount,
-    idleCount: pool.idleCount,
-    waitingCount: pool.waitingCount,
-    max: PLAYER_MIRROR_POOL_MAX,
+    ...stats,
   });
 }
 
 function logSqlPoolAudit() {
   console.info('[SQL_POOL_AUDIT] known_pools', {
     playerMirror: {
-      scope: 'carerTasksCache,liveOutbox,playerGameRequestsCache,playersCache,...',
+      scope: 'carerTasksCache,liveOutbox,playerGameRequestsCache,playersCache,playerSessionsCache,...',
       shared: true,
       max: PLAYER_MIRROR_POOL_MAX,
     },
@@ -227,5 +419,6 @@ export function getPlayerMirrorPool(poolTiming?: PlayerMirrorPoolTiming) {
   }
   console.info('[SQL_POOL] created', { name: 'playerMirror', max: PLAYER_MIRROR_POOL_MAX });
   logSqlPoolAudit();
+  void warmPlayerMirrorPool('pool_created');
   return pool;
 }

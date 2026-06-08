@@ -24,10 +24,18 @@ import UserManagementView from '../../components/admin/UserManagementView';
 import ReachOutView from '../../components/admin/ReachOutView';
 import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 
+import {
+  ensureAppSessionBootstrapped,
+  getAppSessionRequestHeaders,
+  getLocalAppSessionId,
+  startImpersonationSession,
+} from '@/features/auth/appSession';
+import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { auth, db } from '@/lib/firebase/client';
-import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
+import { getApiAuthHeaders, getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import {
   belongsToCoadmin,
+  getCoadminActorUid,
   getCurrentUserCoadminUid,
 } from '@/lib/coadmin/scope';
 
@@ -46,7 +54,8 @@ import {
   deletePlayer,
   getStaff,
   getCarers,
-  getPlayers,
+  getMyPendingCarerCreationRequests,
+  getPlayersByCoadminSqlFirst,
   requestCarerCreation,
   resetCoadminWorkerCredentials,
   unblockCarer,
@@ -259,8 +268,15 @@ function formatUsdFromNprDisplay(value: number) {
   return formatUsdDisplay(Number(value || 0));
 }
 
-function formatDateTime(value?: { toDate?: () => Date } | null) {
-  const date = value?.toDate?.();
+function formatDateTime(value?: { toDate?: () => Date } | string | null) {
+  if (!value) {
+    return '—';
+  }
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString();
+  }
+  const date = value.toDate?.();
   if (!date) {
     return '—';
   }
@@ -340,8 +356,63 @@ function calculateWorkedHoursLast24hWithHeartbeat(
   return totalMs / (1000 * 60 * 60);
 }
 
+function logCoadminActionAuth(action: string) {
+  console.info('[COADMIN_ACTION_AUTH]', {
+    action,
+    hasAppSession: Boolean(getLocalAppSessionId()),
+    hasFirebaseUser: Boolean(auth.currentUser),
+  });
+}
+
+function readInitialCoadminActorFromCache() {
+  const cached = getCachedSessionUser();
+  if (cached?.role === 'coadmin' && cached.uid) {
+    return {
+      uid: cached.uid,
+      username: String(cached.username || ''),
+    };
+  }
+  return { uid: '', username: '' };
+}
+
+function resolveCoadminActorUid(coadminActorUid: string) {
+  return coadminActorUid || auth.currentUser?.uid || '';
+}
+
+function viewNeedsCoadminActor(view: CoadminView) {
+  return (
+    view === 'dashboard' ||
+    view === 'view-staff' ||
+    view === 'view-carers' ||
+    view === 'create-carer' ||
+    view === 'shifts' ||
+    view === 'behaviours' ||
+    view === 'view-players' ||
+    view === 'game-list' ||
+    view === 'reach-out' ||
+    view === 'payment-details'
+  );
+}
+
+type CoadminBaseLoadResult = {
+  staffCount: number;
+  carerCount: number;
+  playerCount: number;
+  requestCount: number;
+  gameLoginCount: number;
+  prefetchedStaff: StaffUser[];
+};
+
+const coadminBaseLoadInflight = new Map<string, Promise<CoadminBaseLoadResult>>();
+
 export default function CoadminPage() {
   const [activeView, setActiveView] = useState<CoadminView>('dashboard');
+  const [coadminActorUid, setCoadminActorUid] = useState(
+    () => readInitialCoadminActorFromCache().uid
+  );
+  const [coadminActorUsername, setCoadminActorUsername] = useState(
+    () => readInitialCoadminActorFromCache().username
+  );
 
   const [staffUsername, setStaffUsername] = useState('');
   const [staffPassword, setStaffPassword] = useState('');
@@ -492,6 +563,8 @@ export default function CoadminPage() {
     activeView === 'reach-out' ? reachOutChatUser : staffChatUser;
   const isBonusEventsView =
     activeView === 'view-bonus-events' || activeView === 'create-bonus-event';
+  const selectedPlayerUid = selectedPlayer?.uid || '';
+  const selectedStaffUid = selectedStaff?.uid || '';
 
   const pagedCoadminChat = usePaginatedChatMessages(activeChatUser?.uid ?? null, {
     scrollContainerRef: coadminChatScrollRef,
@@ -503,18 +576,18 @@ export default function CoadminPage() {
   });
 
   const messages: ChatMessage[] = useMemo(() => {
-    const currentUser = auth.currentUser;
-    if (!currentUser) {
+    const actorUid = coadminActorUid || auth.currentUser?.uid || '';
+    if (!actorUid) {
       return [];
     }
     return pagedCoadminChat.items.map((msg) => ({
       id: msg.id,
       text: msg.text,
       imageUrl: msg.imageUrl,
-      sender: msg.senderUid === currentUser.uid ? 'admin' : 'user',
+      sender: msg.senderUid === actorUid ? 'admin' : 'user',
       timestamp: msg.createdAt?.toDate?.() || new Date(),
     }));
-  }, [pagedCoadminChat.items]);
+  }, [coadminActorUid, pagedCoadminChat.items]);
 
   const totalUnread = Object.values(unreadCounts).reduce(
     (total, count) => total + count,
@@ -536,7 +609,7 @@ export default function CoadminPage() {
   const visiblePendingCarerRequests = pendingCarerRequests.filter(
     (request) => !dismissedPendingCarerRequestIds.includes(request.id)
   );
-  const coadminCashoutViewerUid = auth.currentUser?.uid || '';
+  const coadminCashoutViewerUid = coadminActorUid || auth.currentUser?.uid || '';
   const visiblePlayerCashoutTasks = playerCashoutTasks
     .filter((task) => {
       if (isPlayerCashoutHandledBySomeoneElse(task, coadminCashoutViewerUid)) {
@@ -669,16 +742,96 @@ export default function CoadminPage() {
   }
 
   useEffect(() => {
+    let cancelled = false;
+
+    async function resolveFromAppSession() {
+      await ensureAppSessionBootstrapped();
+      const sessionUser = getCachedSessionUser() || (await getSessionUserOnce());
+      if (!sessionUser?.uid || sessionUser.role !== 'coadmin') {
+        return false;
+      }
+      if (cancelled) {
+        return true;
+      }
+      setCoadminActorUid(sessionUser.uid);
+      setCoadminActorUsername(String(sessionUser.username || ''));
+      console.info('[COADMIN_PAGE_AUTH]', {
+        source: 'app_session',
+        uid: sessionUser.uid,
+        role: sessionUser.role,
+        ok: true,
+      });
+      return true;
+    }
+
+    async function resolveFromFirebase(user: NonNullable<typeof auth.currentUser>) {
+      if (cancelled) {
+        return;
+      }
+      setCoadminActorUid(user.uid);
+      try {
+        const userSnap = await getDoc(doc(db, 'users', user.uid));
+        const data = userSnap.data() as { username?: string } | undefined;
+        setCoadminActorUsername(String(data?.username || ''));
+      } catch {
+        // Non-blocking profile read for display name.
+      }
+      console.info('[COADMIN_PAGE_AUTH]', {
+        source: 'firebase',
+        uid: user.uid,
+        role: 'coadmin',
+        ok: true,
+      });
+    }
+
+    void (async () => {
+      try {
+        const fromSession = await resolveFromAppSession();
+        if (!fromSession && !cancelled) {
+          const firebaseUser = auth.currentUser;
+          if (firebaseUser) {
+            await resolveFromFirebase(firebaseUser);
+          } else {
+            console.info('[COADMIN_PAGE_AUTH]', {
+              source: 'none',
+              ok: false,
+              reason: 'missing_session_and_firebase_user',
+            });
+          }
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.info('[COADMIN_PAGE_AUTH]', {
+            source: 'app_session',
+            ok: false,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    })();
+
+    const stopAuthListener = onAuthStateChanged(auth, (user) => {
+      if (getCachedSessionUser()?.role === 'coadmin') {
+        return;
+      }
+      if (user) {
+        void resolveFromFirebase(user);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      stopAuthListener();
+    };
+  }, []);
+
+  useEffect(() => {
     let isCancelled = false;
 
     async function loadAutoBonusPercentRange() {
-      const currentUser = auth.currentUser;
-      if (!currentUser) {
-        return;
-      }
-
       try {
-        const range = await getCoadminAutoBonusPercentRange(currentUser.uid);
+        const coadminUid = await getCurrentUserCoadminUid();
+        const range = await getCoadminAutoBonusPercentRange(coadminUid);
         if (isCancelled) {
           return;
         }
@@ -726,13 +879,13 @@ export default function CoadminPage() {
   }, []);
 
   useEffect(() => {
+    const actorUid = resolveCoadminActorUid(coadminActorUid);
+    if (viewNeedsCoadminActor(activeView) && !actorUid) {
+      return;
+    }
+
     if (activeView === 'dashboard') {
-      loadStaffList();
-      loadCarerList();
-      loadPlayerList();
-      loadGameLogins();
-      loadChatUsers();
-      void loadPendingCarerRequestsForCoadmin();
+      void loadDashboardBaseData(actorUid);
     }
 
     if (activeView === 'view-staff') loadStaffList();
@@ -752,11 +905,14 @@ export default function CoadminPage() {
     if (activeView === 'game-list') loadGameLogins();
     if (activeView === 'reach-out') loadChatUsers();
     if (activeView === 'behaviours') void loadStaffBehaviours();
-  }, [activeView]);
+  }, [activeView, coadminActorUid]);
 
   useEffect(() => {
+    if (!coadminActorUid) {
+      return;
+    }
     setPlayerCoinAmountInput('');
-  }, [selectedPlayer?.uid]);
+  }, [activeView, selectedPlayerUid, coadminActorUid]);
 
   async function loadSelectedPlayerRedeemLimitSummaries(playerUid: string) {
     const cleanPlayerUid = String(playerUid || '').trim();
@@ -808,7 +964,7 @@ export default function CoadminPage() {
   }
 
   useEffect(() => {
-    const playerUid = selectedPlayer?.uid;
+    const playerUid = selectedPlayerUid;
     if (!playerUid) {
       setSelectedPlayerCoadminAddedCoinTotal(0);
       setSelectedPlayerCashoutTotalAmount(0);
@@ -831,6 +987,9 @@ export default function CoadminPage() {
       setRedeemLimitResetBusyGameName(null);
       return;
     }
+    if (!coadminActorUid) {
+      return;
+    }
 
     let cancelled = false;
     setSelectedPlayerTotalsLoading(true);
@@ -838,10 +997,14 @@ export default function CoadminPage() {
 
     void (async () => {
       try {
+        await ensureAppSessionBootstrapped();
+        const historyHeaders = getLocalAppSessionId()
+          ? getAppSessionRequestHeaders()
+          : await getFirebaseApiHeaders(false);
         const response = await fetch(
           `/api/coadmin/players/${encodeURIComponent(playerUid)}/history`,
           {
-            headers: await getFirebaseApiHeaders(false),
+            headers: historyHeaders,
           }
         );
         const payload = (await response.json()) as SelectedPlayerHistoryResponse;
@@ -893,21 +1056,91 @@ export default function CoadminPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedPlayer?.uid]);
+  }, [activeView, selectedPlayerUid, coadminActorUid]);
 
   useEffect(() => {
-    const playerUid = selectedPlayer?.uid;
-    if (!playerUid) {
+    if (!coadminActorUid || !selectedPlayerUid) {
       return;
     }
-    void loadSelectedPlayerRedeemLimitSummaries(playerUid);
-  }, [selectedPlayer?.uid]);
+    void loadSelectedPlayerRedeemLimitSummaries(selectedPlayerUid);
+  }, [activeView, selectedPlayerUid, coadminActorUid]);
+
+  useEffect(() => {
+    if (!selectedStaffUid) {
+      setStaffLedgerPayoutTasks([]);
+      setStaffLedgerClaimPay([]);
+      setStaffLiveCashBoxNpr(null);
+      return;
+    }
+    if (!coadminActorUid) {
+      return;
+    }
+
+    const uid = selectedStaffUid;
+    let cancelled = false;
+
+    const unsubscribePayoutLedger = listenPlayerCashoutTasksByAssignedHandler(
+      uid,
+      (tasks) => {
+        if (!cancelled) {
+          setStaffLedgerPayoutTasks(tasks);
+        }
+      },
+      (error) => {
+        if (!cancelled) {
+          setMessage(error.message || 'Could not load staff player cashout ledger.');
+        }
+      }
+    );
+
+    const unsubscribeClaimPayLedger = listenCarerCashoutsByCarerUid(
+      uid,
+      (requests) => {
+        if (!cancelled) {
+          setStaffLedgerClaimPay(requests);
+        }
+      },
+      (error) => {
+        if (!cancelled) {
+          setMessage(error.message || 'Could not load staff Claim Pay history.');
+        }
+      }
+    );
+
+    const profileRef = doc(db, 'users', uid);
+    const unsubscribeStaffProfile = onSnapshot(
+      profileRef,
+      (snapshot) => {
+        if (cancelled) {
+          return;
+        }
+        if (!snapshot.exists()) {
+          setStaffLiveCashBoxNpr(0);
+          return;
+        }
+        const data = snapshot.data() as { cashBoxNpr?: number };
+        setStaffLiveCashBoxNpr(Number(data.cashBoxNpr || 0));
+      },
+      (error) => {
+        if (!cancelled) {
+          setMessage(error.message || 'Could not monitor staff cash box.');
+        }
+      }
+    );
+
+    return () => {
+      cancelled = true;
+      unsubscribePayoutLedger();
+      unsubscribeClaimPayLedger();
+      unsubscribeStaffProfile();
+    };
+  }, [activeView, selectedStaffUid, coadminActorUid]);
 
   useEffect(() => {
     if (activeView !== 'payment-details') {
       return;
     }
-    const uid = auth.currentUser?.uid;
+    const uid = resolveCoadminActorUid(coadminActorUid);
     if (!uid) {
       return;
     }
@@ -933,7 +1166,7 @@ export default function CoadminPage() {
     return () => {
       cancelled = true;
     };
-  }, [activeView]);
+  }, [activeView, coadminActorUid]);
 
   useEffect(() => {
     if (!isBonusEventsView) {
@@ -1390,74 +1623,6 @@ export default function CoadminPage() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!selectedStaff?.uid) {
-      setStaffLedgerPayoutTasks([]);
-      setStaffLedgerClaimPay([]);
-      setStaffLiveCashBoxNpr(null);
-      return;
-    }
-
-    const uid = selectedStaff.uid;
-    let cancelled = false;
-
-    const unsubscribePayoutLedger = listenPlayerCashoutTasksByAssignedHandler(
-      uid,
-      (tasks) => {
-        if (!cancelled) {
-          setStaffLedgerPayoutTasks(tasks);
-        }
-      },
-      (error) => {
-        if (!cancelled) {
-          setMessage(error.message || 'Could not load staff player cashout ledger.');
-        }
-      }
-    );
-
-    const unsubscribeClaimPayLedger = listenCarerCashoutsByCarerUid(
-      uid,
-      (requests) => {
-        if (!cancelled) {
-          setStaffLedgerClaimPay(requests);
-        }
-      },
-      (error) => {
-        if (!cancelled) {
-          setMessage(error.message || 'Could not load staff Claim Pay history.');
-        }
-      }
-    );
-
-    const profileRef = doc(db, 'users', uid);
-    const unsubscribeStaffProfile = onSnapshot(
-      profileRef,
-      (snapshot) => {
-        if (cancelled) {
-          return;
-        }
-        if (!snapshot.exists()) {
-          setStaffLiveCashBoxNpr(0);
-          return;
-        }
-        const data = snapshot.data() as { cashBoxNpr?: number };
-        setStaffLiveCashBoxNpr(Number(data.cashBoxNpr || 0));
-      },
-      (error) => {
-        if (!cancelled) {
-          setMessage(error.message || 'Could not monitor staff cash box.');
-        }
-      }
-    );
-
-    return () => {
-      cancelled = true;
-      unsubscribePayoutLedger();
-      unsubscribeClaimPayLedger();
-      unsubscribeStaffProfile();
-    };
-  }, [selectedStaff?.uid]);
-
   function playNotificationSound() {
     const audio = new Audio('/notification.mp3');
     audio.volume = 0.6;
@@ -1473,8 +1638,102 @@ export default function CoadminPage() {
     return list.filter((user) => belongsToCoadmin(user, coadminUid));
   }
 
+  async function loadDashboardBaseData(actorUid: string) {
+    const inflight = coadminBaseLoadInflight.get(actorUid);
+    if (inflight) {
+      console.info('[COADMIN_BASE_LOAD]', {
+        stage: 'start',
+        coadminUid: actorUid,
+        deduped: true,
+      });
+      await inflight;
+      console.info('[COADMIN_BASE_LOAD]', {
+        stage: 'done',
+        coadminUid: actorUid,
+        deduped: true,
+      });
+      return;
+    }
+
+    const startedAt = Date.now();
+    console.info('[COADMIN_BASE_LOAD]', {
+      stage: 'start',
+      coadminUid: actorUid,
+      deduped: false,
+    });
+
+    const promise = (async (): Promise<CoadminBaseLoadResult> => {
+      setLoadingList(true);
+      logCoadminActionAuth('load_dashboard_base');
+
+      try {
+        const coadminUid = await getCurrentUserCoadminUid();
+        const [staffRaw, carersRaw, players, requests, gameLoginsRaw] = await Promise.all([
+          getStaff(),
+          getCarers(),
+          getPlayersByCoadminSqlFirst(coadminUid),
+          getMyPendingCarerCreationRequests(),
+          getMyGameLogins(),
+        ]);
+
+        const staff = staffRaw.filter((user) => belongsToCoadmin(user, coadminUid));
+        const carers = carersRaw.filter((user) => belongsToCoadmin(user, coadminUid));
+        const gameLogins = sortByNewest(
+          gameLoginsRaw.filter((game) => belongsToCoadmin(game, coadminUid))
+        );
+
+        setStaffList(staff);
+        setCarerList(carers);
+        setPlayerList(players);
+        setPendingCarerRequests(requests);
+        setGameLogins(gameLogins);
+        void loadChatUsers(staff);
+
+        return {
+          staffCount: staff.length,
+          carerCount: carers.length,
+          playerCount: players.length,
+          requestCount: requests.length,
+          gameLoginCount: gameLogins.length,
+          prefetchedStaff: staff,
+        };
+      } catch (err: unknown) {
+        setMessage(err instanceof Error ? err.message : 'Failed to load dashboard data.');
+        return {
+          staffCount: 0,
+          carerCount: 0,
+          playerCount: 0,
+          requestCount: 0,
+          gameLoginCount: 0,
+          prefetchedStaff: [],
+        };
+      } finally {
+        setLoadingList(false);
+      }
+    })();
+
+    coadminBaseLoadInflight.set(actorUid, promise);
+    try {
+      const result = await promise;
+      console.info('[COADMIN_BASE_LOAD]', {
+        stage: 'done',
+        coadminUid: actorUid,
+        deduped: false,
+        staffCount: result.staffCount,
+        carerCount: result.carerCount,
+        playerCount: result.playerCount,
+        requestCount: result.requestCount,
+        gameLoginCount: result.gameLoginCount,
+        durationMs: Date.now() - startedAt,
+      });
+    } finally {
+      coadminBaseLoadInflight.delete(actorUid);
+    }
+  }
+
   async function loadStaffList() {
     setLoadingList(true);
+    logCoadminActionAuth('load_staff');
 
     try {
       setStaffList(await getUsersForCurrentCoadmin(getStaff));
@@ -1487,6 +1746,7 @@ export default function CoadminPage() {
 
   async function loadCarerList() {
     setLoadingList(true);
+    logCoadminActionAuth('load_carers');
 
     try {
       setCarerList(await getUsersForCurrentCoadmin(getCarers));
@@ -1497,11 +1757,17 @@ export default function CoadminPage() {
     }
   }
 
+  async function loadScopedPlayerList() {
+    const coadminUid = await getCurrentUserCoadminUid();
+    return getPlayersByCoadminSqlFirst(coadminUid);
+  }
+
   async function loadPlayerList() {
     setLoadingList(true);
+    logCoadminActionAuth('load_players');
 
     try {
-      setPlayerList(await getUsersForCurrentCoadmin(getPlayers));
+      setPlayerList(await loadScopedPlayerList());
     } catch (err: any) {
       setMessage(err.message || 'Failed to load players.');
     } finally {
@@ -1524,7 +1790,7 @@ export default function CoadminPage() {
     }
   }
 
-  async function loadChatUsers() {
+  async function loadChatUsers(prefetchedStaff?: StaffUser[]) {
     try {
       const adminQuery = query(collection(db, 'users'), where('role', '==', 'admin'));
       const adminSnapshot = await getDocs(adminQuery);
@@ -1535,7 +1801,7 @@ export default function CoadminPage() {
       })) as AdminUser[];
 
       const adminUIDs = admins.map((admin: any) => admin.uid);
-      const allStaff = await getStaff();
+      const allStaff = prefetchedStaff ?? (await getStaff());
 
       const adminStaff = allStaff.filter((staff) =>
         adminUIDs.includes(staff.createdBy || '')
@@ -1549,18 +1815,12 @@ export default function CoadminPage() {
 
   async function loadStaffBehaviours(staffId?: string) {
     setBehavioursLoading(true);
+    logCoadminActionAuth('load_behaviours');
     try {
-      const currentUser = auth.currentUser;
-      if (!currentUser) {
-        throw new Error('Not authenticated.');
-      }
-      const token = await currentUser.getIdToken();
       const queryString = staffId ? `?staffId=${encodeURIComponent(staffId)}` : '';
       const response = await fetch(`/api/coadmin/behaviours${queryString}`, {
         method: 'GET',
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: await getApiAuthHeaders(false, { action: 'read' }),
       });
       const data = await response.json();
       if (!response.ok) {
@@ -1582,8 +1842,9 @@ export default function CoadminPage() {
   }
 
   async function handleToggleStaffRewardBlock(row: StaffBehaviourRow) {
-    const currentUser = auth.currentUser;
-    if (!currentUser) {
+    try {
+      await getCoadminActorUid();
+    } catch {
       setMessage('Not authenticated.');
       return;
     }
@@ -1629,33 +1890,49 @@ export default function CoadminPage() {
   }
 
   async function handleLoginAsStaffFromBehaviour(staffId: string) {
-    const currentUser = auth.currentUser;
-    if (!currentUser) {
+    await ensureAppSessionBootstrapped();
+    if (!auth.currentUser && !getLocalAppSessionId()) {
       setMessage('Not authenticated.');
       return;
     }
     setWorkerCredentialsLoading(true);
     setMessage('');
     try {
-      const token = await currentUser.getIdToken();
+      const impersonateHeaders = getLocalAppSessionId()
+        ? {
+            'Content-Type': 'application/json',
+            ...getAppSessionRequestHeaders(),
+          }
+        : await getFirebaseApiHeaders();
       const response = await fetch('/api/coadmin/impersonate-staff', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        headers: impersonateHeaders,
         body: JSON.stringify({ staffUid: staffId }),
       });
       const data = (await response.json()) as {
+        ok?: boolean;
         success?: boolean;
+        mode?: 'sql_session' | 'firebase_custom_token';
+        sessionId?: string;
+        expiresAt?: string;
         customToken?: string;
+        firebaseCustomToken?: string | null;
         redirectTo?: string;
         error?: string;
       };
-      if (!response.ok || !data.success || !data.customToken) {
+      if (!response.ok || !data.success) {
         throw new Error(data.error || 'Failed to login as staff.');
       }
-      await signInWithCustomToken(auth, data.customToken);
+      if (data.mode === 'sql_session' && data.sessionId) {
+        startImpersonationSession(data.sessionId, String(data.expiresAt || ''));
+        window.location.href = data.redirectTo || '/staff';
+        return;
+      }
+      const customToken = data.customToken || data.firebaseCustomToken;
+      if (!customToken) {
+        throw new Error(data.error || 'Failed to login as staff.');
+      }
+      await signInWithCustomToken(auth, customToken);
       window.location.href = data.redirectTo || '/staff';
     } catch (error: any) {
       setMessage(error?.message || 'Failed to login as staff.');
@@ -1702,24 +1979,12 @@ export default function CoadminPage() {
   }
 
   async function loadPendingCarerRequestsForCoadmin() {
-    const currentUser = auth.currentUser;
-    if (!currentUser) return;
-    const coadminUid = await getCurrentUserCoadminUid();
-    const requestsSnap = await getDocs(
-      query(
-        collection(db, 'carerCreationRequests'),
-        where('coadminUid', '==', coadminUid),
-        where('status', '==', 'pending')
-      )
-    );
-    const requests = requestsSnap.docs
-      .map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() as Omit<CarerCreationRequest, 'id'>) }))
-      .sort((a, b) => {
-        const aMs = a.requestedAt?.toDate?.()?.getTime?.() || 0;
-        const bMs = b.requestedAt?.toDate?.()?.getTime?.() || 0;
-        return bMs - aMs;
-      });
-    setPendingCarerRequests(requests);
+    logCoadminActionAuth('load_carer_requests');
+    try {
+      setPendingCarerRequests(await getMyPendingCarerCreationRequests());
+    } catch {
+      setPendingCarerRequests([]);
+    }
   }
 
   async function handleCreatePlayer(e: React.FormEvent) {
@@ -2112,7 +2377,7 @@ export default function CoadminPage() {
       );
       setPlayerCashAmountInput('');
 
-      const list = await getUsersForCurrentCoadmin(getPlayers);
+      const list = await loadScopedPlayerList();
       setPlayerList(list);
       setSelectedPlayer(list.find((p) => p.uid === player.uid) ?? null);
     } catch (err: any) {
@@ -2150,7 +2415,7 @@ export default function CoadminPage() {
       );
       setPlayerCoinAmountInput('');
 
-      const list = await getUsersForCurrentCoadmin(getPlayers);
+      const list = await loadScopedPlayerList();
       setPlayerList(list);
       setSelectedPlayer(list.find((p) => p.uid === player.uid) ?? null);
     } catch (err: any) {
@@ -2419,13 +2684,9 @@ export default function CoadminPage() {
         });
         return;
       }
-      const idToken = await currentUser.getIdToken();
       const response = await fetch('/api/coadmin/bonus-events/ensure-capacity', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${idToken}`,
-        },
+        headers: await getFirebaseApiHeaders(),
         body: JSON.stringify({ activeCountHint: resolvedActiveCount }),
       });
       const data = (await response.json()) as {

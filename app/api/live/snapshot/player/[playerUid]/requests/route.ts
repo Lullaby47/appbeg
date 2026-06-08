@@ -122,7 +122,7 @@ export async function GET(
   const playerUid = cleanText(decodeURIComponent(rawPlayerUid || ''));
   if (!playerUid || playerUid.includes('/')) {
     logSnapshotTiming({
-      auth_path: 'player_token_session',
+      auth_path: 'invalid_player_uid',
       verify_token_ms: 0,
       user_doc_ms: 0,
       session_check_ms: 0,

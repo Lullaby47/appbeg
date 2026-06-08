@@ -72,9 +72,14 @@ function mergeSqlTiming(routeTiming: RouteTiming, sqlTiming: GameLoginsSqlTiming
   }
 }
 
-function logRouteTiming(routeTiming: RouteTiming, details: Record<string, unknown> = {}) {
+function logRouteTiming(
+  routeTiming: RouteTiming,
+  details: Record<string, unknown> = {},
+  sqlTiming?: GameLoginsSqlTiming
+) {
   console.info('[GAME_LOGINS_CACHE_TIMING]', {
     ...routeTiming,
+    pool: sqlTiming?.pool || 'gameLoginsCache',
     ...details,
   });
 }
@@ -162,7 +167,10 @@ async function resolveGetAuth(
   routeTiming.token_only_eligible = Boolean(tokenOnlyScope);
 
   const authStartedAt = Date.now();
-  if (tokenOnlyScope) {
+  const hasAppSession = Boolean(cleanText(request.headers.get('X-App-Session-Id')));
+
+  // App session auth is local SQL (~0ms verify); token_only always hits Firebase verifyIdToken (~5s from VPS).
+  if (!hasAppSession && tokenOnlyScope) {
     const identity = await verifyApiTokenIdentity(request);
     if ('uid' in identity && identity.uid === tokenOnlyScope.scopeKey) {
       routeTiming.auth_ms = Date.now() - authStartedAt;
@@ -202,13 +210,14 @@ function timedJson(
   totalStartedAt: number,
   routeTiming: RouteTiming,
   details: Record<string, unknown> = {},
-  init?: ResponseInit
+  init?: ResponseInit,
+  sqlTiming?: GameLoginsSqlTiming
 ) {
   const serializeStartedAt = Date.now();
   const response = NextResponse.json(payload, init);
   routeTiming.serialization_ms = Date.now() - serializeStartedAt;
   routeTiming.total_ms = Date.now() - totalStartedAt;
-  logRouteTiming(routeTiming, details);
+  logRouteTiming(routeTiming, details, sqlTiming);
   return response;
 }
 
@@ -247,17 +256,24 @@ export async function GET(request: Request) {
     try {
       const cached = await readGameLoginsCacheByField(field, fieldValue, sqlTiming);
       mergeSqlTiming(routeTiming, sqlTiming);
-      if (cached && cached.length > 0) {
+      if (cached !== null) {
         console.info('[GAME_LOGINS_CACHE] postgres hit', {
           field,
           value: fieldValue,
           count: cached.length,
         });
-        return timedJson({ gameLogins: cached, source: 'postgres' }, totalStartedAt, routeTiming, {
-          field,
-          value: fieldValue,
-          source: 'postgres',
-        });
+        return timedJson(
+          { gameLogins: cached, source: 'postgres' },
+          totalStartedAt,
+          routeTiming,
+          {
+            field,
+            value: fieldValue,
+            source: 'postgres',
+          },
+          undefined,
+          sqlTiming
+        );
       }
     } catch (error) {
       console.warn('[GAME_LOGINS_CACHE] fallback firestore', {
@@ -308,15 +324,22 @@ export async function GET(request: Request) {
   try {
     const cached = await readGameLoginsCacheByCoadmin(coadminUid, sqlTiming);
     mergeSqlTiming(routeTiming, sqlTiming);
-    if (cached && cached.length > 0) {
+    if (cached !== null) {
       console.info('[GAME_LOGINS_CACHE] postgres hit', {
         coadminUid,
         count: cached.length,
       });
-      return timedJson({ gameLogins: cached, source: 'postgres' }, totalStartedAt, routeTiming, {
-        coadminUid,
-        source: 'postgres',
-      });
+      return timedJson(
+        { gameLogins: cached, source: 'postgres' },
+        totalStartedAt,
+        routeTiming,
+        {
+          coadminUid,
+          source: 'postgres',
+        },
+        undefined,
+        sqlTiming
+      );
     }
   } catch (error) {
     console.warn('[GAME_LOGINS_CACHE] fallback firestore', {

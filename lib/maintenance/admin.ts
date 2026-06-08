@@ -2,21 +2,46 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import {
+  isRechargeFirestoreQuotaError,
+  timedRechargeFirestoreRead,
+} from '@/lib/server/rechargeFirestoreInstrumentation';
+import {
   maintenanceBreakResponse,
   normalizeMaintenanceBreak,
   type MaintenanceBreak,
 } from '@/lib/maintenance/config';
 
 export async function getCoadminMaintenanceBreak(
-  coadminUid: string
+  coadminUid: string,
+  options?: { rechargeInstrumentation?: boolean; quotaFailOpen?: boolean }
 ): Promise<MaintenanceBreak> {
   const cleanCoadminUid = String(coadminUid || '').trim();
   if (!cleanCoadminUid) {
     return normalizeMaintenanceBreak(null);
   }
 
-  const snapshot = await adminDb.collection('coadminMaintenance').doc(cleanCoadminUid).get();
-  return normalizeMaintenanceBreak(snapshot.data()?.maintenanceBreak);
+  try {
+    const snapshot = options?.rechargeInstrumentation
+      ? await timedRechargeFirestoreRead(
+          {
+            stage: 'maintenance_break',
+            collection: 'coadminMaintenance',
+            document: cleanCoadminUid,
+          },
+          () => adminDb.collection('coadminMaintenance').doc(cleanCoadminUid).get()
+        )
+      : await adminDb.collection('coadminMaintenance').doc(cleanCoadminUid).get();
+    return normalizeMaintenanceBreak(snapshot.data()?.maintenanceBreak);
+  } catch (error) {
+    if (options?.quotaFailOpen && isRechargeFirestoreQuotaError(error)) {
+      console.warn('[MAINTENANCE] recharge quota fail-open', {
+        coadminUid: cleanCoadminUid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return normalizeMaintenanceBreak(null);
+    }
+    throw error;
+  }
 }
 
 export async function getPlayerCoadminMaintenanceBreak(playerUid: string): Promise<{
@@ -64,6 +89,34 @@ export async function rejectIfPlayerMaintenanceBreak(playerUid: string, action: 
     action,
     playerUid,
     coadminUid,
+  });
+  throw new Error(`MAINTENANCE_BREAK:${maintenanceBreak.message}`);
+}
+
+/** Uses SQL auth profile scope — avoids redundant Firestore users/{uid} read. */
+export async function rejectIfPlayerMaintenanceBreakFromUser(
+  user: { uid: string; coadminUid?: string | null; createdBy?: string | null },
+  action: string
+) {
+  const coadminUid =
+    String(user.coadminUid || '').trim() || String(user.createdBy || '').trim();
+  if (!coadminUid) {
+    throw new Error('Player coadmin scope not found.');
+  }
+
+  const maintenanceBreak = await getCoadminMaintenanceBreak(coadminUid, {
+    rechargeInstrumentation: true,
+    quotaFailOpen: true,
+  });
+  if (!maintenanceBreak.enabled) {
+    return;
+  }
+
+  console.info('[MAINTENANCE] blocked player action', {
+    action,
+    playerUid: user.uid,
+    coadminUid,
+    source: 'auth_user_scope',
   });
   throw new Error(`MAINTENANCE_BREAK:${maintenanceBreak.message}`);
 }
