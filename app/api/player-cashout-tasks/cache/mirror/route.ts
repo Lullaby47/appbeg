@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { isCacheSqlAuthoritative, mirrorSqlSkipResponse } from '@/lib/server/cacheSqlRead';
 import {
   mirrorPlayerCashoutTaskSnapshot,
   tombstonePlayerCashoutTaskCache,
@@ -50,6 +51,12 @@ export async function POST(request: Request) {
 
   if (action !== 'upsert') {
     return apiError('Invalid mirror action.', 400);
+  }
+
+  if (isCacheSqlAuthoritative()) {
+    return mirrorSqlSkipResponse('/api/player-cashout-tasks/cache/mirror', 'playerCashoutTasks', {
+      count: taskIds.length,
+    });
   }
 
   const snaps = await Promise.all(

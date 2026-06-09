@@ -142,6 +142,12 @@ export async function GET(request: Request) {
 
     role: auth.role,
 
+    source: 'sql',
+
+    firestore_fallback: false,
+
+    user_doc_ms: 0,
+
     durationMs: total_ms,
 
   });

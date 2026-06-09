@@ -7,6 +7,7 @@ import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { createHash } from 'node:crypto';
 
 import { adminDb } from '@/lib/firebase/admin';
+import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import {
   buildAutomationPayload,
@@ -983,10 +984,12 @@ export async function claimCarerTaskAsAdmin(input: {
     throw lastError instanceof Error ? lastError : new Error('Failed to queue the task.');
   }
   affectedJobIds.add(result.jobId);
-  for (const jobId of affectedJobIds) {
-    void mirrorAutomationJobById(jobId, 'appbeg_admin');
+  if (!isAuthSqlReadEnabled()) {
+    for (const jobId of affectedJobIds) {
+      void mirrorAutomationJobById(jobId, 'appbeg_admin');
+    }
+    void mirrorCarerTaskById(input.taskId, 'appbeg_admin_claim');
   }
-  void mirrorCarerTaskById(input.taskId, 'appbeg_admin_claim');
   console.info(
     '[START_TIMING] server write completed at=%s durationMs=%s taskId=%s jobId=%s status=%s source=admin_claimCarerTaskAsAdmin',
     new Date().toISOString(),

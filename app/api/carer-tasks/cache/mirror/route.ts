@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
-import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { isCacheSqlAuthoritative, mirrorSqlSkipResponse } from '@/lib/server/cacheSqlRead';
 import { logFirestoreTouch, routeFromRequest } from '@/lib/server/firestoreTouchAudit';
 import {
   mirrorCarerTaskIdsBatch,
@@ -46,21 +46,8 @@ export async function POST(request: Request) {
   }
 
   const route = routeFromRequest(request);
-  if (isAuthSqlReadEnabled()) {
-    logFirestoreTouch({
-      firestore_touch_type: 'mirror_write_can_disable',
-      route,
-      operation: 'read',
-      collection: 'carerTasks',
-      skipped: true,
-      sql_read_mode: true,
-      details: { reason: 'sql_cache_authoritative', taskCount: taskIds.length },
-    });
-    return NextResponse.json({
-      ok: true,
-      skipped: true,
-      reason: 'sql_cache_authoritative',
-    });
+  if (isCacheSqlAuthoritative()) {
+    return mirrorSqlSkipResponse(route, 'carerTasks', { taskCount: taskIds.length });
   }
 
   if (taskIds.length === 1) {

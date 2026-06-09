@@ -4,6 +4,8 @@ import type { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import type { PoolClient } from 'pg';
 
 import { adminDb } from '@/lib/firebase/admin';
+import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import {
   isReferralRechargeEligible,
   REFERRAL_REWARD_COINS,
@@ -356,11 +358,34 @@ function mergeTopLevelSource(
   return 'mixed';
 }
 
+function emptyPlayerBaseDataPayload(snapshotAt: string): PlayerBaseDataPayload {
+  return {
+    staff: [],
+    gameLogins: [],
+    pendingGift: { hasPendingGift: false, giftId: null, source: 'postgres' },
+    referralRewards: { groups: [], source: 'postgres' },
+    source: 'postgres',
+    snapshotAt,
+  };
+}
+
 async function loadPlayerBaseDataFallback(
   playerUid: string,
   coadminUid: string
 ): Promise<PlayerBaseDataPayload> {
   const snapshotAt = new Date().toISOString();
+  if (isAuthSqlReadEnabled()) {
+    logFirestoreTouch({
+      firestore_touch_type: 'legacy_read_remove_now',
+      route: PLAYER_BASE_DATA_ROUTE,
+      operation: 'read',
+      collection: 'users,gameLogins,freeplayPendingGifts,referralRewardClaims',
+      skipped: true,
+      sql_read_mode: true,
+      details: { playerUid, coadminUid, context: 'full_fallback_blocked' },
+    });
+    return emptyPlayerBaseDataPayload(snapshotAt);
+  }
   const [staffResult, freeplayResult, referralResult, gameLogins] = await Promise.all([
     resolvePlayerStaffList(coadminUid),
     loadFreeplayPendingGift(playerUid),
@@ -588,13 +613,27 @@ async function buildPlayerBaseDataPayloadFromSql(
 
   if (sqlResult.freeplayLookup) {
     if (sqlResult.freeplayLookup.missReason === 'postgres_unavailable') {
-      const freeplayResult = await loadFreeplayPendingGift(playerUid);
-      pendingGift = {
-        hasPendingGift: freeplayResult.hasPendingGift,
-        giftId: freeplayResult.giftId,
-        source: freeplayResult.dataSource,
-      };
-      sourceParts.push(freeplayResult.dataSource);
+      if (isAuthSqlReadEnabled()) {
+        logFirestoreTouch({
+          firestore_touch_type: 'legacy_read_remove_now',
+          route: PLAYER_BASE_DATA_ROUTE,
+          operation: 'read',
+          collection: 'freeplayPendingGifts',
+          skipped: true,
+          sql_read_mode: true,
+          details: { playerUid, context: 'freeplay_fallback_blocked' },
+        });
+        pendingGift = { hasPendingGift: false, giftId: null, source: 'postgres' };
+        sourceParts.push('postgres');
+      } else {
+        const freeplayResult = await loadFreeplayPendingGift(playerUid);
+        pendingGift = {
+          hasPendingGift: freeplayResult.hasPendingGift,
+          giftId: freeplayResult.giftId,
+          source: freeplayResult.dataSource,
+        };
+        sourceParts.push(freeplayResult.dataSource);
+      }
     } else {
       pendingGift = pendingGiftFromSqlLookup(sqlResult.freeplayLookup);
       sourceParts.push('postgres');
@@ -602,12 +641,26 @@ async function buildPlayerBaseDataPayloadFromSql(
   }
 
   if (!sqlResult.referralSqlOk) {
-    const referralResult = await loadReferralRewardGroups(playerUid);
-    referralRewards = {
-      groups: referralResult.groups,
-      source: 'firestore',
-    };
-    sourceParts.push('firestore');
+    if (isAuthSqlReadEnabled()) {
+      logFirestoreTouch({
+        firestore_touch_type: 'legacy_read_remove_now',
+        route: PLAYER_BASE_DATA_ROUTE,
+        operation: 'read',
+        collection: 'referralRewardClaims,playerGameRequests',
+        skipped: true,
+        sql_read_mode: true,
+        details: { playerUid, context: 'referral_fallback_blocked' },
+      });
+      referralRewards = { groups: [], source: 'postgres' };
+      sourceParts.push('postgres');
+    } else {
+      const referralResult = await loadReferralRewardGroups(playerUid);
+      referralRewards = {
+        groups: referralResult.groups,
+        source: 'firestore',
+      };
+      sourceParts.push('firestore');
+    }
   } else {
     sourceParts.push('postgres');
   }
@@ -667,6 +720,21 @@ export async function loadPlayerBaseData(input: {
 
   if (!pool) {
     timing.total_ms = Date.now() - totalStartedAt;
+    if (isAuthSqlReadEnabled()) {
+      logFirestoreTouch({
+        firestore_touch_type: 'legacy_read_remove_now',
+        route: PLAYER_BASE_DATA_ROUTE,
+        operation: 'read',
+        collection: 'users,gameLogins',
+        skipped: true,
+        sql_read_mode: true,
+        details: { playerUid: cleanPlayerUid, reason: 'postgres_unavailable' },
+      });
+      return {
+        payload: emptyPlayerBaseDataPayload(snapshotAt),
+        timing: { ...timing, total_ms: Date.now() - totalStartedAt },
+      };
+    }
     return {
       payload: await loadPlayerBaseDataFallback(cleanPlayerUid, cleanCoadminUid),
       timing: { ...timing, total_ms: Date.now() - totalStartedAt },
@@ -693,6 +761,32 @@ export async function loadPlayerBaseData(input: {
   timing.pool_waiting_max = sqlResult.timing.pool_waiting_max;
 
   if (sqlResult.hardSqlFailure) {
+    if (isAuthSqlReadEnabled()) {
+      logFirestoreTouch({
+        firestore_touch_type: 'legacy_read_remove_now',
+        route: PLAYER_BASE_DATA_ROUTE,
+        operation: 'read',
+        collection: 'users,gameLogins',
+        skipped: true,
+        sql_read_mode: true,
+        details: {
+          playerUid: cleanPlayerUid,
+          coadminUid: cleanCoadminUid,
+          reason: 'sql_hard_failure',
+        },
+      });
+      console.warn('[PLAYER_BASE_DATA] sql read failed, firestore fallback blocked', {
+        playerUid: cleanPlayerUid,
+        coadminUid: cleanCoadminUid,
+        mode: modeSelection.mode,
+        reason: modeSelection.reason,
+      });
+      timing.total_ms = Date.now() - totalStartedAt;
+      return {
+        payload: emptyPlayerBaseDataPayload(snapshotAt),
+        timing: { ...timing, total_ms: Date.now() - totalStartedAt },
+      };
+    }
     console.warn('[PLAYER_BASE_DATA] sql read failed, using firestore fallback', {
       playerUid: cleanPlayerUid,
       coadminUid: cleanCoadminUid,

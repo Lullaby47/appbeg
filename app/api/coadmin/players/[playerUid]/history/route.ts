@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { isCacheSqlAuthoritative } from '@/lib/server/cacheSqlRead';
+import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import {
   acquirePlayerMirrorClient,
   cleanText,
@@ -178,10 +180,36 @@ async function playerBelongsToCoadminScope(
   client: PoolClient | null,
   routeTiming: RouteTiming
 ) {
+  const sqlReadMode = isCacheSqlAuthoritative();
+
+  const matchesScope = (row: { coadmin_uid?: unknown; created_by?: unknown } | undefined) => {
+    if (!row) return null;
+    return (
+      cleanText(row.coadmin_uid) === coadminUid || cleanText(row.created_by) === coadminUid
+    );
+  };
+
   if (client) {
     try {
       const queryStartedAt = Date.now();
       const result = await client.query(
+        `
+          SELECT coadmin_uid, created_by
+          FROM public.players_cache
+          WHERE uid = $1 AND deleted_at IS NULL
+          LIMIT 1
+        `,
+        [playerUid]
+      );
+      routeTiming.each_query_ms.push(Date.now() - queryStartedAt);
+      const playerRow = result.rows[0] as { coadmin_uid?: unknown; created_by?: unknown } | undefined;
+      const playerMatch = matchesScope(playerRow);
+      if (playerMatch !== null) {
+        return playerMatch;
+      }
+
+      const balanceStartedAt = Date.now();
+      const balanceResult = await client.query(
         `
           SELECT coadmin_uid, created_by
           FROM public.user_balance_snapshots_cache
@@ -190,19 +218,45 @@ async function playerBelongsToCoadminScope(
         `,
         [playerUid]
       );
-      routeTiming.each_query_ms.push(Date.now() - queryStartedAt);
-      const row = result.rows[0] as { coadmin_uid?: unknown; created_by?: unknown } | undefined;
-      if (row) {
-        return (
-          cleanText(row.coadmin_uid) === coadminUid || cleanText(row.created_by) === coadminUid
-        );
+      routeTiming.each_query_ms.push(Date.now() - balanceStartedAt);
+      const balanceRow = balanceResult.rows[0] as
+        | { coadmin_uid?: unknown; created_by?: unknown }
+        | undefined;
+      const balanceMatch = matchesScope(balanceRow);
+      if (balanceMatch !== null) {
+        return balanceMatch;
       }
     } catch {
-      // Scope cache is advisory for this display route; Firebase remains the authority.
+      if (sqlReadMode) {
+        return false;
+      }
     }
   }
 
+  if (sqlReadMode) {
+    logFirestoreTouch({
+      firestore_touch_type: 'legacy_read_remove_now',
+      route: '/api/coadmin/players/[playerUid]/history',
+      operation: 'read',
+      collection: 'users',
+      document_id: playerUid,
+      skipped: true,
+      sql_read_mode: true,
+      details: { context: 'scope_check' },
+    });
+    return false;
+  }
+
   routeTiming.firebaseScopeRead = true;
+  logFirestoreTouch({
+    firestore_touch_type: 'legacy_read_remove_now',
+    route: '/api/coadmin/players/[playerUid]/history',
+    operation: 'read',
+    collection: 'users',
+    document_id: playerUid,
+    sql_read_mode: false,
+    details: { context: 'scope_check' },
+  });
   const playerSnap = await adminDb.collection('users').doc(playerUid).get();
   if (!playerSnap.exists) return false;
   const player = playerSnap.data() || {};

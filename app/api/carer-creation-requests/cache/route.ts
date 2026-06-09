@@ -3,6 +3,13 @@ import { NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
 import {
+  isCacheSqlAuthoritative,
+  logCacheFirestoreFallbackBlocked,
+  logCacheSqlRead,
+} from '@/lib/server/cacheSqlRead';
+
+const ROUTE = '/api/carer-creation-requests/cache';
+import {
   listFirestorePendingCarerCreationRequestsForCoadmin,
   listPendingCarerCreationRequestsForCoadminSql,
   listPendingCarerCreationRequestsSql,
@@ -71,10 +78,9 @@ export async function GET(request: Request) {
 
     if (cached !== null) {
       const durationMs = Date.now() - startedAt;
-      console.info('[CARER_CREATION_REQUEST_SQL]', {
+      logCacheSqlRead(ROUTE, {
         action: logAction,
         coadminUid: coadminUid || '*',
-        source: 'postgres',
         count: cached.length,
         durationMs,
       });
@@ -86,6 +92,14 @@ export async function GET(request: Request) {
       coadminUid: coadminUid || '*',
       error,
     });
+  }
+
+  if (isCacheSqlAuthoritative()) {
+    logCacheFirestoreFallbackBlocked(ROUTE, 'carerCreationRequests', {
+      action: logAction,
+      coadminUid: coadminUid || '*',
+    });
+    return NextResponse.json({ requests: [], source: 'postgres' });
   }
 
   const requests =

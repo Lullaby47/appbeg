@@ -8,7 +8,14 @@ import {
   scopedCoadminUid,
   type ApiUser,
 } from '@/lib/firebase/apiAuth';
+import {
+  isCacheSqlAuthoritative,
+  logCacheFirestoreFallbackBlocked,
+  logCacheSqlRead,
+} from '@/lib/server/cacheSqlRead';
 import { readPlayersCacheByCoadmin, type CachedPlayer } from '@/lib/sql/playersCache';
+
+const ROUTE = '/api/players/cache';
 
 function cleanText(value: unknown) {
   return String(value || '').trim();
@@ -102,7 +109,10 @@ export async function GET(request: Request) {
   const scoped = scopedCoadminUid(auth.user);
   const coadminUid = resolveExplicitCoadminUid(request) || scoped;
   if (!coadminUid) {
-    return NextResponse.json({ players: [], source: 'firestore' });
+    return NextResponse.json({
+      players: [],
+      source: isCacheSqlAuthoritative() ? 'postgres' : 'firestore',
+    });
   }
 
   if (!canAccessCoadmin(auth.user, coadminUid, scoped)) {
@@ -113,17 +123,16 @@ export async function GET(request: Request) {
     const cached = await readPlayersCacheByCoadmin(coadminUid);
     if (cached !== null) {
       const durationMs = Date.now() - startedAt;
-      console.info(
-        `[PLAYERS_CACHE_READ] source=postgres coadminUid=${coadminUid} count=${cached.length} durationMs=${durationMs}`
-      );
+      logCacheSqlRead(ROUTE, { coadminUid, count: cached.length, durationMs });
       return NextResponse.json({ players: cached, source: 'postgres' });
     }
   } catch (error) {
-    console.warn('[PLAYERS_CACHE] fallback firestore', {
-      coadminUid,
-      reason: 'postgres_read_failed',
-      error,
-    });
+    console.warn('[PLAYERS_CACHE] postgres read failed', { coadminUid, error });
+  }
+
+  if (isCacheSqlAuthoritative()) {
+    logCacheFirestoreFallbackBlocked(ROUTE, 'users', { coadminUid });
+    return NextResponse.json({ players: [], source: 'postgres' });
   }
 
   const players = await getFirestorePlayersByCoadmin(coadminUid);

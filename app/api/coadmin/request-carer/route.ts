@@ -4,6 +4,8 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
+import { isCacheSqlAuthoritative } from '@/lib/server/cacheSqlRead';
+import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import {
   createCarerCreationRequestSql,
   hasPendingCarerCreationRequestSql,
@@ -36,13 +38,25 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Username already exists.' }, { status: 409 });
     }
 
-    const existsSnap = await adminDb
-      .collection('users')
-      .where('username', '==', requestedUsername)
-      .limit(1)
-      .get();
-    if (!existsSnap.empty) {
-      return NextResponse.json({ error: 'Username already exists.' }, { status: 409 });
+    const sqlReadMode = isCacheSqlAuthoritative();
+
+    if (!sqlReadMode) {
+      logFirestoreTouch({
+        firestore_touch_type: 'legacy_read_remove_now',
+        route: '/api/coadmin/request-carer',
+        operation: 'read',
+        collection: 'users',
+        sql_read_mode: false,
+        details: { context: 'username_dup_check' },
+      });
+      const existsSnap = await adminDb
+        .collection('users')
+        .where('username', '==', requestedUsername)
+        .limit(1)
+        .get();
+      if (!existsSnap.empty) {
+        return NextResponse.json({ error: 'Username already exists.' }, { status: 409 });
+      }
     }
 
     if (await hasPendingCarerCreationRequestSql(callerUid, requestedUsername)) {
@@ -52,18 +66,28 @@ export async function POST(request: Request) {
       );
     }
 
-    const pendingSnap = await adminDb
-      .collection('carerCreationRequests')
-      .where('coadminUid', '==', callerUid)
-      .where('requestedUsername', '==', requestedUsername)
-      .where('status', '==', 'pending')
-      .limit(1)
-      .get();
-    if (!pendingSnap.empty) {
-      return NextResponse.json(
-        { error: 'This carer request is already pending approval.' },
-        { status: 409 }
-      );
+    if (!sqlReadMode) {
+      logFirestoreTouch({
+        firestore_touch_type: 'legacy_read_remove_now',
+        route: '/api/coadmin/request-carer',
+        operation: 'read',
+        collection: 'carerCreationRequests',
+        sql_read_mode: false,
+        details: { context: 'pending_dup_check' },
+      });
+      const pendingSnap = await adminDb
+        .collection('carerCreationRequests')
+        .where('coadminUid', '==', callerUid)
+        .where('requestedUsername', '==', requestedUsername)
+        .where('status', '==', 'pending')
+        .limit(1)
+        .get();
+      if (!pendingSnap.empty) {
+        return NextResponse.json(
+          { error: 'This carer request is already pending approval.' },
+          { status: 409 }
+        );
+      }
     }
 
     requestId = randomUUID();

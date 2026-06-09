@@ -9,9 +9,16 @@ import {
   type ApiUser,
 } from '@/lib/firebase/apiAuth';
 import {
+  isCacheSqlAuthoritative,
+  logCacheFirestoreFallbackBlocked,
+  logCacheSqlRead,
+} from '@/lib/server/cacheSqlRead';
+import {
   readPlayerGameLoginsCacheByCoadmin,
   type CachedPlayerGameLogin,
 } from '@/lib/sql/playerGameLoginsCache';
+
+const ROUTE = '/api/player-game-logins/cache';
 
 function cleanText(value: unknown) {
   return String(value || '').trim();
@@ -103,7 +110,10 @@ export async function GET(request: Request) {
   const scoped = scopedCoadminUid(auth.user);
   const coadminUid = resolveExplicitCoadminUid(request) || scoped;
   if (!coadminUid) {
-    return NextResponse.json({ playerGameLogins: [], source: 'firestore' });
+    return NextResponse.json({
+      playerGameLogins: [],
+      source: isCacheSqlAuthoritative() ? 'postgres' : 'firestore',
+    });
   }
 
   if (!canAccessCoadmin(auth.user, coadminUid, scoped)) {
@@ -114,17 +124,16 @@ export async function GET(request: Request) {
     const cached = await readPlayerGameLoginsCacheByCoadmin(coadminUid);
     if (cached !== null) {
       const durationMs = Date.now() - startedAt;
-      console.info(
-        `[PLAYER_GAME_LOGINS_CACHE_READ] source=postgres coadminUid=${coadminUid} count=${cached.length} durationMs=${durationMs}`
-      );
+      logCacheSqlRead(ROUTE, { coadminUid, count: cached.length, durationMs });
       return NextResponse.json({ playerGameLogins: cached, source: 'postgres' });
     }
   } catch (error) {
-    console.warn('[PLAYER_GAME_LOGINS_CACHE] fallback firestore', {
-      coadminUid,
-      reason: 'postgres_read_failed',
-      error,
-    });
+    console.warn('[PLAYER_GAME_LOGINS_CACHE] postgres read failed', { coadminUid, error });
+  }
+
+  if (isCacheSqlAuthoritative()) {
+    logCacheFirestoreFallbackBlocked(ROUTE, 'playerGameLogins', { coadminUid });
+    return NextResponse.json({ playerGameLogins: [], source: 'postgres' });
   }
 
   const playerGameLogins = await getFirestorePlayerGameLoginsByCoadmin(coadminUid);

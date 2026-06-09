@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { isCacheSqlAuthoritative, mirrorSqlSkipResponse } from '@/lib/server/cacheSqlRead';
+import { routeFromRequest } from '@/lib/server/firestoreTouchAudit';
 import {
   mirrorPlayerGameLoginSnapshot,
   tombstonePlayerGameLoginCache,
@@ -42,6 +44,14 @@ export async function POST(request: Request) {
 
   if (action !== 'upsert') {
     return apiError('Invalid mirror action.', 400);
+  }
+
+  if (isCacheSqlAuthoritative()) {
+    return mirrorSqlSkipResponse(
+      routeFromRequest(request),
+      'playerGameLogins',
+      { count: loginIds.length }
+    );
   }
 
   const snaps = await Promise.all(

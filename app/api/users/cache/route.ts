@@ -9,10 +9,17 @@ import {
   type ApiUser,
 } from '@/lib/firebase/apiAuth';
 import {
+  isCacheSqlAuthoritative,
+  logCacheFirestoreFallbackBlocked,
+  logCacheSqlRead,
+} from '@/lib/server/cacheSqlRead';
+import {
   readUsersCacheByRole,
   type CachedDirectoryUser,
   type DirectoryRole,
 } from '@/lib/sql/usersCache';
+
+const ROUTE = '/api/users/cache';
 
 const DIRECTORY_ROLES = new Set<DirectoryRole>(['staff', 'carer', 'coadmin', 'player']);
 
@@ -208,20 +215,34 @@ export async function GET(request: Request) {
     const cached = await readUsersCacheByRole({ role, coadminUid, status, includeDisabled });
     if (cached !== null) {
       const durationMs = Date.now() - startedAt;
-      console.info(
-        `[USERS_CACHE_READ] source=postgres role=${role} statusFilter=${statusFilter} includeDisabled=${includeDisabled} coadminUid=${coadminUid || ''} count=${cached.length} auth_path=${auth.authPath} durationMs=${durationMs}`
-      );
+      logCacheSqlRead(ROUTE, {
+        role,
+        statusFilter,
+        includeDisabled,
+        coadminUid: coadminUid || null,
+        count: cached.length,
+        auth_path: auth.authPath,
+        durationMs,
+      });
       return NextResponse.json({ users: cached, source: 'postgres' });
     }
   } catch (error) {
-    console.warn('[USERS_CACHE] fallback firestore', {
+    console.warn('[USERS_CACHE] postgres read failed', {
       role,
       coadminUid,
       statusFilter,
       includeDisabled,
-      reason: 'postgres_read_failed',
       error,
     });
+  }
+
+  if (isCacheSqlAuthoritative()) {
+    logCacheFirestoreFallbackBlocked(ROUTE, 'users', {
+      role,
+      coadminUid: coadminUid || null,
+      statusFilter,
+    });
+    return NextResponse.json({ users: [], source: 'postgres' });
   }
 
   const users = await getFirestoreUsersByRole(role, coadminUid, status, includeDisabled);

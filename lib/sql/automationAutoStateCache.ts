@@ -359,6 +359,16 @@ export async function acquireAutomationAutoTickLeaseSql(
       [cleanCarerUid, cleanInstanceId, nextExpiresAt, JSON.stringify(normalizeJson(raw) || {})]
     );
     await client.query('COMMIT');
+    console.info('[AUTO_TICK_LEASE_SQL]', {
+      carerUid: cleanCarerUid,
+      instanceId: cleanInstanceId,
+      lease_source: 'sql',
+      lease_acquired: true,
+      firestore_fallback: false,
+      pool_acquire_ms: timing.pool_acquire_ms,
+      query_exec_ms: timing.query_exec_ms,
+      total_ms: timing.total_ms,
+    });
     return { ok: true, timing };
   } catch (error) {
     try {

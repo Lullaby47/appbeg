@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { requireApiUser } from '@/lib/firebase/apiAuth';
+import { isCacheSqlAuthoritative, mirrorSqlSkipResponse } from '@/lib/server/cacheSqlRead';
 import {
   mirrorAutomationJobById,
   tombstoneAutomationJobCache,
@@ -24,6 +25,12 @@ export async function POST(request: Request) {
     const action = String(body.action || 'upsert').trim().toLowerCase();
     if (action !== 'upsert' && action !== 'tombstone') {
       return NextResponse.json({ error: 'action must be upsert or tombstone.' }, { status: 400 });
+    }
+
+    if (action === 'upsert' && isCacheSqlAuthoritative()) {
+      return mirrorSqlSkipResponse('/api/automation-jobs/cache/mirror', 'automation_jobs', {
+        jobId,
+      });
     }
 
     const mirrored = action === 'tombstone'

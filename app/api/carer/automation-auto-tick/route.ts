@@ -300,6 +300,28 @@ function createAutoTickStateTiming(): AutoTickStateTiming {
   };
 }
 
+function logAutoTickSources(input: {
+  carerUid: string;
+  auto_state_source?: 'sql' | 'firestore';
+  pending_source?: 'sql' | 'firestore';
+  recheck_source?: 'candidate' | 'sql' | 'firestore' | 'none';
+  lease_source?: 'sql' | 'firestore' | 'skipped';
+  lease_acquired?: boolean;
+  firestore_fallback: boolean;
+  details?: Record<string, unknown>;
+}) {
+  console.info('[AUTO_TICK_SOURCES]', {
+    carerUid: input.carerUid,
+    auto_state_source: input.auto_state_source ?? null,
+    pending_source: input.pending_source ?? null,
+    recheck_source: input.recheck_source ?? null,
+    lease_source: input.lease_source ?? null,
+    lease_acquired: input.lease_acquired ?? null,
+    firestore_fallback: input.firestore_fallback,
+    ...(input.details || {}),
+  });
+}
+
 function logAutoTickLease(input: {
   carerUid: string;
   coadminUid: string;
@@ -314,6 +336,22 @@ function logAutoTickLease(input: {
   skipped?: boolean;
   mode?: string;
 }) {
+  logAutoTickSources({
+    carerUid: input.carerUid,
+    lease_source: input.lease_source,
+    lease_acquired: input.lease_acquired,
+    firestore_fallback: input.firestore_fallback,
+    details: {
+      instanceId: input.instanceId,
+      coadminUid: input.coadminUid,
+      emergency_fallback: input.emergency_fallback ?? false,
+      lease_sql_ms: input.lease_sql_ms ?? 0,
+      lease_transaction_ms: input.lease_transaction_ms ?? 0,
+      error: input.error ?? null,
+      skipped: input.skipped ?? false,
+      mode: input.mode ?? null,
+    },
+  });
   console.info('[AUTO_TICK_LEASE]', {
     carerUid: input.carerUid,
     instanceId: input.instanceId,
@@ -332,14 +370,14 @@ function logAutoTickLease(input: {
 
 async function acquireAutomationAutoTickLeaseFirestore(
   stateRef: DocumentReference,
-  instanceId: string,
-  options?: { emergencyFallback?: boolean }
+  instanceId: string
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  if (isAuthSqlReadEnabled() && !options?.emergencyFallback) {
+  if (isAuthSqlReadEnabled()) {
     console.info('[AUTO_TICK_LEASE] firestore lease blocked', {
       carerUid: stateRef.id,
       instanceId,
-      reason: 'sql_read_mode_requires_emergency_fallback',
+      reason: 'sql_read_mode',
+      firestore_fallback: false,
     });
     return { ok: false, reason: 'SQL_READ_MODE' };
   }
@@ -352,11 +390,7 @@ async function acquireAutomationAutoTickLeaseFirestore(
     document_id: stateRef.id,
     skipped: false,
     sql_read_mode: isAuthSqlReadEnabled(),
-    details: {
-      context: 'tick_lease',
-      instanceId,
-      emergency_fallback: options?.emergencyFallback ?? false,
-    },
+    details: { context: 'tick_lease', instanceId },
   });
   try {
     await adminDb.runTransaction(async (tx) => {
@@ -396,7 +430,7 @@ async function acquireAutomationAutoTickLeaseFirestore(
 
 async function resolveAutomationAutoTickState(
   carerUid: string,
-  stateRef: DocumentReference,
+  stateRef: DocumentReference | null,
   stateTiming: AutoTickStateTiming
 ): Promise<
   | {
@@ -414,6 +448,15 @@ async function resolveAutomationAutoTickState(
 
   if (sqlStateLookup.state) {
     stateTiming.state_source = 'sql';
+    logAutoTickSources({
+      carerUid,
+      auto_state_source: 'sql',
+      firestore_fallback: false,
+      details: {
+        enabled: sqlStateLookup.state.enabled,
+        state_sql_ms: stateTiming.state_sql_ms,
+      },
+    });
     logAutoTickTiming('state_read', stateReadStartedAt, {
       carerUid,
       exists: true,
@@ -421,6 +464,7 @@ async function resolveAutomationAutoTickState(
       state_sql_ms: stateTiming.state_sql_ms,
       state_doc_ms: 0,
       enabled: sqlStateLookup.state.enabled,
+      firestore_fallback: false,
     });
     return {
       ok: true,
@@ -442,6 +486,16 @@ async function resolveAutomationAutoTickState(
 
   if (isAuthSqlReadEnabled()) {
     stateTiming.state_source = 'sql';
+    logAutoTickSources({
+      carerUid,
+      auto_state_source: 'sql',
+      firestore_fallback: false,
+      details: {
+        exists: false,
+        missReason: sqlStateLookup.missReason || 'row_missing',
+        state_sql_ms: stateTiming.state_sql_ms,
+      },
+    });
     logAutoTickTiming('state_read', stateReadStartedAt, {
       carerUid,
       exists: false,
@@ -457,6 +511,16 @@ async function resolveAutomationAutoTickState(
       stateExists: false,
       stateCoadminUidIgnored: null,
       usedSqlState: true,
+    };
+  }
+
+  if (!stateRef) {
+    return {
+      ok: true,
+      enabled: false,
+      stateExists: false,
+      stateCoadminUidIgnored: null,
+      usedSqlState: false,
     };
   }
 
@@ -534,6 +598,16 @@ async function resolveAutoTickPendingCandidates(
   const pending_sql_ms = Date.now() - sqlStartedAt;
 
   if (sqlResult.hit) {
+    logAutoTickSources({
+      carerUid,
+      pending_source: 'sql',
+      firestore_fallback: false,
+      details: {
+        coadminUid,
+        candidateCount: sqlResult.candidates.length,
+        pending_sql_ms,
+      },
+    });
     return {
       candidates: sqlResult.candidates,
       timing: {
@@ -553,6 +627,17 @@ async function resolveAutoTickPendingCandidates(
   );
 
   if (isAuthSqlReadEnabled()) {
+    logAutoTickSources({
+      carerUid,
+      pending_source: 'sql',
+      firestore_fallback: false,
+      details: {
+        coadminUid,
+        candidateCount: 0,
+        missReason: sqlResult.missReason || 'lookup_failed',
+        pending_sql_ms,
+      },
+    });
     return {
       candidates: [],
       timing: {
@@ -613,6 +698,7 @@ type AutoTickTaskRecheckTiming = {
 };
 
 async function resolveAutoTickTaskRecheck(
+  carerUid: string,
   taskId: string,
   candidateTask: AutoTickPendingTaskCandidate,
   pendingSource: AutoTickPendingTiming['pending_source']
@@ -646,11 +732,22 @@ async function resolveAutoTickTaskRecheck(
 
   if (sqlResult.hit && sqlResult.task) {
     timing.task_recheck_source = 'sql';
+    logAutoTickSources({
+      carerUid,
+      recheck_source: 'sql',
+      firestore_fallback: false,
+      details: {
+        taskId,
+        pending_source: pendingSource,
+        durationMs: timing.task_recheck_sql_ms,
+      },
+    });
     console.info('[AUTO_TICK_TASK_RECHECK_SQL]', {
       taskId,
-      source: 'sql',
+      recheck_source: 'sql',
       pending_source: pendingSource,
       durationMs: timing.task_recheck_sql_ms,
+      firestore_fallback: false,
       pool_acquire_ms: sqlResult.timing.pool_acquire_ms,
       query_exec_ms: sqlResult.timing.query_exec_ms,
     });
@@ -662,9 +759,19 @@ async function resolveAutoTickTaskRecheck(
 
   if (isAuthSqlReadEnabled()) {
     timing.task_recheck_source = 'sql';
+    logAutoTickSources({
+      carerUid,
+      recheck_source: 'sql',
+      firestore_fallback: false,
+      details: {
+        taskId,
+        pending_source: pendingSource,
+        sql_miss_reason: sqlResult.missReason,
+      },
+    });
     console.info('[AUTO_TICK_TASK_RECHECK_SQL]', {
       taskId,
-      source: 'sql_miss',
+      recheck_source: 'sql',
       pending_source: pendingSource,
       durationMs: timing.task_recheck_sql_ms,
       sql_miss_reason: sqlResult.missReason,
@@ -787,7 +894,10 @@ export async function POST(request: Request) {
     return apiError('agentId does not match the linked automation agent for this carer.', 403);
   }
 
-  const stateRef = adminDb.collection(AUTOMATION_AUTO_STATE_COLLECTION).doc(carerUid);
+  const sqlReadMode = isAuthSqlReadEnabled();
+  const stateRef = sqlReadMode
+    ? null
+    : adminDb.collection(AUTOMATION_AUTO_STATE_COLLECTION).doc(carerUid);
   const stateTiming = createAutoTickStateTiming();
   const stateResult = await resolveAutomationAutoTickState(carerUid, stateRef, stateTiming);
   if (!stateResult.ok) {
@@ -800,7 +910,8 @@ export async function POST(request: Request) {
     enabled: stateResult.enabled,
     stateCoadminUidIgnored: stateResult.stateCoadminUidIgnored,
     coadminUid,
-    state_source: stateTiming.state_source,
+    auto_state_source: stateTiming.state_source,
+    firestore_fallback: false,
   });
   if (!stateResult.enabled) {
     console.info('[AUTO_TICK] skipped auto tick', {
@@ -812,7 +923,7 @@ export async function POST(request: Request) {
 
   const leaseStartedAt = Date.now();
   const isBrowserAutoTick = !hasValidSecret && instanceId.startsWith('carer-ui-');
-  const useSqlLease = isAuthSqlReadEnabled() || stateResult.usedSqlState;
+  const useSqlLease = sqlReadMode || stateResult.usedSqlState;
 
   const handleLeaseFailure = (msg: string) => {
     if (msg === 'LEASE_HELD') {
@@ -894,16 +1005,18 @@ export async function POST(request: Request) {
         lease_transaction_ms: 0,
       });
     } else if (
-      sqlLeaseResult.reason === 'postgres_unavailable' ||
-      sqlLeaseResult.reason === 'lookup_failed'
+      !sqlReadMode &&
+      (sqlLeaseResult.reason === 'postgres_unavailable' ||
+        sqlLeaseResult.reason === 'lookup_failed')
     ) {
-      console.info('[AUTO_TICK_STATE_FALLBACK] reason=%s carerUid=%s context=lease emergency_fallback=true', {
+      if (!stateRef) {
+        return handleLeaseFailure(sqlLeaseResult.reason);
+      }
+      console.info('[AUTO_TICK_STATE_FALLBACK] reason=%s carerUid=%s context=lease legacy_emergency_fallback=true', {
         reason: sqlLeaseResult.reason,
         carerUid,
       });
-      const firestoreLease = await acquireAutomationAutoTickLeaseFirestore(stateRef, instanceId, {
-        emergencyFallback: true,
-      });
+      const firestoreLease = await acquireAutomationAutoTickLeaseFirestore(stateRef, instanceId);
       stateTiming.lease_transaction_ms = Date.now() - leaseStartedAt;
       stateTiming.lease_source = 'firestore';
       logAutoTickLease({
@@ -917,14 +1030,14 @@ export async function POST(request: Request) {
         lease_sql_ms: stateTiming.lease_sql_ms,
         lease_transaction_ms: stateTiming.lease_transaction_ms,
         error: firestoreLease.ok ? null : firestoreLease.reason,
-        mode: 'emergency_fallback',
+        mode: 'legacy_emergency_fallback',
       });
       logAutoTickTiming('lease_transaction', leaseStartedAt, {
         carerUid,
         coadminUid,
         instanceId,
         acquired: firestoreLease.ok,
-        mode: 'emergency_fallback',
+        mode: 'legacy_emergency_fallback',
         lease_source: stateTiming.lease_source,
         lease_sql_ms: stateTiming.lease_sql_ms,
         lease_transaction_ms: stateTiming.lease_transaction_ms,
@@ -959,7 +1072,7 @@ export async function POST(request: Request) {
       });
       return handleLeaseFailure(sqlLeaseResult.reason);
     }
-  } else {
+  } else if (stateRef) {
     const firestoreLease = await acquireAutomationAutoTickLeaseFirestore(stateRef, instanceId);
     stateTiming.lease_transaction_ms = Date.now() - leaseStartedAt;
     stateTiming.lease_source = 'firestore';
@@ -1191,7 +1304,9 @@ export async function POST(request: Request) {
         automationJobCreated: !result.reusedExistingJob,
         originalTaskUpdatedToInProgress: true,
       });
-      void mirrorCarerTaskById(result.taskId, 'appbeg_automation_auto_tick');
+      if (!sqlReadMode) {
+        void mirrorCarerTaskById(result.taskId, 'appbeg_automation_auto_tick');
+      }
       claimedJobs.push({
         taskId: result.taskId,
         jobId: result.jobId,
@@ -1213,6 +1328,7 @@ export async function POST(request: Request) {
         message.includes('No automation agent')
       ) {
         const taskRecheck = await resolveAutoTickTaskRecheck(
+          carerUid,
           taskId,
           task,
           pendingResult.timing.pending_source
@@ -1235,10 +1351,14 @@ export async function POST(request: Request) {
       }
       const lower = message.toLowerCase();
       if (lower.includes('resource_exhausted') || lower.includes('quota exceeded')) {
-        if (isAuthSqlReadEnabled()) {
-          console.info('[AUTO_TICK] quota disable via sql', { carerUid, firestore_fallback: false });
+        if (sqlReadMode) {
+          console.info('[AUTO_TICK] quota disable via sql', {
+            carerUid,
+            auto_state_source: 'sql',
+            firestore_fallback: false,
+          });
           await disableAutomationAutoStateSql(carerUid, 'firestore_quota');
-        } else {
+        } else if (stateRef) {
           logFirestoreTouch({
             firestore_touch_type: 'authority_write_keep_for_now',
             route: '/api/carer/automation-auto-tick',
