@@ -6,7 +6,7 @@ import { verifyLiveCarerApiToken } from '@/lib/firebase/liveAuthTokenCache';
 import {
   lookupAppSession,
   lookupAppSessionWithClient,
-  touchAppSession,
+  scheduleAppSessionTouchIfDue,
   type AppSessionRow,
 } from '@/lib/sql/appSessions';
 import {
@@ -64,9 +64,7 @@ function isLoginAllowedStatus(status: string | null, role: string) {
   return isActive || isBlockedPlayer;
 }
 
-const APP_SESSION_TOUCH_THROTTLE_MS = 60_000;
 const APP_SESSION_AUTH_CACHE_TTL_MS = 30_000;
-const lastAppSessionTouchAt = new Map<string, number>();
 
 export type AppSessionAuthTiming = {
   cookie_parse_ms: number;
@@ -266,13 +264,6 @@ export async function verifyAppSessionFromRequest(
     return { hit: false, sessionId, reason: 'invalid_or_expired', lookupMs, timing };
   }
 
-  const now = Date.now();
-  const lastTouch = lastAppSessionTouchAt.get(sessionId) || 0;
-  if (now - lastTouch >= APP_SESSION_TOUCH_THROTTLE_MS) {
-    void touchAppSession(sessionId);
-    lastAppSessionTouchAt.set(sessionId, now);
-  }
-
   const profileStartedAt = Date.now();
   let profileLookup;
   try {
@@ -363,6 +354,7 @@ export async function verifyAppSessionFromRequest(
   writeAppSessionAuthCache(sessionId, verified);
   timing.auth_finalize_ms = Date.now() - finalizeStartedAt;
   timing.total_ms = Date.now() - verifyStartedAt;
+  scheduleAppSessionTouchIfDue(sessionId);
 
   console.info(
     '[APP_SESSION_AUTH] hit=true uid=%s role=%s sessionId=%s lookup_ms=%s profile_ms=%s shared_client=%s pool_acquire_ms=%s session_lookup_ms=%s profile_lookup_ms=%s client_release_ms=%s auth_finalize_ms=%s total_ms=%s',

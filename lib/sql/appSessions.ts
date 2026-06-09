@@ -4,12 +4,120 @@ import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 
 import {
+  acquirePlayerMirrorClient,
   cleanText,
   getPlayerMirrorPool,
+  getPlayerMirrorPoolStats,
+  isPgConnectionTimeoutError,
   normalizeJson,
   runMirrorClientQuery,
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
+
+/** Minimum interval between successful app_sessions last_seen updates. */
+const APP_SESSION_TOUCH_THROTTLE_MS = 5 * 60_000;
+/** Shorter backoff after a failed touch so we do not hammer Postgres every request. */
+const APP_SESSION_TOUCH_FAILURE_BACKOFF_MS = 2 * 60_000;
+const APP_SESSION_TOUCH_FAILURE_LOG_THROTTLE_MS = 5 * 60_000;
+
+const APP_SESSION_TOUCH_SQL = `
+  UPDATE public.app_sessions
+  SET last_seen_at = $2::timestamptz, updated_at = $2::timestamptz
+  WHERE session_id = $1
+    AND active = TRUE
+    AND expires_at > $2::timestamptz
+`;
+
+const globalAppSessionTouch = globalThis as typeof globalThis & {
+  __appbegAppSessionTouchState?: {
+    lastTouchAt: Map<string, number>;
+    inflight: Set<string>;
+    lastFailureLogAt: Map<string, number>;
+  };
+};
+
+function appSessionTouchState() {
+  if (!globalAppSessionTouch.__appbegAppSessionTouchState) {
+    globalAppSessionTouch.__appbegAppSessionTouchState = {
+      lastTouchAt: new Map(),
+      inflight: new Set(),
+      lastFailureLogAt: new Map(),
+    };
+  }
+  return globalAppSessionTouch.__appbegAppSessionTouchState;
+}
+
+function shouldRetryAppSessionTouch(error: unknown) {
+  if (isPgConnectionTimeoutError(error)) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error || '');
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('connection terminated') ||
+    lower.includes('too many clients') ||
+    lower.includes('remaining connection slots')
+  );
+}
+
+function logAppSessionTouchFailure(sessionId: string, error: unknown, retried: boolean) {
+  const state = appSessionTouchState();
+  const now = Date.now();
+  const lastLog = state.lastFailureLogAt.get(sessionId) || 0;
+  if (now - lastLog < APP_SESSION_TOUCH_FAILURE_LOG_THROTTLE_MS) {
+    return;
+  }
+  state.lastFailureLogAt.set(sessionId, now);
+  const poolStats = getPlayerMirrorPoolStats();
+  console.info('[APP_SESSIONS] touch failed (non-fatal)', {
+    sessionIdPrefix: sessionId.slice(0, 8),
+    retried,
+    error: error instanceof Error ? error.message : String(error),
+    pool_totalCount: poolStats?.totalCount ?? null,
+    pool_idleCount: poolStats?.idleCount ?? null,
+    pool_waitingCount: poolStats?.waitingCount ?? null,
+    pool_max: poolStats?.max ?? null,
+  });
+}
+
+/**
+ * Fire-and-forget last_seen update. Non-fatal: auth must not depend on this succeeding.
+ * Debounced globally (per warm serverless instance) to avoid pool contention.
+ */
+export function scheduleAppSessionTouchIfDue(sessionId: string) {
+  const cleanSessionId = cleanText(sessionId);
+  if (!cleanSessionId || !getPlayerMirrorPool()) {
+    return;
+  }
+
+  const state = appSessionTouchState();
+  const now = Date.now();
+  const lastTouch = state.lastTouchAt.get(cleanSessionId) || 0;
+  if (now - lastTouch < APP_SESSION_TOUCH_THROTTLE_MS) {
+    return;
+  }
+  if (state.inflight.has(cleanSessionId)) {
+    return;
+  }
+
+  state.lastTouchAt.set(cleanSessionId, now);
+  state.inflight.add(cleanSessionId);
+
+  queueMicrotask(() => {
+    void touchAppSession(cleanSessionId)
+      .then((ok) => {
+        if (!ok) {
+          state.lastTouchAt.set(
+            cleanSessionId,
+            Date.now() - APP_SESSION_TOUCH_THROTTLE_MS + APP_SESSION_TOUCH_FAILURE_BACKOFF_MS
+          );
+        }
+      })
+      .finally(() => {
+        state.inflight.delete(cleanSessionId);
+      });
+  });
+}
 
 const DEFAULT_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const DEFAULT_IMPERSONATION_TTL_SECONDS = 60 * 60;
@@ -260,29 +368,39 @@ export async function lookupAppSession(sessionId: string) {
   }
 }
 
+async function touchAppSessionOnce(sessionId: string, nowIso: string) {
+  const acquired = await acquirePlayerMirrorClient({ context: 'app_session_touch' });
+  if (!acquired) {
+    return false;
+  }
+  try {
+    const result = await acquired.client.query(APP_SESSION_TOUCH_SQL, [sessionId, nowIso]);
+    return (result.rowCount || 0) > 0;
+  } finally {
+    acquired.client.release();
+  }
+}
+
 export async function touchAppSession(sessionId: string) {
-  const db = getPlayerMirrorPool();
   const cleanSessionId = cleanText(sessionId);
-  if (!db || !cleanSessionId) {
+  if (!cleanSessionId || !getPlayerMirrorPool()) {
     return false;
   }
 
-  const now = new Date().toISOString();
+  const nowIso = new Date().toISOString();
   try {
-    const result = await db.query(
-      `
-        UPDATE public.app_sessions
-        SET last_seen_at = $2::timestamptz, updated_at = $2::timestamptz
-        WHERE session_id = $1
-          AND active = TRUE
-          AND expires_at > $2::timestamptz
-      `,
-      [cleanSessionId, now]
-    );
-    return (result.rowCount || 0) > 0;
+    return await touchAppSessionOnce(cleanSessionId, nowIso);
   } catch (error) {
-    console.error('[APP_SESSIONS] touch failed', { sessionId: cleanSessionId, error });
-    return false;
+    if (!shouldRetryAppSessionTouch(error)) {
+      logAppSessionTouchFailure(cleanSessionId, error, false);
+      return false;
+    }
+    try {
+      return await touchAppSessionOnce(cleanSessionId, nowIso);
+    } catch (retryError) {
+      logAppSessionTouchFailure(cleanSessionId, retryError, true);
+      return false;
+    }
   }
 }
 
