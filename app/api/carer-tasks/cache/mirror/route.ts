@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { logFirestoreTouch, routeFromRequest } from '@/lib/server/firestoreTouchAudit';
 import {
   mirrorCarerTaskIdsBatch,
   mirrorCarerTaskSnapshotsBatch,
@@ -43,12 +45,45 @@ export async function POST(request: Request) {
     return apiError('Invalid mirror action.', 400);
   }
 
+  const route = routeFromRequest(request);
+  if (isAuthSqlReadEnabled()) {
+    logFirestoreTouch({
+      firestore_touch_type: 'mirror_write_can_disable',
+      route,
+      operation: 'read',
+      collection: 'carerTasks',
+      skipped: true,
+      sql_read_mode: true,
+      details: { reason: 'sql_cache_authoritative', taskCount: taskIds.length },
+    });
+    return NextResponse.json({
+      ok: true,
+      skipped: true,
+      reason: 'sql_cache_authoritative',
+    });
+  }
+
   if (taskIds.length === 1) {
+    logFirestoreTouch({
+      firestore_touch_type: 'mirror_write_can_disable',
+      route,
+      operation: 'read',
+      collection: 'carerTasks',
+      document_id: taskIds[0],
+      details: { action: 'upsert_single', mirror_target: 'carer_tasks_cache' },
+    });
     const snap = await adminDb.collection('carerTasks').doc(taskIds[0]).get();
     const mirrored = await mirrorCarerTaskSnapshotsBatch([snap], 'appbeg_browser_write');
     return NextResponse.json({ success: true, mirrored, requested: taskIds.length });
   }
 
+  logFirestoreTouch({
+    firestore_touch_type: 'mirror_write_can_disable',
+    route,
+    operation: 'read',
+    collection: 'carerTasks',
+    details: { action: 'upsert_batch', count: taskIds.length, mirror_target: 'carer_tasks_cache' },
+  });
   const mirrored = await mirrorCarerTaskIdsBatch(taskIds, 'appbeg_browser_write');
   return NextResponse.json({ success: true, mirrored, requested: taskIds.length });
 }

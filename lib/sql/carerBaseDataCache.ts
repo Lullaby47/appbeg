@@ -9,6 +9,8 @@ import {
   isFirestoreQuotaExhausted,
   logCarerStartupFirestore,
 } from '@/lib/firestore/quota';
+import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import { type CachedGameLogin } from '@/lib/sql/gameLoginsCache';
 import { readGameLoginsCacheByCoadminWithClient } from '@/lib/sql/gameLoginsCache';
 import {
@@ -350,6 +352,32 @@ async function readCarerBaseDataFirestoreFallback(coadminUid: string) {
 async function readCarerBaseDataFirestoreFallbackSafe(coadminUid: string, reason: string) {
   const startedAt = Date.now();
   const path = `coadmin/${coadminUid}/base-data`;
+  if (isAuthSqlReadEnabled()) {
+    logFirestoreTouch({
+      firestore_touch_type: 'legacy_read_remove_now',
+      route: '/api/carer/base-data',
+      operation: 'read',
+      collection: 'users,gameLogins,playerGameLogins',
+      sql_read_mode: true,
+      skipped: true,
+      details: { reason, coadminUid },
+    });
+    return {
+      players: [] as CachedPlayer[],
+      gameLogins: [] as CachedGameLogin[],
+      playerGameLogins: [] as CachedPlayerGameLogin[],
+      usedFallback: false as const,
+      quotaExhausted: false as const,
+    };
+  }
+  logFirestoreTouch({
+    firestore_touch_type: 'legacy_read_remove_now',
+    route: '/api/carer/base-data',
+    operation: 'read',
+    collection: 'users,gameLogins,playerGameLogins',
+    sql_read_mode: false,
+    details: { reason, coadminUid },
+  });
   try {
     const fallback = await readCarerBaseDataFirestoreFallback(coadminUid);
     logCarerStartupFirestore({

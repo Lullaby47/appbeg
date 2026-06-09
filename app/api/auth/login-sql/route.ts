@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 
 import { verifyPassword } from '@/lib/auth/passwordHash';
+import { isPlayerSessionSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import { mirrorPlayerSessionStartToFirestore } from '@/lib/server/playerSessionFirestoreMirror';
 import { createPlayerLoginSessionsInSql } from '@/lib/server/sqlPlayerLoginSessions';
 import { isSqlPlayerLoginEnabled } from '@/lib/server/sqlPlayerLogin';
@@ -50,6 +52,19 @@ function schedulePlayerSessionStartFirestoreMirror(input: {
   deviceId: string;
   previousSessionIds: string[];
 }) {
+  if (isPlayerSessionSqlReadEnabled()) {
+    logFirestoreTouch({
+      firestore_touch_type: 'mirror_write_can_disable',
+      route: '/api/auth/login-sql',
+      operation: 'batch',
+      collection: 'users,playerSessions',
+      document_id: input.sessionId,
+      sql_read_mode: true,
+      skipped: true,
+      details: { reason: 'player_session_sql_read' },
+    });
+    return;
+  }
   void mirrorPlayerSessionStartToFirestore({
     playerUid: input.playerUid,
     sessionId: input.sessionId,
@@ -262,7 +277,7 @@ export async function POST(request: Request) {
         uid: profile.uid,
         player_session_sql_ok: true,
         firestore_mirror_ok: null,
-        firestore_mirror_async: true,
+        firestore_mirror_async: isPlayerSessionSqlReadEnabled() ? null : true,
         playerSessionId,
         lookup_ms: lookupMs,
         verify_ms: verifyMs,

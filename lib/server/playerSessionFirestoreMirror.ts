@@ -3,6 +3,7 @@ import 'server-only';
 import { FieldValue } from 'firebase-admin/firestore';
 
 import { adminDb } from '@/lib/firebase/admin';
+import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 
 export async function mirrorPlayerSessionStartToFirestore(input: {
@@ -26,6 +27,14 @@ export async function mirrorPlayerSessionStartToFirestore(input: {
     ...(input.platform ? { platform: cleanText(input.platform) } : {}),
   };
 
+  logFirestoreTouch({
+    firestore_touch_type: 'mirror_write_can_disable',
+    route: '/api/auth/player-session/start',
+    operation: 'batch',
+    collection: 'users,playerSessions',
+    document_id: sessionId,
+    details: { playerUid, previousSessionCount: input.previousSessionIds.length },
+  });
   const batch = adminDb.batch();
   const userRef = adminDb.collection('users').doc(playerUid);
   const sessionRef = adminDb.collection('playerSessions').doc(sessionId);
@@ -84,6 +93,14 @@ export async function mirrorPlayerSessionTouchToFirestore(input: {
   }
 
   const deviceId = cleanText(input.deviceId);
+  logFirestoreTouch({
+    firestore_touch_type: 'mirror_write_can_disable',
+    route: '/api/auth/player-session/touch',
+    operation: 'batch',
+    collection: 'users,playerSessions',
+    document_id: sessionId,
+    details: { playerUid },
+  });
   const batch = adminDb.batch();
   batch.set(
     adminDb.collection('playerSessions').doc(sessionId),
@@ -118,6 +135,14 @@ export async function mirrorPlayerSessionEndToFirestore(input: {
     return false;
   }
 
+  logFirestoreTouch({
+    firestore_touch_type: 'mirror_write_can_disable',
+    route: '/api/auth/player-session/end',
+    operation: 'write',
+    collection: 'playerSessions',
+    document_id: sessionId,
+    details: { playerUid, reason: cleanText(input.reason) || 'logout' },
+  });
   await adminDb.collection('playerSessions').doc(sessionId).set(
     {
       active: false,

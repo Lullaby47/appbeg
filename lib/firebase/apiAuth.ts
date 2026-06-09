@@ -32,6 +32,7 @@ import {
 } from '@/lib/sql/playerSessionsCache';
 import { timedRechargeFirestoreRead } from '@/lib/server/rechargeFirestoreInstrumentation';
 import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 
 export type ApiRole = 'admin' | 'coadmin' | 'staff' | 'carer' | 'player';
 
@@ -671,6 +672,15 @@ async function validatePlayerApiSession(
     };
   }
 
+  logFirestoreTouch({
+    firestore_touch_type: 'legacy_read_remove_now',
+    route: 'lib/firebase/apiAuth.validatePlayerApiSession',
+    operation: 'read',
+    collection: 'playerSessions',
+    document_id: sessionId,
+    sql_read_mode: Boolean(options?.sqlOnly),
+    details: { uid },
+  });
   const sessionDocStartedAt = Date.now();
   const sessionSnap = options?.rechargeFirestoreInstrumentation
     ? await timedRechargeFirestoreRead(
@@ -1118,6 +1128,14 @@ export async function requirePlayerOwnedLiveAuth(
       console.info('[LIVE_AUTH_PLAYER_FALLBACK] reason=%s uid=%s', sqlProfileLookup.missReason, identityUid);
     }
 
+    logFirestoreTouch({
+      firestore_touch_type: 'legacy_read_remove_now',
+      route: 'lib/firebase/apiAuth.requirePlayerOwnedLiveAuth',
+      operation: 'read',
+      collection: 'users',
+      document_id: identityUid,
+      sql_read_mode: false,
+    });
     const userDocStartedAt = Date.now();
     const userSnap = await adminDb.collection('users').doc(identityUid).get();
     timing.user_doc_ms = Date.now() - userDocStartedAt;
@@ -1417,6 +1435,14 @@ export async function requireCarerOwnedLiveAuth(
     firestore_fallback: true,
   });
 
+  logFirestoreTouch({
+    firestore_touch_type: 'legacy_read_remove_now',
+    route: 'lib/firebase/apiAuth.requireCarerOwnedLiveAuth',
+    operation: 'read',
+    collection: 'users',
+    document_id: identityUid,
+    sql_read_mode: false,
+  });
   const userDocStartedAt = Date.now();
   const userSnap = await adminDb.collection('users').doc(identityUid).get();
   timing.user_doc_ms = Date.now() - userDocStartedAt;
@@ -1980,6 +2006,14 @@ export async function requireApiUser(
       firestore_fallback: true,
     });
 
+    logFirestoreTouch({
+      firestore_touch_type: 'legacy_read_remove_now',
+      route: 'lib/firebase/apiAuth.requireApiUser',
+      operation: 'read',
+      collection: 'users',
+      document_id: identityUid,
+      sql_read_mode: false,
+    });
     const userDocStartedAt = Date.now();
     const snap = await adminDb.collection('users').doc(identityUid).get();
     timing.user_doc_ms = Date.now() - userDocStartedAt;

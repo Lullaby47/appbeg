@@ -7,6 +7,7 @@ import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { createHash } from 'node:crypto';
 
 import { adminDb } from '@/lib/firebase/admin';
+import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import {
   buildAutomationPayload,
   getTimestampMs,
@@ -250,6 +251,14 @@ export async function claimCarerTaskAsAdmin(input: {
 
   const runClaimTransaction = async () => {
     const transactionStartedAt = Date.now();
+    logFirestoreTouch({
+      firestore_touch_type: 'authority_write_keep_for_now',
+      route: '/api/carer/automation-auto-tick',
+      operation: 'transaction',
+      collection: 'carerTasks,automation_jobs',
+      document_id: input.taskId,
+      details: { context: 'claimCarerTaskAsAdmin', carerUid: input.carerUid },
+    });
     try {
       return await adminDb.runTransaction(async (transaction) => {
       const taskReadStartedAt = Date.now();

@@ -9,6 +9,8 @@ import {
   writePlayerSessionAuthCache,
   type PlayerSessionStatusResult,
 } from '@/lib/server/playerSessionAuthCache';
+import { isPlayerSessionSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import { requireFirebasePlayerUser } from '@/lib/server/playerSessionRouteAuth';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import {
@@ -168,6 +170,14 @@ async function readPlayerSessionStatusFromSql(
 }
 
 async function readPlayerSessionStatusFromFirestore(uid: string, sessionId: string) {
+  logFirestoreTouch({
+    firestore_touch_type: 'legacy_read_remove_now',
+    route: '/api/auth/player-session/status',
+    operation: 'read',
+    collection: 'users',
+    document_id: uid,
+    sql_read_mode: isPlayerSessionSqlReadEnabled(),
+  });
   const userSnap = await adminDb.collection('users').doc(uid).get();
   const activeSessionId = cleanText(userSnap.data()?.activeSessionId);
   if (!activeSessionId || activeSessionId !== sessionId) {
@@ -182,6 +192,14 @@ async function readPlayerSessionStatusFromFirestore(uid: string, sessionId: stri
     } satisfies PlayerSessionStatusResult;
   }
 
+  logFirestoreTouch({
+    firestore_touch_type: 'legacy_read_remove_now',
+    route: '/api/auth/player-session/status',
+    operation: 'read',
+    collection: 'playerSessions',
+    document_id: sessionId,
+    sql_read_mode: isPlayerSessionSqlReadEnabled(),
+  });
   const sessionSnap = await adminDb.collection('playerSessions').doc(sessionId).get();
   const sessionData = sessionSnap.data() || {};
   if (
@@ -326,6 +344,38 @@ export async function resolvePlayerSessionStatus(request: Request) {
       sessionId,
       error: error instanceof Error ? error.message : String(error),
     });
+  }
+
+  if (isPlayerSessionSqlReadEnabled()) {
+    logFirestoreTouch({
+      firestore_touch_type: 'legacy_read_remove_now',
+      route: '/api/auth/player-session/status',
+      operation: 'read',
+      collection: 'users',
+      document_id: uid,
+      sql_read_mode: true,
+      skipped: true,
+      details: { reason: 'player_session_sql_authoritative' },
+    });
+    const result: PlayerSessionStatusResult = {
+      ok: false,
+      reason: 'session_inactive',
+      uid,
+      sessionId,
+      source: 'sql',
+    };
+    console.info('[PLAYER_SESSION_STATUS]', {
+      source: 'sql',
+      uid,
+      sessionId,
+      activeSessionId: '',
+      ok: false,
+      reason: result.reason,
+      durationMs: Date.now() - startedAt,
+      cache_hit: false,
+      firestore_fallback_skipped: true,
+    });
+    return { status: 200, result };
   }
 
   const result = await readPlayerSessionStatusFromFirestore(uid, sessionId);

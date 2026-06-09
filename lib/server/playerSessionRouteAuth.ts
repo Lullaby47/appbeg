@@ -12,6 +12,7 @@ import {
   authSqlReadEnvLogFields,
   isAuthSqlReadEnabled,
 } from '@/lib/server/authSqlRead';
+import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import {
   lookupApiUserProfileFromSqlCache,
@@ -86,6 +87,14 @@ export async function requireFirebasePlayerUser(request: Request) {
     } as const;
   }
 
+  logFirestoreTouch({
+    firestore_touch_type: 'legacy_read_remove_now',
+    route: 'lib/server/playerSessionRouteAuth.requireFirebasePlayerUser',
+    operation: 'read',
+    collection: 'users',
+    document_id: uid,
+    sql_read_mode: false,
+  });
   const userSnap = await adminDb.collection('users').doc(uid).get();
   if (!userSnap.exists) {
     return { response: apiError('User profile not found.', 401) } as const;
