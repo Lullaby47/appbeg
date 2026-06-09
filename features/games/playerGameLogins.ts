@@ -11,8 +11,14 @@ import {
 } from 'firebase/firestore';
 
 import { getAppSessionRequestHeaders } from '@/features/auth/appSession';
+import {
+  attachPlayerGameLoginsSqlPoll,
+  isPlayerGameLoginsSqlReadEnabled,
+} from '@/features/live/playerGameLoginsSqlRead';
 import { auth, db } from '@/lib/firebase/client';
+import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
+import { logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 export type PlayerGameLogin = {
   id: string;
@@ -237,6 +243,22 @@ export async function updatePlayerGameLogin(
 export async function getPlayerGameLoginsByPlayer(
   playerUid: string
 ): Promise<PlayerGameLogin[]> {
+  if (isPlayerGameLoginsSqlReadEnabled()) {
+    logClientFirestoreSkipped('player_game_logins_get_by_player', { playerUid });
+    const headers = await getSqlApiReadHeaders(false);
+    const response = await fetch(
+      `/api/player-game-logins/cache?playerUid=${encodeURIComponent(playerUid)}`,
+      { method: 'GET', headers, cache: 'no-store' }
+    );
+    const payload = (await response.json().catch(() => ({}))) as {
+      playerGameLogins?: PlayerGameLogin[];
+    };
+    if (response.ok && Array.isArray(payload.playerGameLogins)) {
+      return payload.playerGameLogins;
+    }
+    return [];
+  }
+
   const q = query(
     collection(db, 'playerGameLogins'),
     where('playerUid', '==', playerUid)
@@ -259,6 +281,15 @@ export function listenToPlayerGameLoginsByPlayer(
   onChange: (logins: PlayerGameLogin[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (isPlayerGameLoginsSqlReadEnabled()) {
+    return attachPlayerGameLoginsSqlPoll({
+      scope: 'player',
+      uid: playerUid,
+      onChange,
+      onError,
+    });
+  }
+
   const q = query(collection(db, 'playerGameLogins'), where('playerUid', '==', playerUid));
 
   return onSnapshot(
@@ -312,6 +343,15 @@ export function listenToPlayerGameLoginsByCoadmin(
   onChange: (logins: PlayerGameLogin[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (isPlayerGameLoginsSqlReadEnabled()) {
+    return attachPlayerGameLoginsSqlPoll({
+      scope: 'coadmin',
+      uid: coadminUid,
+      onChange,
+      onError,
+    });
+  }
+
   const coadminQuery = query(
     collection(db, 'playerGameLogins'),
     where('coadminUid', '==', coadminUid)

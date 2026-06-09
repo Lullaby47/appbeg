@@ -2,6 +2,18 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
+import {
+  isCacheSqlAuthoritative,
+  logCacheFirestoreFallbackBlocked,
+  logCacheSqlRead,
+} from '@/lib/server/cacheSqlRead';
+import {
+  readActiveBonusEventsByCoadmin,
+  type CachedBonusEvent,
+} from '@/lib/sql/bonusEventsCache';
+import { readGameLoginsCacheByCoadmin } from '@/lib/sql/gameLoginsCache';
+
+const ROUTE = '/api/bonus-events/list';
 
 type BonusEvent = {
   id: string;
@@ -115,8 +127,114 @@ function resolveVisibleCoadminUid(values: {
   return values.derivedCoadminUid;
 }
 
+function decorateLegacyBonusEvents(events: CachedBonusEvent[], gameNames: string[]): BonusEvent[] {
+  return events
+    .map((event): BonusEvent => {
+      const currentBonusName = String(event.bonusName || '');
+      const currentGameName = String(event.gameName || '');
+      const funnyName =
+        AUTO_BONUS_NAMES[hashText(`${event.id}:bonus`) % AUTO_BONUS_NAMES.length];
+      const randomGameFromList =
+        gameNames.length > 0
+          ? gameNames[hashText(`${event.id}:game`) % gameNames.length]
+          : currentGameName || 'Bonus Table';
+
+      return {
+        ...event,
+        bonusName: isLegacyAutoBonusName(currentBonusName) ? funnyName : currentBonusName,
+        gameName: isLegacyAutoGameName(currentGameName) ? randomGameFromList : currentGameName,
+        createdAt: event.createdAt ?? null,
+        created_at: event.created_at ?? null,
+      };
+    })
+    .filter((event) => isActive(event))
+    .sort((a, b) => toMs(b.createdAt || b.created_at) - toMs(a.createdAt || a.created_at));
+}
+
+async function loadGameNames(coadminUid: string, sqlReadMode: boolean) {
+  if (sqlReadMode) {
+    const cached = await readGameLoginsCacheByCoadmin(coadminUid);
+    if (cached) {
+      return Array.from(
+        new Set(cached.map((entry) => String(entry.gameName || '').trim()).filter(Boolean))
+      );
+    }
+    logCacheFirestoreFallbackBlocked(ROUTE, 'game_logins_cache', {
+      coadminUid,
+      reason: 'game_logins_cache_miss',
+    });
+    return [];
+  }
+
+  const gameSnap = await adminDb
+    .collection('gameLogins')
+    .where('coadminUid', '==', coadminUid)
+    .get();
+  return Array.from(
+    new Set(
+      gameSnap.docs
+        .map((d) => String((d.data() as { gameName?: string }).gameName || '').trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+async function loadBonusEvents(coadminUid: string, sqlReadMode: boolean) {
+  if (sqlReadMode) {
+    const cached = await readActiveBonusEventsByCoadmin(coadminUid, {
+      includeInactive: true,
+      maxResults: 100,
+    });
+    if (cached === null) {
+      logCacheFirestoreFallbackBlocked(ROUTE, 'bonus_events_cache', {
+        coadminUid,
+        reason: 'postgres_unavailable',
+      });
+      return [];
+    }
+    return cached;
+  }
+
+  const cached = await readActiveBonusEventsByCoadmin(coadminUid, {
+    includeInactive: true,
+    maxResults: 100,
+  });
+  if (cached !== null && cached.length > 0) {
+    return cached;
+  }
+
+  const snap = await adminDb
+    .collection('bonusEvents')
+    .where('coadminUid', '==', coadminUid)
+    .get();
+
+  return snap.docs.map((d) => {
+    const data = d.data() as Record<string, unknown>;
+    return {
+      id: d.id,
+      coadminUid,
+      bonusName: String(data.bonusName || ''),
+      gameName: String(data.gameName || ''),
+      amountNpr: Number(data.amountNpr ?? data.amount ?? 0),
+      description: String(data.description || ''),
+      bonusPercentage: Number(data.bonusPercentage ?? data.bonus_percentage ?? 0),
+      createdByUid: String(data.createdByUid ?? data.created_by ?? ''),
+      createdByUsername: String(data.createdByUsername || 'User'),
+      createdByRole: String(data.createdByRole ?? data.creator_role ?? ''),
+      status: String(data.status || 'active'),
+      startDate: null,
+      endDate: null,
+      createdAt: null,
+      created_at: null,
+      updatedAt: null,
+      updated_at: null,
+    } satisfies CachedBonusEvent;
+  });
+}
+
 export async function GET(request: Request) {
   try {
+    const startedAt = Date.now();
     const url = new URL(request.url);
     const requestedCoadminUid = String(url.searchParams.get('coadminUid') || '').trim();
     const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer', 'player']);
@@ -143,50 +261,25 @@ export async function GET(request: Request) {
       return NextResponse.json({ events: [] });
     }
 
-    const gameSnap = await adminDb
-      .collection('gameLogins')
-      .where('coadminUid', '==', coadminUid)
-      .get();
-    const gameNames = Array.from(
-      new Set(
-        gameSnap.docs
-          .map((d) => String((d.data() as { gameName?: string }).gameName || '').trim())
-          .filter(Boolean)
-      )
-    );
+    const sqlReadMode = isCacheSqlAuthoritative();
+    const [gameNames, rawEvents] = await Promise.all([
+      loadGameNames(coadminUid, sqlReadMode),
+      loadBonusEvents(coadminUid, sqlReadMode),
+    ]);
+    const events = decorateLegacyBonusEvents(rawEvents, gameNames);
 
-    const snap = await adminDb
-      .collection('bonusEvents')
-      .where('coadminUid', '==', coadminUid)
-      .get();
+    if (sqlReadMode) {
+      logCacheSqlRead(ROUTE, {
+        coadminUid,
+        count: events.length,
+        durationMs: Date.now() - startedAt,
+      });
+    }
 
-    const events: BonusEvent[] = snap.docs
-      .map((d): BonusEvent => {
-        const data = d.data() as Record<string, unknown>;
-        const id = d.id;
-        const currentBonusName = String(data.bonusName || '');
-        const currentGameName = String(data.gameName || '');
-
-        const funnyName =
-          AUTO_BONUS_NAMES[hashText(`${id}:bonus`) % AUTO_BONUS_NAMES.length];
-        const randomGameFromList =
-          gameNames.length > 0
-            ? gameNames[hashText(`${id}:game`) % gameNames.length]
-            : currentGameName || 'Bonus Table';
-
-        return {
-          id,
-          ...data,
-          bonusName: isLegacyAutoBonusName(currentBonusName) ? funnyName : currentBonusName,
-          gameName: isLegacyAutoGameName(currentGameName) ? randomGameFromList : currentGameName,
-          createdAt: data.createdAt ?? null,
-          created_at: data.created_at ?? null,
-        };
-      })
-      .filter((event) => isActive(event))
-      .sort((a, b) => toMs(b.createdAt || b.created_at) - toMs(a.createdAt || a.created_at));
-
-    return NextResponse.json({ events });
+    return NextResponse.json({
+      events,
+      source: sqlReadMode ? 'postgres' : rawEvents.length > 0 ? 'postgres' : 'firestore',
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to load bonus events.';
     return NextResponse.json({ error: message }, { status: 400 });

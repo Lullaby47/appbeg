@@ -1,10 +1,10 @@
 import 'server-only';
 
 import type { DocumentSnapshot } from 'firebase-admin/firestore';
-import { Pool } from 'pg';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { emitAutomationJobOutboxEvent } from '@/lib/sql/liveOutbox';
+import { getPlayerMirrorPool } from '@/lib/sql/playerMirrorCommon';
 
 type AutomationJobMirrorRow = {
   jobId: string;
@@ -39,22 +39,7 @@ type AutomationJobMirrorRow = {
   rawFirestoreData: unknown;
 };
 
-const SQL_TIMEOUT_MS = 5_000;
-const AUTOMATION_JOBS_POOL_MAX = 4;
-const AUTOMATION_JOBS_POOL_IDLE_TIMEOUT_MS = 120_000;
-
-type AutomationJobsPoolCache = {
-  connectionString: string;
-  pool: Pool;
-};
-
-const globalSqlPool = globalThis as typeof globalThis & {
-  __appbegAutomationJobsCachePool?: AutomationJobsPoolCache;
-};
-
-function databaseUrl() {
-  return String(process.env.DATABASE_URL || process.env.POSTGRES_URL || '').trim();
-}
+const PLAYER_MIRROR_POOL_MAX = 12;
 
 export type AutomationJobsAcquireContext = {
   context: string;
@@ -108,7 +93,7 @@ export async function acquireAutomationJobsClient(
       totalCount: pool.totalCount,
       idleCount: pool.idleCount,
       waitingCount: pool.waitingCount,
-      max: AUTOMATION_JOBS_POOL_MAX,
+      max: PLAYER_MIRROR_POOL_MAX,
       request_id: acquireContext?.request_id ?? null,
       route: acquireContext?.route ?? null,
       idle_before: statsBefore.idleCount,
@@ -122,33 +107,7 @@ export async function acquireAutomationJobsClient(
 }
 
 function getPool() {
-  const connectionString = databaseUrl();
-  if (!connectionString) return null;
-  const cached = globalSqlPool.__appbegAutomationJobsCachePool;
-  if (cached?.connectionString === connectionString) {
-    if (process.env.SQL_POOL_DEBUG === '1') {
-      console.info('[SQL_POOL] reused', { name: 'automationJobsCache', global: true });
-    }
-    return cached.pool;
-  }
-  const pool = new Pool({
-    connectionString,
-    max: AUTOMATION_JOBS_POOL_MAX,
-    connectionTimeoutMillis: SQL_TIMEOUT_MS,
-    idleTimeoutMillis: AUTOMATION_JOBS_POOL_IDLE_TIMEOUT_MS,
-    query_timeout: SQL_TIMEOUT_MS,
-    statement_timeout: SQL_TIMEOUT_MS,
-  });
-  pool.on('error', (error) => {
-    console.warn('[SQL_POOL] idle client error', { name: 'automationJobsCache', error });
-  });
-  globalSqlPool.__appbegAutomationJobsCachePool = { connectionString, pool };
-  console.info('[SQL_POOL] created', {
-    name: 'automationJobsCache',
-    max: AUTOMATION_JOBS_POOL_MAX,
-    global: true,
-  });
-  return pool;
+  return getPlayerMirrorPool();
 }
 
 function cleanText(value: unknown) {

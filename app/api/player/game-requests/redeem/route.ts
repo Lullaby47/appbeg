@@ -13,6 +13,13 @@ import {
   findRequestLinkedGameCredential,
   requestLinkedCarerTaskId,
 } from '@/lib/games/requestLinkedCarerTask';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { createRedeemRequestInSql } from '@/lib/sql/authorityGameRequests';
+import { readGameLoginsCacheByCoadmin } from '@/lib/sql/gameLoginsCache';
+import { readPlayerGameLoginsCacheByPlayer } from '@/lib/sql/playerGameLoginsCache';
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
 
@@ -27,6 +34,7 @@ type RedeemBody = {
   baseAmount?: unknown;
   bonusPercentage?: unknown;
   bonusEventId?: unknown;
+  idempotencyKey?: unknown;
 };
 
 function parsePositiveNumber(value: unknown) {
@@ -88,6 +96,64 @@ export async function POST(request: Request) {
     }
 
     const playerUid = auth.user.uid;
+    const idempotencyKey =
+      String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const normalizedGame = normalizeGameName(gameName);
+      const previewCoadminUid =
+        String(auth.user.coadminUid || '').trim() || String(auth.user.createdBy || '').trim();
+      const [playerGameLogins, gameLogins] = await Promise.all([
+        readPlayerGameLoginsCacheByPlayer(playerUid),
+        previewCoadminUid
+          ? readGameLoginsCacheByCoadmin(previewCoadminUid)
+          : Promise.resolve([]),
+      ]);
+      const loginRows = playerGameLogins || [];
+      const gameLoginRows = gameLogins || [];
+      const assignedLogin = loginRows.find(
+        (row) =>
+          normalizeGameName(String(row.gameName || '')) === normalizedGame &&
+          String(row.gameUsername || '').trim().length > 0
+      );
+      const assignedGameUsername = String(assignedLogin?.gameUsername || '').trim();
+      if (!assignedGameUsername) {
+        return apiError(
+          'Game username is not assigned for this game yet. Please create username first.',
+          400
+        );
+      }
+      const gameCredential = findRequestLinkedGameCredential(gameLoginRows, gameName);
+      const result = await createRedeemRequestInSql({
+        playerUid,
+        gameName,
+        amount,
+        baseAmount:
+          body.baseAmount !== undefined && body.baseAmount !== null
+            ? Number(body.baseAmount)
+            : null,
+        bonusPercentage:
+          body.bonusPercentage !== undefined && body.bonusPercentage !== null
+            ? Number(body.bonusPercentage)
+            : null,
+        bonusEventId: String(body.bonusEventId || '').trim() || null,
+        assignedGameUsername,
+        gameCredential,
+        idempotencyKey,
+      });
+      logAuthoritySqlWrite('/api/player/game-requests/redeem', {
+        playerUid,
+        requestId: result.requestId,
+        duplicate: result.duplicate,
+      });
+      return NextResponse.json({
+        success: true,
+        requestId: result.requestId,
+        duplicate: result.duplicate,
+        authority: 'sql',
+      });
+    }
+
     const rollingRedeemUsed = await fetchRolling24hRedeemUsageForPlayerGame(playerUid, gameName);
     const redeemRemaining = Math.max(0, PLAYER_GAME_REDEEM_MAX_PER_24H - rollingRedeemUsed);
     if (redeemRemaining <= 0) {

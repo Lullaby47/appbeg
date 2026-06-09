@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 
 
 import { verifyAppSessionFromRequest } from '@/lib/firebase/apiAuth';
+import { readSessionMePlayerExtras } from '@/lib/server/sessionMeExtras';
 
 
 
@@ -102,6 +103,14 @@ export async function GET(request: Request) {
 
   const serializationStartedAt = Date.now();
 
+  const playerExtras =
+    auth.role === 'player'
+      ? await readSessionMePlayerExtras({
+          uid: auth.uid,
+          coadminUid: auth.coadminUid,
+        })
+      : null;
+
   const body = {
 
     ok: true as const,
@@ -117,6 +126,12 @@ export async function GET(request: Request) {
     status: auth.profile.status,
 
     expiresAt: auth.session.expiresAt,
+
+    ...(playerExtras
+      ? {
+          player: playerExtras,
+        }
+      : {}),
 
   };
 

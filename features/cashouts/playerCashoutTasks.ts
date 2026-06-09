@@ -17,6 +17,10 @@ import {
 import { auth, db } from '@/lib/firebase/client';
 import { evaluateWithdrawalPolicy } from '@/lib/economy/policy';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
+import {
+  attachPlayerCashoutTasksSqlPoll,
+  isPlayerCashoutSqlReadEnabled,
+} from '@/features/live/playerCashoutSqlRead';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 
 export type PlayerCashoutTaskStatus = 'pending' | 'in_progress' | 'completed' | 'declined';
@@ -404,6 +408,16 @@ export function listenPlayerCashoutTasksByAssignedHandler(
   onChange: (tasks: PlayerCashoutTask[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (isPlayerCashoutSqlReadEnabled()) {
+    return attachPlayerCashoutTasksSqlPoll({
+      scope: 'assigned_handler',
+      uid: assignedHandlerUid,
+      limit: CASHOUT_HISTORY_LISTENER_LIMIT,
+      onChange,
+      onError,
+    });
+  }
+
   const tasksQuery = query(
     collection(db, 'playerCashoutTasks'),
     where('assignedHandlerUid', '==', assignedHandlerUid),
@@ -428,6 +442,16 @@ export function listenPlayerCashoutTasksByCoadmin(
   onChange: (tasks: PlayerCashoutTask[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (isPlayerCashoutSqlReadEnabled()) {
+    return attachPlayerCashoutTasksSqlPoll({
+      scope: 'coadmin',
+      uid: coadminUid,
+      limit: CASHOUT_ACTIVE_LISTENER_LIMIT,
+      onChange,
+      onError,
+    });
+  }
+
   const tasksQuery = query(
     collection(db, 'playerCashoutTasks'),
     where('coadminUid', '==', coadminUid),
@@ -450,6 +474,10 @@ export function listenAllPlayerCashoutTasks(
   onChange: (tasks: PlayerCashoutTask[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (isPlayerCashoutSqlReadEnabled()) {
+    return () => {};
+  }
+
   const tasksQuery = query(
     collection(db, 'playerCashoutTasks'),
     orderBy('createdAt', 'desc'),
@@ -472,6 +500,16 @@ export function listenPlayerCashoutTasksByPlayer(
   onChange: (tasks: PlayerCashoutTask[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (isPlayerCashoutSqlReadEnabled()) {
+    return attachPlayerCashoutTasksSqlPoll({
+      scope: 'player',
+      uid: playerUid,
+      limit: CASHOUT_HISTORY_LISTENER_LIMIT,
+      onChange,
+      onError,
+    });
+  }
+
   const tasksQuery = query(
     collection(db, 'playerCashoutTasks'),
     where('playerUid', '==', playerUid),

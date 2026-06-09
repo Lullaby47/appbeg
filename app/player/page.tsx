@@ -85,6 +85,12 @@ import {
 } from '@/features/freeplay/playerFreeplay';
 import { loadPlayerBaseData } from '@/features/player/playerBaseData';
 import {
+  attachPlayerProfileSqlPoll,
+  loadPlayerProfileSnapshotOnce,
+  type PlayerProfileSqlSnapshot,
+} from '@/features/player/playerProfileSqlPoll';
+import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
+import {
   getCoadminMaintenanceBreakClient,
   listenCoadminMaintenanceBreak,
 } from '@/features/maintenance/maintenanceBreak';
@@ -1382,19 +1388,21 @@ export default function PlayerPage() {
       return;
     }
 
-    const playerRef = doc(db, 'users', currentPlayerUid);
-    const playerSnap = await getDoc(playerRef);
-    if (!playerSnap.exists()) {
-      return;
-    }
+    if (!isClientSqlReadMode()) {
+      const playerRef = doc(db, 'users', currentPlayerUid);
+      const playerSnap = await getDoc(playerRef);
+      if (!playerSnap.exists()) {
+        return;
+      }
 
-  const profile = playerSnap.data() as { role?: string; referralCode?: string };
-  if (String(profile.role || '').toLowerCase() !== 'player') {
-    return;
-  }
-  const existingCode = String(profile.referralCode || '').trim();
-    if (/^\d{6,10}$/.test(existingCode)) {
-      setReferralCode(existingCode);
+      const profile = playerSnap.data() as { role?: string; referralCode?: string };
+      if (String(profile.role || '').toLowerCase() !== 'player') {
+        return;
+      }
+      const existingCode = String(profile.referralCode || '').trim();
+      if (/^\d{6,10}$/.test(existingCode)) {
+        setReferralCode(existingCode);
+      }
     }
 
     referralCodeEnsureInFlightRef.current = true;
@@ -1421,6 +1429,47 @@ export default function PlayerPage() {
       console.error(error);
     } finally {
       referralCodeEnsureInFlightRef.current = false;
+    }
+  }
+
+  function applyPlayerProfileSnapshot(profile: PlayerProfileSqlSnapshot, currentPlayerUid: string) {
+    setWallet({
+      coin: Number(profile.coin || 0),
+      cash: Number(profile.cash || 0),
+    });
+    setDismissedPaymentDetailsNoticeVersion(
+      Number(profile.dismissedPaymentDetailsNoticeVersion || 0)
+    );
+    setPlayerUsername(String(profile.username || '').trim());
+    setIsBlockedPlayer(profile.status === 'disabled');
+    const resolvedCoadminUid = profile.coadminUid || '';
+    if (!resolvedCoadminUid) {
+      setPaymentDetailsNoticeVersion(0);
+    } else {
+      setPaymentDetailsNoticeVersion(Number(profile.coadminPaymentDetailsNoticeVersion || 0));
+    }
+    setPlayerCoadminUid(resolvedCoadminUid);
+    const nextReferralCode = String(profile.referralCode || '').trim();
+    if (/^\d{6,10}$/.test(nextReferralCode)) {
+      setReferralCode(nextReferralCode);
+    } else {
+      setReferralCode('');
+      void ensureCurrentPlayerReferralCode(currentPlayerUid);
+    }
+    setReferredByPlayerName(String(profile.referredByUsername || '').trim());
+    setReferredByPlayerUid(String(profile.referredByUid || '').trim());
+
+    const referralNotice = String(profile.referralBonusNotice || '').trim();
+    const noticeTimestamp = profile.referralBonusNoticeAt
+      ? Date.parse(profile.referralBonusNoticeAt)
+      : 0;
+    if (referralNotice && noticeTimestamp > 0) {
+      const noticeKey = `playerReferralNoticeSeen:${currentPlayerUid}:${noticeTimestamp}`;
+      const hasSeen = window.sessionStorage.getItem(noticeKey) === '1';
+      if (!hasSeen) {
+        setMessage('Your referral was successful. Referral bonus has been added.');
+        window.sessionStorage.setItem(noticeKey, '1');
+      }
     }
   }
 
@@ -1611,24 +1660,40 @@ export default function PlayerPage() {
       }
 
       try {
-        const playerSnap = await getDoc(doc(db, 'users', nextPlayerUid));
-        const playerData = playerSnap.data() as
-          | { status?: string; coin?: number; cash?: number; username?: string }
-          | undefined;
-        setIsBlockedPlayer(playerData?.status === 'disabled');
-        setWallet({
-          coin: Number(playerData?.coin || 0),
-          cash: Number(playerData?.cash || 0),
-        });
-        setPlayerUsername(String(playerData?.username || '').trim());
-        const resolvedCoadminUid = resolveCoadminUid({
-          uid: nextPlayerUid,
-          ...(playerData as Record<string, unknown>),
-        });
-        if (!resolvedCoadminUid) {
-          setPaymentDetailsNoticeVersion(0);
+        if (isClientSqlReadMode()) {
+          const sessionUser =
+            getCachedSessionUser() ||
+            (await getSessionUserOnce()) ||
+            null;
+          if (sessionUser?.uid === nextPlayerUid) {
+            setPlayerUsername(String(sessionUser.username || '').trim());
+            setPlayerCoadminUid(String(sessionUser.coadminUid || '').trim());
+            setIsBlockedPlayer(sessionUser.status === 'disabled');
+          }
+          const profile = await loadPlayerProfileSnapshotOnce();
+          if (profile) {
+            applyPlayerProfileSnapshot(profile, nextPlayerUid);
+          }
+        } else {
+          const playerSnap = await getDoc(doc(db, 'users', nextPlayerUid));
+          const playerData = playerSnap.data() as
+            | { status?: string; coin?: number; cash?: number; username?: string }
+            | undefined;
+          setIsBlockedPlayer(playerData?.status === 'disabled');
+          setWallet({
+            coin: Number(playerData?.coin || 0),
+            cash: Number(playerData?.cash || 0),
+          });
+          setPlayerUsername(String(playerData?.username || '').trim());
+          const resolvedCoadminUid = resolveCoadminUid({
+            uid: nextPlayerUid,
+            ...(playerData as Record<string, unknown>),
+          });
+          if (!resolvedCoadminUid) {
+            setPaymentDetailsNoticeVersion(0);
+          }
+          setPlayerCoadminUid(resolvedCoadminUid ? String(resolvedCoadminUid) : '');
         }
-        setPlayerCoadminUid(resolvedCoadminUid ? String(resolvedCoadminUid) : '');
       } catch {
         setIsBlockedPlayer(false);
         setWallet({ coin: 0, cash: 0 });
@@ -1661,7 +1726,7 @@ export default function PlayerPage() {
   }, [playerCoadminUid]);
 
   useEffect(() => {
-    if (!playerCoadminUid) {
+    if (!playerCoadminUid || isClientSqlReadMode()) {
       return;
     }
 
@@ -1830,7 +1895,7 @@ export default function PlayerPage() {
   }, [playerUid]);
 
   useEffect(() => {
-    if (!referredByPlayerUid || referredByPlayerName) {
+    if (!referredByPlayerUid || referredByPlayerName || isClientSqlReadMode()) {
       return;
     }
     let cancelled = false;
@@ -1909,6 +1974,12 @@ export default function PlayerPage() {
   useEffect(() => {
     if (!playerUid) {
       return;
+    }
+
+    if (isClientSqlReadMode()) {
+      return attachPlayerProfileSqlPoll((profile) => {
+        applyPlayerProfileSnapshot(profile, playerUid);
+      });
     }
 
     const unsubscribe = onSnapshot(
@@ -2279,7 +2350,7 @@ export default function PlayerPage() {
         return;
       }
       const uid = auth.currentUser?.uid;
-      if (uid) {
+      if (uid && !isClientSqlReadMode()) {
         const liveSnap = await getDoc(doc(db, 'users', uid));
         if (liveSnap.exists()) {
           const liveCoin = Number(

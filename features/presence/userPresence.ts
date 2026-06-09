@@ -10,10 +10,14 @@ import {
   where,
 } from 'firebase/firestore';
 
+import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { db } from '@/lib/firebase/client';
 
 /** A user is "online" if their client wrote presence within this window. */
 export const PRESENCE_TTL_MS = 120_000;
+
+const PRESENCE_POLL_MS = 15_000;
 
 export function isPresenceTimeOnline(
   lastSeenMs: number | null | undefined,
@@ -27,16 +31,48 @@ export function isPresenceTimeOnline(
 
 const CHUNK = 30;
 
-/**
- * Real-time map of whether each uid is "online" (fresh lastSeen) for UI dots.
- * Ensure {@link UserPresenceSync} (or equivalent heartbeat) is mounted for the signed-in app.
- */
 function stableUidListKey(uids: string[]) {
   return JSON.stringify(
     [...new Set((uids || []).map((u) => String(u || '').trim()).filter(Boolean))].sort()
   );
 }
 
+async function fetchPresenceBatch(uids: string[]) {
+  if (!uids.length) {
+    return {} as Record<string, number | null>;
+  }
+  const response = await fetch(
+    `/api/presence/batch?uids=${encodeURIComponent(uids.join(','))}`,
+    {
+      method: 'GET',
+      headers: await getSqlApiReadHeaders(false),
+      cache: 'no-store',
+    }
+  );
+  const payload = (await response.json().catch(() => ({}))) as {
+    presence?: Array<{ uid?: string; lastSeenAt?: string }>;
+  };
+  if (!response.ok) {
+    return {};
+  }
+  const out: Record<string, number | null> = {};
+  for (const uid of uids) {
+    out[uid] = null;
+  }
+  for (const row of payload.presence || []) {
+    const uid = String(row.uid || '').trim();
+    const ms = row.lastSeenAt ? Date.parse(row.lastSeenAt) : NaN;
+    if (uid) {
+      out[uid] = Number.isFinite(ms) ? ms : null;
+    }
+  }
+  return out;
+}
+
+/**
+ * Real-time map of whether each uid is "online" (fresh lastSeen) for UI dots.
+ * Ensure {@link UserPresenceSync} (or equivalent heartbeat) is mounted for the signed-in app.
+ */
 export function usePresenceOnlineMap(uids: string[]) {
   const contentKey = stableUidListKey(uids);
   const uniqueSorted = useMemo(
@@ -59,6 +95,43 @@ export function usePresenceOnlineMap(uids: string[]) {
     if (uniqueSorted.length === 0) {
       setLastSeenMsByUid({});
       return;
+    }
+
+    if (isClientSqlReadMode()) {
+      logClientFirestoreSkipped('user_presence_listener', { count: uniqueSorted.length });
+      let cancelled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      const poll = async () => {
+        if (cancelled) {
+          return;
+        }
+        try {
+          for (let i = 0; i < uniqueSorted.length; i += CHUNK) {
+            const chunk = uniqueSorted.slice(i, i + CHUNK);
+            const batch = await fetchPresenceBatch(chunk);
+            if (cancelled) {
+              return;
+            }
+            setLastSeenMsByUid((prev) => ({ ...prev, ...batch }));
+          }
+        } finally {
+          if (!cancelled) {
+            timer = setTimeout(() => {
+              void poll();
+            }, PRESENCE_POLL_MS);
+          }
+        }
+      };
+
+      void poll();
+      return () => {
+        cancelled = true;
+        if (timer != null) {
+          clearTimeout(timer);
+          timer = null;
+        }
+      };
     }
 
     const unsubs: (() => void)[] = [];

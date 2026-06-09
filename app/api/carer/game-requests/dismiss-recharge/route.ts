@@ -3,6 +3,11 @@ import { NextResponse } from 'next/server';
 
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
 import { adminDb } from '@/lib/firebase/admin';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { dismissRechargeRequestInSql } from '@/lib/sql/authorityGameRequests';
 import { tombstoneCarerTaskCache } from '@/lib/sql/carerTasksCache';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
@@ -10,6 +15,7 @@ import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCac
 
 type Body = {
   requestId?: unknown;
+  idempotencyKey?: unknown;
 };
 
 function ttlAfterDays(days: number) {
@@ -31,6 +37,36 @@ export async function POST(request: Request) {
     const caller = auth.user;
     const callerScope = scopedCoadminUid(caller);
     const isAdmin = caller.role === 'admin';
+    const idempotencyKey =
+      String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const outcome = await dismissRechargeRequestInSql({
+        requestId,
+        actorUid: caller.uid,
+        actorRole: caller.role,
+        isAdmin,
+        scopeUid: callerScope,
+        idempotencyKey,
+      });
+      logAuthoritySqlWrite('/api/carer/game-requests/dismiss-recharge', {
+        requestId,
+        duplicate: outcome.duplicate,
+        refunded: outcome.refunded,
+      });
+      return NextResponse.json({
+        success: true,
+        alreadyDismissed: outcome.alreadyDismissed,
+        refunded: outcome.refunded,
+        playerUid: '',
+        taskDeleted: outcome.taskDeleted,
+        linkedTaskId: outcome.linkedTaskId,
+        retryMarkersCleared: true,
+        duplicate: outcome.duplicate,
+        authority: 'sql',
+      });
+    }
+
     const requestRef = adminDb.collection('playerGameRequests').doc(requestId);
     const taskRef = adminDb.collection('carerTasks').doc(`request__${requestId}`);
     const eventRef = adminDb.collection('financialEvents').doc();

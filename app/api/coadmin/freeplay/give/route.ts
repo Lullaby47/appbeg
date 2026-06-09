@@ -3,7 +3,16 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import {
+  authoritySqlWriteEnvLogFields,
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { giveFreeplayGiftInSql } from '@/lib/sql/authorityFreeplay';
+import { getPlayerMirrorPoolStats } from '@/lib/sql/playerMirrorCommon';
 import { mirrorFreeplayPendingGiftByPlayerUid } from '@/lib/sql/freeplayPendingGiftsCache';
+
+const ROUTE = '/api/coadmin/freeplay/give';
 
 type PlayerCandidate = {
   uid: string;
@@ -39,11 +48,43 @@ async function loadPlayersForCoadmin(coadminUid: string): Promise<PlayerCandidat
 }
 
 export async function POST(request: Request) {
+  const startedAt = Date.now();
   try {
     const auth = await requireApiUser(request, ['coadmin']);
     if ('response' in auth) return auth.response;
 
     const coadminUid = auth.user.uid;
+    const body = (await request.json().catch(() => ({}))) as { idempotencyKey?: unknown };
+    const idempotencyKey =
+      String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await giveFreeplayGiftInSql({ coadminUid, idempotencyKey });
+      const poolStats = getPlayerMirrorPoolStats();
+
+      logAuthoritySqlWrite(ROUTE, {
+        ...authoritySqlWriteEnvLogFields(),
+        coadminUid,
+        playerUid: result.playerUid,
+        giftId: result.giftId,
+        duplicate: result.duplicate,
+        route: ROUTE,
+        pool_totalCount: poolStats?.totalCount ?? null,
+        pool_idleCount: poolStats?.idleCount ?? null,
+        pool_waitingCount: poolStats?.waitingCount ?? null,
+        pool_max: poolStats?.max ?? null,
+        duration_ms: Date.now() - startedAt,
+      });
+
+      return NextResponse.json({
+        success: true,
+        playerUsername: result.playerUsername,
+        giftId: result.giftId,
+        duplicate: result.duplicate,
+        authority: 'sql',
+      });
+    }
+
     const players = await loadPlayersForCoadmin(coadminUid);
     if (players.length === 0) {
       return apiError('No active players are assigned to your account.', 400);
@@ -124,6 +165,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       success: true,
       playerUsername: selectedPlayer.username,
+      authority: 'firestore',
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to give FreePlay gift.';

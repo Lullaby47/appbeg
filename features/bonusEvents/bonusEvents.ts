@@ -19,8 +19,10 @@ import { recordBonusEventsListenerFirstSnapshot } from '@/features/dev/devUsageE
 import { getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
 import { upsertCarerTaskForPlayerGameRequest } from '@/features/games/carerTasks';
 import type { PlayerGameRequest } from '@/features/games/playerGameRequests';
+import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
+import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 const BONUS_EVENTS_DEBUG =
   process.env.NODE_ENV !== 'production' &&
@@ -184,7 +186,12 @@ export function getStaffBonusEventsForPlayerDisplay(events: BonusEvent[]) {
   return getBonusEventsForPlayerDisplay(events);
 }
 
-function normalizeDateMs(value: Timestamp | null | undefined): number {
+function normalizeDateMs(value: Timestamp | string | null | undefined): number {
+  if (!value) return 0;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
   return value?.toMillis?.() || 0;
 }
 
@@ -275,7 +282,31 @@ function normalizeAutoBonusPercentRange(values: {
   };
 }
 
+async function fetchCoadminAutoBonusPercentRangeFromApi(coadminUid: string) {
+  const response = await fetch(
+    `/api/coadmin/bonus-events/cache?coadminUid=${encodeURIComponent(coadminUid)}`,
+    {
+      method: 'GET',
+      headers: await getFirebaseApiHeaders(),
+      cache: 'no-store',
+    }
+  );
+  const payload = (await response.json().catch(() => ({}))) as {
+    autoBonusPercentRange?: { minPercent?: number; maxPercent?: number };
+    error?: string;
+  };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to load auto-created bonus range.');
+  }
+  return normalizeAutoBonusPercentRange(payload.autoBonusPercentRange || {});
+}
+
 export async function getCoadminAutoBonusPercentRange(coadminUid: string) {
+  if (isClientSqlReadMode()) {
+    logClientFirestoreSkipped('coadmin_auto_bonus_percent_range', { coadminUid });
+    return fetchCoadminAutoBonusPercentRangeFromApi(coadminUid);
+  }
+
   const userSnap = await getDoc(doc(db, 'users', coadminUid));
   if (!userSnap.exists()) {
     return normalizeAutoBonusPercentRange({});
@@ -306,7 +337,36 @@ function pickFunnyBonusName(usedNames: Set<string>, fallbackIndex: number) {
   return fallback;
 }
 
+async function getCoadminGameNamesFromApi(coadminUid: string): Promise<string[]> {
+  const response = await fetch(
+    `/api/game-logins/cache?coadminUid=${encodeURIComponent(coadminUid)}`,
+    {
+      method: 'GET',
+      headers: await getFirebaseApiHeaders(),
+      cache: 'no-store',
+    }
+  );
+  const payload = (await response.json().catch(() => ({}))) as {
+    gameLogins?: Array<{ gameName?: string }>;
+  };
+  if (!response.ok) {
+    return [];
+  }
+  return Array.from(
+    new Set(
+      (payload.gameLogins || [])
+        .map((entry) => String(entry.gameName || '').trim())
+        .filter(Boolean)
+    )
+  );
+}
+
 async function getCoadminGameNames(coadminUid: string): Promise<string[]> {
+  if (isClientSqlReadMode()) {
+    logClientFirestoreSkipped('coadmin_game_names', { coadminUid });
+    return getCoadminGameNamesFromApi(coadminUid);
+  }
+
   const [coadminOwned, legacyOwned] = await Promise.all([
     getDocs(
       query(
@@ -645,6 +705,57 @@ export async function setCoadminAutoBonusPercentRange(values: {
   };
 }
 
+const BONUS_EVENTS_SQL_POLL_MS = 8_000;
+
+function mapApiBonusEvent(event: Record<string, unknown>): BonusEvent {
+  const bonusPercentage = Number(event.bonusPercentage ?? event.bonus_percentage ?? 0);
+  const amountNpr = Number(event.amountNpr ?? event.amount ?? 0);
+  return {
+    id: String(event.id || ''),
+    ...event,
+    bonusName: normalizeLegacyBonusName(String(event.bonusName || '')),
+    bonusPercentage,
+    bonus_percentage: bonusPercentage,
+    amountNpr,
+    amount: amountNpr,
+    createdAt: (event.createdAt as Timestamp | null | undefined) ?? null,
+    created_at: (event.created_at as Timestamp | null | undefined) ?? null,
+  } as BonusEvent;
+}
+
+async function getBonusEventsListHeaders() {
+  if (getLocalAppSessionId()) {
+    return getPlayerApiHeaders(false);
+  }
+  return getFirebaseApiHeaders();
+}
+
+async function fetchBonusEventsFromApi(
+  coadminUid: string,
+  options?: { skipTimeWindowFilter?: boolean }
+) {
+  const response = await fetch(
+    `/api/bonus-events/list?coadminUid=${encodeURIComponent(coadminUid)}`,
+    {
+      method: 'GET',
+      headers: await getBonusEventsListHeaders(),
+      cache: 'no-store',
+    }
+  );
+  const payload = (await response.json().catch(() => ({}))) as {
+    events?: Array<Record<string, unknown>>;
+    error?: string;
+  };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to load bonus events.');
+  }
+  const events = (payload.events || []).map(mapApiBonusEvent);
+  const filtered = options?.skipTimeWindowFilter
+    ? sortByNewest(events)
+    : sortByNewest(events).filter((event) => isBonusEventActive(event));
+  return filtered;
+}
+
 export function listenBonusEventsByCoadmin(
   coadminUid: string,
   onChange: (events: BonusEvent[]) => void,
@@ -660,6 +771,67 @@ export function listenBonusEventsByCoadmin(
   if (!coadminUid.trim()) {
     onChange([]);
     return () => {};
+  }
+
+  if (isClientSqlReadMode()) {
+    logClientFirestoreSkipped('bonus_events_by_coadmin', { coadminUid });
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let recordedFirstSnapshot = false;
+
+    const tick = async () => {
+      if (cancelled) {
+        return;
+      }
+      try {
+        const events = await fetchBonusEventsFromApi(coadminUid, options);
+        if (cancelled) {
+          return;
+        }
+        if (!recordedFirstSnapshot) {
+          recordedFirstSnapshot = true;
+          recordBonusEventsListenerFirstSnapshot(events.length);
+        }
+        const firstDocData = events[0] ? (events[0] as unknown as Record<string, unknown>) : null;
+        options?.onSnapshotDebug?.({
+          snapshotSize: events.length,
+          firstDocData,
+        });
+        if (BONUS_EVENTS_DEBUG) {
+          console.info('[bonusEvents] sql-poll:snapshot', {
+            coadminUid,
+            snapshotSize: events.length,
+            skipTimeWindowFilter: Boolean(options?.skipTimeWindowFilter),
+          });
+        }
+        onChange(events);
+      } catch (error) {
+        if (!cancelled) {
+          onError?.(error instanceof Error ? error : new Error(String(error)));
+        }
+      } finally {
+        if (!cancelled) {
+          timer = setTimeout(() => {
+            void tick();
+          }, BONUS_EVENTS_SQL_POLL_MS);
+        }
+      }
+    };
+
+    if (BONUS_EVENTS_DEBUG) {
+      console.info('[bonusEvents] sql-poll:start', { coadminUid });
+    }
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer != null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (BONUS_EVENTS_DEBUG) {
+        console.info('[bonusEvents] sql-poll:stop', { coadminUid });
+      }
+    };
   }
 
   let recordedFirstSnapshot = false;

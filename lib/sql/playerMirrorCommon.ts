@@ -127,7 +127,7 @@ export type PlayerMirrorAcquireContext = {
 function shouldLogPoolAcquire(acquireMs: number, waitingBefore: number, idleBefore: number) {
   return (
     process.env.SQL_POOL_DEBUG === '1' ||
-    acquireMs >= 10 ||
+    acquireMs >= 50 ||
     waitingBefore > 0 ||
     idleBefore === 0
   );
@@ -148,19 +148,26 @@ function logSqlPoolAcquire(
   ) {
     return;
   }
-  console.info('[SQL_POOL_ACQUIRE]', {
-    name: 'playerMirror',
-    context: acquireContext?.context ?? 'unspecified',
-    acquire_ms: acquireMs,
+  const stats = {
     totalCount: pool.totalCount,
     idleCount: pool.idleCount,
     waitingCount: pool.waitingCount,
     max: PLAYER_MIRROR_POOL_MAX,
+  };
+  console.info('[SQL_POOL_ACQUIRE]', {
+    name: 'playerMirror',
+    context: acquireContext?.context ?? 'unspecified',
+    acquire_ms: acquireMs,
+    ...stats,
     request_id: acquireContext?.request_id ?? null,
     route: acquireContext?.route ?? null,
     idle_before: statsBefore.idleCount,
     waiting_before: statsBefore.waitingCount,
+    slow_acquire: acquireMs >= 50,
   });
+  if (acquireMs >= 100 || statsBefore.waitingCount > 0 || stats.waitingCount > 0) {
+    logPlayerMirrorPoolStats(`slow_acquire:${acquireContext?.context ?? 'unspecified'}`);
+  }
 }
 
 export type PlayerMirrorSqlTiming = {
@@ -229,6 +236,78 @@ export async function runMirrorPoolQuery<T extends Record<string, unknown>>(
         total_ms: Date.now() - totalStartedAt,
       }),
     };
+  } finally {
+    client.release();
+  }
+}
+
+export type SqlRoutePoolSummary = {
+  route: string;
+  context?: string;
+  query_count: number;
+  connection_reused: boolean;
+  pool_acquire_ms: number;
+  route_total_ms: number;
+  pool_totalCount: number;
+  pool_idleCount: number;
+  pool_waitingCount: number;
+  pool_max: number;
+};
+
+export function logSqlRoutePoolSummary(summary: SqlRoutePoolSummary) {
+  const shouldLog =
+    process.env.SQL_POOL_DEBUG === '1' ||
+    summary.query_count > 1 ||
+    summary.pool_acquire_ms >= 50 ||
+    summary.pool_waitingCount > 0;
+  if (!shouldLog) {
+    return;
+  }
+  console.info('[SQL_ROUTE_POOL]', summary);
+}
+
+export type PlayerMirrorClientScope = {
+  route: string;
+  context?: string;
+  request_id?: string;
+};
+
+export async function withPlayerMirrorClient<T>(
+  scope: PlayerMirrorClientScope,
+  run: (client: PoolClient, trackQuery: () => void) => Promise<T>
+): Promise<{ result: T | null; summary: SqlRoutePoolSummary | null }> {
+  const routeStartedAt = Date.now();
+  const acquired = await acquirePlayerMirrorClient({
+    context: scope.context || 'route_scope',
+    route: scope.route,
+    request_id: scope.request_id,
+  });
+  if (!acquired) {
+    return { result: null, summary: null };
+  }
+
+  let queryCount = 0;
+  const trackQuery = () => {
+    queryCount += 1;
+  };
+  const { client, timing } = acquired;
+  const pool = getPlayerMirrorPool();
+  try {
+    const result = await run(client, trackQuery);
+    const summary: SqlRoutePoolSummary = {
+      route: scope.route,
+      context: scope.context,
+      query_count: queryCount,
+      connection_reused: queryCount > 1,
+      pool_acquire_ms: timing.pool_acquire_ms,
+      route_total_ms: Date.now() - routeStartedAt,
+      pool_totalCount: pool?.totalCount ?? 0,
+      pool_idleCount: pool?.idleCount ?? 0,
+      pool_waitingCount: pool?.waitingCount ?? 0,
+      pool_max: PLAYER_MIRROR_POOL_MAX,
+    };
+    logSqlRoutePoolSummary(summary);
+    return { result, summary };
   } finally {
     client.release();
   }
@@ -325,9 +404,15 @@ function logSqlPoolAudit() {
       max: PLAYER_MIRROR_POOL_MAX,
     },
     gameLoginsCache: { scope: 'game_logins_cache reads/writes', shared: false, max: 4 },
-    automationJobsCache: { scope: 'automation_jobs_cache', shared: false, defaultMax: 10 },
-    coadminBonusSettingsCache: { scope: 'coadmin_bonus_settings_cache', shared: false, defaultMax: 10 },
+    automationJobsCache: { scope: 'automation_jobs_cache', shared: true, uses: 'playerMirror' },
+    coadminBonusSettingsCache: {
+      scope: 'coadmin_bonus_settings_cache',
+      shared: true,
+      uses: 'playerMirror',
+    },
     note: 'carerTasksCache uses playerMirror; separate pools also hit DATABASE_URL under burst load',
+    vercel_pgbouncer:
+      'On Vercel/serverless prefer DATABASE_URL with ?pgbouncer=true and transaction pool mode; avoid holding clients across awaits/SSE; keep max pool modest per instance',
   });
 }
 

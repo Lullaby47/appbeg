@@ -9,6 +9,7 @@ import {
 
 import { auth, db } from '@/lib/firebase/client';
 import { getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
+import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import {
   DEFAULT_MAINTENANCE_MESSAGE,
   DEFAULT_MAINTENANCE_TITLE,
@@ -23,6 +24,12 @@ export function listenCoadminMaintenanceBreak(
 ): Unsubscribe {
   const cleanCoadminUid = String(coadminUid || '').trim();
   if (!cleanCoadminUid) {
+    onChange(normalizeMaintenanceBreak(null));
+    return () => {};
+  }
+
+  if (isClientSqlReadMode()) {
+    logClientFirestoreSkipped('coadmin_maintenance_break_listener', { coadminUid: cleanCoadminUid });
     onChange(normalizeMaintenanceBreak(null));
     return () => {};
   }
@@ -44,6 +51,11 @@ export async function getCoadminMaintenanceBreakClient(
 ): Promise<MaintenanceBreak> {
   const cleanCoadminUid = String(coadminUid || '').trim();
   if (!cleanCoadminUid) {
+    return normalizeMaintenanceBreak(null);
+  }
+
+  if (isClientSqlReadMode()) {
+    logClientFirestoreSkipped('coadmin_maintenance_break_get', { coadminUid: cleanCoadminUid });
     return normalizeMaintenanceBreak(null);
   }
 

@@ -7,50 +7,44 @@ import {
   getCoadminMaintenanceBreak,
   maintenanceBreakApiResponse,
   rejectIfPlayerMaintenanceBreak,
+  rejectIfPlayerMaintenanceBreakFromUser,
 } from '@/lib/maintenance/admin';
+import {
+  authoritySqlWriteEnvLogFields,
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import {
+  getCoinToCashTip,
+  parsePositiveInteger,
+  parseTransferId,
+} from '@/lib/server/playerTransferRules';
+import { transferCoinToCashInSql } from '@/lib/sql/authorityTransfer';
+import { getPlayerMirrorPoolStats } from '@/lib/sql/playerMirrorCommon';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
+
+const ROUTE = '/api/player/transfer/coin-to-cash';
 
 type Body = {
   amountCoins?: unknown;
   transferId?: unknown;
+  idempotencyKey?: unknown;
 };
-
-function parsePositiveInteger(value: unknown) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed !== Math.floor(parsed) || parsed <= 0) {
-    return 0;
-  }
-  return parsed;
-}
-
-function parseTransferId(value: unknown) {
-  const transferId = String(value || '').trim();
-  if (!/^[A-Za-z0-9_-]{8,80}$/.test(transferId)) {
-    return '';
-  }
-  return transferId;
-}
-
-function getCoinToCashTip(amountCoins: number) {
-  if (amountCoins >= 150) return 10;
-  if (amountCoins >= 100) return 8;
-  if (amountCoins >= 40) return 4;
-  if (amountCoins >= 30) return 3;
-  if (amountCoins >= 20) return 2;
-  if (amountCoins >= 10) return 1;
-  return 0;
-}
 
 export async function POST(request: Request) {
   try {
     const auth = await requireApiUser(request, ['player']);
     if ('response' in auth) return auth.response;
-    await rejectIfPlayerMaintenanceBreak(auth.user.uid, 'coin_to_cash');
 
     const body = (await request.json()) as Body;
     const amountCoins = parsePositiveInteger(body.amountCoins);
     const transferId = parseTransferId(body.transferId);
+    const idempotencyKey =
+      String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() ||
+      transferId ||
+      null;
+
     if (!amountCoins) {
       return apiError('Amount must be a positive whole number.', 400);
     }
@@ -61,15 +55,55 @@ export async function POST(request: Request) {
       return apiError('Transfer id is required.', 400);
     }
 
-    const playerUid = auth.user.uid;
-    const playerRef = adminDb.collection('users').doc(playerUid);
-    const eventRef = adminDb.collection('financialEvents').doc(`coinToCash_${playerUid}_${transferId}`);
     const tipAmount = getCoinToCashTip(amountCoins);
     const cashReceived = amountCoins - tipAmount;
     if (cashReceived <= 0) {
       return apiError('Transfer amount is too low after tip.', 400);
     }
 
+    if (isAuthoritySqlWriteEnabled()) {
+      await rejectIfPlayerMaintenanceBreakFromUser(auth.user, 'coin_to_cash');
+
+      const result = await transferCoinToCashInSql({
+        playerUid: auth.user.uid,
+        amountCoins,
+        transferId,
+        idempotencyKey,
+      });
+      const poolStats = getPlayerMirrorPoolStats();
+
+      logAuthoritySqlWrite(ROUTE, {
+        ...authoritySqlWriteEnvLogFields(),
+        playerUid: auth.user.uid,
+        transferId,
+        duplicate: result.duplicate,
+        transferAmount: result.transferAmount,
+        route: ROUTE,
+        pool_totalCount: poolStats?.totalCount ?? null,
+        pool_idleCount: poolStats?.idleCount ?? null,
+        pool_waitingCount: poolStats?.waitingCount ?? null,
+        pool_max: poolStats?.max ?? null,
+      });
+
+      return NextResponse.json({
+        success: true,
+        cash: result.cash,
+        coin: result.coin,
+        transferAmount: result.transferAmount,
+        feeAmount: result.feeAmount,
+        tipAmount: result.tipAmount,
+        cashReceived: result.cashReceived,
+        transferId: result.transferId,
+        duplicate: result.duplicate,
+        authority: 'sql',
+      });
+    }
+
+    await rejectIfPlayerMaintenanceBreak(auth.user.uid, 'coin_to_cash');
+
+    const playerUid = auth.user.uid;
+    const playerRef = adminDb.collection('users').doc(playerUid);
+    const eventRef = adminDb.collection('financialEvents').doc(`coinToCash_${playerUid}_${transferId}`);
     let newCash = 0;
     let newCoin = 0;
 
@@ -174,6 +208,7 @@ export async function POST(request: Request) {
       tipAmount,
       cashReceived,
       transferId,
+      authority: 'firestore',
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to transfer coin to cash.';
@@ -183,12 +218,12 @@ export async function POST(request: Request) {
     const status = /not authenticated|authorization|token/i.test(message)
       ? 401
       : /forbidden|blocked/i.test(message)
-      ? 403
-      : /duplicate|already/i.test(message)
-      ? 409
-      : /required|valid|not found|only|amount|coin|transfer/i.test(message)
-      ? 400
-      : 500;
+        ? 403
+        : /duplicate|already/i.test(message)
+          ? 409
+          : /required|valid|not found|only|amount|coin|transfer/i.test(message)
+            ? 400
+            : 500;
 
     return NextResponse.json({ error: message }, { status });
   }

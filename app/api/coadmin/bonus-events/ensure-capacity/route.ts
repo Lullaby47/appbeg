@@ -3,6 +3,11 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { ensureBonusCapacityInSql } from '@/lib/sql/authorityBonus';
 
 const MAX_ACTIVE_BONUS_EVENTS = 20;
 const COADMIN_MIN_PERCENT = 5;
@@ -343,6 +348,23 @@ export async function POST(request: Request) {
       return auth.response;
     }
     const callerUid = auth.user.uid;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await ensureBonusCapacityInSql({
+        coadminUid: callerUid,
+        callerUid,
+        callerUsername: auth.user.username || 'Coadmin',
+        activeCountHint,
+      });
+      logAuthoritySqlWrite('/api/coadmin/bonus-events/ensure-capacity', {
+        coadminUid: callerUid,
+        autoCreatedCount: result.autoCreatedCount,
+        totalActive: result.totalActive,
+        skipped: result.skipped || null,
+      });
+      return NextResponse.json({ ...result, authority: 'sql' });
+    }
+
     const userSnap = await adminDb.collection('users').doc(callerUid).get();
     if (!userSnap.exists) {
       return NextResponse.json({ error: 'Current user profile not found.' }, { status: 404 });

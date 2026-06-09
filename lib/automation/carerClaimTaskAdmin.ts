@@ -8,7 +8,9 @@ import { createHash } from 'node:crypto';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
+import { claimCarerTaskInSql } from '@/lib/sql/authorityCarerTasks';
 import {
   buildAutomationPayload,
   getTimestampMs,
@@ -219,9 +221,27 @@ export async function claimCarerTaskAsAdmin(input: {
     username?: string | null;
     automationAgentId?: string | null;
   };
+  skipLocked?: boolean;
 }): Promise<ClaimCarerTaskAdminResult> {
   const totalStartedAt = Date.now();
   console.info('[START_TIMING] server claim start at=%s taskId=%s source=admin_claimCarerTaskAsAdmin', new Date(totalStartedAt).toISOString(), input.taskId);
+  if (isAuthoritySqlWriteEnabled()) {
+    const result = await claimCarerTaskInSql(input);
+    console.info('[AUTHORITY_SQL_WRITE] claimCarerTaskAsAdmin', {
+      taskId: input.taskId,
+      carerUid: input.carerUid,
+      jobId: result.jobId,
+      reusedExistingJob: result.reusedExistingJob,
+      duplicate: result.duplicate ?? false,
+      durationMs: Date.now() - totalStartedAt,
+    });
+    return {
+      jobId: result.jobId,
+      taskId: result.taskId,
+      status: result.status,
+      reusedExistingJob: result.reusedExistingJob,
+    };
+  }
   const taskRef = adminDb.collection('carerTasks').doc(input.taskId);
   const affectedJobIds = new Set<string>();
 

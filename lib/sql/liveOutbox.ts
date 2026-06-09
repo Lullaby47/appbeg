@@ -51,6 +51,22 @@ export function playerRequestLiveChannel(playerUid: string) {
   return `player:${cleanText(playerUid)}:requests`;
 }
 
+export function playerFreeplayLiveChannel(playerUid: string) {
+  return `player:${cleanText(playerUid)}:freeplay`;
+}
+
+export function playerTransferLiveChannel(playerUid: string) {
+  return `player:${cleanText(playerUid)}:transfer`;
+}
+
+export function playerCashoutLiveChannel(playerUid: string) {
+  return `player:${cleanText(playerUid)}:cashouts`;
+}
+
+export function coadminCashoutLiveChannel(coadminUid: string) {
+  return `coadmin:${cleanText(coadminUid)}:cashouts`;
+}
+
 export function carerTaskLiveChannel(carerUid: string) {
   return `carer:${cleanText(carerUid)}:tasks`;
 }
@@ -169,6 +185,55 @@ export async function insertLiveOutboxEvent(input: {
     });
     return null;
   }
+}
+
+export async function insertLiveOutboxEventWithClient(
+  client: PoolClient,
+  input: {
+    channel: string;
+    eventType: string;
+    entityType: string;
+    entityId: string;
+    payload: Record<string, unknown>;
+    source?: string;
+    mirroredAt?: string | null;
+  }
+): Promise<number | null> {
+  const channel = cleanText(input.channel);
+  const entityId = cleanText(input.entityId);
+  if (!channel || !entityId) {
+    return null;
+  }
+
+  const payloadHash = hashPayload(input.payload);
+  const result = await client.query(
+    `
+      INSERT INTO public.live_outbox (
+        channel,
+        event_type,
+        entity_type,
+        entity_id,
+        payload,
+        payload_hash,
+        source,
+        mirrored_at
+      )
+      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::timestamptz)
+      RETURNING outbox_id
+    `,
+    [
+      channel,
+      cleanText(input.eventType),
+      cleanText(input.entityType),
+      entityId,
+      JSON.stringify(input.payload),
+      payloadHash,
+      cleanText(input.source) || 'authority',
+      input.mirroredAt || null,
+    ]
+  );
+
+  return Number(result.rows[0]?.outbox_id || 0) || null;
 }
 
 export function buildPlayerRequestOutboxPayload(input: {

@@ -8,6 +8,7 @@ import {
 } from '@/lib/economy/policy';
 import { readCompletedRechargeRequestsForPlayer } from '@/lib/sql/playerGameRequestsCache';
 import { readPlayersCacheByReferrerUid } from '@/lib/sql/playersCache';
+import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
 import { getPlayerMirrorPool } from '@/lib/sql/playerMirrorCommon';
 import { getReferralRewardClaimCacheById } from '@/lib/sql/referralRewardClaimsCache';
 import {
@@ -144,6 +145,10 @@ async function loadQualifiedRechargeForReferredPlayer(
     return null;
   }
 
+  if (isAuthoritySqlWriteEnabled()) {
+    return null;
+  }
+
   return loadQualifiedRechargeForReferredPlayerFromFirestore(referredPlayerUid, trace);
 }
 
@@ -169,6 +174,10 @@ async function readClaimStatus(
       return false;
     }
     return String(cachedClaim.status || '').toLowerCase() === 'claimed';
+  }
+
+  if (isAuthoritySqlWriteEnabled()) {
+    return false;
   }
 
   const startedAt = Date.now();
@@ -220,6 +229,8 @@ export async function loadReferralRewardGroups(referrerUid: string) {
       rowCount: cachedPlayers.length,
     });
     referredPlayers = cachedPlayers;
+  } else if (isAuthoritySqlWriteEnabled()) {
+    referredPlayers = [];
   } else {
     referredPlayers = await loadReferredPlayersFromFirestore(referrerUid, trace);
   }

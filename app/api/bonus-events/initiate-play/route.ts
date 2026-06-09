@@ -13,6 +13,11 @@ import {
   findRequestLinkedGameCredential,
   requestLinkedCarerTaskId,
 } from '@/lib/games/requestLinkedCarerTask';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { initiateBonusPlayInSql } from '@/lib/sql/authorityBonus';
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
@@ -25,7 +30,7 @@ function getStaffBonusMultiplier(bonusPercent: number) {
   return 0;
 }
 
-type Body = { bonusEventId?: unknown };
+type Body = { bonusEventId?: unknown; idempotencyKey?: unknown };
 
 function normalizeGameName(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
@@ -41,6 +46,29 @@ export async function POST(request: Request) {
     if (!bonusEventId) return apiError('bonusEventId is required.', 400);
 
     const playerUid = auth.user.uid;
+    const idempotencyKey =
+      String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await initiateBonusPlayInSql({
+        playerUid,
+        bonusEventId,
+        idempotencyKey,
+      });
+      logAuthoritySqlWrite('/api/bonus-events/initiate-play', {
+        playerUid,
+        bonusEventId,
+        requestId: result.requestId,
+        duplicate: result.duplicate,
+      });
+      return NextResponse.json({
+        success: true,
+        requestId: result.requestId,
+        duplicate: result.duplicate,
+        authority: 'sql',
+      });
+    }
+
     const playerRef = adminDb.collection('users').doc(playerUid);
     const bonusRef = adminDb.collection('bonusEvents').doc(bonusEventId);
     const requestRef = adminDb.collection('playerGameRequests').doc();

@@ -8,6 +8,7 @@ import {
   getPlayerMirrorPool,
   normalizeJson,
   numberOrNull,
+  runMirrorPoolQuery,
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
 
@@ -171,6 +172,160 @@ export async function tombstonePlayerCashoutTaskCache(firebaseId: string, source
     console.error('[PLAYER_CASHOUT_TASKS_CACHE] mirror failed', { firebaseId: cleanId, error });
     return false;
   }
+}
+
+export type CachedPlayerCashoutTask = {
+  id: string;
+  coadminUid: string;
+  playerUid: string;
+  playerUsername: string;
+  amountNpr: number;
+  paymentDetails: string;
+  payoutMethod: string | null;
+  qrImageUrl: string | null;
+  paymentAppName: string | null;
+  paymentAppCashTag: string | null;
+  paymentAppAccountName: string | null;
+  cashDeductedOnRequest: boolean | null;
+  declinedByUids: string[];
+  status: string;
+  assignedHandlerUid: string | null;
+  assignedHandlerUsername: string | null;
+  startedAt: string | null;
+  expiresAt: string | null;
+  createdAt: string | null;
+  completedAt: string | null;
+};
+
+function mapCachedPlayerCashoutTaskRow(row: Record<string, unknown>): CachedPlayerCashoutTask | null {
+  const id = cleanText(row.firebase_id);
+  const playerUid = cleanText(row.player_uid);
+  if (!id || !playerUid) {
+    return null;
+  }
+  const declinedRaw = row.declined_by_uids;
+  const declinedByUids = Array.isArray(declinedRaw)
+    ? declinedRaw.map((entry) => String(entry)).filter(Boolean)
+    : [];
+
+  return {
+    id,
+    coadminUid: cleanText(row.coadmin_uid),
+    playerUid,
+    playerUsername: cleanText(row.player_username),
+    amountNpr: Number(row.amount_npr || 0),
+    paymentDetails: cleanText(row.payment_details),
+    payoutMethod: cleanText(row.payout_method) || null,
+    qrImageUrl: cleanText(row.qr_image_url) || null,
+    paymentAppName: cleanText(row.payment_app_name) || null,
+    paymentAppCashTag: cleanText(row.payment_app_cash_tag) || null,
+    paymentAppAccountName: cleanText(row.payment_app_account_name) || null,
+    cashDeductedOnRequest:
+      typeof row.cash_deducted_on_request === 'boolean' ? row.cash_deducted_on_request : null,
+    declinedByUids,
+    status: cleanText(row.status) || 'pending',
+    assignedHandlerUid: cleanText(row.assigned_handler_uid) || null,
+    assignedHandlerUsername: cleanText(row.assigned_handler_username) || null,
+    startedAt: toIsoString(row.started_at),
+    expiresAt: toIsoString(row.expires_at),
+    createdAt: toIsoString(row.created_at),
+    completedAt: toIsoString(row.completed_at),
+  };
+}
+
+async function readPlayerCashoutTasksBySql(
+  sql: string,
+  params: unknown[],
+  label: string
+): Promise<CachedPlayerCashoutTask[] | null> {
+  const db = getPlayerMirrorPool();
+  if (!db) {
+    return null;
+  }
+  try {
+    const startedAt = Date.now();
+    const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(db, sql, params, {
+      context: 'player_cashout_tasks_cache_read',
+    });
+    const tasks = rows
+      .map((row) => mapCachedPlayerCashoutTaskRow(row))
+      .filter((task): task is CachedPlayerCashoutTask => Boolean(task));
+    console.info('[PLAYER_CASHOUT_TASKS_CACHE] read ok', {
+      label,
+      count: tasks.length,
+      durationMs: Date.now() - startedAt,
+    });
+    return tasks;
+  } catch (error) {
+    console.warn('[PLAYER_CASHOUT_TASKS_CACHE] read failed', { label, error });
+    return null;
+  }
+}
+
+export async function readPlayerCashoutTasksCacheByPlayer(
+  playerUid: string,
+  limit = 50
+): Promise<CachedPlayerCashoutTask[] | null> {
+  const cleanPlayerUid = cleanText(playerUid);
+  if (!cleanPlayerUid) {
+    return [];
+  }
+  return readPlayerCashoutTasksBySql(
+    `
+      SELECT *
+      FROM public.player_cashout_tasks_cache
+      WHERE deleted_at IS NULL
+        AND player_uid = $1
+      ORDER BY created_at DESC NULLS LAST
+      LIMIT $2
+    `,
+    [cleanPlayerUid, Math.max(1, Math.min(200, limit))],
+    'by_player'
+  );
+}
+
+export async function readPlayerCashoutTasksCacheByCoadmin(
+  coadminUid: string,
+  limit = 100
+): Promise<CachedPlayerCashoutTask[] | null> {
+  const cleanCoadminUid = cleanText(coadminUid);
+  if (!cleanCoadminUid) {
+    return [];
+  }
+  return readPlayerCashoutTasksBySql(
+    `
+      SELECT *
+      FROM public.player_cashout_tasks_cache
+      WHERE deleted_at IS NULL
+        AND coadmin_uid = $1
+      ORDER BY created_at DESC NULLS LAST
+      LIMIT $2
+    `,
+    [cleanCoadminUid, Math.max(1, Math.min(200, limit))],
+    'by_coadmin'
+  );
+}
+
+export async function readPlayerCashoutTasksCacheByAssignedHandler(
+  assignedHandlerUid: string,
+  limit = 50
+): Promise<CachedPlayerCashoutTask[] | null> {
+  const cleanHandlerUid = cleanText(assignedHandlerUid);
+  if (!cleanHandlerUid) {
+    return [];
+  }
+  return readPlayerCashoutTasksBySql(
+    `
+      SELECT *
+      FROM public.player_cashout_tasks_cache
+      WHERE deleted_at IS NULL
+        AND assigned_handler_uid = $1
+      ORDER BY COALESCE(completed_at, created_at) DESC NULLS LAST
+      LIMIT $2
+    `,
+    [cleanHandlerUid, Math.max(1, Math.min(200, limit))],
+    'by_assigned_handler'
+  );
 }
 
 export async function getPlayerCashoutTaskCacheById(firebaseId: string) {

@@ -15,9 +15,15 @@ import {
   where,
 } from 'firebase/firestore';
 
+import {
+  attachSqlChatMessagesPoll,
+  attachSqlUnreadCountsPoll,
+  isChatSqlReadEnabled,
+} from '@/features/live/chatSqlRead';
 import { auth, db } from '@/lib/firebase/client';
 import { uploadImageToCloudinary } from '@/lib/cloudinary/uploadImage';
 import { chatMessageTtl } from '@/lib/firestore/ttl';
+import { logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 export type FirestoreChatMessage = {
   id: string;
@@ -171,6 +177,10 @@ export function listenToMessages(
     return () => {};
   }
 
+  if (isChatSqlReadEnabled()) {
+    return attachSqlChatMessagesPoll(receiverUid, callback, options, undefined);
+  }
+
   const conversationId = getConversationId(currentUser.uid, receiverUid);
   const collectionRef = collection(
     db,
@@ -217,6 +227,11 @@ export async function fetchMessagesOlderThan(
   const currentUser = auth.currentUser;
 
   if (!currentUser) {
+    return [];
+  }
+
+  if (isChatSqlReadEnabled()) {
+    logClientFirestoreSkipped('chat_messages_older_than', { receiverUid });
     return [];
   }
 
@@ -287,6 +302,10 @@ export function listenToUnreadCounts(
     return () => {};
   }
 
+  if (isChatSqlReadEnabled()) {
+    return attachSqlUnreadCountsPoll(callback);
+  }
+
   const conversationsQuery = query(
     collection(db, 'conversations'),
     where(`unreadCounts.${currentUser.uid}`, '>', 0)
@@ -321,6 +340,18 @@ export function listenToUnreadNotices(
   if (!currentUser) {
     callback([]);
     return () => {};
+  }
+
+  if (isChatSqlReadEnabled()) {
+    return attachSqlUnreadCountsPoll((counts) => {
+      callback(
+        Object.entries(counts).map(([uid, unreadCount]) => ({
+          uid,
+          unreadCount,
+          lastMessage: '',
+        }))
+      );
+    });
   }
 
   const conversationsQuery = query(

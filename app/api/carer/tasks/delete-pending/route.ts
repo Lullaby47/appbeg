@@ -3,10 +3,16 @@ import { NextResponse } from 'next/server';
 
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
 import { adminDb } from '@/lib/firebase/admin';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { deletePendingTaskInSql } from '@/lib/sql/authorityCarerTasks';
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 
 type Body = {
   taskId?: unknown;
+  idempotencyKey?: unknown;
 };
 
 type ScopedTask = {
@@ -67,6 +73,26 @@ export async function POST(request: Request) {
     const caller = auth.user;
     const callerScope = scopedCoadminUid(caller);
     const isAdmin = caller.role === 'admin';
+    const idempotencyKey =
+      String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const outcome = await deletePendingTaskInSql({
+        taskId,
+        actorUid: caller.uid,
+        actorUsername: caller.username,
+        actorRole: caller.role,
+        isAdmin,
+        scopeUid: callerScope,
+        idempotencyKey,
+      });
+      logAuthoritySqlWrite('/api/carer/tasks/delete-pending', {
+        taskId,
+        duplicate: outcome.duplicate,
+      });
+      return NextResponse.json({ authority: 'sql', ...outcome });
+    }
+
     const taskRef = adminDb.collection('carerTasks').doc(taskId);
 
     await adminDb.runTransaction(async (transaction) => {

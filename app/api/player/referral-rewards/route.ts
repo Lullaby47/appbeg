@@ -17,6 +17,11 @@ import {
   loadReferralRewardGroups,
 } from '@/lib/server/playerReferralRewardsRead';
 import { logPlayerRouteTiming } from '@/lib/server/playerRouteTiming';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { claimReferralRewardInSql } from '@/lib/sql/authorityReferral';
 import { mirrorReferralRewardClaimById } from '@/lib/sql/referralRewardClaimsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
@@ -168,6 +173,39 @@ export async function POST(request: Request) {
     const referredPlayerUid = String(body.referredPlayerUid || '').trim();
     if (!referredPlayerUid) {
       return NextResponse.json({ error: 'Referred player uid is required.' }, { status: 400 });
+    }
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await claimReferralRewardInSql({
+        referrerUid,
+        referredPlayerUid,
+      });
+      logAuthoritySqlWrite('/api/player/referral-rewards', {
+        referrerUid,
+        referredPlayerUid,
+        claimId: result.claimId,
+        duplicate: result.duplicate,
+        alreadyClaimed: result.alreadyClaimed,
+      });
+      const totalMs = Date.now() - startedAt;
+      logPlayerRouteTiming('[PLAYER_REFERRAL_REWARDS]', {
+        method: 'POST',
+        ok: true,
+        uid: referrerUid,
+        referredPlayerUid,
+        auth_ms: authMs,
+        sql_ms: authSqlMs,
+        firestore_ms: authFirestoreMs,
+        total_ms: totalMs,
+      });
+      return NextResponse.json({
+        success: true,
+        rewardCoins: result.rewardCoins,
+        referredPlayerUid: result.referredPlayerUid,
+        message: result.message,
+        duplicate: result.duplicate,
+        authority: 'sql',
+      });
     }
 
     const qualifiedRecharge = await loadQualifiedRechargeForReferredPlayer(referredPlayerUid);

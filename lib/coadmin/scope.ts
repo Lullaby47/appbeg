@@ -1,6 +1,7 @@
 import { doc, getDoc } from 'firebase/firestore';
 
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
+import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { auth, db } from '@/lib/firebase/client';
 
 export type CoadminScopedRecord = {
@@ -77,6 +78,13 @@ export async function getCurrentUserCoadminUid() {
   const currentUser = auth.currentUser;
   if (!currentUser) {
     throw new Error('Not authenticated.');
+  }
+
+  if (isClientSqlReadMode()) {
+    logClientFirestoreSkipped('get_current_user_coadmin_uid_firestore_fallback', {
+      uid: currentUser.uid,
+    });
+    throw new Error('No coadmin assigned to this user.');
   }
 
   const userSnap = await getDoc(doc(db, 'users', currentUser.uid));

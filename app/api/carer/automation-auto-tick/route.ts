@@ -21,6 +21,7 @@ import {
   type ApiUserAuthPath,
 } from '@/lib/firebase/apiAuth';
 import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import {
   acquireAutomationAutoTickLeaseSql,
@@ -1288,6 +1289,7 @@ export async function POST(request: Request) {
           username: carerProfile.username || null,
           automationAgentId: linked.normalized,
         },
+        skipLocked: isAuthoritySqlWriteEnabled(),
       });
       logAutoTickTiming('claimCarerTaskAsAdmin_total', claimStartedAt, {
         taskId,
@@ -1304,7 +1306,7 @@ export async function POST(request: Request) {
         automationJobCreated: !result.reusedExistingJob,
         originalTaskUpdatedToInProgress: true,
       });
-      if (!sqlReadMode) {
+      if (!sqlReadMode && !isAuthoritySqlWriteEnabled()) {
         void mirrorCarerTaskById(result.taskId, 'appbeg_automation_auto_tick');
       }
       claimedJobs.push({

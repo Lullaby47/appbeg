@@ -21,6 +21,11 @@ import {
   logRechargeSqlSource,
   timedRechargeFirestoreRead,
 } from '@/lib/server/rechargeFirestoreInstrumentation';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { createRechargeRequestInSql } from '@/lib/sql/authorityGameRequests';
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
@@ -32,6 +37,7 @@ type RechargeBody = {
   baseAmount?: unknown;
   bonusPercentage?: unknown;
   bonusEventId?: unknown;
+  idempotencyKey?: unknown;
 };
 
 type RechargeCreateTiming = {
@@ -321,6 +327,55 @@ export async function POST(request: Request) {
           'Not enough coin to request this recharge. Use a lower amount or add coin first.'
         );
       }
+    }
+
+    const idempotencyKey =
+      String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      failureStage = 'authority_transaction';
+      const authorityStartedAt = Date.now();
+      const result = await createRechargeRequestInSql({
+        playerUid,
+        gameName,
+        amount,
+        baseAmount: requestedBaseAmount > 0 ? requestedBaseAmount : null,
+        bonusPercentage:
+          Number.isFinite(requestedBonusPercentage) && requestedBonusPercentage > 0
+            ? requestedBonusPercentage
+            : null,
+        bonusEventId,
+        assignedGameUsername,
+        gameCredential,
+        previewCoadminUid,
+        hasAnyFirstRechargeAppliedRequest: firstRechargeRead.hasAnyFirstRechargeAppliedRequest,
+        idempotencyKey,
+      });
+      timing.authority_transaction_ms = Date.now() - authorityStartedAt;
+      timing.total_ms = Date.now() - routeStartedAt;
+      logAuthoritySqlWrite('/api/player/game-requests/recharge', {
+        playerUid,
+        requestId: result.requestId,
+        duplicate: result.duplicate,
+      });
+      logRechargeCreateTiming({
+        ...timing,
+        ok: true,
+        playerUid,
+        requestId: result.requestId,
+        firestore_code: null,
+        firestore_details: null,
+        playerGameLoginsSource,
+        gameLoginsSource,
+        firstRechargeSource,
+        shared_sql_client: sharedSqlClient,
+      });
+      return NextResponse.json({
+        success: true,
+        requestId: result.requestId,
+        duplicate: result.duplicate,
+        authority: 'sql',
+      });
     }
 
     const playerRef = adminDb.collection('users').doc(playerUid);

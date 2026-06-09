@@ -3,12 +3,17 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { completeRechargeRedeemTaskInSql } from '@/lib/sql/authorityGameRequests';
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
-type Body = { taskId?: unknown };
+type Body = { taskId?: unknown; idempotencyKey?: unknown };
 
 function ttlAfterDays(days: number) {
   const DAY_MS = 24 * 60 * 60 * 1000;
@@ -57,6 +62,35 @@ export async function POST(request: Request) {
     const caller = auth.user;
     const callerIsAdmin = caller.role === 'admin';
     const callerScope = scopedCoadminUid(caller);
+    const idempotencyKey =
+      String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await completeRechargeRedeemTaskInSql({
+        taskId,
+        actorUid: caller.uid,
+        actorUsername: caller.username,
+        actorRole: caller.role,
+        isAdmin: callerIsAdmin,
+        scopeUid: callerScope,
+        idempotencyKey,
+      });
+      logAuthoritySqlWrite('/api/carer/tasks/complete-recharge-redeem', {
+        taskId,
+        requestId: result.requestId,
+        duplicate: result.duplicate,
+        alreadyCompleted: result.alreadyCompleted,
+      });
+      return NextResponse.json({
+        success: true,
+        alreadyCompleted: result.alreadyCompleted,
+        completedTaskCount: result.alreadyCompleted ? 0 : 1,
+        totalAwardNpr: result.totalAwardNpr,
+        duplicate: result.duplicate,
+        authority: 'sql',
+      });
+    }
+
     const taskRef = adminDb.collection('carerTasks').doc(taskId);
     const eventRef = adminDb.collection('financialEvents').doc();
 

@@ -4,6 +4,8 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { useEffect } from 'react';
 
+import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { auth, db } from '@/lib/firebase/client';
 
 const HEARTBEAT_MS = 90_000;
@@ -73,6 +75,20 @@ export default function UserPresenceSync() {
 
       const pulse = () => {
         if (!isLeader) {
+          return;
+        }
+        if (isClientSqlReadMode()) {
+          logClientFirestoreSkipped('user_presence_heartbeat', { uid: user.uid });
+          void (async () => {
+            try {
+              await fetch('/api/presence/heartbeat', {
+                method: 'POST',
+                headers: await getSqlApiReadHeaders(true),
+              });
+            } catch {
+              // Best-effort heartbeat.
+            }
+          })();
           return;
         }
         setDoc(ref, { lastSeenAt: serverTimestamp() }, { merge: true }).catch(

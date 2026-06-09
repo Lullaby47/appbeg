@@ -1,7 +1,8 @@
 import 'server-only';
 
 import type { DocumentSnapshot } from 'firebase-admin/firestore';
-import { Pool } from 'pg';
+
+import { getPlayerMirrorPool } from '@/lib/sql/playerMirrorCommon';
 
 type MirrorInput = {
   firebaseId: string;
@@ -11,49 +12,8 @@ type MirrorInput = {
   updatedAt?: unknown;
 };
 
-const SQL_TIMEOUT_MS = 5_000;
-const COADMIN_BONUS_SETTINGS_POOL_MAX = 2;
-const COADMIN_BONUS_SETTINGS_POOL_IDLE_TIMEOUT_MS = 120_000;
-
-type CoadminBonusSettingsPoolCache = {
-  connectionString: string;
-  pool: Pool;
-};
-
-const globalSqlPool = globalThis as typeof globalThis & {
-  __appbegCoadminBonusSettingsCachePool?: CoadminBonusSettingsPoolCache;
-};
-
-function databaseUrl() {
-  return String(process.env.DATABASE_URL || process.env.POSTGRES_URL || '').trim();
-}
-
 function getPool() {
-  const connectionString = databaseUrl();
-  if (!connectionString) return null;
-  const cached = globalSqlPool.__appbegCoadminBonusSettingsCachePool;
-  if (cached?.connectionString === connectionString) {
-    console.info('[SQL_POOL] reused', { name: 'coadminBonusSettingsCache', global: true });
-    return cached.pool;
-  }
-  const pool = new Pool({
-    connectionString,
-    max: COADMIN_BONUS_SETTINGS_POOL_MAX,
-    connectionTimeoutMillis: SQL_TIMEOUT_MS,
-    idleTimeoutMillis: COADMIN_BONUS_SETTINGS_POOL_IDLE_TIMEOUT_MS,
-    query_timeout: SQL_TIMEOUT_MS,
-    statement_timeout: SQL_TIMEOUT_MS,
-  });
-  pool.on('error', (error) => {
-    console.warn('[SQL_POOL] idle client error', { name: 'coadminBonusSettingsCache', error });
-  });
-  globalSqlPool.__appbegCoadminBonusSettingsCachePool = { connectionString, pool };
-  console.info('[SQL_POOL] created', {
-    name: 'coadminBonusSettingsCache',
-    max: COADMIN_BONUS_SETTINGS_POOL_MAX,
-    global: true,
-  });
-  return pool;
+  return getPlayerMirrorPool();
 }
 
 function cleanText(value: unknown) {

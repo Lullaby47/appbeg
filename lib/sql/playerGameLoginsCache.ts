@@ -305,6 +305,27 @@ const PLAYER_GAME_LOGINS_BY_PLAYER_SQL = `
   ORDER BY firebase_id, COALESCE(updated_at, created_at, mirrored_at) DESC
 `;
 
+const PLAYER_GAME_LOGINS_FULL_BY_PLAYER_SQL = `
+  SELECT DISTINCT ON (firebase_id)
+    firebase_id,
+    player_uid,
+    player_username,
+    game_name,
+    game_username,
+    game_password,
+    frontend_url,
+    site_url,
+    coadmin_uid,
+    created_by,
+    created_at,
+    updated_at,
+    mirrored_at
+  FROM public.player_game_logins_cache
+  WHERE deleted_at IS NULL
+    AND player_uid = $1
+  ORDER BY firebase_id, COALESCE(updated_at, created_at, mirrored_at) DESC
+`;
+
 export type PlayerGameLoginByPlayerRow = {
   gameName: string;
   gameUsername: string;
@@ -330,6 +351,31 @@ export async function readPlayerGameLoginsCacheByPlayerWithClient(
     [cleanPlayerUid]
   );
   return mapPlayerGameLoginByPlayerRows(rows);
+}
+
+export async function readPlayerGameLoginsCacheFullByPlayer(
+  playerUid: string
+): Promise<CachedPlayerGameLogin[] | null> {
+  const cleanPlayerUid = cleanText(playerUid);
+  const db = getPlayerMirrorPool();
+  if (!db || !cleanPlayerUid) {
+    return null;
+  }
+
+  try {
+    const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(
+      db,
+      PLAYER_GAME_LOGINS_FULL_BY_PLAYER_SQL,
+      [cleanPlayerUid]
+    );
+    return mapCachedPlayerGameLoginRows(rows, '');
+  } catch (error) {
+    console.warn('[PLAYER_GAME_LOGINS_CACHE] postgres full read by player failed', {
+      playerUid: cleanPlayerUid,
+      error,
+    });
+    return null;
+  }
 }
 
 export async function readPlayerGameLoginsCacheByPlayer(

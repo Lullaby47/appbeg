@@ -3,22 +3,71 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
+import {
+  authoritySqlWriteEnvLogFields,
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { claimFreeplayGiftInSql } from '@/lib/sql/authorityFreeplay';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorFreeplayPendingGiftByPlayerUid } from '@/lib/sql/freeplayPendingGiftsCache';
+import { getPlayerMirrorPoolStats } from '@/lib/sql/playerMirrorCommon';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+const ROUTE = '/api/player/freeplay/claim';
+
 export async function POST(request: Request) {
+  const startedAt = Date.now();
   try {
     const auth = await requireApiUser(request, ['player']);
     if ('response' in auth) return auth.response;
 
-    const body = (await request.json().catch(() => ({}))) as { giftId?: unknown };
+    const body = (await request.json().catch(() => ({}))) as {
+      giftId?: unknown;
+      idempotencyKey?: unknown;
+    };
     const requestedGiftId = String(body.giftId || '').trim();
     if (!requestedGiftId) {
       return NextResponse.json({ error: 'FreePlay gift id is required.' }, { status: 400 });
     }
+    const idempotencyKey =
+      String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
 
     const playerUid = auth.user.uid;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await claimFreeplayGiftInSql({
+        playerUid,
+        giftId: requestedGiftId,
+        idempotencyKey,
+      });
+      const poolStats = getPlayerMirrorPoolStats();
+
+      logAuthoritySqlWrite(ROUTE, {
+        ...authoritySqlWriteEnvLogFields(),
+        playerUid,
+        giftId: requestedGiftId,
+        amount: result.amount,
+        alreadyClaimed: result.alreadyClaimed,
+        duplicate: result.duplicate,
+        route: ROUTE,
+        pool_totalCount: poolStats?.totalCount ?? null,
+        pool_idleCount: poolStats?.idleCount ?? null,
+        pool_waitingCount: poolStats?.waitingCount ?? null,
+        pool_max: poolStats?.max ?? null,
+        duration_ms: Date.now() - startedAt,
+      });
+
+      return NextResponse.json({
+        success: true,
+        amount: result.amount,
+        alreadyClaimed: result.alreadyClaimed,
+        duplicate: result.duplicate,
+        message: result.message,
+        authority: 'sql',
+      });
+    }
+
     const playerRef = adminDb.collection('users').doc(playerUid);
     const markerRef = adminDb.collection('freeplayPendingGifts').doc(playerUid);
     const eventRef = adminDb.collection('financialEvents').doc();
@@ -119,6 +168,7 @@ export async function POST(request: Request) {
       amount,
       alreadyClaimed,
       message: `You got ${amount} FreePlay coins!`,
+      authority: 'firestore',
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to claim FreePlay gift.';

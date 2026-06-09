@@ -26,11 +26,16 @@ import {
   cleanText,
   runMirrorClientQuery,
 } from '@/lib/sql/playerMirrorCommon';
+import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
 import {
   isRechargeFirestoreQuotaError,
   logRechargeSqlSource,
   timedRechargeFirestoreRead,
 } from '@/lib/server/rechargeFirestoreInstrumentation';
+
+function blockRechargeFirestoreFallback() {
+  return isAuthoritySqlWriteEnabled();
+}
 
 export type RechargeReadSource = 'postgres' | 'firestore';
 
@@ -265,6 +270,15 @@ export async function loadRechargePlayerGameLogins(input: {
     };
   }
 
+  if (blockRechargeFirestoreFallback()) {
+    return {
+      assignedGameUsername: '',
+      source: 'postgres',
+      sqlMs,
+      firestoreFallbackMs: 0,
+    };
+  }
+
   return loadPlayerGameLoginsFromFirestore(input.playerUid, input.normalizedGame, sqlMs);
 }
 
@@ -299,6 +313,15 @@ export async function loadRechargeGameLogins(input: {
     };
   }
 
+  if (blockRechargeFirestoreFallback()) {
+    return {
+      gameCredential: null,
+      source: 'postgres',
+      sqlMs,
+      firestoreFallbackMs: 0,
+    };
+  }
+
   return loadGameLoginsFromFirestore(cleanCoadminUid, input.gameName, sqlMs);
 }
 
@@ -312,6 +335,15 @@ export async function loadRechargeFirstRechargeCheck(
   if (sqlResult !== null) {
     return {
       hasAnyFirstRechargeAppliedRequest: sqlResult,
+      source: 'postgres',
+      sqlMs,
+      firestoreFallbackMs: 0,
+    };
+  }
+
+  if (blockRechargeFirestoreFallback()) {
+    return {
+      hasAnyFirstRechargeAppliedRequest: false,
       source: 'postgres',
       sqlMs,
       firestoreFallbackMs: 0,
@@ -389,6 +421,9 @@ export async function loadRechargePreTransactionReads(input: {
         playerUid: input.playerUid,
         error,
       });
+      if (blockRechargeFirestoreFallback()) {
+        throw error;
+      }
       playerGameLogins = await loadPlayerGameLoginsFromFirestore(
         input.playerUid,
         input.normalizedGame,
@@ -414,6 +449,9 @@ export async function loadRechargePreTransactionReads(input: {
         playerUid: input.playerUid,
         error,
       });
+      if (blockRechargeFirestoreFallback()) {
+        throw error;
+      }
       firstRecharge = await loadFirstRechargeFromFirestore(
         input.playerUid,
         Date.now() - firstRechargeStartedAt
@@ -447,6 +485,9 @@ export async function loadRechargePreTransactionReads(input: {
           coadminUid: cleanCoadminUid,
           error,
         });
+        if (blockRechargeFirestoreFallback()) {
+          throw error;
+        }
         gameLogins = await loadGameLoginsFromFirestore(
           cleanCoadminUid,
           input.gameName,

@@ -5,11 +5,18 @@ import {
   isRechargeFirestoreQuotaError,
   timedRechargeFirestoreRead,
 } from '@/lib/server/rechargeFirestoreInstrumentation';
+import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
+import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { readCoadminMaintenanceBreakFromSql } from '@/lib/sql/coadminMaintenanceCache';
 import {
   maintenanceBreakResponse,
   normalizeMaintenanceBreak,
   type MaintenanceBreak,
 } from '@/lib/maintenance/config';
+
+function shouldReadMaintenanceFromSql() {
+  return isAuthSqlReadEnabled() || isAuthoritySqlWriteEnabled();
+}
 
 export async function getCoadminMaintenanceBreak(
   coadminUid: string,
@@ -18,6 +25,10 @@ export async function getCoadminMaintenanceBreak(
   const cleanCoadminUid = String(coadminUid || '').trim();
   if (!cleanCoadminUid) {
     return normalizeMaintenanceBreak(null);
+  }
+
+  if (shouldReadMaintenanceFromSql()) {
+    return readCoadminMaintenanceBreakFromSql(cleanCoadminUid);
   }
 
   try {

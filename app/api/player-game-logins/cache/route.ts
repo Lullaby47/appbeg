@@ -15,6 +15,7 @@ import {
 } from '@/lib/server/cacheSqlRead';
 import {
   readPlayerGameLoginsCacheByCoadmin,
+  readPlayerGameLoginsCacheFullByPlayer,
   type CachedPlayerGameLogin,
 } from '@/lib/sql/playerGameLoginsCache';
 
@@ -93,6 +94,11 @@ function resolveExplicitCoadminUid(request: Request) {
   return cleanText(url.searchParams.get('coadminUid'));
 }
 
+function resolvePlayerUid(request: Request) {
+  const url = new URL(request.url);
+  return cleanText(url.searchParams.get('playerUid'));
+}
+
 function canAccessCoadmin(authUser: ApiUser, requested: string, scoped: string | null) {
   if (authUser.role === 'admin') return true;
   if (authUser.role === 'coadmin') return requested === authUser.uid;
@@ -102,9 +108,38 @@ function canAccessCoadmin(authUser: ApiUser, requested: string, scoped: string |
 export async function GET(request: Request) {
   const startedAt = Date.now();
 
-  const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer']);
+  const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer', 'player']);
   if ('response' in auth) {
     return auth.response;
+  }
+
+  const playerUid = resolvePlayerUid(request);
+  if (playerUid) {
+    if (auth.user.role === 'player' && auth.user.uid !== playerUid) {
+      return apiError('Forbidden.', 403);
+    }
+    try {
+      const cached = await readPlayerGameLoginsCacheFullByPlayer(playerUid);
+      if (cached !== null) {
+        const durationMs = Date.now() - startedAt;
+        logCacheSqlRead(ROUTE, { playerUid, count: cached.length, durationMs });
+        return NextResponse.json({ playerGameLogins: cached, source: 'postgres' });
+      }
+    } catch (error) {
+      console.warn('[PLAYER_GAME_LOGINS_CACHE] postgres read by player failed', { playerUid, error });
+    }
+    if (isCacheSqlAuthoritative()) {
+      logCacheFirestoreFallbackBlocked(ROUTE, 'playerGameLogins', { playerUid });
+      return NextResponse.json({ playerGameLogins: [], source: 'postgres' });
+    }
+    const snap = await adminDb
+      .collection('playerGameLogins')
+      .where('playerUid', '==', playerUid)
+      .get();
+    const playerGameLogins = snap.docs
+      .map((docSnap) => mapFirestorePlayerGameLogin(docSnap, ''))
+      .filter((login): login is CachedPlayerGameLogin => Boolean(login));
+    return NextResponse.json({ playerGameLogins, source: 'firestore' });
   }
 
   const scoped = scopedCoadminUid(auth.user);

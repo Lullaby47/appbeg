@@ -12,7 +12,9 @@ import {
 } from 'firebase/firestore';
 
 import { getAppSessionRequestHeaders, getLocalAppSessionId } from '@/features/auth/appSession';
+import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
 import { getCachedSessionUser } from '@/features/auth/sessionUser';
+import { logClientFirestoreSkipped, isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { auth, db } from '@/lib/firebase/client';
 
 export const PLAYER_DEVICE_ID_KEY = 'appbeg:playerDeviceId';
@@ -891,7 +893,13 @@ export function listenForPlayerSessionReplacement(
   user: User,
   onMismatch?: () => void
 ) {
-  if (getLocalAppSessionId()) {
+  if (
+    getLocalAppSessionId() ||
+    isSqlPlayerAppSessionMode() ||
+    isSqlPlayerLoginEnabled() ||
+    isClientSqlReadMode()
+  ) {
+    logClientFirestoreSkipped('player_session_replacement_listener', { uid: user.uid });
     return () => {};
   }
 

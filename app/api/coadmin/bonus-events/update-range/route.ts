@@ -3,6 +3,11 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { updateBonusRangeInSql } from '@/lib/sql/authorityBonus';
 import { mirrorCoadminBonusSettingsSnapshot } from '@/lib/sql/coadminBonusSettingsCache';
 
 const COADMIN_MIN_PERCENT = 5;
@@ -90,13 +95,36 @@ export async function POST(request: Request) {
       return auth.response;
     }
     const callerUid = auth.user.uid;
+    const body = (await request.json()) as {
+      minPercent?: number;
+      maxPercent?: number;
+      idempotencyKey?: unknown;
+    } | null;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const idempotencyKey =
+        String(body?.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() ||
+        null;
+      const result = await updateBonusRangeInSql({
+        coadminUid: callerUid,
+        minPercent: Number(body?.minPercent),
+        maxPercent: Number(body?.maxPercent),
+        idempotencyKey,
+      });
+      logAuthoritySqlWrite('/api/coadmin/bonus-events/update-range', {
+        coadminUid: callerUid,
+        adjustedEventCount: result.adjustedEventCount,
+        duplicate: result.duplicate || false,
+      });
+      return NextResponse.json({ ...result, authority: 'sql' });
+    }
+
     console.info('[COADMIN_BONUS_UPDATE_RANGE_AUTH]', {
       auth_path: auth.authPath,
       uid: callerUid,
       app_session_used: auth.authPath.startsWith('app_session'),
     });
 
-    const body = (await request.json()) as { minPercent?: number; maxPercent?: number } | null;
     const normalized = normalizeAutoBonusPercentRange({
       minPercent: body?.minPercent,
       maxPercent: body?.maxPercent,

@@ -3,11 +3,23 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import {
+  authoritySqlWriteEnvLogFields,
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { declinePlayerCashoutTaskInSql } from '@/lib/sql/authorityCashout';
+import { getPlayerMirrorPoolStats } from '@/lib/sql/playerMirrorCommon';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorPlayerCashoutTaskById } from '@/lib/sql/playerCashoutTasksCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
-type Body = { taskId?: unknown };
+const ROUTE = '/api/cashout-tasks/decline';
+
+type Body = {
+  taskId?: unknown;
+  idempotencyKey?: unknown;
+};
 
 export async function POST(request: Request) {
   try {
@@ -17,6 +29,39 @@ export async function POST(request: Request) {
     const body = (await request.json()) as Body;
     const taskId = String(body.taskId || '').trim();
     if (!taskId) return apiError('taskId is required.', 400);
+    const idempotencyKey =
+      String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await declinePlayerCashoutTaskInSql({
+        taskId,
+        actorUid: auth.user.uid,
+        actorRole: auth.user.role,
+        isAdmin: auth.user.role === 'admin',
+        scopeUid: scopedCoadminUid(auth.user),
+        idempotencyKey,
+      });
+      const poolStats = getPlayerMirrorPoolStats();
+
+      logAuthoritySqlWrite(ROUTE, {
+        ...authoritySqlWriteEnvLogFields(),
+        taskId,
+        duplicate: result.duplicate,
+        refunded: result.refunded,
+        route: ROUTE,
+        pool_totalCount: poolStats?.totalCount ?? null,
+        pool_idleCount: poolStats?.idleCount ?? null,
+        pool_waitingCount: poolStats?.waitingCount ?? null,
+        pool_max: poolStats?.max ?? null,
+      });
+
+      return NextResponse.json({
+        success: true,
+        duplicate: result.duplicate,
+        refunded: result.refunded,
+        authority: 'sql',
+      });
+    }
 
     const caller = auth.user;
     const scope = scopedCoadminUid(caller);
@@ -82,11 +127,10 @@ export async function POST(request: Request) {
       void mirrorUserBalanceSnapshotById(mirroredPlayerUid, 'appbeg_cashout_decline');
     }
     void mirrorPlayerCashoutTaskById(taskId, 'appbeg_cashout_decline');
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, authority: 'firestore' });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to decline cashout task.';
     const status = /forbidden|scope/i.test(message) ? 403 : /not authenticated|authorization|token/i.test(message) ? 401 : /not found|required|only/i.test(message) ? 400 : 409;
     return NextResponse.json({ error: message }, { status });
   }
 }
-

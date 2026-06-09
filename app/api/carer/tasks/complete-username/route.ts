@@ -3,6 +3,11 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { completeUsernameTasksInSql } from '@/lib/sql/authorityCarerTasks';
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
@@ -38,7 +43,12 @@ export async function POST(request: Request) {
   try {
     const auth = await requireApiUser(request, ['carer', 'staff', 'coadmin', 'admin']);
     if ('response' in auth) return auth.response;
-    const body = (await request.json()) as { coadminUid?: unknown; playerUid?: unknown; gameName?: unknown };
+    const body = (await request.json()) as {
+      coadminUid?: unknown;
+      playerUid?: unknown;
+      gameName?: unknown;
+      idempotencyKey?: unknown;
+    };
     const coadminUid = String(body.coadminUid || '').trim();
     const playerUid = String(body.playerUid || '').trim();
     const gameName = String(body.gameName || '').trim();
@@ -46,9 +56,34 @@ export async function POST(request: Request) {
       return apiError('coadminUid, playerUid, and gameName are required.', 400);
     }
 
+    const idempotencyKey =
+      String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
+
     if (auth.user.role !== 'admin') {
       const callerScope = scopedCoadminUid(auth.user);
       if (callerScope !== coadminUid) return apiError('Forbidden: task is outside your scope.', 403);
+    }
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await completeUsernameTasksInSql({
+        coadminUid,
+        playerUid,
+        gameName,
+        actorUid: auth.user.uid,
+        actorUsername: auth.user.username,
+        actorRole: auth.user.role,
+        isAdmin: auth.user.role === 'admin',
+        scopeUid: scopedCoadminUid(auth.user),
+        idempotencyKey,
+      });
+      logAuthoritySqlWrite('/api/carer/tasks/complete-username', {
+        coadminUid,
+        playerUid,
+        gameName,
+        duplicate: result.duplicate,
+        completedTaskCount: result.completedTaskCount,
+      });
+      return NextResponse.json({ authority: 'sql', ...result });
     }
 
     const taskIds = [

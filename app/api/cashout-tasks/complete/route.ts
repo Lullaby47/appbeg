@@ -3,12 +3,22 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import {
+  authoritySqlWriteEnvLogFields,
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { completePlayerCashoutTaskInSql } from '@/lib/sql/authorityCashout';
+import { getPlayerMirrorPoolStats } from '@/lib/sql/playerMirrorCommon';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorPlayerCashoutTaskById } from '@/lib/sql/playerCashoutTasksCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+const ROUTE = '/api/cashout-tasks/complete';
+
 type Body = {
   taskId?: unknown;
+  idempotencyKey?: unknown;
 };
 
 export async function POST(request: Request) {
@@ -20,6 +30,40 @@ export async function POST(request: Request) {
     const taskId = String(body.taskId || '').trim();
     if (!taskId) {
       return apiError('taskId is required.', 400);
+    }
+    const idempotencyKey =
+      String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await completePlayerCashoutTaskInSql({
+        taskId,
+        actorUid: auth.user.uid,
+        actorUsername: auth.user.username,
+        actorRole: auth.user.role,
+        isAdmin: auth.user.role === 'admin',
+        scopeUid: scopedCoadminUid(auth.user),
+        idempotencyKey,
+      });
+      const poolStats = getPlayerMirrorPoolStats();
+
+      logAuthoritySqlWrite(ROUTE, {
+        ...authoritySqlWriteEnvLogFields(),
+        taskId,
+        duplicate: result.duplicate,
+        alreadyCompleted: result.alreadyCompleted,
+        route: ROUTE,
+        pool_totalCount: poolStats?.totalCount ?? null,
+        pool_idleCount: poolStats?.idleCount ?? null,
+        pool_waitingCount: poolStats?.waitingCount ?? null,
+        pool_max: poolStats?.max ?? null,
+      });
+
+      return NextResponse.json({
+        success: true,
+        alreadyCompleted: result.alreadyCompleted,
+        duplicate: result.duplicate,
+        authority: 'sql',
+      });
     }
 
     const caller = auth.user;
@@ -149,7 +193,7 @@ export async function POST(request: Request) {
         void mirrorUserBalanceSnapshotById(uid, 'appbeg_cashout_complete');
       });
     }
-    return NextResponse.json({ success: true, ...result });
+    return NextResponse.json({ success: true, ...result, authority: 'firestore' });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to complete cashout task.';
     const status =
@@ -165,4 +209,3 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status });
   }
 }
-

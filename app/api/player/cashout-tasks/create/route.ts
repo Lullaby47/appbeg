@@ -8,11 +8,20 @@ import {
   getCoadminMaintenanceBreak,
   maintenanceBreakApiResponse,
   rejectIfPlayerMaintenanceBreak,
+  rejectIfPlayerMaintenanceBreakFromUser,
 } from '@/lib/maintenance/admin';
+import {
+  authoritySqlWriteEnvLogFields,
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { createPlayerCashoutTaskInSql } from '@/lib/sql/authorityCashout';
+import { getPlayerMirrorPoolStats } from '@/lib/sql/playerMirrorCommon';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorPlayerCashoutTaskById } from '@/lib/sql/playerCashoutTasksCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+const ROUTE = '/api/player/cashout-tasks/create';
 const PLAYER_CASHOUT_MAX_NPR_PER_24_H = 1000;
 const PLAYER_CASHOUT_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -23,6 +32,7 @@ type Body = {
   paymentAppName?: unknown;
   paymentAppCashTag?: unknown;
   paymentAppAccountName?: unknown;
+  idempotencyKey?: unknown;
 };
 
 async function fetchRolling24hCashoutUsageNprForPlayer(playerUid: string): Promise<number> {
@@ -72,13 +82,53 @@ export async function POST(request: Request) {
   try {
     const auth = await requireApiUser(request, ['player']);
     if ('response' in auth) return auth.response;
-    await rejectIfPlayerMaintenanceBreak(auth.user.uid, 'cashout');
 
     const body = (await request.json()) as Body;
     const paymentDetails = String(body.paymentDetails || '').trim();
     if (paymentDetails.length < 5) {
       return apiError('Please provide clear payment details.', 400);
     }
+
+    const idempotencyKey =
+      String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      await rejectIfPlayerMaintenanceBreakFromUser(auth.user, 'cashout');
+
+      const result = await createPlayerCashoutTaskInSql({
+        playerUid: auth.user.uid,
+        playerUsername: auth.user.username,
+        paymentDetails,
+        payoutMethod: String(body.payoutMethod || '').trim() || null,
+        qrImageUrl: String(body.qrImageUrl || '').trim() || null,
+        paymentAppName: String(body.paymentAppName || '').trim() || null,
+        paymentAppCashTag: String(body.paymentAppCashTag || '').trim() || null,
+        paymentAppAccountName: String(body.paymentAppAccountName || '').trim() || null,
+        idempotencyKey,
+      });
+      const poolStats = getPlayerMirrorPoolStats();
+
+      logAuthoritySqlWrite(ROUTE, {
+        ...authoritySqlWriteEnvLogFields(),
+        playerUid: auth.user.uid,
+        taskId: result.taskId,
+        duplicate: result.duplicate,
+        route: ROUTE,
+        pool_totalCount: poolStats?.totalCount ?? null,
+        pool_idleCount: poolStats?.idleCount ?? null,
+        pool_waitingCount: poolStats?.waitingCount ?? null,
+        pool_max: poolStats?.max ?? null,
+      });
+
+      return NextResponse.json({
+        success: true,
+        taskId: result.taskId,
+        duplicate: result.duplicate,
+        authority: 'sql',
+      });
+    }
+
+    await rejectIfPlayerMaintenanceBreak(auth.user.uid, 'cashout');
 
     const playerUid = auth.user.uid;
     const [rollingUsed, completedCashoutCount, lastRechargeAmountNpr] = await Promise.all([
@@ -175,7 +225,7 @@ export async function POST(request: Request) {
     void mirrorFinancialEventById(eventRef.id, 'appbeg_cashout_create');
     void mirrorPlayerCashoutTaskById(taskRef.id, 'appbeg_cashout_create');
     void mirrorUserBalanceSnapshotById(playerUid, 'appbeg_cashout_create');
-    return NextResponse.json({ success: true, taskId: taskRef.id });
+    return NextResponse.json({ success: true, taskId: taskRef.id, authority: 'firestore' });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create cashout request.';
     if (message.startsWith('MAINTENANCE_BREAK:')) {
@@ -194,4 +244,3 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status });
   }
 }
-

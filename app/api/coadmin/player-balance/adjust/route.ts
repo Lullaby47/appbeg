@@ -3,6 +3,12 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import {
+  authoritySqlWriteEnvLogFields,
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { adjustPlayerBalanceInSql } from '@/lib/sql/authorityBalanceAdjust';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
@@ -10,9 +16,11 @@ type Body = {
   playerUid?: unknown;
   delta?: unknown;
   balanceType?: unknown;
+  idempotencyKey?: unknown;
 };
 
 export async function POST(request: Request) {
+  const route = '/api/coadmin/player-balance/adjust';
   try {
     const auth = await requireApiUser(request, ['coadmin', 'staff', 'admin']);
     if ('response' in auth) return auth.response;
@@ -20,6 +28,8 @@ export async function POST(request: Request) {
     const playerUid = String(body.playerUid || '').trim();
     const delta = Number(body.delta);
     const balanceType = String(body.balanceType || '').trim().toLowerCase();
+    const idempotencyKey =
+      String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
     if (!playerUid) return apiError('playerUid is required.', 400);
     if (!Number.isFinite(delta) || delta === 0 || !Number.isInteger(delta)) {
       return apiError('Amount must be a non-zero whole number.', 400);
@@ -29,6 +39,36 @@ export async function POST(request: Request) {
     }
 
     const scope = scopedCoadminUid(auth.user);
+    const isAdmin = auth.user.role === 'admin';
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await adjustPlayerBalanceInSql({
+        playerUid,
+        delta,
+        balanceType,
+        actorUid: auth.user.uid,
+        actorRole: auth.user.role,
+        scopeUid: scope,
+        isAdmin,
+        idempotencyKey,
+      });
+      logAuthoritySqlWrite(route, {
+        ...authoritySqlWriteEnvLogFields(),
+        playerUid,
+        balanceType,
+        delta,
+        duplicate: result.duplicate,
+        eventId: result.eventId,
+      });
+      return NextResponse.json({
+        success: true,
+        duplicate: result.duplicate,
+        authority: 'sql',
+        before: result.before,
+        after: result.after,
+      });
+    }
+
     const playerRef = adminDb.collection('users').doc(playerUid);
     const eventRef = adminDb.collection('financialEvents').doc();
     await adminDb.runTransaction(async (transaction) => {
@@ -46,7 +86,7 @@ export async function POST(request: Request) {
       }
       const playerScope =
         String(player.coadminUid || '').trim() || String(player.createdBy || '').trim();
-      if (auth.user.role !== 'admin' && playerScope !== scope) {
+      if (!isAdmin && playerScope !== scope) {
         throw new Error('Forbidden: this player is outside your scope.');
       }
 
@@ -82,11 +122,16 @@ export async function POST(request: Request) {
 
     void mirrorFinancialEventById(eventRef.id, 'appbeg_player_balance_adjust');
     void mirrorUserBalanceSnapshotById(playerUid, 'appbeg_player_balance_adjust');
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, authority: 'firestore' });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to adjust player balance.';
-    const status = /not authenticated|authorization|token/i.test(message) ? 401 : /forbidden|scope/i.test(message) ? 403 : /required|not found|not enough|whole|player/i.test(message) ? 400 : 409;
+    const status = /not authenticated|authorization|token/i.test(message)
+      ? 401
+      : /forbidden|scope/i.test(message)
+        ? 403
+        : /required|not found|not enough|whole|player/i.test(message)
+          ? 400
+          : 409;
     return NextResponse.json({ error: message }, { status });
   }
 }
-

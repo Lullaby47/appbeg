@@ -31,6 +31,7 @@ import {
   startImpersonationSession,
 } from '@/features/auth/appSession';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
+import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { auth, db } from '@/lib/firebase/client';
 import { getApiAuthHeaders, getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import {
@@ -769,12 +770,18 @@ export default function CoadminPage() {
         return;
       }
       setCoadminActorUid(user.uid);
-      try {
-        const userSnap = await getDoc(doc(db, 'users', user.uid));
-        const data = userSnap.data() as { username?: string } | undefined;
-        setCoadminActorUsername(String(data?.username || ''));
-      } catch {
-        // Non-blocking profile read for display name.
+      if (isClientSqlReadMode()) {
+        logClientFirestoreSkipped('coadmin_actor_profile', { uid: user.uid });
+        const sessionUser = getCachedSessionUser() || (await getSessionUserOnce());
+        setCoadminActorUsername(String(sessionUser?.username || ''));
+      } else {
+        try {
+          const userSnap = await getDoc(doc(db, 'users', user.uid));
+          const data = userSnap.data() as { username?: string } | undefined;
+          setCoadminActorUsername(String(data?.username || ''));
+        } catch {
+          // Non-blocking profile read for display name.
+        }
       }
       console.info('[COADMIN_PAGE_AUTH]', {
         source: 'firebase',
@@ -1107,26 +1114,71 @@ export default function CoadminPage() {
       }
     );
 
-    const profileRef = doc(db, 'users', uid);
-    const unsubscribeStaffProfile = onSnapshot(
-      profileRef,
-      (snapshot) => {
+    let unsubscribeStaffProfile = () => {};
+    let staffProfilePollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    if (isClientSqlReadMode()) {
+      logClientFirestoreSkipped('staff_live_cash_box', { staffUid: uid });
+      const pollStaffCashBox = async () => {
         if (cancelled) {
           return;
         }
-        if (!snapshot.exists()) {
-          setStaffLiveCashBoxNpr(0);
-          return;
+        try {
+          const response = await fetch('/api/users/cache?role=staff', {
+            method: 'GET',
+            headers: await getFirebaseApiHeaders(false),
+            cache: 'no-store',
+          });
+          const payload = (await response.json().catch(() => ({}))) as {
+            users?: Array<{ uid?: string; cashBoxNpr?: number }>;
+          };
+          if (!cancelled && response.ok) {
+            const staff = (payload.users || []).find((entry) => entry.uid === uid);
+            setStaffLiveCashBoxNpr(Number(staff?.cashBoxNpr || 0));
+          }
+        } catch (error) {
+          if (!cancelled) {
+            setMessage(
+              error instanceof Error ? error.message : 'Could not monitor staff cash box.'
+            );
+          }
+        } finally {
+          if (!cancelled) {
+            staffProfilePollTimer = setTimeout(() => {
+              void pollStaffCashBox();
+            }, 12_000);
+          }
         }
-        const data = snapshot.data() as { cashBoxNpr?: number };
-        setStaffLiveCashBoxNpr(Number(data.cashBoxNpr || 0));
-      },
-      (error) => {
-        if (!cancelled) {
-          setMessage(error.message || 'Could not monitor staff cash box.');
+      };
+      void pollStaffCashBox();
+      unsubscribeStaffProfile = () => {
+        if (staffProfilePollTimer != null) {
+          clearTimeout(staffProfilePollTimer);
+          staffProfilePollTimer = null;
         }
-      }
-    );
+      };
+    } else {
+      const profileRef = doc(db, 'users', uid);
+      unsubscribeStaffProfile = onSnapshot(
+        profileRef,
+        (snapshot) => {
+          if (cancelled) {
+            return;
+          }
+          if (!snapshot.exists()) {
+            setStaffLiveCashBoxNpr(0);
+            return;
+          }
+          const data = snapshot.data() as { cashBoxNpr?: number };
+          setStaffLiveCashBoxNpr(Number(data.cashBoxNpr || 0));
+        },
+        (error) => {
+          if (!cancelled) {
+            setMessage(error.message || 'Could not monitor staff cash box.');
+          }
+        }
+      );
+    }
 
     return () => {
       cancelled = true;

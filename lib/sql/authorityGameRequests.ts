@@ -1,0 +1,1702 @@
+import 'server-only';
+
+import { randomUUID } from 'crypto';
+import type { PoolClient } from 'pg';
+
+import type { RequestLinkedGameCredential } from '@/lib/games/requestLinkedCarerTask';
+import { getCoadminMaintenanceBreak } from '@/lib/maintenance/admin';
+import {
+  claimAuthorityOperation,
+  insertAuthorityLedgerEvent,
+  readAuthorityOperationPayload,
+} from '@/lib/sql/authorityLedger';
+import {
+  normalizeGameName,
+  tombstoneLinkedCarerTaskInTxn,
+  ttlAfterDaysIso,
+  updatePlayerBalancesInTxn,
+  upsertGameRequestCacheInTxn,
+  upsertLinkedCarerTaskInTxn,
+  writeGameRequestOutboxInTxn,
+} from '@/lib/sql/authorityGameRequestHelpers';
+import {
+  carerTaskLiveChannel,
+  coadminTaskLiveChannel,
+  insertLiveOutboxEventWithClient,
+  playerRequestLiveChannel,
+} from '@/lib/sql/liveOutbox';
+import { cleanText, getPlayerMirrorPool, toIsoString } from '@/lib/sql/playerMirrorCommon';
+import { hasFirstRechargeMatchAppliedFromSqlWithClient } from '@/lib/sql/playerGameRequestsCache';
+
+const MIN_REDEEM_AMOUNT = 50;
+const MAX_REDEEM_AMOUNT = 350;
+const PLAYER_GAME_REDEEM_MAX_PER_24H = 350;
+const PLAYER_GAME_REDEEM_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
+const FIRST_RECHARGE_MATCH_PERCENT = 50;
+
+const DISMISSIBLE_REDEEM_STATUSES = new Set(['pending', 'poked', 'pending_review']);
+
+export type AuthorityRechargeCreateInput = {
+  playerUid: string;
+  gameName: string;
+  amount: number;
+  baseAmount?: number | null;
+  bonusPercentage?: number | null;
+  bonusEventId?: string | null;
+  assignedGameUsername: string;
+  gameCredential: RequestLinkedGameCredential | null;
+  previewCoadminUid: string;
+  hasAnyFirstRechargeAppliedRequest: boolean;
+  idempotencyKey?: string | null;
+};
+
+export type AuthorityRechargeCreateResult = {
+  success: true;
+  duplicate: boolean;
+  requestId: string;
+};
+
+export type AuthorityRedeemCreateInput = {
+  playerUid: string;
+  gameName: string;
+  amount: number;
+  baseAmount?: number | null;
+  bonusPercentage?: number | null;
+  bonusEventId?: string | null;
+  assignedGameUsername: string;
+  gameCredential: RequestLinkedGameCredential | null;
+  idempotencyKey?: string | null;
+};
+
+export type AuthorityRedeemCreateResult = {
+  success: true;
+  duplicate: boolean;
+  requestId: string;
+};
+
+export type AuthorityCompleteRechargeRedeemInput = {
+  taskId: string;
+  actorUid: string;
+  actorUsername?: string | null;
+  actorRole: string;
+  isAdmin: boolean;
+  scopeUid: string | null;
+  idempotencyKey?: string | null;
+};
+
+export type AuthorityCompleteRechargeRedeemResult = {
+  success: true;
+  duplicate: boolean;
+  alreadyCompleted: boolean;
+  taskId: string;
+  requestId: string;
+  totalAwardNpr: number;
+};
+
+export type AuthorityDismissRechargeInput = {
+  requestId: string;
+  actorUid: string;
+  actorRole: string;
+  isAdmin: boolean;
+  scopeUid: string | null;
+  idempotencyKey?: string | null;
+};
+
+export type AuthorityDismissRechargeResult = {
+  success: true;
+  duplicate: boolean;
+  alreadyDismissed: boolean;
+  refunded: boolean;
+  requestId: string;
+  linkedTaskId: string;
+  taskDeleted: boolean;
+};
+
+export type AuthorityDismissRedeemInput = {
+  requestId: string;
+  actorUid: string;
+  actorRole: string;
+  isAdmin: boolean;
+  scopeUid: string | null;
+  idempotencyKey?: string | null;
+};
+
+export type AuthorityDismissRedeemResult = {
+  success: true;
+  duplicate: boolean;
+  alreadyDismissed: boolean;
+  requestId: string;
+  linkedTaskId: string;
+  taskDeleted: boolean;
+};
+
+function getNepalHour() {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kathmandu',
+    hour: 'numeric',
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(new Date());
+  return Number(parts.find((part) => part.type === 'hour')?.value || '0') || 0;
+}
+
+function isNepalNightTime() {
+  const hour = getNepalHour();
+  return hour >= 22 || hour < 6;
+}
+
+function randomInt(min: number, max: number) {
+  const safeMin = Math.min(min, max);
+  const safeMax = Math.max(min, max);
+  return Math.floor(Math.random() * (safeMax - safeMin + 1)) + safeMin;
+}
+
+export function calculateRechargeRedeemRewardNpr() {
+  const base = isNepalNightTime() ? randomInt(22, 35) : randomInt(12, 22);
+  if (!isNepalNightTime()) return base;
+  const bonusPercent = randomInt(10, 15);
+  return Math.round(base * (1 + bonusPercent / 100));
+}
+
+function readRawField(raw: unknown, field: string) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  return (raw as Record<string, unknown>)[field];
+}
+
+function readPlayerCoin(row: Record<string, unknown>) {
+  const coin = Number(row.coin);
+  if (Number.isFinite(coin)) return Math.max(0, coin);
+  return Math.max(0, Number(readRawField(row.raw_firestore_data, 'coin') || 0));
+}
+
+function readPlayerCash(row: Record<string, unknown>) {
+  const cash = Number(row.cash);
+  if (Number.isFinite(cash)) return Math.max(0, cash);
+  return Math.max(0, Number(readRawField(row.raw_firestore_data, 'cash') || 0));
+}
+
+function readCashBoxNpr(snapshot: Record<string, unknown>, playerRow?: Record<string, unknown>) {
+  const fromSnapshot = Number(snapshot.cash_box_npr);
+  if (Number.isFinite(fromSnapshot)) return Math.max(0, fromSnapshot);
+  const raw = playerRow?.raw_firestore_data ?? snapshot.raw_firestore_data;
+  const fromRaw = Number(readRawField(raw, 'cashBoxNpr'));
+  return Number.isFinite(fromRaw) ? Math.max(0, fromRaw) : 0;
+}
+
+function readFirstRechargeMatchUsed(row: Record<string, unknown>) {
+  const raw = row.raw_firestore_data;
+  if (readRawField(raw, 'firstRechargeMatchUsed') === true) return true;
+  return false;
+}
+
+async function fetchRolling24hRedeemUsageForPlayerGame(
+  client: PoolClient,
+  playerUid: string,
+  gameName: string
+) {
+  const normalizedGame = normalizeGameName(gameName);
+  const since = new Date(Date.now() - PLAYER_GAME_REDEEM_ROLLING_WINDOW_MS).toISOString();
+  const { rows } = await client.query(
+    `
+      SELECT amount, status, normalized_game_name
+      FROM public.player_game_requests_cache
+      WHERE player_uid = $1
+        AND type = 'redeem'
+        AND deleted_at IS NULL
+        AND created_at >= $2::timestamptz
+    `,
+    [playerUid, since]
+  );
+  let total = 0;
+  for (const row of rows) {
+    const record = row as Record<string, unknown>;
+    if (cleanText(record.normalized_game_name) !== normalizedGame) continue;
+    const status = cleanText(record.status).toLowerCase();
+    if (status === 'failed' || status === 'dismissed') continue;
+    total += Math.max(0, Number(record.amount || 0));
+  }
+  return total;
+}
+
+async function insertFinancialEventInTxn(
+  client: PoolClient,
+  input: {
+    eventId: string;
+    playerUid: string;
+    coadminUid: string;
+    amountNpr: number;
+    type: string;
+    requestId: string;
+    beforeCash?: number | null;
+    afterCash?: number | null;
+    beforeCoin?: number | null;
+    afterCoin?: number | null;
+    createdAt: string;
+    source: string;
+  }
+) {
+  const raw = {
+    playerUid: input.playerUid,
+    coadminUid: input.coadminUid,
+    amountNpr: input.amountNpr,
+    type: input.type,
+    requestId: input.requestId,
+    createdAt: input.createdAt,
+    ttlExpiresAt: ttlAfterDaysIso(90),
+  };
+  await client.query(
+    `
+      INSERT INTO public.financial_events_cache (
+        firebase_id, player_uid, coadmin_uid, type, amount_npr, request_id,
+        before_cash, after_cash, before_coin, after_coin,
+        created_at, updated_at, ttl_expires_at, source, mirrored_at, deleted_at, raw_firestore_data
+      )
+      VALUES (
+        $1, $2, $3, $4, $5, $6,
+        $7, $8, $9, $10,
+        $11::timestamptz, $11::timestamptz, $12::timestamptz, $13, now(), NULL, $14::jsonb
+      )
+      ON CONFLICT (firebase_id) DO NOTHING
+    `,
+    [
+      input.eventId,
+      input.playerUid,
+      input.coadminUid,
+      input.type,
+      input.amountNpr,
+      input.requestId,
+      input.beforeCash ?? null,
+      input.afterCash ?? null,
+      input.beforeCoin ?? null,
+      input.afterCoin ?? null,
+      input.createdAt,
+      ttlAfterDaysIso(90),
+      input.source,
+      JSON.stringify(raw),
+    ]
+  );
+}
+
+async function updateCarerTaskCompletedInTxn(
+  client: PoolClient,
+  taskId: string,
+  input: Record<string, unknown>
+) {
+  const nowIso = String(input.updatedAt || new Date().toISOString());
+  const raw = {
+    status: 'completed',
+    expiresAt: null,
+    completedAt: nowIso,
+    ttlExpiresAt: ttlAfterDaysIso(30),
+    automationStatus: 'completed',
+    automationUpdatedAt: nowIso,
+    claimedStatus: 'completed',
+    isPoked: false,
+    pokeMessage: null,
+    pokedAt: null,
+    completedByCarerUid: cleanText(input.completedByCarerUid),
+    completedByCarerUsername: cleanText(input.completedByCarerUsername),
+    rewardAmountNpr: input.rewardAmountNpr == null ? null : Number(input.rewardAmountNpr),
+    rewardReason: cleanText(input.rewardReason),
+    cashBoxBefore: input.cashBoxBefore == null ? null : Number(input.cashBoxBefore),
+    cashBoxAfter: input.cashBoxAfter == null ? null : Number(input.cashBoxAfter),
+    cashBoxDelta: input.cashBoxDelta == null ? null : Number(input.cashBoxDelta),
+    actorUid: cleanText(input.actorUid),
+    actorRole: cleanText(input.actorRole),
+    sourceTaskId: cleanText(input.sourceTaskId),
+    sourceRequestId: cleanText(input.sourceRequestId),
+    updatedAt: nowIso,
+  };
+  await client.query(
+    `
+      UPDATE public.carer_tasks_cache
+      SET
+        status = 'completed',
+        expires_at = NULL,
+        completed_at = $2::timestamptz,
+        ttl_expires_at = $3::timestamptz,
+        automation_status = 'completed',
+        automation_updated_at = $2::timestamptz,
+        claimed_status = 'completed',
+        is_poked = FALSE,
+        poke_message = NULL,
+        poked_at = NULL,
+        completed_by_carer_uid = NULLIF($4, ''),
+        completed_by_carer_username = NULLIF($5, ''),
+        updated_at = $2::timestamptz,
+        source = 'authority',
+        mirrored_at = now(),
+        raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || $6::jsonb
+      WHERE firebase_id = $1 AND deleted_at IS NULL
+    `,
+    [
+      taskId,
+      nowIso,
+      ttlAfterDaysIso(30),
+      cleanText(input.completedByCarerUid),
+      cleanText(input.completedByCarerUsername),
+      JSON.stringify(raw),
+    ]
+  );
+}
+
+async function writeCarerTaskOutboxInTxn(
+  client: PoolClient,
+  input: {
+    coadminUid: string;
+    carerUid?: string | null;
+    taskId: string;
+    requestId: string;
+    status: string;
+    eventType: string;
+    updatedAt: string;
+  }
+) {
+  const payload = {
+    entityId: input.taskId,
+    taskId: input.taskId,
+    requestId: input.requestId,
+    status: input.status,
+    updatedAt: input.updatedAt,
+    source: 'authority',
+  };
+  await insertLiveOutboxEventWithClient(client, {
+    channel: coadminTaskLiveChannel(input.coadminUid),
+    eventType: input.eventType,
+    entityType: 'carer_task',
+    entityId: input.taskId,
+    source: 'authority_game_request',
+    mirroredAt: input.updatedAt,
+    payload,
+  });
+  const carerUid = cleanText(input.carerUid);
+  if (carerUid) {
+    await insertLiveOutboxEventWithClient(client, {
+      channel: carerTaskLiveChannel(carerUid),
+      eventType: input.eventType,
+      entityType: 'carer_task',
+      entityId: input.taskId,
+      source: 'authority_game_request',
+      mirroredAt: input.updatedAt,
+      payload,
+    });
+  }
+}
+
+export async function createRechargeRequestInSql(
+  input: AuthorityRechargeCreateInput
+): Promise<AuthorityRechargeCreateResult> {
+  const playerUid = cleanText(input.playerUid);
+  const gameName = cleanText(input.gameName);
+  const amount = Math.max(0, Number(input.amount || 0));
+  const bonusEventId = cleanText(input.bonusEventId) || null;
+  const idempotencyKey = cleanText(input.idempotencyKey) || randomUUID();
+  const operationKey = `game_request_create:${playerUid}:recharge:${idempotencyKey}`;
+
+  if (!playerUid || !gameName || amount <= 0) {
+    throw new Error('Enter a valid amount.');
+  }
+
+  const existing = await readAuthorityOperationPayload(operationKey);
+  if (existing?.requestId) {
+    return {
+      success: true,
+      duplicate: true,
+      requestId: cleanText(existing.requestId),
+    };
+  }
+
+  const db = getPlayerMirrorPool();
+  if (!db) throw new Error('SQL authority unavailable.');
+
+  const requestId = randomUUID();
+  const eventId = randomUUID();
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const claim = await claimAuthorityOperation(client, {
+      operationKey,
+      operationType: 'game_request_create',
+      userUid: playerUid,
+      sourceId: requestId,
+      actorUid: playerUid,
+      actorRole: 'player',
+      payload: {},
+    });
+    if (!claim.claimed) {
+      await client.query('ROLLBACK');
+      const payload = await readAuthorityOperationPayload(operationKey);
+      if (payload?.requestId) {
+        return {
+          success: true,
+          duplicate: true,
+          requestId: cleanText(payload.requestId),
+        };
+      }
+      throw new Error('Duplicate recharge create in progress.');
+    }
+
+    const playerResult = await client.query(
+      `
+        SELECT uid, username, role, status, coin, coadmin_uid, created_by, raw_firestore_data
+        FROM public.players_cache
+        WHERE uid = $1 AND deleted_at IS NULL
+        FOR UPDATE
+      `,
+      [playerUid]
+    );
+    if (!playerResult.rows.length) throw new Error('Player profile not found.');
+    const player = playerResult.rows[0] as Record<string, unknown>;
+    const role = cleanText(player.role).toLowerCase();
+    const status = cleanText(player.status).toLowerCase();
+    if (role !== 'player') throw new Error('Only players can create recharge requests.');
+    if (status === 'disabled') {
+      throw new Error('Your account is blocked. Recharge and redeem features are disabled.');
+    }
+
+    const coadminUid =
+      cleanText(player.coadmin_uid) ||
+      cleanText(player.created_by) ||
+      cleanText(input.previewCoadminUid);
+    if (!coadminUid) throw new Error('Player coadmin scope not found.');
+
+    const maintenanceBreak = await getCoadminMaintenanceBreak(coadminUid);
+    if (maintenanceBreak.enabled) {
+      throw new Error(`MAINTENANCE_BREAK:${maintenanceBreak.message}`);
+    }
+
+    const currentCoin = readPlayerCoin(player);
+    if (currentCoin < amount) {
+      throw new Error(
+        'Not enough coin to request this recharge. Use a lower amount or add coin first.'
+      );
+    }
+
+    const firstRechargeMatchUsed = readFirstRechargeMatchUsed(player);
+    const hasApplied =
+      input.hasAnyFirstRechargeAppliedRequest ||
+      (await hasFirstRechargeMatchAppliedFromSqlWithClient(client, playerUid));
+    const firstRechargeMatchEligible =
+      !bonusEventId && !firstRechargeMatchUsed && !hasApplied;
+
+    const requestedBaseAmount = Math.max(0, Number(input.baseAmount || 0));
+    const requestedBonusPercentage = Number(input.bonusPercentage);
+    const boostedAmount = firstRechargeMatchEligible
+      ? Math.round(amount * (1 + FIRST_RECHARGE_MATCH_PERCENT / 100))
+      : amount;
+
+    const nowIso = new Date().toISOString();
+    const newCoin = currentCoin - amount;
+    const playerUsername = cleanText(player.username) || 'Player';
+    const assignedGameUsername = cleanText(input.assignedGameUsername);
+    if (!assignedGameUsername) {
+      throw new Error(
+        'Game username is not assigned for this game yet. Please create username first.'
+      );
+    }
+
+    const requestRaw = {
+      playerUid,
+      gameName,
+      currentUsername: assignedGameUsername,
+      gameAccountUsername: assignedGameUsername,
+      amount: boostedAmount,
+      baseAmount: firstRechargeMatchEligible
+        ? amount
+        : requestedBaseAmount > 0
+          ? requestedBaseAmount
+          : null,
+      bonusPercentage: firstRechargeMatchEligible
+        ? FIRST_RECHARGE_MATCH_PERCENT
+        : Number.isFinite(requestedBonusPercentage) && requestedBonusPercentage > 0
+          ? requestedBonusPercentage
+          : null,
+      bonusEventId,
+      firstRechargeMatchApplied: firstRechargeMatchEligible,
+      type: 'recharge',
+      status: 'pending',
+      createdBy: coadminUid,
+      coadminUid,
+      createdAt: nowIso,
+      completedAt: null,
+      pokedAt: null,
+      pokeMessage: null,
+      coinDeductedOnRequest: true,
+    };
+
+    await updatePlayerBalancesInTxn(client, playerUid, { coin: newCoin });
+    await upsertGameRequestCacheInTxn(client, requestId, {
+      ...requestRaw,
+      playerUsername,
+      source: 'authority_recharge_create',
+      rawFirestoreData: requestRaw,
+    });
+    await upsertLinkedCarerTaskInTxn(
+      client,
+      {
+        requestId,
+        coadminUid,
+        type: 'recharge',
+        playerUid,
+        playerUsername,
+        gameName,
+        amount: boostedAmount,
+        currentUsername: assignedGameUsername,
+        gameCredential: input.gameCredential,
+      },
+      nowIso
+    );
+
+    const financialRaw = {
+      playerUid,
+      coadminUid,
+      amountNpr: amount,
+      type: 'recharge_request_deduct',
+      requestId,
+      createdAt: nowIso,
+      ttlExpiresAt: ttlAfterDaysIso(90),
+    };
+    await insertFinancialEventInTxn(client, {
+      eventId,
+      playerUid,
+      coadminUid,
+      amountNpr: amount,
+      type: 'recharge_request_deduct',
+      requestId,
+      beforeCoin: currentCoin,
+      afterCoin: newCoin,
+      createdAt: nowIso,
+      source: 'authority_recharge_create',
+    });
+    await insertAuthorityLedgerEvent(client, {
+      eventKey: `financialEvents:${eventId}:${playerUid}:coin:recharge_request_coin_debit`,
+      userUid: playerUid,
+      username: playerUsername,
+      role: 'player',
+      coadminUid,
+      balanceType: 'coin',
+      direction: 'debit',
+      delta: -amount,
+      absoluteAfter: newCoin,
+      eventType: 'recharge_request_coin_debit',
+      sourceCollection: 'financialEvents',
+      sourceId: eventId,
+      actorUid: playerUid,
+      actorRole: 'player',
+      confidence: 'high',
+      sourceCreatedAt: nowIso,
+      rawSourceData: financialRaw,
+      sourceFields: { amount, requestId },
+    });
+
+    await writeGameRequestOutboxInTxn(client, {
+      playerUid,
+      coadminUid,
+      requestId,
+      type: 'recharge',
+      status: 'pending',
+      gameName,
+      amount: boostedAmount,
+      eventType: 'recharge_create',
+      updatedAt: nowIso,
+    });
+    await writeCarerTaskOutboxInTxn(client, {
+      coadminUid,
+      taskId: `request__${requestId}`,
+      requestId,
+      status: 'pending',
+      eventType: 'recharge_task_create',
+      updatedAt: nowIso,
+    });
+
+    await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
+      operationKey,
+      JSON.stringify({ requestId, playerUid, type: 'recharge', amount }),
+    ]);
+    await client.query('COMMIT');
+    return { success: true, duplicate: false, requestId };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function createRedeemRequestInSql(
+  input: AuthorityRedeemCreateInput
+): Promise<AuthorityRedeemCreateResult> {
+  const playerUid = cleanText(input.playerUid);
+  const gameName = cleanText(input.gameName);
+  const amount = Math.max(0, Number(input.amount || 0));
+  const idempotencyKey = cleanText(input.idempotencyKey) || randomUUID();
+  const operationKey = `game_request_create:${playerUid}:redeem:${idempotencyKey}`;
+
+  if (!gameName) throw new Error('Game is required.');
+  if (!amount) throw new Error('Enter a valid amount.');
+  if (amount < MIN_REDEEM_AMOUNT || amount > MAX_REDEEM_AMOUNT) {
+    throw new Error(
+      `Redeem amount must be between ${MIN_REDEEM_AMOUNT} and ${MAX_REDEEM_AMOUNT}.`
+    );
+  }
+
+  const existing = await readAuthorityOperationPayload(operationKey);
+  if (existing?.requestId) {
+    return {
+      success: true,
+      duplicate: true,
+      requestId: cleanText(existing.requestId),
+    };
+  }
+
+  const db = getPlayerMirrorPool();
+  if (!db) throw new Error('SQL authority unavailable.');
+
+  const requestId = randomUUID();
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const claim = await claimAuthorityOperation(client, {
+      operationKey,
+      operationType: 'game_request_create',
+      userUid: playerUid,
+      sourceId: requestId,
+      actorUid: playerUid,
+      actorRole: 'player',
+      payload: {},
+    });
+    if (!claim.claimed) {
+      await client.query('ROLLBACK');
+      const payload = await readAuthorityOperationPayload(operationKey);
+      if (payload?.requestId) {
+        return {
+          success: true,
+          duplicate: true,
+          requestId: cleanText(payload.requestId),
+        };
+      }
+      throw new Error('Duplicate redeem create in progress.');
+    }
+
+    const rollingUsed = await fetchRolling24hRedeemUsageForPlayerGame(client, playerUid, gameName);
+    const redeemRemaining = Math.max(0, PLAYER_GAME_REDEEM_MAX_PER_24H - rollingUsed);
+    if (redeemRemaining <= 0) {
+      throw new Error(
+        `Redeem limit for ${gameName} is ${PLAYER_GAME_REDEEM_MAX_PER_24H} per rolling 24 hours. Wait until older redeems expire from this game window before redeeming again.`
+      );
+    }
+    if (amount > redeemRemaining) {
+      throw new Error(
+        `Only ${redeemRemaining} redeem is left for ${gameName} in this rolling 24-hour window.`
+      );
+    }
+
+    const playerResult = await client.query(
+      `
+        SELECT uid, username, role, status, coadmin_uid, created_by
+        FROM public.players_cache
+        WHERE uid = $1 AND deleted_at IS NULL
+        FOR UPDATE
+      `,
+      [playerUid]
+    );
+    if (!playerResult.rows.length) throw new Error('Player profile not found.');
+    const player = playerResult.rows[0] as Record<string, unknown>;
+    const role = cleanText(player.role).toLowerCase();
+    const status = cleanText(player.status).toLowerCase();
+    if (role !== 'player') throw new Error('Only players can create redeem requests.');
+    if (status === 'disabled') {
+      throw new Error('Your account is blocked. Recharge and redeem features are disabled.');
+    }
+
+    const coadminUid = cleanText(player.coadmin_uid) || cleanText(player.created_by);
+    if (!coadminUid) throw new Error('Player coadmin scope not found.');
+
+    const maintenanceBreak = await getCoadminMaintenanceBreak(coadminUid);
+    if (maintenanceBreak.enabled) {
+      throw new Error(`MAINTENANCE_BREAK:${maintenanceBreak.message}`);
+    }
+
+    const assignedGameUsername = cleanText(input.assignedGameUsername);
+    if (!assignedGameUsername) {
+      throw new Error(
+        'Game username is not assigned for this game yet. Please create username first.'
+      );
+    }
+
+    const nowIso = new Date().toISOString();
+    const playerUsername = cleanText(player.username) || 'Player';
+    const requestRaw = {
+      playerUid,
+      gameName,
+      currentUsername: assignedGameUsername,
+      gameAccountUsername: assignedGameUsername,
+      amount,
+      baseAmount:
+        input.baseAmount !== undefined && input.baseAmount !== null
+          ? Number(input.baseAmount)
+          : null,
+      bonusPercentage:
+        input.bonusPercentage !== undefined && input.bonusPercentage !== null
+          ? Number(input.bonusPercentage)
+          : null,
+      bonusEventId: cleanText(input.bonusEventId) || null,
+      type: 'redeem',
+      status: 'pending',
+      createdBy: coadminUid,
+      coadminUid,
+      createdAt: nowIso,
+      completedAt: null,
+      pokedAt: null,
+      pokeMessage: null,
+    };
+
+    await upsertGameRequestCacheInTxn(client, requestId, {
+      ...requestRaw,
+      playerUsername,
+      source: 'authority_redeem_create',
+      rawFirestoreData: requestRaw,
+    });
+    await upsertLinkedCarerTaskInTxn(
+      client,
+      {
+        requestId,
+        coadminUid,
+        type: 'redeem',
+        playerUid,
+        playerUsername,
+        gameName,
+        amount,
+        currentUsername: assignedGameUsername,
+        gameCredential: input.gameCredential,
+      },
+      nowIso
+    );
+
+    await writeGameRequestOutboxInTxn(client, {
+      playerUid,
+      coadminUid,
+      requestId,
+      type: 'redeem',
+      status: 'pending',
+      gameName,
+      amount,
+      eventType: 'redeem_create',
+      updatedAt: nowIso,
+    });
+    await writeCarerTaskOutboxInTxn(client, {
+      coadminUid,
+      taskId: `request__${requestId}`,
+      requestId,
+      status: 'pending',
+      eventType: 'redeem_task_create',
+      updatedAt: nowIso,
+    });
+
+    await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
+      operationKey,
+      JSON.stringify({ requestId, playerUid, type: 'redeem', amount }),
+    ]);
+    await client.query('COMMIT');
+    return { success: true, duplicate: false, requestId };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function completeRechargeRedeemTaskInSql(
+  input: AuthorityCompleteRechargeRedeemInput
+): Promise<AuthorityCompleteRechargeRedeemResult> {
+  const taskId = cleanText(input.taskId);
+  const actorUid = cleanText(input.actorUid);
+  const actorRole = cleanText(input.actorRole);
+  if (!taskId) throw new Error('taskId is required.');
+
+  const idempotencyKey = cleanText(input.idempotencyKey) || taskId;
+  const operationKey = `game_request_complete:${taskId}:${idempotencyKey}`;
+
+  const existing = await readAuthorityOperationPayload(operationKey);
+  if (existing?.requestId) {
+    return {
+      success: true,
+      duplicate: true,
+      alreadyCompleted: existing.alreadyCompleted === true,
+      taskId,
+      requestId: cleanText(existing.requestId),
+      totalAwardNpr: Number(existing.totalAwardNpr || 0),
+    };
+  }
+
+  const db = getPlayerMirrorPool();
+  if (!db) throw new Error('SQL authority unavailable.');
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const claim = await claimAuthorityOperation(client, {
+      operationKey,
+      operationType: 'game_request_complete',
+      userUid: actorUid,
+      sourceId: taskId,
+      actorUid,
+      actorRole,
+      payload: {},
+    });
+    if (!claim.claimed) {
+      await client.query('ROLLBACK');
+      const payload = await readAuthorityOperationPayload(operationKey);
+      if (payload?.requestId) {
+        return {
+          success: true,
+          duplicate: true,
+          alreadyCompleted: payload.alreadyCompleted === true,
+          taskId,
+          requestId: cleanText(payload.requestId),
+          totalAwardNpr: Number(payload.totalAwardNpr || 0),
+        };
+      }
+      throw new Error('Duplicate complete in progress.');
+    }
+
+    const taskResult = await client.query(
+      `
+        SELECT *
+        FROM public.carer_tasks_cache
+        WHERE firebase_id = $1 AND deleted_at IS NULL
+        FOR UPDATE
+      `,
+      [taskId]
+    );
+    if (!taskResult.rows.length) throw new Error('Task not found.');
+    const task = taskResult.rows[0] as Record<string, unknown>;
+    const taskStatus = cleanText(task.status).toLowerCase();
+    if (taskStatus === 'completed') {
+      const requestId = cleanText(task.request_id);
+      await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
+        operationKey,
+        JSON.stringify({
+          requestId,
+          alreadyCompleted: true,
+          totalAwardNpr: 0,
+        }),
+      ]);
+      await client.query('COMMIT');
+      return {
+        success: true,
+        duplicate: false,
+        alreadyCompleted: true,
+        taskId,
+        requestId,
+        totalAwardNpr: 0,
+      };
+    }
+    if (taskStatus !== 'in_progress') {
+      throw new Error('Start the task first so it moves to In Progress before completion.');
+    }
+
+    const taskScope = cleanText(task.coadmin_uid);
+    if (!input.isAdmin && (!input.scopeUid || input.scopeUid !== taskScope)) {
+      throw new Error('Forbidden: task is outside your scope.');
+    }
+    const assignedCarerUid = cleanText(task.assigned_carer_uid);
+    if (assignedCarerUid && assignedCarerUid !== actorUid && !input.isAdmin) {
+      throw new Error('Only the assigned handler can complete this task.');
+    }
+
+    const requestId = cleanText(task.request_id);
+    if (!requestId) throw new Error('This task is not linked to a request.');
+
+    const requestResult = await client.query(
+      `
+        SELECT *
+        FROM public.player_game_requests_cache
+        WHERE firebase_id = $1 AND deleted_at IS NULL
+        FOR UPDATE
+      `,
+      [requestId]
+    );
+    if (!requestResult.rows.length) throw new Error('Related request not found.');
+    const request = requestResult.rows[0] as Record<string, unknown>;
+    const requestStatus = cleanText(request.status).toLowerCase();
+    const playerUid = cleanText(task.player_uid) || cleanText(request.player_uid);
+    if (!playerUid) throw new Error('Related player not found.');
+
+    if (requestStatus === 'completed') {
+      const nowIso = new Date().toISOString();
+      await updateCarerTaskCompletedInTxn(client, taskId, {
+        updatedAt: nowIso,
+        completedByCarerUid:
+          cleanText(task.completed_by_carer_uid) || assignedCarerUid || actorUid,
+        completedByCarerUsername:
+          cleanText(task.completed_by_carer_username) ||
+          cleanText(task.assigned_carer_username) ||
+          input.actorUsername ||
+          'Handler',
+        actorUid,
+        actorRole,
+        sourceTaskId: taskId,
+        sourceRequestId: requestId,
+      });
+      await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
+        operationKey,
+        JSON.stringify({ requestId, alreadyCompleted: true, totalAwardNpr: 0 }),
+      ]);
+      await client.query('COMMIT');
+      return {
+        success: true,
+        duplicate: false,
+        alreadyCompleted: true,
+        taskId,
+        requestId,
+        totalAwardNpr: 0,
+      };
+    }
+    if (requestStatus !== 'pending' && requestStatus !== 'poked') {
+      throw new Error('Request is not available to complete.');
+    }
+
+    const playerResult = await client.query(
+      `
+        SELECT uid, username, coin, cash, raw_firestore_data
+        FROM public.players_cache
+        WHERE uid = $1 AND deleted_at IS NULL
+        FOR UPDATE
+      `,
+      [playerUid]
+    );
+    if (!playerResult.rows.length) throw new Error('Related player not found.');
+    const player = playerResult.rows[0] as Record<string, unknown>;
+
+    const handlerResult = await client.query(
+      `
+        SELECT uid, username, raw_firestore_data
+        FROM public.players_cache
+        WHERE uid = $1 AND deleted_at IS NULL
+        FOR UPDATE
+      `,
+      [actorUid]
+    );
+    const handler = handlerResult.rows[0] as Record<string, unknown> | undefined;
+    const snapshotResult = await client.query(
+      `
+        SELECT firebase_id, cash_box_npr, raw_firestore_data
+        FROM public.user_balance_snapshots_cache
+        WHERE firebase_id = $1 AND deleted_at IS NULL
+        FOR UPDATE
+      `,
+      [actorUid]
+    );
+    const handlerSnapshot = snapshotResult.rows[0] as Record<string, unknown> | undefined;
+
+    const requestType = cleanText(request.type).toLowerCase();
+    const amount = Math.max(0, Number(request.amount || 0));
+    const coadminUid = cleanText(request.coadmin_uid) || taskScope;
+    const nowIso = new Date().toISOString();
+    const eventId = randomUUID();
+    let totalAwardNpr = 0;
+
+    if (requestType === 'redeem') {
+      const currentCash = readPlayerCash(player);
+      const newCash = currentCash + amount;
+      await updatePlayerBalancesInTxn(client, playerUid, { cash: newCash });
+      const financialRaw = {
+        playerUid,
+        coadminUid,
+        amountNpr: amount,
+        type: 'redeem',
+        requestId,
+        createdAt: nowIso,
+      };
+      await insertFinancialEventInTxn(client, {
+        eventId,
+        playerUid,
+        coadminUid,
+        amountNpr: amount,
+        type: 'redeem',
+        requestId,
+        beforeCash: currentCash,
+        afterCash: newCash,
+        createdAt: nowIso,
+        source: 'authority_game_request_complete',
+      });
+      await insertAuthorityLedgerEvent(client, {
+        eventKey: `financialEvents:${eventId}:${playerUid}:cash:redeem_cash_credit`,
+        userUid: playerUid,
+        username: cleanText(player.username) || 'Player',
+        role: 'player',
+        coadminUid,
+        balanceType: 'cash',
+        direction: 'credit',
+        delta: amount,
+        absoluteAfter: newCash,
+        eventType: 'redeem_cash_credit',
+        sourceCollection: 'financialEvents',
+        sourceId: eventId,
+        actorUid,
+        actorRole,
+        confidence: 'high',
+        sourceCreatedAt: nowIso,
+        rawSourceData: financialRaw,
+        sourceFields: { amount, requestId },
+      });
+    } else if (requestType === 'recharge') {
+      if (
+        request.first_recharge_match_applied === true &&
+        !readFirstRechargeMatchUsed(player)
+      ) {
+        await updatePlayerBalancesInTxn(client, playerUid, { firstRechargeMatchUsed: true });
+      }
+      const depositAmount = Math.max(
+        0,
+        Number(request.base_amount ?? request.amount ?? 0)
+      );
+      const financialRaw = {
+        playerUid,
+        coadminUid,
+        amountNpr: depositAmount,
+        type: 'deposit',
+        requestId,
+        createdAt: nowIso,
+      };
+      await insertFinancialEventInTxn(client, {
+        eventId,
+        playerUid,
+        coadminUid,
+        amountNpr: depositAmount,
+        type: 'deposit',
+        requestId,
+        createdAt: nowIso,
+        source: 'authority_game_request_complete',
+      });
+    } else {
+      throw new Error('Unsupported request type for completion.');
+    }
+
+    totalAwardNpr = calculateRechargeRedeemRewardNpr();
+    const cashBoxBefore = handlerSnapshot
+      ? readCashBoxNpr(handlerSnapshot, handler)
+      : 0;
+    const cashBoxAfter = cashBoxBefore + totalAwardNpr;
+    if (handlerSnapshot) {
+      await updatePlayerBalancesInTxn(client, actorUid, { cashBoxNpr: cashBoxAfter });
+    }
+
+    const requestRaw = {
+      ...(request.raw_firestore_data as Record<string, unknown>),
+      status: 'completed',
+      completedAt: nowIso,
+      ttlExpiresAt: ttlAfterDaysIso(90),
+      pokedAt: null,
+      pokeMessage: null,
+    };
+    await upsertGameRequestCacheInTxn(client, requestId, {
+      ...requestRaw,
+      playerUid,
+      playerUsername: cleanText(request.player_username),
+      coadminUid,
+      gameName: cleanText(request.game_name),
+      type: requestType,
+      status: 'completed',
+      amount,
+      completedAt: nowIso,
+      ttlExpiresAt: ttlAfterDaysIso(90),
+      source: 'authority_game_request_complete',
+      rawFirestoreData: requestRaw,
+    });
+
+    await updateCarerTaskCompletedInTxn(client, taskId, {
+      updatedAt: nowIso,
+      completedByCarerUid: actorUid,
+      completedByCarerUsername: input.actorUsername || 'Handler',
+      rewardAmountNpr: totalAwardNpr,
+      rewardReason: 'recharge_redeem_task_completion',
+      cashBoxBefore,
+      cashBoxAfter,
+      cashBoxDelta: cashBoxAfter - cashBoxBefore,
+      actorUid,
+      actorRole,
+      sourceTaskId: taskId,
+      sourceRequestId: requestId,
+    });
+
+    if (totalAwardNpr > 0 && handlerSnapshot) {
+      await insertAuthorityLedgerEvent(client, {
+        eventKey: `game_request_complete:${taskId}:${actorUid}:cashBoxNpr:handler_reward`,
+        userUid: actorUid,
+        username: cleanText(handler?.username) || input.actorUsername || 'Handler',
+        role: actorRole,
+        coadminUid: taskScope,
+        balanceType: 'cashBoxNpr',
+        direction: 'credit',
+        delta: totalAwardNpr,
+        absoluteAfter: cashBoxAfter,
+        eventType: 'recharge_redeem_handler_cashbox_credit',
+        sourceCollection: 'carerTasks',
+        sourceId: taskId,
+        actorUid,
+        actorRole,
+        confidence: 'high',
+        sourceCreatedAt: nowIso,
+        rawSourceData: {
+          rewardNpr: totalAwardNpr,
+          requestId,
+          taskId,
+        },
+        sourceFields: { rewardNpr: totalAwardNpr, requestId, taskId },
+      });
+    }
+
+    await writeGameRequestOutboxInTxn(client, {
+      playerUid,
+      coadminUid,
+      requestId,
+      type: requestType,
+      status: 'completed',
+      gameName: cleanText(request.game_name),
+      amount,
+      eventType: 'game_request_complete',
+      updatedAt: nowIso,
+    });
+    await writeCarerTaskOutboxInTxn(client, {
+      coadminUid: taskScope,
+      carerUid: assignedCarerUid || actorUid,
+      taskId,
+      requestId,
+      status: 'completed',
+      eventType: 'game_request_task_complete',
+      updatedAt: nowIso,
+    });
+    await insertLiveOutboxEventWithClient(client, {
+      channel: playerRequestLiveChannel(playerUid),
+      eventType: 'balance_update',
+      entityType: 'player_balance',
+      entityId: playerUid,
+      source: 'authority_game_request_complete',
+      mirroredAt: nowIso,
+      payload: { playerUid, updatedAt: nowIso, source: 'authority' },
+    });
+
+    await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
+      operationKey,
+      JSON.stringify({
+        requestId,
+        alreadyCompleted: false,
+        totalAwardNpr,
+      }),
+    ]);
+    await client.query('COMMIT');
+    return {
+      success: true,
+      duplicate: false,
+      alreadyCompleted: false,
+      taskId,
+      requestId,
+      totalAwardNpr,
+    };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function dismissRechargeRequestInSql(
+  input: AuthorityDismissRechargeInput
+): Promise<AuthorityDismissRechargeResult> {
+  const requestId = cleanText(input.requestId);
+  if (!requestId) throw new Error('requestId is required.');
+
+  const idempotencyKey = cleanText(input.idempotencyKey) || requestId;
+  const operationKey = `game_request_dismiss:${requestId}:${idempotencyKey}`;
+  const linkedTaskId = `request__${requestId}`;
+
+  const existing = await readAuthorityOperationPayload(operationKey);
+  if (existing?.requestId) {
+    return {
+      success: true,
+      duplicate: true,
+      alreadyDismissed: existing.alreadyDismissed === true,
+      refunded: existing.refunded === true,
+      requestId,
+      linkedTaskId,
+      taskDeleted: existing.taskDeleted === true,
+    };
+  }
+
+  const db = getPlayerMirrorPool();
+  if (!db) throw new Error('SQL authority unavailable.');
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const claim = await claimAuthorityOperation(client, {
+      operationKey,
+      operationType: 'game_request_dismiss',
+      userUid: input.actorUid,
+      sourceId: requestId,
+      actorUid: input.actorUid,
+      actorRole: input.actorRole,
+      payload: {},
+    });
+    if (!claim.claimed) {
+      await client.query('ROLLBACK');
+      const payload = await readAuthorityOperationPayload(operationKey);
+      if (payload?.requestId) {
+        return {
+          success: true,
+          duplicate: true,
+          alreadyDismissed: payload.alreadyDismissed === true,
+          refunded: payload.refunded === true,
+          requestId,
+          linkedTaskId,
+          taskDeleted: payload.taskDeleted === true,
+        };
+      }
+      throw new Error('Duplicate dismiss in progress.');
+    }
+
+    const requestResult = await client.query(
+      `
+        SELECT *
+        FROM public.player_game_requests_cache
+        WHERE firebase_id = $1 AND deleted_at IS NULL
+        FOR UPDATE
+      `,
+      [requestId]
+    );
+    if (!requestResult.rows.length) throw new Error('Request not found.');
+    const request = requestResult.rows[0] as Record<string, unknown>;
+    if (cleanText(request.type).toLowerCase() !== 'recharge') {
+      throw new Error('Only recharge requests can be dismissed.');
+    }
+
+    const requestCoadminUid =
+      cleanText(request.coadmin_uid) || cleanText(request.created_by);
+    if (!input.isAdmin && (!input.scopeUid || input.scopeUid !== requestCoadminUid)) {
+      throw new Error('Forbidden: request is outside your scope.');
+    }
+
+    const currentStatus = cleanText(request.status).toLowerCase();
+    const alreadyDismissed = currentStatus === 'dismissed';
+    if (!alreadyDismissed && currentStatus !== 'pending') {
+      throw new Error('Request is not pending.');
+    }
+
+    const taskResult = await client.query(
+      `
+        SELECT firebase_id
+        FROM public.carer_tasks_cache
+        WHERE firebase_id = $1 AND deleted_at IS NULL
+        FOR UPDATE
+      `,
+      [linkedTaskId]
+    );
+    const taskExists = taskResult.rows.length > 0;
+    const nowIso = new Date().toISOString();
+    let refunded = false;
+    const playerUid = cleanText(request.player_uid);
+
+    if (alreadyDismissed) {
+      if (taskExists) {
+        await tombstoneLinkedCarerTaskInTxn(client, requestId, 'authority_dismiss_recharge');
+      }
+      await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
+        operationKey,
+        JSON.stringify({
+          requestId,
+          alreadyDismissed: true,
+          refunded: false,
+          taskDeleted: taskExists,
+        }),
+      ]);
+      await client.query('COMMIT');
+      return {
+        success: true,
+        duplicate: false,
+        alreadyDismissed: true,
+        refunded: false,
+        requestId,
+        linkedTaskId,
+        taskDeleted: taskExists,
+      };
+    }
+
+    if (!playerUid) throw new Error('Request player not found.');
+
+    const deductedAmount = Math.max(
+      0,
+      Number(request.base_amount ?? request.amount ?? 0)
+    );
+    const shouldRefund =
+      request.coin_deducted_on_request === true &&
+      request.coin_refunded_on_dismissal !== true &&
+      deductedAmount > 0;
+
+    const requestRaw = {
+      ...(request.raw_firestore_data as Record<string, unknown>),
+      status: 'dismissed',
+      completedAt: nowIso,
+      ttlExpiresAt: ttlAfterDaysIso(90),
+      pokedAt: null,
+      pokeMessage: null,
+      dismissType: 'carer_manual',
+      coinRefundedOnDismissal: shouldRefund ? true : request.coin_refunded_on_dismissal,
+      coinRefundedOnDismissalAt: shouldRefund ? nowIso : toIsoString(request.coin_refunded_on_dismissal_at),
+    };
+    await upsertGameRequestCacheInTxn(client, requestId, {
+      ...requestRaw,
+      playerUid,
+      playerUsername: cleanText(request.player_username),
+      coadminUid: requestCoadminUid,
+      gameName: cleanText(request.game_name),
+      type: 'recharge',
+      status: 'dismissed',
+      dismissType: 'carer_manual',
+      coinRefundedOnDismissal: shouldRefund,
+      coinRefundedOnDismissalAt: shouldRefund ? nowIso : null,
+      completedAt: nowIso,
+      ttlExpiresAt: ttlAfterDaysIso(90),
+      source: 'authority_dismiss_recharge',
+      rawFirestoreData: requestRaw,
+    });
+
+    if (taskExists) {
+      await tombstoneLinkedCarerTaskInTxn(client, requestId, 'authority_dismiss_recharge');
+    }
+
+    if (shouldRefund) {
+      const refundKey = `game_request_refund:${requestId}:${idempotencyKey}`;
+      const refundClaim = await claimAuthorityOperation(client, {
+        operationKey: refundKey,
+        operationType: 'game_request_refund',
+        userUid: playerUid,
+        sourceId: requestId,
+        actorUid: input.actorUid,
+        actorRole: input.actorRole,
+        payload: {},
+      });
+      if (refundClaim.claimed) {
+        const playerResult = await client.query(
+          `
+            SELECT uid, username, coin, raw_firestore_data
+            FROM public.players_cache
+            WHERE uid = $1 AND deleted_at IS NULL
+            FOR UPDATE
+          `,
+          [playerUid]
+        );
+        if (!playerResult.rows.length) throw new Error('Player not found.');
+        const player = playerResult.rows[0] as Record<string, unknown>;
+        const currentCoin = readPlayerCoin(player);
+        const newCoin = currentCoin + deductedAmount;
+        await updatePlayerBalancesInTxn(client, playerUid, { coin: newCoin });
+        const eventId = randomUUID();
+        const financialRaw = {
+          playerUid,
+          coadminUid: requestCoadminUid,
+          amountNpr: deductedAmount,
+          type: 'recharge_refund',
+          requestId,
+          createdAt: nowIso,
+        };
+        await insertFinancialEventInTxn(client, {
+          eventId,
+          playerUid,
+          coadminUid: requestCoadminUid,
+          amountNpr: deductedAmount,
+          type: 'recharge_refund',
+          requestId,
+          beforeCoin: currentCoin,
+          afterCoin: newCoin,
+          createdAt: nowIso,
+          source: 'authority_dismiss_recharge',
+        });
+        await insertAuthorityLedgerEvent(client, {
+          eventKey: `financialEvents:${eventId}:${playerUid}:coin:recharge_refund_coin_credit`,
+          userUid: playerUid,
+          username: cleanText(player.username) || 'Player',
+          role: 'player',
+          coadminUid: requestCoadminUid,
+          balanceType: 'coin',
+          direction: 'credit',
+          delta: deductedAmount,
+          absoluteAfter: newCoin,
+          eventType: 'recharge_refund_coin_credit',
+          sourceCollection: 'financialEvents',
+          sourceId: eventId,
+          actorUid: input.actorUid,
+          actorRole: input.actorRole,
+          confidence: 'high',
+          sourceCreatedAt: nowIso,
+          rawSourceData: financialRaw,
+          sourceFields: { amount: deductedAmount, requestId },
+        });
+        refunded = true;
+      }
+    }
+
+    await writeGameRequestOutboxInTxn(client, {
+      playerUid,
+      coadminUid: requestCoadminUid,
+      requestId,
+      type: 'recharge',
+      status: 'dismissed',
+      gameName: cleanText(request.game_name),
+      amount: Math.max(0, Number(request.amount || 0)),
+      eventType: 'recharge_dismiss',
+      updatedAt: nowIso,
+    });
+    if (taskExists) {
+      await writeCarerTaskOutboxInTxn(client, {
+        coadminUid: requestCoadminUid,
+        taskId: linkedTaskId,
+        requestId,
+        status: 'deleted',
+        eventType: 'recharge_task_dismiss',
+        updatedAt: nowIso,
+      });
+    }
+    if (refunded) {
+      await insertLiveOutboxEventWithClient(client, {
+        channel: playerRequestLiveChannel(playerUid),
+        eventType: 'balance_update',
+        entityType: 'player_balance',
+        entityId: playerUid,
+        source: 'authority_dismiss_recharge',
+        mirroredAt: nowIso,
+        payload: { playerUid, updatedAt: nowIso, source: 'authority' },
+      });
+    }
+
+    await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
+      operationKey,
+      JSON.stringify({
+        requestId,
+        alreadyDismissed: false,
+        refunded,
+        taskDeleted: taskExists,
+      }),
+    ]);
+    await client.query('COMMIT');
+    return {
+      success: true,
+      duplicate: false,
+      alreadyDismissed: false,
+      refunded,
+      requestId,
+      linkedTaskId,
+      taskDeleted: taskExists,
+    };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function dismissRedeemRequestInSql(
+  input: AuthorityDismissRedeemInput
+): Promise<AuthorityDismissRedeemResult> {
+  const requestId = cleanText(input.requestId);
+  if (!requestId) throw new Error('requestId is required.');
+
+  const idempotencyKey = cleanText(input.idempotencyKey) || requestId;
+  const operationKey = `game_request_dismiss:${requestId}:${idempotencyKey}`;
+  const linkedTaskId = `request__${requestId}`;
+
+  const existing = await readAuthorityOperationPayload(operationKey);
+  if (existing?.requestId) {
+    return {
+      success: true,
+      duplicate: true,
+      alreadyDismissed: existing.alreadyDismissed === true,
+      requestId,
+      linkedTaskId,
+      taskDeleted: existing.taskDeleted === true,
+    };
+  }
+
+  const db = getPlayerMirrorPool();
+  if (!db) throw new Error('SQL authority unavailable.');
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const claim = await claimAuthorityOperation(client, {
+      operationKey,
+      operationType: 'game_request_dismiss',
+      userUid: input.actorUid,
+      sourceId: requestId,
+      actorUid: input.actorUid,
+      actorRole: input.actorRole,
+      payload: {},
+    });
+    if (!claim.claimed) {
+      await client.query('ROLLBACK');
+      const payload = await readAuthorityOperationPayload(operationKey);
+      if (payload?.requestId) {
+        return {
+          success: true,
+          duplicate: true,
+          alreadyDismissed: payload.alreadyDismissed === true,
+          requestId,
+          linkedTaskId,
+          taskDeleted: payload.taskDeleted === true,
+        };
+      }
+      throw new Error('Duplicate dismiss in progress.');
+    }
+
+    const requestResult = await client.query(
+      `
+        SELECT *
+        FROM public.player_game_requests_cache
+        WHERE firebase_id = $1 AND deleted_at IS NULL
+        FOR UPDATE
+      `,
+      [requestId]
+    );
+    if (!requestResult.rows.length) throw new Error('Request not found.');
+    const request = requestResult.rows[0] as Record<string, unknown>;
+    if (cleanText(request.type).toLowerCase() !== 'redeem') {
+      throw new Error('Only redeem requests can be dismissed.');
+    }
+
+    const playerUid = cleanText(request.player_uid);
+    if (!playerUid) throw new Error('Request player not found.');
+
+    const playerResult = await client.query(
+      `
+        SELECT uid, role, coadmin_uid, created_by
+        FROM public.players_cache
+        WHERE uid = $1 AND deleted_at IS NULL
+        FOR UPDATE
+      `,
+      [playerUid]
+    );
+    if (!playerResult.rows.length) throw new Error('Player not found.');
+    const player = playerResult.rows[0] as Record<string, unknown>;
+    if (cleanText(player.role).toLowerCase() !== 'player') {
+      throw new Error('Request player not found.');
+    }
+
+    const requestScope =
+      cleanText(request.coadmin_uid) || cleanText(request.created_by);
+    const playerScope = cleanText(player.coadmin_uid) || cleanText(player.created_by);
+    const canonicalScope = requestScope || playerScope;
+    if (!canonicalScope) throw new Error('Request missing scope.');
+    if (requestScope && playerScope && requestScope !== playerScope) {
+      throw new Error('Forbidden: request is outside your scope.');
+    }
+    if (!input.isAdmin && (!input.scopeUid || input.scopeUid !== canonicalScope)) {
+      throw new Error('Forbidden: request is outside your scope.');
+    }
+
+    const taskResult = await client.query(
+      `
+        SELECT firebase_id, coadmin_uid, request_id
+        FROM public.carer_tasks_cache
+        WHERE firebase_id = $1 AND deleted_at IS NULL
+        FOR UPDATE
+      `,
+      [linkedTaskId]
+    );
+    const taskExists = taskResult.rows.length > 0;
+    if (taskExists) {
+      const task = taskResult.rows[0] as Record<string, unknown>;
+      const taskScope = cleanText(task.coadmin_uid);
+      if (
+        cleanText(task.request_id) !== requestId ||
+        (taskScope && taskScope !== canonicalScope)
+      ) {
+        throw new Error('Forbidden: linked task is outside your scope.');
+      }
+    }
+
+    const currentStatus = cleanText(request.status).toLowerCase();
+    const alreadyDismissed = currentStatus === 'dismissed';
+    if (!alreadyDismissed && !DISMISSIBLE_REDEEM_STATUSES.has(currentStatus)) {
+      throw new Error('Redeem request is not dismissible.');
+    }
+
+    const nowIso = new Date().toISOString();
+    const requestRaw = {
+      ...(request.raw_firestore_data as Record<string, unknown>),
+      status: 'dismissed',
+      completedAt: nowIso,
+      ttlExpiresAt: ttlAfterDaysIso(90),
+      pokedAt: null,
+      pokeMessage: null,
+      dismissType: 'carer_manual',
+      updatedAt: nowIso,
+    };
+    await upsertGameRequestCacheInTxn(client, requestId, {
+      ...requestRaw,
+      playerUid,
+      playerUsername: cleanText(request.player_username),
+      coadminUid: canonicalScope,
+      gameName: cleanText(request.game_name),
+      type: 'redeem',
+      status: 'dismissed',
+      dismissType: 'carer_manual',
+      completedAt: nowIso,
+      ttlExpiresAt: ttlAfterDaysIso(90),
+      source: 'authority_dismiss_redeem',
+      rawFirestoreData: requestRaw,
+    });
+
+    if (taskExists) {
+      await tombstoneLinkedCarerTaskInTxn(client, requestId, 'authority_dismiss_redeem');
+    }
+
+    await writeGameRequestOutboxInTxn(client, {
+      playerUid,
+      coadminUid: canonicalScope,
+      requestId,
+      type: 'redeem',
+      status: 'dismissed',
+      gameName: cleanText(request.game_name),
+      amount: Math.max(0, Number(request.amount || 0)),
+      eventType: 'redeem_dismiss',
+      updatedAt: nowIso,
+    });
+    if (taskExists) {
+      await writeCarerTaskOutboxInTxn(client, {
+        coadminUid: canonicalScope,
+        taskId: linkedTaskId,
+        requestId,
+        status: 'deleted',
+        eventType: 'redeem_task_dismiss',
+        updatedAt: nowIso,
+      });
+    }
+
+    await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
+      operationKey,
+      JSON.stringify({
+        requestId,
+        alreadyDismissed,
+        taskDeleted: taskExists,
+      }),
+    ]);
+    await client.query('COMMIT');
+    return {
+      success: true,
+      duplicate: false,
+      alreadyDismissed,
+      requestId,
+      linkedTaskId,
+      taskDeleted: taskExists,
+    };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}

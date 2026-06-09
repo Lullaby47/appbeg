@@ -3,12 +3,18 @@ import { after, NextResponse } from 'next/server';
 
 import { apiError, requireApiUser, scopedCoadminUid, type ApiUser } from '@/lib/firebase/apiAuth';
 import { adminDb } from '@/lib/firebase/admin';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { dismissRedeemRequestInSql } from '@/lib/sql/authorityGameRequests';
 import { mirrorAutomationJobById } from '@/lib/sql/automationJobsCache';
 import { tombstoneCarerTaskCache } from '@/lib/sql/carerTasksCache';
 import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
 
 type Body = {
   requestId?: unknown;
+  idempotencyKey?: unknown;
 };
 
 type ScopedRecord = {
@@ -204,6 +210,44 @@ export async function POST(request: Request) {
     const caller = auth.user;
     const callerScope = scopedCoadminUid(caller);
     const isAdmin = caller.role === 'admin';
+    const idempotencyKey =
+      String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const outcome = await dismissRedeemRequestInSql({
+        requestId,
+        actorUid: caller.uid,
+        actorRole: caller.role,
+        isAdmin,
+        scopeUid: callerScope,
+        idempotencyKey,
+      });
+      logAuthoritySqlWrite('/api/carer/game-requests/dismiss-redeem', {
+        requestId,
+        duplicate: outcome.duplicate,
+        alreadyDismissed: outcome.alreadyDismissed,
+      });
+      console.info('DISMISS_REDEEM success', {
+        requestId,
+        callerUid: caller.uid,
+        callerRole: caller.role,
+        alreadyDismissed: outcome.alreadyDismissed,
+        taskDeleted: outcome.taskDeleted,
+        linkedTaskId: outcome.linkedTaskId,
+        milkyWayFakeRedeemCleanupQueued: false,
+        authority: 'sql',
+      });
+      return NextResponse.json({
+        success: true,
+        alreadyDismissed: outcome.alreadyDismissed,
+        taskDeleted: outcome.taskDeleted,
+        linkedTaskId: outcome.linkedTaskId,
+        retryMarkersCleared: true,
+        duplicate: outcome.duplicate,
+        authority: 'sql',
+      });
+    }
+
     const requestRef = adminDb.collection('playerGameRequests').doc(requestId);
     const taskRef = adminDb.collection('carerTasks').doc(`request__${requestId}`);
 

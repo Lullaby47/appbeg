@@ -7,6 +7,12 @@ import {
   requireApiUser,
   scopedCoadminUid,
 } from '@/lib/firebase/apiAuth';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthorityFirestoreFallbackBlocked,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { lookupUserDirectoryFromSql } from '@/lib/sql/authorityLookup';
 import { mirrorPlayerById } from '@/lib/sql/playersCache';
 import { setUserStatusInSql } from '@/lib/sql/userDirectoryWrite';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
@@ -70,14 +76,29 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Invalid status value.' }, { status: 400 });
     }
 
-    const userRef = adminDb.collection('users').doc(uid);
-    const userSnap = await userRef.get();
+    const authoritySql = isAuthoritySqlWriteEnabled();
+    let userData: Record<string, unknown> | undefined;
+    let userRef: FirebaseFirestore.DocumentReference | null = null;
 
-    if (!userSnap.exists) {
-      return NextResponse.json({ error: 'User not found.' }, { status: 404 });
+    if (authoritySql) {
+      const sqlUser = await lookupUserDirectoryFromSql(uid);
+      if (!sqlUser) {
+        return NextResponse.json({ error: 'User not found.' }, { status: 404 });
+      }
+      userData = {
+        role: sqlUser.role,
+        status: sqlUser.status,
+        coadminUid: sqlUser.coadminUid,
+        createdBy: sqlUser.createdBy,
+      };
+    } else {
+      userRef = adminDb.collection('users').doc(uid);
+      const userSnap = await userRef.get();
+      if (!userSnap.exists) {
+        return NextResponse.json({ error: 'User not found.' }, { status: 404 });
+      }
+      userData = userSnap.data();
     }
-
-    const userData = userSnap.data();
 
     if (userData?.role === 'admin') {
       return NextResponse.json(
@@ -131,13 +152,25 @@ export async function POST(request: Request) {
     }
 
     const firebaseMirrorOk = await mirrorFirebaseAuthStatus(uid, isPlayer, isDisabled);
-    const firestoreMirrorOk = await mirrorFirestoreStatus(userRef, status);
-
-    if (firestoreMirrorOk) {
-      if (isPlayer) {
-        void mirrorPlayerById(uid, 'appbeg_set_user_status');
+    let firestoreMirrorOk = false;
+    if (authoritySql) {
+      logAuthorityFirestoreFallbackBlocked('/api/admin/set-user-status', 'mirror_firestore_status', {
+        uid,
+        status,
+      });
+      logAuthoritySqlWrite('/api/admin/set-user-status', {
+        uid,
+        status,
+        sessions_revoked: sqlResult.sessionsRevoked,
+      });
+    } else if (userRef) {
+      firestoreMirrorOk = await mirrorFirestoreStatus(userRef, status);
+      if (firestoreMirrorOk) {
+        if (isPlayer) {
+          void mirrorPlayerById(uid, 'appbeg_set_user_status');
+        }
+        void mirrorUserBalanceSnapshotById(uid, 'appbeg_set_user_status');
       }
-      void mirrorUserBalanceSnapshotById(uid, 'appbeg_set_user_status');
     }
 
     console.info('[USER_DIRECTORY_SQL]', {
@@ -145,6 +178,7 @@ export async function POST(request: Request) {
       uid,
       status,
       actorUid: auth.user.uid,
+      authority_sql_write: authoritySql,
       sql_ok: true,
       firebase_mirror_ok: firebaseMirrorOk,
       firestore_mirror_ok: firestoreMirrorOk,
@@ -159,6 +193,7 @@ export async function POST(request: Request) {
       success: true,
       message: `User ${isDisabled ? 'blocked' : 'unblocked'} successfully.`,
       sqlOk: true,
+      authority: authoritySql ? 'sql' : 'firestore_mirror',
       firebaseMirrorOk,
       firestoreMirrorOk,
       sessionsRevoked: sqlResult.sessionsRevoked,
