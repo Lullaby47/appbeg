@@ -455,7 +455,8 @@ export type ApiUserAuthPath =
   | 'api_user_sql'
   | 'api_user_sql_session_sql'
   | 'api_user_sql_session_firestore'
-  | 'api_user_firestore';
+  | 'api_user_firestore'
+  | PlayerLiveAuthPath;
 
 export type ApiUserAuthTiming = {
   auth_path: ApiUserAuthPath;
@@ -1206,6 +1207,187 @@ export function apiUserAuthFirestoreMs(timing: ApiUserAuthTiming) {
   return timing.session_doc_ms + timing.user_doc_ms;
 }
 
+function playerLiveAuthTimingToApiUserTiming(timing: PlayerLiveAuthTiming): ApiUserAuthTiming {
+  return {
+    auth_path: timing.auth_path,
+    verify_token_ms: timing.verify_token_ms,
+    sql_profile_ms: timing.sql_profile_total_ms || timing.sql_profile_ms,
+    sql_session_ms: timing.session_sql_ms,
+    user_doc_ms: timing.user_doc_ms,
+    session_doc_ms: timing.session_doc_ms,
+    session_source: timing.session_source,
+    auth_ms: timing.auth_ms,
+    token_cache_hit: timing.token_cache_hit,
+  };
+}
+
+function emptyPlayerLiveAuthTiming(sqlReadMode: boolean): PlayerLiveAuthTiming {
+  return {
+    auth_path: sqlReadMode
+      ? 'player_token_sql_session_sql'
+      : 'player_token_firestore_session_firestore',
+    verify_token_ms: 0,
+    sql_profile_ms: 0,
+    sql_profile_pool_acquire_ms: 0,
+    sql_profile_query_exec_ms: 0,
+    sql_profile_total_ms: 0,
+    session_sql_ms: 0,
+    session_sql_pool_acquire_ms: 0,
+    session_sql_query_exec_ms: 0,
+    session_sql_total_ms: 0,
+    user_doc_ms: 0,
+    session_doc_ms: 0,
+    session_source: 'none',
+    session_check_ms: 0,
+    auth_ms: 0,
+    token_cache_hit: false,
+  };
+}
+
+export type PlayerApiAuthResult =
+  | { user: ApiUser; authPath: PlayerLiveAuthPath; timing: PlayerLiveAuthTiming }
+  | { response: NextResponse; timing: PlayerLiveAuthTiming };
+
+export async function requirePlayerApiUser(
+  request: Request,
+  options?: { rechargeFirestoreInstrumentation?: boolean }
+): Promise<PlayerApiAuthResult> {
+  void options;
+  const sqlReadMode = isAuthSqlReadEnabled();
+  const authStartedAt = Date.now();
+
+  let playerUid = '';
+  let resolveBranch = 'unknown';
+
+  const appSessionAuth = await verifyAppSessionFromRequest(request, {
+    acquireContext: mirrorAcquireContextFromRequest(request, 'player_api_user_auth'),
+  });
+  if (appSessionAuth.hit && appSessionAuth.profile.role === 'player') {
+    playerUid = appSessionAuth.uid;
+    resolveBranch = 'app_session_sql';
+    console.info('[API_AUTH] player_api_user resolve', {
+      branch: resolveBranch,
+      uid: playerUid,
+      app_session_id: appSessionAuth.sessionId,
+      player_session_id: playerSessionId(request) || null,
+      canonical_session_id: playerSessionId(request) || null,
+      sql_read_mode: sqlReadMode,
+    });
+  } else {
+    const token = bearerToken(request);
+    if (!token) {
+      const timing = emptyPlayerLiveAuthTiming(sqlReadMode);
+      timing.auth_ms = Date.now() - authStartedAt;
+      console.info('[API_AUTH] player_api_user blocked', {
+        branch: 'missing_credentials',
+        reason: 'missing_app_session_and_bearer',
+        auth_path: timing.auth_path,
+        app_session_id: appSessionIdFromRequest(request) || null,
+        player_session_id: playerSessionId(request) || null,
+      });
+      return {
+        response: apiError('Missing or invalid authorization.', 401),
+        timing,
+      };
+    }
+
+    try {
+      const verified = await verifyLiveCarerApiToken(token);
+      playerUid = verified.uid;
+      resolveBranch = 'bearer_token';
+      console.info('[API_AUTH] player_api_user resolve', {
+        branch: resolveBranch,
+        uid: playerUid,
+        token_cache_hit: verified.cacheHit,
+        app_session_id: appSessionIdFromRequest(request) || null,
+        player_session_id: playerSessionId(request) || null,
+        canonical_session_id: playerSessionId(request) || null,
+        sql_read_mode: sqlReadMode,
+      });
+    } catch {
+      const timing = emptyPlayerLiveAuthTiming(sqlReadMode);
+      timing.auth_ms = Date.now() - authStartedAt;
+      console.info('[API_AUTH] player_api_user blocked', {
+        branch: 'invalid_bearer_token',
+        auth_path: timing.auth_path,
+      });
+      return {
+        response: apiError('Invalid or expired authorization token.', 401),
+        timing,
+      };
+    }
+  }
+
+  const auth = await requirePlayerOwnedLiveAuth(request, playerUid);
+  if (!auth.ok) {
+    console.info('[API_AUTH] player_api_user blocked', {
+      branch: resolveBranch,
+      uid: playerUid,
+      reason: 'live_auth_denied',
+      auth_path: auth.timing.auth_path,
+      session_source: auth.timing.session_source,
+      request_session_id: auth.timing.request_session_id ?? null,
+      active_session_id: auth.timing.active_session_id ?? null,
+    });
+    return { response: auth.response, timing: auth.timing };
+  }
+
+  let profileLookup = await lookupApiUserProfileFromSqlCache(auth.uid);
+  if (!profileLookup.profile) {
+    try {
+      await mirrorPlayerById(auth.uid, 'player_api_auth_hydrate');
+    } catch (error) {
+      console.info('[API_AUTH] player_api_user hydrate_failed', {
+        uid: auth.uid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    profileLookup = await lookupApiUserProfileFromSqlCache(auth.uid);
+  }
+
+  if (!profileLookup.profile || profileLookup.profile.role !== 'player') {
+    const reason = profileLookup.missReason || 'row_missing';
+    console.info('[API_AUTH] player_api_user blocked', {
+      branch: resolveBranch,
+      uid: auth.uid,
+      reason,
+      auth_path: auth.timing.auth_path,
+      sql_read_mode: sqlReadMode,
+    });
+    if (reason === 'postgres_unavailable') {
+      return {
+        response: apiError('SQL auth is unavailable. Configure DATABASE_URL on the server.', 503),
+        timing: auth.timing,
+      };
+    }
+    return {
+      response: apiError(
+        'User profile not found in SQL cache. Ensure players_cache is populated for this user.',
+        404
+      ),
+      timing: auth.timing,
+    };
+  }
+
+  console.info('[API_AUTH] player_api_user allowed', {
+    branch: resolveBranch,
+    uid: auth.uid,
+    auth_path: auth.timing.auth_path,
+    session_source: auth.timing.session_source,
+    canonical_session_id: auth.timing.request_session_id ?? null,
+    app_session_id: appSessionIdFromRequest(request) || null,
+    player_session_id: auth.timing.request_session_id ?? null,
+    sql_read_mode: sqlReadMode,
+    auth_ms: Date.now() - authStartedAt,
+  });
+
+  return {
+    user: apiUserFromSqlProfile(profileLookup.profile),
+    authPath: auth.timing.auth_path,
+    timing: auth.timing,
+  };
+}
+
 export async function requireApiUser(
   request: Request,
   allowedRoles: ApiRole[],
@@ -1226,6 +1408,38 @@ export async function requireApiUser(
     auth_ms: 0,
     token_cache_hit: false,
   };
+
+  if (allowedRoles.length === 1 && allowedRoles[0] === 'player') {
+    const playerAuth = await requirePlayerApiUser(request, options);
+    if ('response' in playerAuth) {
+      return {
+        response: playerAuth.response,
+        timing: playerLiveAuthTimingToApiUserTiming(playerAuth.timing),
+      };
+    }
+    const playerTiming = playerLiveAuthTimingToApiUserTiming(playerAuth.timing);
+    playerTiming.auth_path = playerAuth.authPath;
+    playerTiming.auth_ms = Date.now() - authStartedAt;
+    console.info('[API_AUTH] request allowed', {
+      uid: playerAuth.user.uid,
+      role: playerAuth.user.role,
+      auth_path: playerAuth.authPath,
+      session_source: playerTiming.session_source,
+      token_cache_hit: playerTiming.token_cache_hit,
+      verify_token_ms: playerTiming.verify_token_ms,
+      sql_profile_ms: playerTiming.sql_profile_ms,
+      sql_session_ms: playerTiming.sql_session_ms,
+      user_doc_ms: 0,
+      session_doc_ms: playerTiming.session_doc_ms,
+      auth_ms: playerTiming.auth_ms,
+      validates: 'player_session_sql',
+    });
+    return {
+      user: playerAuth.user,
+      authPath: playerAuth.authPath,
+      timing: playerTiming,
+    };
+  }
 
   const appSessionAuthResult = await authenticateApiUserFromAppSession(
     request,

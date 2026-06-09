@@ -81,6 +81,11 @@ export async function loadPlayerBaseData(): Promise<PlayerBaseDataResponse> {
       error?: string;
     };
     if (!response.ok) {
+      console.info('[PLAYER_BASE_DATA_CLIENT]', {
+        stage: 'http_error',
+        status: response.status,
+        logout_suppressed: response.status === 401,
+      });
       throw new Error(payload.error || 'Failed to load player base data.');
     }
 

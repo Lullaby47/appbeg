@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-import { requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import { requirePlayerApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
 import { loadPlayerBaseData } from '@/lib/server/playerBaseDataRead';
 import { logRouteSessionValidation, sessionIdsFromRequest } from '@/lib/server/sessionAuthLog';
 
@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: Request) {
   const startedAt = Date.now();
   const headerSessions = sessionIdsFromRequest(request);
-  const auth = await requireApiUser(request, ['player']);
+  const auth = await requirePlayerApiUser(request);
   if ('response' in auth) {
     logRouteSessionValidation('/api/player/base-data', {
       ok: false,
