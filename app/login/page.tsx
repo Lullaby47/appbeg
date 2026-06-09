@@ -22,7 +22,7 @@ import { migrateCredentialsAfterFirebaseLogin } from '@/features/auth/credential
 import {
   getLocalPlayerSessionId,
   PLAYER_REPLACED_LOGIN_MESSAGE,
-  startPlayerSession,
+  storeLocalPlayerSessionId,
 } from '@/features/auth/playerSession';
 import { attemptSqlLogin, isSqlLoginFirstEnabled } from '@/features/auth/sqlLogin';
 import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
@@ -181,22 +181,29 @@ export default function LoginPage() {
       throw new Error('Invalid role.');
     }
 
-    let playerSessionId: string | undefined;
-    if (role === 'player') {
-      const playerSession = await startPlayerSession(credential.user);
-      playerSessionId = playerSession.sessionId;
-      rememberPlayerLoginCredentials(cleanUsername, password);
-      console.info('[PLAYER_LOGIN_SESSION] player login allowed after session write', {
-        uid: credential.user.uid,
-        sessionId: playerSession.sessionId,
-        reason: 'active_session_saved',
-      });
+    const bootstrapped = await bootstrapAppSessionAfterFirebaseLogin({
+      roleHint: role,
+      playerSessionId: getLocalPlayerSessionId() || undefined,
+    });
+    if (!bootstrapped?.sessionId) {
+      throw new Error('Failed to establish app session.');
     }
 
-    await bootstrapAppSessionAfterFirebaseLogin({
-      roleHint: role,
-      playerSessionId,
-    });
+    if (role === 'player') {
+      const canonicalSessionId = String(
+        bootstrapped?.playerSessionId || bootstrapped?.canonicalSessionId || ''
+      ).trim();
+      if (canonicalSessionId) {
+        storeLocalPlayerSessionId(canonicalSessionId);
+      }
+      rememberPlayerLoginCredentials(cleanUsername, password);
+      console.info('[PLAYER_LOGIN_SESSION] player login allowed after unified bootstrap', {
+        uid: credential.user.uid,
+        canonicalSessionId: canonicalSessionId || null,
+        appSessionId: bootstrapped?.sessionId || null,
+        reason: 'unified_bootstrap_saved',
+      });
+    }
 
     router.push(DASHBOARD_BY_ROLE[role]);
   }

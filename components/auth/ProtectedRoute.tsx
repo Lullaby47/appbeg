@@ -392,7 +392,12 @@ export default function ProtectedRoute({
     const heartbeat = window.setInterval(() => {
       void touchPlayerSession(auth.currentUser);
     }, 45_000);
+    const mountedAt = Date.now();
     const markInactive = () => {
+      if (Date.now() - mountedAt < 30_000) {
+        console.info('[PLAYER_SESSION_LOCAL] skip_end_during_boot_window');
+        return;
+      }
       void endLocalPlayerSession('browser_closed');
     };
     window.addEventListener('pagehide', markInactive);

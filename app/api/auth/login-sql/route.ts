@@ -280,6 +280,7 @@ export async function POST(request: Request) {
         status: profile.status,
         expiresAt: session.expiresAt,
         playerSessionId,
+        canonicalSessionId: playerSessionId,
         playerSessionSource: 'sql',
       });
     } catch (error) {

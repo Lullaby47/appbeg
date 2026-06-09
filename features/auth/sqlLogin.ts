@@ -82,7 +82,12 @@ export async function attemptSqlLogin(input: {
       storeAppSessionLocal(payload.sessionId, String(payload.expiresAt || ''));
       if (payload.role === 'player' && payload.playerSessionId) {
         getOrCreatePlayerDeviceId();
-        storeLocalPlayerSessionId(payload.playerSessionId);
+        const canonicalSessionId = String(
+          payload.playerSessionId || (payload as { canonicalSessionId?: string }).canonicalSessionId || ''
+        ).trim();
+        if (canonicalSessionId) {
+          storeLocalPlayerSessionId(canonicalSessionId);
+        }
       }
       seedSessionUserCache(
         {

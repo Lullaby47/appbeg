@@ -635,6 +635,9 @@ export async function getPlayerApiHeaders(contentType = true) {
     hasAppSession,
     hasPlayerSession,
     hasFirebaseUser: Boolean(auth.currentUser),
+    app_session_id: headers['X-App-Session-Id'] || null,
+    player_session_id: headers['X-Player-Session-Id'] || null,
+    canonical_session_id: headers['X-Player-Session-Id'] || null,
   });
   return headers;
 }

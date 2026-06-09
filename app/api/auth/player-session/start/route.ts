@@ -6,6 +6,7 @@ import {
 import { authSqlReadEnvLogFields, isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
 import { requireFirebasePlayerUser } from '@/lib/server/playerSessionRouteAuth';
 import { invalidatePlayerSessionStatusCache } from '@/lib/server/playerSessionStatus';
+import { logRouteSessionValidation } from '@/lib/server/sessionAuthLog';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { startPlayerSessionInSql } from '@/lib/sql/playerSessionWrite';
 
@@ -115,6 +116,16 @@ export async function POST(request: Request) {
       firestore_mirror_ok: firestoreMirrorOk,
       previousSessionCount: previousSessionIds.length,
       durationMs: Date.now() - startedAt,
+    });
+
+    logRouteSessionValidation('/api/auth/player-session/start', {
+      ok: true,
+      uid,
+      canonical_session_id: sessionId,
+      player_session_id: sessionId,
+      validates: 'player_session_sql',
+      resumed: previousSessionIds.length === 0 && sqlOk,
+      previous_session_count: previousSessionIds.length,
     });
 
     return NextResponse.json({

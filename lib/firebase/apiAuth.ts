@@ -728,23 +728,24 @@ async function authenticateApiUserFromAppSession(
       return null;
     }
 
-    const activeSessionId = String(profile.activeSessionId || '').trim();
-    if (!activeSessionId || sessionHeaderId !== activeSessionId) {
-      console.info('[API_AUTH] player request blocked', {
-        uid: session.uid,
-        reason: !activeSessionId ? 'missing_active_session_id' : 'session_mismatch',
-        sessionId: sessionHeaderId || null,
-        activeSessionId: activeSessionId || null,
-        auth_path: 'app_session_sql',
-      });
-      return { response: playerSessionBlockedResponse() };
-    }
-
+    const sqlReadMode = isAuthSqlReadEnabled();
+    const profileActiveSessionId = String(profile.activeSessionId || '').trim();
     const sessionValidation = await validatePlayerApiSession(session.uid, sessionHeaderId, timing, {
       appSessionId: sessionId,
       rechargeFirestoreInstrumentation: options?.rechargeFirestoreInstrumentation,
+      sqlOnly: sqlReadMode,
     });
     if (!sessionValidation.ok) {
+      console.info('[API_AUTH] player request blocked', {
+        uid: session.uid,
+        reason: 'session_validation_failed',
+        auth_path: 'app_session_sql',
+        canonical_session_id: sessionHeaderId,
+        app_session_id: sessionId,
+        player_session_id: sessionHeaderId,
+        profile_active_session_id: profileActiveSessionId || null,
+        validates: 'player_session_sql',
+      });
       return { response: sessionValidation.response };
     }
 
@@ -758,10 +759,13 @@ async function authenticateApiUserFromAppSession(
     const user = apiUserFromSqlProfile(profile);
     console.info('[API_AUTH] player request allowed', {
       uid: session.uid,
-      sessionId: sessionHeaderId,
       reason: 'session_match',
       auth_path: authPath,
       session_source: timing.session_source,
+      canonical_session_id: sessionHeaderId,
+      app_session_id: sessionId,
+      player_session_id: sessionHeaderId,
+      validates: 'player_session_sql',
     });
     return { user, authPath };
   }
@@ -1297,25 +1301,10 @@ export async function requireApiUser(
     }
 
     if (role === 'player') {
-      const sessionId = playerSessionId(request);
+      usedSqlProfile = true;
+      user = apiUserFromSqlProfile(sqlProfileLookup.profile);
+      timing.auth_path = 'api_user_sql';
       activeSessionId = String(sqlProfileLookup.profile.activeSessionId || '').trim();
-      if (sessionId && activeSessionId && sessionId === activeSessionId) {
-        usedSqlProfile = true;
-        user = apiUserFromSqlProfile(sqlProfileLookup.profile);
-        timing.auth_path = 'api_user_sql';
-      } else {
-        console.info(
-          '[API_AUTH_FIRESTORE_FALLBACK] reason=%s uid=%s sessionId=%s sqlActiveSessionId=%s context=api_user_profile',
-          !sessionId
-            ? 'missing_session_header'
-            : !activeSessionId
-              ? 'missing_sql_active_session_id'
-              : 'session_mismatch',
-          identityUid,
-          sessionId || null,
-          activeSessionId || null
-        );
-      }
     } else {
       usedSqlProfile = true;
       user = apiUserFromSqlProfile(sqlProfileLookup.profile);
@@ -1368,26 +1357,38 @@ export async function requireApiUser(
 
   if (user.role === 'player') {
     const sessionId = playerSessionId(request);
-    if (!sessionId || sessionId !== activeSessionId) {
+    const appSessionId = appSessionIdFromRequest(request);
+    if (!sessionId) {
       console.info('[API_AUTH] player request blocked', {
         uid: identityUid,
-        reason: !sessionId
-          ? 'missing_session_header'
-          : !activeSessionId
-            ? 'missing_active_session_id'
-            : 'session_mismatch',
-        sessionId: sessionId || null,
-        activeSessionId: activeSessionId || null,
+        reason: 'missing_session_header',
+        canonical_session_id: null,
+        app_session_id: appSessionId || null,
+        player_session_id: null,
+        profile_active_session_id: activeSessionId || null,
         auth_path: timing.auth_path,
+        validates: 'player_session_sql',
       });
       timing.auth_ms = Date.now() - authStartedAt;
-      return { response: playerSessionBlockedResponse(), timing };
+      return { response: apiError('X-Player-Session-Id header is required.', 401), timing };
     }
 
     const sessionValidation = await validatePlayerApiSession(identityUid, sessionId, timing, {
-      appSessionId: appSessionIdFromRequest(request),
+      appSessionId,
+      sqlOnly: isAuthSqlReadEnabled(),
     });
     if (!sessionValidation.ok) {
+      console.info('[API_AUTH] player request blocked', {
+        uid: identityUid,
+        reason: 'session_validation_failed',
+        canonical_session_id: sessionId,
+        app_session_id: appSessionId || null,
+        player_session_id: sessionId,
+        profile_active_session_id: activeSessionId || null,
+        auth_path: timing.auth_path,
+        session_source: timing.session_source,
+        validates: 'player_session_sql',
+      });
       timing.auth_ms = Date.now() - authStartedAt;
       return { response: sessionValidation.response, timing };
     }
@@ -1400,10 +1401,13 @@ export async function requireApiUser(
 
     console.info('[API_AUTH] player request allowed', {
       uid: identityUid,
-      sessionId,
       reason: 'session_match',
       auth_path: timing.auth_path,
       session_source: timing.session_source,
+      canonical_session_id: sessionId,
+      app_session_id: appSessionId || null,
+      player_session_id: sessionId,
+      validates: 'player_session_sql',
     });
   }
 

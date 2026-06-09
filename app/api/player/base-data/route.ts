@@ -2,15 +2,35 @@ import { NextResponse } from 'next/server';
 
 import { requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
 import { loadPlayerBaseData } from '@/lib/server/playerBaseDataRead';
+import { logRouteSessionValidation, sessionIdsFromRequest } from '@/lib/server/sessionAuthLog';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
   const startedAt = Date.now();
+  const headerSessions = sessionIdsFromRequest(request);
   const auth = await requireApiUser(request, ['player']);
   if ('response' in auth) {
+    logRouteSessionValidation('/api/player/base-data', {
+      ok: false,
+      ...headerSessions,
+      canonical_session_id: headerSessions.player_session_id,
+      validates: 'player_session_sql',
+      auth_path: auth.timing.auth_path,
+      session_source: auth.timing.session_source,
+    });
     return auth.response;
   }
+
+  logRouteSessionValidation('/api/player/base-data', {
+    ok: true,
+    ...headerSessions,
+    canonical_session_id: headerSessions.player_session_id,
+    validates: 'player_session_sql',
+    auth_path: auth.authPath,
+    session_source: auth.timing.session_source,
+    uid: auth.user.uid,
+  });
 
   const authMs = Date.now() - startedAt;
   const coadminUid = scopedCoadminUid(auth.user);

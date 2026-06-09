@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 
 import { apiError } from '@/lib/firebase/apiAuth';
 import { verifyLiveCarerApiToken } from '@/lib/firebase/liveAuthTokenCache';
+import { createPlayerLoginSessionsInSql } from '@/lib/server/sqlPlayerLoginSessions';
+import { logRouteSessionValidation, sessionIdsFromRequest } from '@/lib/server/sessionAuthLog';
 import { createAppSessionForUser } from '@/lib/sql/appSessions';
 import { lookupApiUserProfileFromSqlCache } from '@/lib/sql/playersCache';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
@@ -28,6 +30,7 @@ function isLoginAllowedStatus(status: string | null, role: string) {
 
 export async function POST(request: Request) {
   const totalStartedAt = Date.now();
+  const headerSessions = sessionIdsFromRequest(request);
   const token = bearerToken(request);
   if (!token) {
     return apiError('Missing or invalid authorization.', 401);
@@ -108,9 +111,80 @@ export async function POST(request: Request) {
   }
 
   const deviceId = cleanText(body.deviceId) || null;
-  const playerSessionId = cleanText(body.playerSessionId) || null;
+  const requestedPlayerSessionId =
+    cleanText(body.playerSessionId) || headerSessions.player_session_id || null;
   const sessionCreateStartedAt = Date.now();
+
   try {
+    if (profile.role === 'player') {
+      if (!deviceId) {
+        console.info('[SQL_AUTH_BOOTSTRAP]', {
+          ok: false,
+          uid: profile.uid,
+          role: profile.role,
+          reason: 'missing_device_id',
+          total_ms: Date.now() - totalStartedAt,
+        });
+        return apiError('deviceId is required for player bootstrap.', 400);
+      }
+
+      const loginSessions = await createPlayerLoginSessionsInSql({
+        playerUid: profile.uid,
+        deviceId,
+        role: profile.role,
+        coadminUid: profile.coadminUid,
+        username: profile.username,
+        playerSessionId: requestedPlayerSessionId || undefined,
+        actorSource: 'firebase_login_bootstrap',
+        appSessionRawContext: {
+          source: 'firebase_login_bootstrap',
+          requestedPlayerSessionId,
+        },
+      });
+
+      const session = loginSessions.appSession;
+      const playerSessionId = loginSessions.playerSessionId;
+      const sessionCreateMs = Date.now() - sessionCreateStartedAt;
+
+      logRouteSessionValidation('/api/auth/session/bootstrap', {
+        ok: true,
+        uid: profile.uid,
+        role: profile.role,
+        canonical_session_id: playerSessionId,
+        app_session_id: session.sessionId,
+        player_session_id: playerSessionId,
+        validates: 'player_session_sql',
+        resumed: loginSessions.previousSessionIds.length === 0 && Boolean(requestedPlayerSessionId),
+        previous_session_count: loginSessions.previousSessionIds.length,
+      });
+
+      console.info('[SQL_AUTH_BOOTSTRAP]', {
+        ok: true,
+        uid: profile.uid,
+        role: profile.role,
+        sessionId: session.sessionId,
+        playerSessionId,
+        canonical_session_id: playerSessionId,
+        token_cache_hit: tokenCacheHit,
+        verify_token_ms: verifyTokenMs,
+        sql_profile_ms: sqlProfileMs,
+        session_create_ms: sessionCreateMs,
+        total_ms: Date.now() - totalStartedAt,
+      });
+
+      return NextResponse.json({
+        sessionId: session.sessionId,
+        playerSessionId,
+        canonicalSessionId: playerSessionId,
+        uid: session.uid,
+        role: session.role,
+        coadminUid: session.coadminUid,
+        username: session.username,
+        status: profile.status,
+        expiresAt: session.expiresAt,
+      });
+    }
+
     const session = await createAppSessionForUser({
       uid: profile.uid,
       role: profile.role,
@@ -119,12 +193,18 @@ export async function POST(request: Request) {
       deviceId,
       rawContext: {
         source: 'firebase_login_bootstrap',
-        playerSessionId: playerSessionId || null,
-        automationAgentId: profile.automationAgentId || null,
       },
       deactivatePreviousForUid: profile.role === 'player',
     });
     const sessionCreateMs = Date.now() - sessionCreateStartedAt;
+
+    logRouteSessionValidation('/api/auth/session/bootstrap', {
+      ok: true,
+      uid: profile.uid,
+      role: profile.role,
+      app_session_id: session.sessionId,
+      validates: 'app_session_sql',
+    });
 
     console.info('[SQL_AUTH_BOOTSTRAP]', {
       ok: true,

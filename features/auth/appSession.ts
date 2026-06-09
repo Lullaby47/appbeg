@@ -2,7 +2,11 @@
 
 import { auth } from '@/lib/firebase/client';
 import { isValidRole, type UserRole } from '@/lib/auth/roles';
-import { getOrCreatePlayerDeviceId, getLocalPlayerSessionId } from '@/features/auth/playerSession';
+import {
+  getOrCreatePlayerDeviceId,
+  getLocalPlayerSessionId,
+  storeLocalPlayerSessionId,
+} from '@/features/auth/playerSession';
 import {
   clearCachedSessionUser,
   getCachedSessionUser,
@@ -16,6 +20,8 @@ export const IMPERSONATOR_SESSION_ID_KEY = 'appbeg:impersonatorSessionId';
 
 type BootstrapResponse = {
   sessionId?: string;
+  playerSessionId?: string;
+  canonicalSessionId?: string;
   uid?: string;
   role?: string;
   coadminUid?: string | null;
@@ -197,6 +203,12 @@ export async function bootstrapAppSessionAfterFirebaseLogin(input?: {
   }
 
   storeAppSessionLocal(payload.sessionId, String(payload.expiresAt || ''));
+  const canonicalSessionId = String(
+    payload.canonicalSessionId || payload.playerSessionId || ''
+  ).trim();
+  if (canonicalSessionId) {
+    storeLocalPlayerSessionId(canonicalSessionId);
+  }
   if (payload.uid && payload.role && isValidRole(payload.role)) {
     seedSessionUserCache(
       {
@@ -214,6 +226,9 @@ export async function bootstrapAppSessionAfterFirebaseLogin(input?: {
     uid: payload.uid || null,
     role: payload.role || null,
     sessionId: payload.sessionId,
+    appSessionId: payload.sessionId,
+    playerSessionId: canonicalSessionId || null,
+    canonicalSessionId: canonicalSessionId || null,
     expiresAt: payload.expiresAt || null,
   });
   return payload;

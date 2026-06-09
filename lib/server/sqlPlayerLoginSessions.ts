@@ -122,6 +122,164 @@ function emptyQueryTiming(): PlayerLoginSessionQueryTiming {
   };
 }
 
+async function lookupActivePlayerSessionIdOnClient(
+  client: PoolClient,
+  playerUid: string,
+  options?: { sessionId?: string; deviceId?: string }
+) {
+  const requestedSessionId = cleanText(options?.sessionId);
+  if (requestedSessionId) {
+    const requested = await client.query<{ session_id: string }>(
+      `
+        SELECT session_id
+        FROM public.player_sessions_cache
+        WHERE session_id = $1
+          AND player_uid = $2
+          AND deleted_at IS NULL
+          AND active = TRUE
+        LIMIT 1
+      `,
+      [requestedSessionId, playerUid]
+    );
+    const sessionId = cleanText(requested.rows[0]?.session_id);
+    if (sessionId) {
+      return sessionId;
+    }
+  }
+
+  const deviceId = cleanText(options?.deviceId);
+  if (!deviceId) {
+    return '';
+  }
+
+  const sameDevice = await client.query<{ session_id: string }>(
+    `
+      SELECT session_id
+      FROM public.player_sessions_cache
+      WHERE player_uid = $1
+        AND device_id = $2
+        AND deleted_at IS NULL
+        AND active = TRUE
+      LIMIT 1
+    `,
+    [playerUid, deviceId]
+  );
+  return cleanText(sameDevice.rows[0]?.session_id);
+}
+
+async function insertAppSessionForPlayerOnClient(
+  client: PoolClient,
+  input: {
+    playerUid: string;
+    playerSessionId: string;
+    role: string;
+    coadminUid?: string | null;
+    username?: string | null;
+    deviceId: string;
+    appSessionRawContext?: Record<string, unknown>;
+    deactivatePreviousReason?: string;
+  }
+): Promise<{ appSession: AppSessionRow; appSessionInsertMs: number }> {
+  const playerUid = cleanText(input.playerUid);
+  const playerSessionId = cleanText(input.playerSessionId);
+  const role = cleanText(input.role).toLowerCase();
+  const coadminUid = cleanText(input.coadminUid) || null;
+  const username = cleanText(input.username) || null;
+  const deviceId = cleanText(input.deviceId);
+  const appSessionId = randomUUID();
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const expiresAt = new Date(Date.now() + sessionTtlSeconds() * 1000);
+  const deactivateReason = cleanText(input.deactivatePreviousReason) || 'session_refresh';
+  const rawContext = {
+    ...(normalizeJson(input.appSessionRawContext || {}) as Record<string, unknown>),
+    playerSessionId,
+    canonicalSessionId: playerSessionId,
+  };
+
+  const appSessionStartedAt = Date.now();
+  const insertResult = await client.query(
+    `
+      WITH deactivated AS (
+        UPDATE public.app_sessions
+        SET
+          active = FALSE,
+          ended_at = $2::timestamptz,
+          ended_reason = $3,
+          revoked_at = $2::timestamptz,
+          updated_at = $2::timestamptz
+        WHERE uid = $1
+          AND active = TRUE
+      )
+      INSERT INTO public.app_sessions (
+        session_id,
+        uid,
+        role,
+        coadmin_uid,
+        username,
+        device_id,
+        active,
+        expires_at,
+        last_seen_at,
+        ended_at,
+        ended_reason,
+        created_at,
+        updated_at,
+        revoked_at,
+        raw_context
+      )
+      VALUES (
+        $4,
+        $1,
+        $5,
+        COALESCE(
+          NULLIF($6::text, ''),
+          (
+            SELECT COALESCE(
+              NULLIF(BTRIM(coadmin_uid::text), ''),
+              NULLIF(BTRIM(created_by::text), '')
+            )
+            FROM public.players_cache
+            WHERE uid = $1
+              AND deleted_at IS NULL
+            LIMIT 1
+          )
+        ),
+        NULLIF($7::text, ''),
+        NULLIF($8::text, ''),
+        TRUE,
+        $9::timestamptz,
+        $10::timestamptz,
+        NULL,
+        NULL,
+        $10::timestamptz,
+        $10::timestamptz,
+        NULL,
+        $11::jsonb
+      )
+      RETURNING *
+    `,
+    [
+      playerUid,
+      nowIso,
+      deactivateReason,
+      appSessionId,
+      role,
+      coadminUid,
+      username,
+      deviceId,
+      expiresAt.toISOString(),
+      nowIso,
+      JSON.stringify(rawContext),
+    ]
+  );
+
+  return {
+    appSession: mapAppSessionRow(insertResult.rows[0] as Record<string, unknown>),
+    appSessionInsertMs: Date.now() - appSessionStartedAt,
+  };
+}
+
 async function createPlayerLoginSessionsOnClient(
   client: PoolClient,
   input: CreatePlayerLoginSessionsInSqlInput
@@ -141,12 +299,45 @@ async function createPlayerLoginSessionsOnClient(
   const role = cleanText(input.role).toLowerCase();
   const coadminUid = cleanText(input.coadminUid) || null;
   const username = cleanText(input.username) || null;
-  const playerSessionId = cleanText(input.playerSessionId) || randomUUID();
-  const appSessionId = randomUUID();
   const nowIso = new Date().toISOString();
   const now = new Date(nowIso);
-  const expiresAt = new Date(Date.now() + sessionTtlSeconds() * 1000);
   const source = cleanText(input.actorSource) || 'sql_player_login';
+
+  const resumePlayerSessionId = await lookupActivePlayerSessionIdOnClient(client, playerUid, {
+    sessionId: input.playerSessionId,
+    deviceId,
+  });
+  if (resumePlayerSessionId) {
+    const createAppSessionStartedAt = Date.now();
+    const { appSession, appSessionInsertMs } = await insertAppSessionForPlayerOnClient(client, {
+      playerUid,
+      playerSessionId: resumePlayerSessionId,
+      role,
+      coadminUid,
+      username,
+      deviceId,
+      appSessionRawContext: input.appSessionRawContext,
+      deactivatePreviousReason: 'session_refresh',
+    });
+    queryTiming.app_session_insert_ms = appSessionInsertMs;
+    queryTiming.total_ms = Date.now() - transactionStartedAt;
+    console.info('[PLAYER_LOGIN_SESSION] resumed_existing_player_session', {
+      playerUid,
+      canonical_session_id: resumePlayerSessionId,
+      app_session_id: appSession.sessionId,
+      deviceId,
+    });
+    return {
+      playerSessionId: resumePlayerSessionId,
+      appSession,
+      previousSessionIds: [],
+      start_player_session_sql_ms: 0,
+      create_app_session_ms: Date.now() - createAppSessionStartedAt,
+      query_timing: queryTiming,
+    };
+  }
+
+  const playerSessionId = randomUUID();
   const activeSessionDevice = buildActiveSessionDevice(input);
   const rawSessionData = normalizeJson({
     playerUid,
@@ -278,97 +469,31 @@ async function createPlayerLoginSessionsOnClient(
 
   const startPlayerSessionSqlMs = Date.now() - playerSessionStartedAt;
   const createAppSessionStartedAt = Date.now();
-  const rawContext = {
-    ...(normalizeJson(input.appSessionRawContext || {}) as Record<string, unknown>),
+  const { appSession, appSessionInsertMs } = await insertAppSessionForPlayerOnClient(client, {
+    playerUid,
     playerSessionId,
-  };
-
-  const appSessionStartedAt = Date.now();
-  const insertResult = await client.query(
-    `
-      WITH deactivated AS (
-        UPDATE public.app_sessions
-        SET
-          active = FALSE,
-          ended_at = $2::timestamptz,
-          ended_reason = $3,
-          revoked_at = $2::timestamptz,
-          updated_at = $2::timestamptz
-        WHERE uid = $1
-          AND active = TRUE
-      )
-      INSERT INTO public.app_sessions (
-        session_id,
-        uid,
-        role,
-        coadmin_uid,
-        username,
-        device_id,
-        active,
-        expires_at,
-        last_seen_at,
-        ended_at,
-        ended_reason,
-        created_at,
-        updated_at,
-        revoked_at,
-        raw_context
-      )
-      VALUES (
-        $4,
-        $1,
-        $5,
-        COALESCE(
-          NULLIF($6::text, ''),
-          (
-            SELECT COALESCE(
-              NULLIF(BTRIM(coadmin_uid::text), ''),
-              NULLIF(BTRIM(created_by::text), '')
-            )
-            FROM public.players_cache
-            WHERE uid = $1
-              AND deleted_at IS NULL
-            LIMIT 1
-          )
-        ),
-        NULLIF($7::text, ''),
-        NULLIF($8::text, ''),
-        TRUE,
-        $9::timestamptz,
-        $10::timestamptz,
-        NULL,
-        NULL,
-        $10::timestamptz,
-        $10::timestamptz,
-        NULL,
-        $11::jsonb
-      )
-      RETURNING *
-    `,
-    [
-      playerUid,
-      now.toISOString(),
-      'replaced_by_new_login',
-      appSessionId,
-      role,
-      coadminUid,
-      username,
-      deviceId,
-      expiresAt.toISOString(),
-      now.toISOString(),
-      JSON.stringify(rawContext),
-    ]
-  );
-  const appSessionBatchMs = Date.now() - appSessionStartedAt;
-  queryTiming.app_sessions_deactivate_ms = 0;
-  queryTiming.app_session_insert_ms = appSessionBatchMs;
+    role,
+    coadminUid,
+    username,
+    deviceId,
+    appSessionRawContext: input.appSessionRawContext,
+    deactivatePreviousReason: 'replaced_by_new_login',
+  });
+  queryTiming.app_session_insert_ms = appSessionInsertMs;
 
   const createAppSessionMs = Date.now() - createAppSessionStartedAt;
+  console.info('[PLAYER_LOGIN_SESSION] created_new_player_session', {
+    playerUid,
+    canonical_session_id: playerSessionId,
+    app_session_id: appSession.sessionId,
+    deviceId,
+    previousSessionCount: previousSessionIds.length,
+  });
   queryTiming.total_ms = Date.now() - transactionStartedAt;
 
   return {
     playerSessionId,
-    appSession: mapAppSessionRow(insertResult.rows[0] as Record<string, unknown>),
+    appSession,
     previousSessionIds,
     start_player_session_sql_ms: startPlayerSessionSqlMs,
     create_app_session_ms: createAppSessionMs,

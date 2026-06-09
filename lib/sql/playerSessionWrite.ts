@@ -147,9 +147,34 @@ export async function startPlayerSessionInSql(
     throw new Error('Postgres unavailable or missing playerUid/deviceId.');
   }
 
-  const sessionId = randomUUID();
   const nowIso = new Date().toISOString();
   const source = cleanText(input.actorSource) || 'sql_player_session_start';
+
+  const existingSameDevice = await db.query<{ session_id: string }>(
+    `
+      SELECT session_id
+      FROM public.player_sessions_cache
+      WHERE player_uid = $1
+        AND device_id = $2
+        AND deleted_at IS NULL
+        AND active = TRUE
+      LIMIT 1
+    `,
+    [playerUid, deviceId]
+  );
+  const existingSessionId = cleanText(existingSameDevice.rows[0]?.session_id);
+  if (existingSessionId) {
+    console.info('[PLAYER_SESSION_SQL]', {
+      action: 'start_resume',
+      uid: playerUid,
+      sessionId: existingSessionId,
+      deviceId,
+      reason: 'same_device_active_session',
+    });
+    return { sessionId: existingSessionId, previousSessionIds: [], deviceId };
+  }
+
+  const sessionId = randomUUID();
   const activeSessionDevice = buildActiveSessionDevice(input);
 
   const rawSessionData = normalizeJson({

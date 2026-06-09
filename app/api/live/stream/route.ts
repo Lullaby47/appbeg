@@ -5,6 +5,7 @@ import {
   verifyApiTokenIdentity,
 } from '@/lib/firebase/apiAuth';
 import { authSqlReadEnvLogFields } from '@/lib/server/authSqlRead';
+import { logRouteSessionValidation, sessionIdsFromRequest } from '@/lib/server/sessionAuthLog';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { getLiveOutboxRowsAfter, type LiveOutboxRow } from '@/lib/sql/liveOutbox';
 
@@ -259,22 +260,29 @@ export async function GET(request: Request) {
   const playerChannels = resolvePlayerOwnedChannels(channels);
   if (playerChannels) {
     const playerUid = playerChannels[0].match(PLAYER_CHANNEL_PATTERN)?.[1] || '';
+    const headerSessions = sessionIdsFromRequest(request);
     const auth = await requirePlayerOwnedLiveAuth(request, playerUid);
     if (!auth.ok) {
-      console.info('[LIVE_STREAM_AUTH]', {
+      logRouteSessionValidation('/api/live/stream', {
         ok: false,
         channelType: 'player_requests',
         playerUid,
+        ...headerSessions,
+        canonical_session_id: headerSessions.player_session_id,
+        validates: 'player_session_sql',
         ...authSqlReadEnvLogFields(),
         ...auth.timing,
       });
       return auth.response;
     }
 
-    console.info('[LIVE_STREAM_AUTH]', {
+    logRouteSessionValidation('/api/live/stream', {
       ok: true,
       channelType: 'player_requests',
       playerUid,
+      ...headerSessions,
+      canonical_session_id: headerSessions.player_session_id,
+      validates: 'player_session_sql',
       ...authSqlReadEnvLogFields(),
       ...auth.timing,
     });
