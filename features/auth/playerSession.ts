@@ -513,7 +513,7 @@ async function resolveActivePlayerSession(
     return apiResult;
   }
 
-  if (currentUser) {
+  if (currentUser && !sqlPlayerMode) {
     const firestoreResult = await verifyActivePlayerSessionViaFirestore(
       currentUser,
       localSessionId
@@ -598,12 +598,27 @@ export async function assertActivePlayerSession() {
 
 export async function getPlayerApiHeaders(contentType = true) {
   const localSessionId = getLocalPlayerSessionId();
+  const sqlPlayerMode =
+    isSqlPlayerLoginEnabled() && Boolean(getLocalAppSessionId()) && Boolean(localSessionId);
   const cached =
     localSessionId && !forcedPlayerLogout
       ? readPlayerSessionVerifyCache(localSessionId)
       : null;
   if (!cached?.ok) {
-    await assertActivePlayerSession();
+    if (sqlPlayerMode) {
+      const result = await verifyActivePlayerSession();
+      if (
+        !result.ok &&
+        (result.reason === 'session_replaced' || result.reason === 'session_inactive')
+      ) {
+        await forcePlayerSessionLogout({
+          markSessionInactive: true,
+        });
+        throw new Error(PLAYER_REPLACED_LOGIN_MESSAGE);
+      }
+    } else {
+      await assertActivePlayerSession();
+    }
   }
   const headers = await buildPlayerSessionRequestHeaders(contentType);
   const hasBearer = Boolean(headers.Authorization);

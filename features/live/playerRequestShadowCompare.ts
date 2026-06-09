@@ -1,5 +1,6 @@
 import type { PlayerGameRequest } from '@/features/games/playerGameRequests';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { LIVE_STREAM_DISABLED } from '@/features/live/liveStreamFlags';
 type ShadowRequestPayload = {
   entityId?: unknown;
   status?: unknown;
@@ -158,6 +159,11 @@ export function attachPlayerRequestLiveShadowCompare(playerUid: string) {
         latestOutboxId: lastEventId,
         status: snapshotResponse.status,
       });
+
+      if (LIVE_STREAM_DISABLED) {
+        console.info('[LIVE_SHADOW_COMPARE] stream_skipped reason=live_stream_disabled');
+        return;
+      }
 
       abortController = new AbortController();
       await connectStream(headers);

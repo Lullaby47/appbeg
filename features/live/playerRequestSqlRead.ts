@@ -7,6 +7,7 @@ import {
   sortPlayerGameRequestsByNewest,
 } from '@/features/games/playerGameRequests';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { LIVE_STREAM_DISABLED } from '@/features/live/liveStreamFlags';
 
 export const PLAYER_REQUESTS_SQL_READ_ENABLED =
   String(process.env.NEXT_PUBLIC_PLAYER_REQUESTS_SQL_READ || '').trim() === '1';
@@ -262,7 +263,12 @@ export function attachPlayerRequestSqlReadListener(
       cache: 'no-store',
     });
     if (!response.ok || !response.body) {
-      throw new Error(`sse_http_${response.status}`);
+      const status = response.status;
+      console.info('[PLAYER_REQUESTS_SQL_READ] stream_http_error', {
+        status,
+        logout_suppressed: status === 401,
+      });
+      throw new Error(`sse_http_${status}`);
     }
 
     const reader = response.body.getReader();
@@ -329,6 +335,11 @@ export function attachPlayerRequestSqlReadListener(
         source || 'unknown'
       );
       emitRequests();
+
+      if (LIVE_STREAM_DISABLED) {
+        console.info('[PLAYER_REQUESTS_SQL_READ] stream_skipped reason=live_stream_disabled');
+        return;
+      }
 
       abortController = new AbortController();
       await connectStream(headers);

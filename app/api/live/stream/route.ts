@@ -4,6 +4,7 @@ import {
   requirePlayerOwnedLiveAuth,
   verifyApiTokenIdentity,
 } from '@/lib/firebase/apiAuth';
+import { authSqlReadEnvLogFields } from '@/lib/server/authSqlRead';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { getLiveOutboxRowsAfter, type LiveOutboxRow } from '@/lib/sql/liveOutbox';
 
@@ -260,12 +261,21 @@ export async function GET(request: Request) {
     const playerUid = playerChannels[0].match(PLAYER_CHANNEL_PATTERN)?.[1] || '';
     const auth = await requirePlayerOwnedLiveAuth(request, playerUid);
     if (!auth.ok) {
+      console.info('[LIVE_STREAM_AUTH]', {
+        ok: false,
+        channelType: 'player_requests',
+        playerUid,
+        ...authSqlReadEnvLogFields(),
+        ...auth.timing,
+      });
       return auth.response;
     }
 
     console.info('[LIVE_STREAM_AUTH]', {
+      ok: true,
       channelType: 'player_requests',
       playerUid,
+      ...authSqlReadEnvLogFields(),
       ...auth.timing,
     });
 

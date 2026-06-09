@@ -101,16 +101,30 @@ export default function ProtectedRoute({
           uid: sessionUser.uid,
           reason: sessionStatus.reason,
         });
-        setCurrentRole(null);
-        setForcedLogout(true);
-        setChecking(false);
-        void forcePlayerSessionLogout({
-          redirect: (url) => router.replace(url),
-          markSessionInactive:
-            sessionStatus.reason === 'session_replaced' ||
-            sessionStatus.reason === 'session_inactive',
+        if (
+          sessionStatus.reason === 'session_replaced' ||
+          sessionStatus.reason === 'session_inactive'
+        ) {
+          setCurrentRole(null);
+          setForcedLogout(true);
+          setChecking(false);
+          void forcePlayerSessionLogout({
+            redirect: (url) => router.replace(url),
+            markSessionInactive: true,
+          });
+          return 'denied';
+        }
+        console.info('[PROTECTED_ROUTE_AUTH]', {
+          source: 'player_app_session',
+          ok: true,
+          uid: sessionUser.uid,
+          role: 'player',
+          reason: 'transient_verify_failure_allowed',
         });
-        return 'denied';
+        setCurrentRole('player');
+        recordDevActiveSession('player', sessionUser.uid);
+        setChecking(false);
+        return 'allowed';
       }
 
       seedPlayerSessionVerifyCache(sessionStatus);
@@ -232,6 +246,10 @@ export default function ProtectedRoute({
         }
 
         if (role === 'player') {
+          const sqlPlayerMode =
+            isSqlPlayerLoginEnabled() &&
+            Boolean(getLocalAppSessionId()) &&
+            Boolean(getLocalPlayerSessionId());
           const sessionStatus = await verifyActivePlayerSession();
           if (!sessionStatus.ok) {
             if (sessionStatus.reason === 'session_replaced' && sessionStatus.activeSessionId) {
@@ -246,15 +264,34 @@ export default function ProtectedRoute({
               reason: sessionStatus.reason,
               activeSessionId: sessionStatus.activeSessionId || null,
               source: sessionStatus.source || null,
+              sqlPlayerMode,
             });
+            if (
+              sessionStatus.reason === 'session_replaced' ||
+              sessionStatus.reason === 'session_inactive'
+            ) {
+              setCurrentRole(null);
+              setForcedLogout(true);
+              setChecking(false);
+              void forcePlayerSessionLogout({
+                redirect: (url) => router.replace(url),
+                markSessionInactive: true,
+              });
+              return;
+            }
+            if (sqlPlayerMode) {
+              console.info('[SESSION_GUARD] sql_player_transient_verify_failure', {
+                uid: firebaseUser.uid,
+                reason: sessionStatus.reason,
+              });
+              return;
+            }
             setCurrentRole(null);
             setForcedLogout(true);
             setChecking(false);
             void forcePlayerSessionLogout({
               redirect: (url) => router.replace(url),
-              markSessionInactive:
-                sessionStatus.reason === 'session_replaced' ||
-                sessionStatus.reason === 'session_inactive',
+              markSessionInactive: false,
             });
             return;
           }
@@ -336,7 +373,10 @@ export default function ProtectedRoute({
       onInactive: handlePollKick,
     });
 
-    if (currentUser) {
+    const sqlPlayerAppSession =
+      isSqlPlayerLoginEnabled() && Boolean(getLocalAppSessionId());
+
+    if (currentUser && !sqlPlayerAppSession) {
       stopSessionListener = listenForPlayerSessionReplacement(currentUser, () => {
         setForcedLogout(true);
         setCurrentRole(null);

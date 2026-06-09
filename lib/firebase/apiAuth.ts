@@ -30,6 +30,7 @@ import {
   mirrorPlayerSessionById,
 } from '@/lib/sql/playerSessionsCache';
 import { timedRechargeFirestoreRead } from '@/lib/server/rechargeFirestoreInstrumentation';
+import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
 
 export type ApiRole = 'admin' | 'coadmin' | 'staff' | 'carer' | 'player';
 
@@ -402,6 +403,8 @@ export async function verifyApiTokenIdentity(
 }
 
 export type PlayerLiveAuthPath =
+  | 'app_session_sql_session_sql'
+  | 'app_session_sql_session_firestore'
   | 'player_token_sql_session_sql'
   | 'player_token_sql_session_firestore'
   | 'player_token_firestore_session_sql'
@@ -425,6 +428,8 @@ export type PlayerLiveAuthTiming = {
   session_check_ms: number;
   auth_ms: number;
   token_cache_hit: boolean;
+  request_session_id?: string | null;
+  active_session_id?: string | null;
 };
 
 function playerSessionBlockedResponse() {
@@ -520,7 +525,11 @@ async function validatePlayerApiSession(
   uid: string,
   sessionId: string,
   timing: PlayerApiSessionTiming,
-  options?: { appSessionId?: string; rechargeFirestoreInstrumentation?: boolean }
+  options?: {
+    appSessionId?: string;
+    rechargeFirestoreInstrumentation?: boolean;
+    sqlOnly?: boolean;
+  }
 ): Promise<{ ok: true; sessionSource: 'sql' | 'firestore' } | { ok: false; response: NextResponse }> {
   const appSessionId = cleanText(options?.appSessionId);
   const cached = getCachedPlayerSessionValidation({
@@ -582,6 +591,19 @@ async function validatePlayerApiSession(
     uid,
     sessionId
   );
+
+  if (options?.sqlOnly) {
+    console.info('[API_AUTH] player request blocked', {
+      uid,
+      reason: sessionSqlLookup.missReason || 'sql_session_missing',
+      sessionId,
+      context: 'api_user_session_sql_only',
+    });
+    return {
+      ok: false,
+      response: apiError('Player session not found in SQL.', 401),
+    };
+  }
 
   const sessionDocStartedAt = Date.now();
   const sessionSnap = options?.rechargeFirestoreInstrumentation
@@ -758,8 +780,11 @@ export async function requirePlayerOwnedLiveAuth(
 > {
   const authStartedAt = Date.now();
   const expectedUid = String(expectedPlayerUid || '').trim();
+  const sqlReadMode = isAuthSqlReadEnabled();
   const timing: PlayerLiveAuthTiming = {
-    auth_path: 'player_token_firestore_session_firestore',
+    auth_path: sqlReadMode
+      ? 'player_token_sql_session_sql'
+      : 'player_token_firestore_session_firestore',
     verify_token_ms: 0,
     sql_profile_ms: 0,
     sql_profile_pool_acquire_ms: 0,
@@ -780,6 +805,99 @@ export async function requirePlayerOwnedLiveAuth(
   if (!expectedUid) {
     timing.auth_ms = Date.now() - authStartedAt;
     return { ok: false, response: apiError('Forbidden.', 403), timing };
+  }
+
+  const sessionId = playerSessionId(request);
+  const appSessionId = appSessionIdFromRequest(request);
+  timing.request_session_id = sessionId || null;
+
+  const logPlayerLiveAuthBlocked = (
+    uid: string,
+    reason: string,
+    extra?: { activeSessionId?: string | null }
+  ) => {
+    if (extra?.activeSessionId !== undefined) {
+      timing.active_session_id = extra.activeSessionId;
+    }
+    console.info('[API_AUTH] player request blocked', {
+      uid,
+      reason,
+      auth_path: timing.auth_path,
+      session_source: timing.session_source,
+      request_session_id: timing.request_session_id,
+      active_session_id: timing.active_session_id ?? null,
+      sql_read_mode: sqlReadMode,
+    });
+  };
+
+  const finishPlayerLiveAuth = (
+    uid: string,
+    authPath: PlayerLiveAuthPath,
+    sessionSource: 'sql' | 'firestore',
+    activeSessionId?: string | null
+  ) => {
+    timing.auth_path = authPath;
+    timing.session_source = sessionSource;
+    timing.active_session_id = activeSessionId ?? sessionId ?? null;
+    console.info('[API_AUTH] player request allowed', {
+      uid,
+      reason: 'session_match',
+      auth_path: timing.auth_path,
+      session_source: timing.session_source,
+      request_session_id: timing.request_session_id,
+      active_session_id: timing.active_session_id,
+      token_cache_hit: timing.token_cache_hit,
+      sql_profile_ms: timing.sql_profile_total_ms,
+      session_sql_ms: timing.session_sql_total_ms,
+      user_doc_ms: timing.user_doc_ms,
+      session_doc_ms: timing.session_doc_ms,
+      sql_read_mode: sqlReadMode,
+    });
+    timing.auth_ms = Date.now() - authStartedAt;
+    return { ok: true as const, uid, timing };
+  };
+
+  const appSessionAuth = await verifyAppSessionFromRequest(request);
+  if (appSessionAuth.hit && appSessionAuth.profile.role === 'player') {
+    if (appSessionAuth.uid !== expectedUid) {
+      timing.auth_ms = Date.now() - authStartedAt;
+      return { ok: false, response: apiError('Forbidden.', 403), timing };
+    }
+
+    if (!sessionId) {
+      console.info('[API_AUTH] player request blocked', {
+        uid: appSessionAuth.uid,
+        reason: 'missing_session_header',
+        sessionId: null,
+        auth_path: 'app_session_sql',
+      });
+      timing.auth_ms = Date.now() - authStartedAt;
+      return { ok: false, response: apiError('X-Player-Session-Id header is required.', 401), timing };
+    }
+
+    const sessionCheckStartedAt = Date.now();
+    const sessionValidation = await validatePlayerApiSession(
+      appSessionAuth.uid,
+      sessionId,
+      timing,
+      {
+        appSessionId: appSessionAuth.sessionId,
+        sqlOnly: sqlReadMode,
+      }
+    );
+    timing.session_check_ms = Date.now() - sessionCheckStartedAt;
+    if (!sessionValidation.ok) {
+      timing.auth_ms = Date.now() - authStartedAt;
+      return { ok: false, response: sessionValidation.response, timing };
+    }
+
+    return finishPlayerLiveAuth(
+      appSessionAuth.uid,
+      sessionValidation.sessionSource === 'sql'
+        ? 'app_session_sql_session_sql'
+        : 'app_session_sql_session_firestore',
+      sessionValidation.sessionSource
+    );
   }
 
   const token = bearerToken(request);
@@ -806,7 +924,6 @@ export async function requirePlayerOwnedLiveAuth(
     return { ok: false, response: apiError('Forbidden.', 403), timing };
   }
 
-  const sessionId = playerSessionId(request);
   if (!sessionId) {
     console.info('[API_AUTH] player request blocked', {
       uid: identityUid,
@@ -815,7 +932,11 @@ export async function requirePlayerOwnedLiveAuth(
       activeSessionId: null,
     });
     timing.auth_ms = Date.now() - authStartedAt;
-    return { ok: false, response: playerSessionBlockedResponse(), timing };
+    return {
+      ok: false,
+      response: apiError('X-Player-Session-Id header is required.', 401),
+      timing,
+    };
   }
 
   const sqlProfileStartedAt = Date.now();
@@ -825,27 +946,68 @@ export async function requirePlayerOwnedLiveAuth(
   timing.sql_profile_query_exec_ms = sqlProfileLookup.timing.query_exec_ms;
   timing.sql_profile_total_ms = sqlProfileLookup.timing.total_ms;
 
-  let activeSessionId = '';
-  let usedSqlProfile = false;
-
-  if (sqlProfileLookup.profile?.role === 'player') {
-    activeSessionId = String(sqlProfileLookup.profile.activeSessionId || '').trim();
-    if (activeSessionId && activeSessionId === sessionId) {
-      usedSqlProfile = true;
-    } else {
-      console.info(
-        '[LIVE_AUTH_PLAYER_FALLBACK] reason=%s uid=%s sessionId=%s sqlActiveSessionId=%s',
-        !activeSessionId ? 'missing_sql_active_session_id' : 'session_mismatch_sql',
-        identityUid,
-        sessionId,
-        activeSessionId || null
-      );
+  if (sqlReadMode) {
+    if (!sqlProfileLookup.profile || sqlProfileLookup.missReason) {
+      const reason = sqlProfileLookup.missReason || 'row_missing';
+      console.info('[LIVE_AUTH_PLAYER_SQL] blocked uid=%s reason=%s', identityUid, reason);
+      timing.auth_ms = Date.now() - authStartedAt;
+      if (reason === 'postgres_unavailable') {
+        return {
+          ok: false,
+          response: apiError('SQL auth is unavailable. Configure DATABASE_URL on the server.', 503),
+          timing,
+        };
+      }
+      return {
+        ok: false,
+        response: apiError(
+          'User profile not found in SQL cache. Ensure players_cache is populated for this user.',
+          404
+        ),
+        timing,
+      };
     }
-  } else if (sqlProfileLookup.missReason) {
-    console.info('[LIVE_AUTH_PLAYER_FALLBACK] reason=%s uid=%s', sqlProfileLookup.missReason, identityUid);
+
+    if (sqlProfileLookup.profile.role !== 'player') {
+      timing.auth_ms = Date.now() - authStartedAt;
+      return { ok: false, response: apiError('Forbidden.', 403), timing };
+    }
+
+    const sessionCheckStartedAt = Date.now();
+    const sessionValidation = await validatePlayerApiSession(identityUid, sessionId, timing, {
+      appSessionId,
+      sqlOnly: true,
+    });
+    timing.session_check_ms = Date.now() - sessionCheckStartedAt;
+    if (!sessionValidation.ok) {
+      timing.auth_ms = Date.now() - authStartedAt;
+      return { ok: false, response: sessionValidation.response, timing };
+    }
+
+    return finishPlayerLiveAuth(
+      identityUid,
+      sessionValidation.sessionSource === 'sql'
+        ? 'player_token_sql_session_sql'
+        : 'player_token_sql_session_firestore',
+      sessionValidation.sessionSource
+    );
   }
 
+  const usedSqlProfile = sqlProfileLookup.profile?.role === 'player';
+  const sqlActiveSessionId = usedSqlProfile
+    ? String(sqlProfileLookup.profile?.activeSessionId || '').trim()
+    : '';
+
   if (!usedSqlProfile) {
+    if (sqlProfileLookup.profile && sqlProfileLookup.profile.role !== 'player') {
+      timing.auth_ms = Date.now() - authStartedAt;
+      return { ok: false, response: apiError('Forbidden.', 403), timing };
+    }
+
+    if (sqlProfileLookup.missReason) {
+      console.info('[LIVE_AUTH_PLAYER_FALLBACK] reason=%s uid=%s', sqlProfileLookup.missReason, identityUid);
+    }
+
     const userDocStartedAt = Date.now();
     const userSnap = await adminDb.collection('users').doc(identityUid).get();
     timing.user_doc_ms = Date.now() - userDocStartedAt;
@@ -862,7 +1024,6 @@ export async function requirePlayerOwnedLiveAuth(
       return { ok: false, response: apiError('Forbidden.', 403), timing };
     }
 
-    activeSessionId = String(data.activeSessionId || '').trim();
     try {
       await mirrorPlayerById(identityUid, 'player_live_auth_hydrate');
     } catch (error) {
@@ -871,48 +1032,27 @@ export async function requirePlayerOwnedLiveAuth(
   }
 
   const sessionCheckStartedAt = Date.now();
-  if (sessionId !== activeSessionId) {
-    timing.auth_path = resolvePlayerLiveAuthPath(usedSqlProfile, timing.session_source);
-    console.info('[API_AUTH] player request blocked', {
-      uid: identityUid,
-      reason: !activeSessionId ? 'missing_active_session_id' : 'session_mismatch',
-      sessionId,
-      activeSessionId: activeSessionId || null,
-      auth_path: timing.auth_path,
-    });
-    timing.session_check_ms = Date.now() - sessionCheckStartedAt;
-    timing.auth_ms = Date.now() - authStartedAt;
-    return { ok: false, response: playerSessionBlockedResponse(), timing };
-  }
-
   const sessionValidation = await validatePlayerApiSession(identityUid, sessionId, timing, {
-    appSessionId: appSessionIdFromRequest(request),
+    appSessionId,
+    sqlOnly: sqlReadMode,
   });
+  timing.session_check_ms = Date.now() - sessionCheckStartedAt;
+
   if (!sessionValidation.ok) {
     timing.auth_path = resolvePlayerLiveAuthPath(usedSqlProfile, timing.session_source);
-    timing.session_check_ms = Date.now() - sessionCheckStartedAt;
+    logPlayerLiveAuthBlocked(identityUid, 'session_validation_failed', {
+      activeSessionId: sqlActiveSessionId || null,
+    });
     timing.auth_ms = Date.now() - authStartedAt;
     return { ok: false, response: sessionValidation.response, timing };
   }
 
-  timing.auth_path = resolvePlayerLiveAuthPath(usedSqlProfile, timing.session_source);
-
-  console.info('[API_AUTH] player request allowed', {
-    uid: identityUid,
-    sessionId,
-    reason: 'session_match',
-    auth_path: timing.auth_path,
-    session_source: timing.session_source,
-    token_cache_hit: timing.token_cache_hit,
-    sql_profile_ms: timing.sql_profile_total_ms,
-    session_sql_ms: timing.session_sql_total_ms,
-    user_doc_ms: timing.user_doc_ms,
-    session_doc_ms: timing.session_doc_ms,
-  });
-
-  timing.session_check_ms = Date.now() - sessionCheckStartedAt;
-  timing.auth_ms = Date.now() - authStartedAt;
-  return { ok: true, uid: identityUid, timing };
+  return finishPlayerLiveAuth(
+    identityUid,
+    resolvePlayerLiveAuthPath(usedSqlProfile, sessionValidation.sessionSource),
+    sessionValidation.sessionSource,
+    sessionId
+  );
 }
 
 export type CarerLiveAuthTiming = {
