@@ -3,13 +3,18 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
-import { isCacheSqlAuthoritative } from '@/lib/server/cacheSqlRead';
+import {
+  isCacheSqlAuthoritative,
+  logCacheFirestoreFallbackBlocked,
+} from '@/lib/server/cacheSqlRead';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import {
   acquirePlayerMirrorClient,
   cleanText,
   toDate,
 } from '@/lib/sql/playerMirrorCommon';
+
+const ROUTE = '/api/coadmin/players/[playerUid]/history';
 
 const SELECTED_PLAYER_RECORD_QUERY_LIMIT = 100;
 const SELECTED_PLAYER_CASHOUT_QUERY_LIMIT = 50;
@@ -528,6 +533,7 @@ export async function GET(
   }
 
   const callerCoadminUid = auth.user.role === 'coadmin' ? auth.user.uid : null;
+  const sqlReadMode = isCacheSqlAuthoritative();
 
   const clientAcquireStartedAt = Date.now();
   const acquired = await acquirePlayerMirrorClient({
@@ -569,32 +575,11 @@ export async function GET(
           rowCount: rowCount(postgresPayload),
         });
 
-        if (rowCount(postgresPayload) === 0) {
-          const fallbackStartedAt = Date.now();
-          try {
-            const firestorePayload = await getFirestoreHistory(playerUid, callerCoadminUid);
-            routeTiming.fallback_check_ms = Date.now() - fallbackStartedAt;
-            if (rowCount(firestorePayload) > 0) {
-              routeTiming.firebaseFallback = true;
-              routeTiming.row_width_mode = 'wide';
-              console.info('[COADMIN_PLAYER_HISTORY] postgres fallback firestore', {
-                playerUid,
-                reason: 'postgres_empty_firestore_has_rows',
-                rowCount: rowCount(firestorePayload),
-              });
-              return timedJson(firestorePayload, totalStartedAt, routeTiming, {
-                playerUid,
-                source: 'firestore',
-                reason: 'postgres_empty_firestore_has_rows',
-              });
-            }
-          } catch (error) {
-            routeTiming.fallback_check_ms = Date.now() - fallbackStartedAt;
-            console.warn('[COADMIN_PLAYER_HISTORY] firestore fallback failed', {
-              playerUid,
-              error,
-            });
-          }
+        if (rowCount(postgresPayload) === 0 && sqlReadMode) {
+          logCacheFirestoreFallbackBlocked(ROUTE, 'financialEvents,playerCashoutTasks,playerGameRequests', {
+            playerUid,
+            reason: 'postgres_empty',
+          });
         }
 
         return timedJson(postgresPayload, totalStartedAt, routeTiming, {
@@ -602,12 +587,49 @@ export async function GET(
           source: 'postgres',
         });
       } catch (error) {
+        if (sqlReadMode) {
+          logCacheFirestoreFallbackBlocked(ROUTE, 'financialEvents,playerCashoutTasks,playerGameRequests', {
+            playerUid,
+            reason: 'postgres_read_failed',
+          });
+          return timedJson(
+            {
+              source: 'postgres',
+              coadminAddedCoinTotal: 0,
+              cashoutTotalAmount: 0,
+              rows: baseRows(),
+              error: 'Failed to load player history from SQL cache.',
+            },
+            totalStartedAt,
+            routeTiming,
+            { playerUid, source: 'postgres', reason: 'postgres_read_failed' },
+            { status: 503 }
+          );
+        }
         console.info('[COADMIN_PLAYER_HISTORY] postgres fallback firestore', {
           playerUid,
           reason: 'postgres_read_failed',
           error,
         });
       }
+    } else if (sqlReadMode) {
+      logCacheFirestoreFallbackBlocked(ROUTE, 'financialEvents,playerCashoutTasks,playerGameRequests', {
+        playerUid,
+        reason: 'postgres_unavailable',
+      });
+      return timedJson(
+        {
+          source: 'postgres',
+          coadminAddedCoinTotal: 0,
+          cashoutTotalAmount: 0,
+          rows: baseRows(),
+          error: 'SQL cache is unavailable.',
+        },
+        totalStartedAt,
+        routeTiming,
+        { playerUid, source: 'postgres', reason: 'postgres_unavailable' },
+        { status: 503 }
+      );
     } else {
       console.info('[COADMIN_PLAYER_HISTORY] postgres fallback firestore', {
         playerUid,
@@ -616,6 +638,24 @@ export async function GET(
     }
   } finally {
     sharedClient?.release();
+  }
+
+  if (sqlReadMode) {
+    logCacheFirestoreFallbackBlocked(ROUTE, 'financialEvents,playerCashoutTasks,playerGameRequests', {
+      playerUid,
+      reason: 'sql_cache_authoritative',
+    });
+    return timedJson(
+      {
+        source: 'postgres',
+        coadminAddedCoinTotal: 0,
+        cashoutTotalAmount: 0,
+        rows: baseRows(),
+      },
+      totalStartedAt,
+      routeTiming,
+      { playerUid, source: 'postgres', reason: 'sql_cache_authoritative' }
+    );
   }
 
   const fallbackStartedAt = Date.now();

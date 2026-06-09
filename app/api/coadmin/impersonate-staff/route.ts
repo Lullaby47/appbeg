@@ -3,7 +3,9 @@ import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
+import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
 import { createImpersonationSession } from '@/lib/sql/appSessions';
+import { insertImpersonationLogInSql } from '@/lib/sql/impersonationLogs';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { lookupApiUserProfileFromSqlCache } from '@/lib/sql/playersCache';
 
@@ -31,6 +33,15 @@ async function mirrorImpersonationLog(input: {
   staffUid: string;
   staffUsername: string;
 }) {
+  if (isAuthoritySqlWriteEnabled()) {
+    return insertImpersonationLogInSql({
+      coadminUid: input.coadminUid,
+      coadminUsername: input.coadminUsername,
+      staffUid: input.staffUid,
+      staffUsername: input.staffUsername,
+    });
+  }
+
   try {
     await adminDb.collection('impersonationLogs').add({
       coadminUid: input.coadminUid,
@@ -70,6 +81,7 @@ async function createFirebaseCustomTokenFallback(staffUid: string, coadminUid: s
 
 export async function POST(request: Request) {
   const startedAt = Date.now();
+  const authoritySql = isAuthoritySqlWriteEnabled();
   try {
     const auth = await requireApiUser(request, ['coadmin']);
     if ('response' in auth) {
@@ -108,7 +120,6 @@ export async function POST(request: Request) {
     }
 
     const originalSessionId = appSessionIdFromRequest(request);
-    let firebaseFallbackUsed = false;
 
     try {
       const session = await createImpersonationSession({
@@ -121,7 +132,7 @@ export async function POST(request: Request) {
         ttlSeconds: IMPERSONATION_TTL_SECONDS,
       });
 
-      const firebaseMirrorOk = await mirrorImpersonationLog({
+      const auditOk = await mirrorImpersonationLog({
         coadminUid: callerUid,
         coadminUsername,
         staffUid: staffProfile.uid,
@@ -135,7 +146,8 @@ export async function POST(request: Request) {
         ttlSeconds: IMPERSONATION_TTL_SECONDS,
         sql_ok: true,
         firebase_fallback_used: false,
-        firestore_mirror_ok: firebaseMirrorOk,
+        audit_log_ok: auditOk,
+        authority: authoritySql ? 'sql' : 'legacy',
         durationMs: Date.now() - startedAt,
       });
 
@@ -143,30 +155,23 @@ export async function POST(request: Request) {
         ok: true,
         success: true,
         mode: 'sql_session',
+        authority: authoritySql ? 'sql' : 'legacy',
         sessionId: session.sessionId,
         expiresAt: session.expiresAt,
         staffUid: staffProfile.uid,
         staffUsername: staffProfile.username || 'Staff',
         redirectTo: '/staff',
         firebaseCustomToken: null,
-        firebaseMirrorOk,
+        auditLogOk: auditOk,
       });
     } catch (error) {
-      console.warn('[USER_IMPERSONATION_SQL] sql session create failed, trying firebase fallback', {
-        coadminUid: callerUid,
-        staffUid: staffProfile.uid,
-        error: error instanceof Error ? error.message : String(error),
-      });
-
-      const customToken = await createFirebaseCustomTokenFallback(staffProfile.uid, callerUid);
-      if (!customToken) {
+      if (authoritySql) {
         console.info('[USER_IMPERSONATION_SQL]', {
           coadminUid: callerUid,
           staffUid: staffProfile.uid,
           sessionId: null,
-          ttlSeconds: IMPERSONATION_TTL_SECONDS,
           sql_ok: false,
-          firebase_fallback_used: true,
+          authority: 'sql',
           durationMs: Date.now() - startedAt,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -176,23 +181,25 @@ export async function POST(request: Request) {
         );
       }
 
-      firebaseFallbackUsed = true;
-      const firebaseMirrorOk = await mirrorImpersonationLog({
+      console.warn('[USER_IMPERSONATION_SQL] sql session create failed, trying firebase fallback', {
+        coadminUid: callerUid,
+        staffUid: staffProfile.uid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      const customToken = await createFirebaseCustomTokenFallback(staffProfile.uid, callerUid);
+      if (!customToken) {
+        return NextResponse.json(
+          { error: error instanceof Error ? error.message : 'Failed to impersonate staff.' },
+          { status: 500 }
+        );
+      }
+
+      const auditOk = await mirrorImpersonationLog({
         coadminUid: callerUid,
         coadminUsername,
         staffUid: staffProfile.uid,
         staffUsername: staffProfile.username || 'Staff',
-      });
-
-      console.info('[USER_IMPERSONATION_SQL]', {
-        coadminUid: callerUid,
-        staffUid: staffProfile.uid,
-        sessionId: null,
-        ttlSeconds: IMPERSONATION_TTL_SECONDS,
-        sql_ok: false,
-        firebase_fallback_used: firebaseFallbackUsed,
-        firestore_mirror_ok: firebaseMirrorOk,
-        durationMs: Date.now() - startedAt,
       });
 
       return NextResponse.json({
@@ -204,7 +211,7 @@ export async function POST(request: Request) {
         redirectTo: '/staff',
         staffUid: staffProfile.uid,
         staffUsername: staffProfile.username || 'Staff',
-        firebaseMirrorOk,
+        auditLogOk: auditOk,
       });
     }
   } catch (error: unknown) {

@@ -3,6 +3,11 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { approveTransferRequestInSql } from '@/lib/sql/authorityTransferRequest';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorTransferRequestById } from '@/lib/sql/transferRequestsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
@@ -17,6 +22,23 @@ export async function POST(request: Request) {
     const body = (await request.json()) as Body;
     const requestId = String(body.requestId || '').trim();
     if (!requestId) return apiError('requestId is required.', 400);
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await approveTransferRequestInSql({
+        requestId,
+        actorUid: auth.user.uid,
+        actorUsername: auth.user.username || 'Staff',
+        actorRole: auth.user.role,
+        callerCoadminUid: scopedCoadminUid(auth.user),
+        isAdmin: auth.user.role === 'admin',
+      });
+      logAuthoritySqlWrite('/api/risk/transfer-requests/approve', {
+        requestId,
+        duplicate: result.duplicate,
+        eventId: result.eventId,
+      });
+      return NextResponse.json({ authority: 'sql', success: true });
+    }
 
     const caller = auth.user;
     const callerScope = scopedCoadminUid(caller);
@@ -85,4 +107,3 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status });
   }
 }
-

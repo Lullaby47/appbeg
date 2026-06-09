@@ -2,11 +2,11 @@ import 'server-only';
 
 import { NextResponse } from 'next/server';
 
-import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { shouldBlockFirestoreFallback } from '@/lib/server/sqlRuntime';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 
 export function isCacheSqlAuthoritative() {
-  return isAuthSqlReadEnabled();
+  return shouldBlockFirestoreFallback();
 }
 
 export function logCacheSqlRead(route: string, details: Record<string, unknown> = {}) {

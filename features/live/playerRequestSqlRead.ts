@@ -8,9 +8,9 @@ import {
 } from '@/features/games/playerGameRequests';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 import { LIVE_STREAM_DISABLED } from '@/features/live/liveStreamFlags';
+import { isPublicPlayerRequestsSqlReadEnabled } from '@/lib/client/sqlPublicFlags';
 
-export const PLAYER_REQUESTS_SQL_READ_ENABLED =
-  String(process.env.NEXT_PUBLIC_PLAYER_REQUESTS_SQL_READ || '').trim() === '1';
+export const PLAYER_REQUESTS_SQL_READ_ENABLED = isPublicPlayerRequestsSqlReadEnabled();
 
 type SqlSnapshotRequest = {
   id?: string;

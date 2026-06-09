@@ -7,9 +7,9 @@ import {
 } from '@/features/games/carerTasks';
 import { logCarerPageStartup, markCarerPageStartupStreamConnected } from '@/features/carer/carerStartupLogs';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
+import { isPublicCarerTasksSqlReadEnabled } from '@/lib/client/sqlPublicFlags';
 
-export const CARER_TASKS_SQL_READ_ENABLED =
-  String(process.env.NEXT_PUBLIC_CARER_TASKS_SQL_READ || '').trim() === '1';
+export const CARER_TASKS_SQL_READ_ENABLED = isPublicCarerTasksSqlReadEnabled();
 
 type SqlSnapshotTask = {
   id?: string;

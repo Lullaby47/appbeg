@@ -7,6 +7,7 @@ import {
 } from '@/features/auth/playerSession';
 import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
 import { seedSessionUserCache } from '@/features/auth/sessionUser';
+import { isPublicSqlLoginFirstEnabled } from '@/lib/client/sqlPublicFlags';
 
 export { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
 
@@ -39,7 +40,7 @@ export type SqlLoginFailure = {
 export type SqlLoginResult = SqlLoginSuccess | SqlLoginFailure;
 
 export function isSqlLoginFirstEnabled() {
-  return process.env.NEXT_PUBLIC_SQL_LOGIN_FIRST === '1';
+  return isPublicSqlLoginFirstEnabled();
 }
 
 export async function attemptSqlLogin(input: {

@@ -562,6 +562,80 @@ export async function setUserPasswordInSql(
   }
 }
 
+export async function updateUserUsernameInSql(input: {
+  uid: string;
+  username: string;
+  actorUid: string;
+  actorRole: string;
+}) {
+  const uid = cleanText(input.uid);
+  const username = cleanText(input.username).toLowerCase();
+  const actorUid = cleanText(input.actorUid);
+  const actorRole = cleanText(input.actorRole);
+  if (!uid || !username) {
+    throw new Error('uid and username are required.');
+  }
+  if (!actorUid || !actorRole) {
+    throw new Error('actorUid and actorRole are required.');
+  }
+
+  const db = getPlayerMirrorPool();
+  if (!db) {
+    throw new Error('Postgres is unavailable.');
+  }
+
+  const email = `${username}@app.local`;
+  const nowIso = new Date().toISOString();
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `
+        UPDATE public.players_cache
+        SET
+          username = $2,
+          email = $3,
+          updated_at = $4::timestamptz,
+          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object(
+            'username', $2,
+            'email', $3,
+            'usernameUpdatedAt', $4::text,
+            'usernameUpdatedByUid', $5,
+            'usernameUpdatedByRole', $6
+          )
+        WHERE uid = $1 AND deleted_at IS NULL
+      `,
+      [uid, username, email, nowIso, actorUid, actorRole]
+    );
+    await client.query(
+      `
+        UPDATE public.user_balance_snapshots_cache
+        SET
+          username = $2,
+          email = $3,
+          updated_at = $4::timestamptz,
+          mirrored_at = now(),
+          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object(
+            'username', $2,
+            'email', $3,
+            'usernameUpdatedAt', $4::text,
+            'usernameUpdatedByUid', $5,
+            'usernameUpdatedByRole', $6
+          )
+        WHERE firebase_id = $1 AND deleted_at IS NULL
+      `,
+      [uid, username, email, nowIso, actorUid, actorRole]
+    );
+    await client.query('COMMIT');
+    return { username, email };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function setUserStatusInSql(
   input: SetUserStatusInSqlInput
 ): Promise<SetUserStatusInSqlResult> {

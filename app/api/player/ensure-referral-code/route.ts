@@ -4,6 +4,11 @@ import { NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
 import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { ensureReferralCodeInSql } from '@/lib/sql/authorityAdminPlayer';
+import {
   buildUniqueReferralCodeCandidates,
   findFreeReferralCodeInTransaction,
   isValidReferralCodeString,
@@ -22,6 +27,17 @@ export async function POST(request: Request) {
     const auth = await requireApiUser(request, ['player']);
     if ('response' in auth) return auth.response;
     const uid = auth.user.uid;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await ensureReferralCodeInSql(uid);
+      logAuthoritySqlWrite('/api/player/ensure-referral-code', {
+        uid,
+        duplicate: result.duplicate,
+        referralCode: result.referralCode,
+      });
+      return NextResponse.json({ authority: 'sql', ...result });
+    }
+
     const userRef = adminDb.collection('users').doc(uid);
     const userSnap = await userRef.get();
 

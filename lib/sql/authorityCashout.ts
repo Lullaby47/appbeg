@@ -71,6 +71,24 @@ export type AuthorityCashoutDeclineResult = {
   refunded: boolean;
 };
 
+export type AuthorityCashoutStartInput = {
+  taskId: string;
+  actorUid: string;
+  actorUsername?: string | null;
+  actorRole: string;
+  isAdmin: boolean;
+  scopeUid: string | null;
+};
+
+export type AuthorityCashoutStartResult = {
+  success: true;
+  duplicate: boolean;
+  taskId: string;
+  expiresAtMs: number;
+};
+
+const CASHOUT_TASK_DURATION_MS = 3 * 60 * 1000;
+
 function ttlAfterDays(days: number) {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
 }
@@ -810,6 +828,173 @@ export async function completePlayerCashoutTaskInSql(
 
     await client.query('COMMIT');
     return { success: true, duplicate: false, alreadyCompleted: false, taskId };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function startPlayerCashoutTaskInSql(
+  input: AuthorityCashoutStartInput
+): Promise<AuthorityCashoutStartResult> {
+  const taskId = cleanText(input.taskId);
+  const actorUid = cleanText(input.actorUid);
+  const actorRole = cleanText(input.actorRole);
+  if (!taskId) throw new Error('taskId is required.');
+  if (!actorUid || !actorRole) throw new Error('Actor is required.');
+
+  const operationKey = `cashout_start:${taskId}:${actorUid}`;
+  const existing = await readAuthorityOperationPayload(operationKey);
+  if (existing?.taskId && existing.expiresAtMs != null) {
+    return {
+      success: true,
+      duplicate: true,
+      taskId,
+      expiresAtMs: Number(existing.expiresAtMs),
+    };
+  }
+
+  const db = getPlayerMirrorPool();
+  if (!db) throw new Error('Postgres is unavailable.');
+
+  const nowIso = new Date().toISOString();
+  const expiresAtIso = new Date(Date.now() + CASHOUT_TASK_DURATION_MS).toISOString();
+  const expiresAtMs = Date.parse(expiresAtIso);
+  const client = await db.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    const taskLock = await client.query(
+      `SELECT * FROM public.player_cashout_tasks_cache WHERE firebase_id = $1 AND deleted_at IS NULL FOR UPDATE`,
+      [taskId]
+    );
+    if (!taskLock.rows.length) throw new Error('Cashout task not found.');
+    const task = taskLock.rows[0] as Record<string, unknown>;
+    const status = cleanText(task.status).toLowerCase();
+    const taskScope = cleanText(task.coadmin_uid);
+    const playerUid = cleanText(task.player_uid);
+    const amountNpr = Math.max(0, Math.round(Number(task.amount_npr || 0)));
+
+    if (!input.isAdmin && (!input.scopeUid || input.scopeUid !== taskScope)) {
+      throw new Error('Forbidden: cashout task is outside your scope.');
+    }
+    if (status === 'completed') {
+      throw new Error('Task already completed.');
+    }
+    if (status === 'declined') {
+      throw new Error('Task already declined.');
+    }
+    if (status !== 'pending' && status !== 'in_progress') {
+      throw new Error('Cashout task is not available to start.');
+    }
+
+    const assignedHandlerUid = cleanText(task.assigned_handler_uid);
+    const expiresAtMsExisting = task.expires_at ? Date.parse(String(task.expires_at)) : 0;
+    const activeInProgress =
+      status === 'in_progress' && (!expiresAtMsExisting || expiresAtMsExisting > Date.now());
+    if (activeInProgress && assignedHandlerUid && assignedHandlerUid !== actorUid) {
+      throw new Error('This task is already assigned to another handler.');
+    }
+
+    if (
+      activeInProgress &&
+      assignedHandlerUid === actorUid &&
+      expiresAtMsExisting > Date.now()
+    ) {
+      const claim = await claimAuthorityOperation(client, {
+        operationKey,
+        operationType: 'cashout_start',
+        userUid: playerUid,
+        sourceId: taskId,
+        actorUid,
+        actorRole,
+        payload: { taskId, expiresAtMs: expiresAtMsExisting },
+      });
+      await client.query('COMMIT');
+      return {
+        success: true,
+        duplicate: claim.duplicate,
+        taskId,
+        expiresAtMs: expiresAtMsExisting,
+      };
+    }
+
+    const claim = await claimAuthorityOperation(client, {
+      operationKey,
+      operationType: 'cashout_start',
+      userUid: playerUid,
+      sourceId: taskId,
+      actorUid,
+      actorRole,
+      payload: {},
+    });
+    if (claim.duplicate) {
+      const payload = await readAuthorityOperationPayload(operationKey);
+      await client.query('COMMIT');
+      return {
+        success: true,
+        duplicate: true,
+        taskId,
+        expiresAtMs: Number(payload?.expiresAtMs || expiresAtMs),
+      };
+    }
+
+    const taskRaw = {
+      ...(task.raw_firestore_data &&
+      typeof task.raw_firestore_data === 'object' &&
+      !Array.isArray(task.raw_firestore_data)
+        ? (task.raw_firestore_data as Record<string, unknown>)
+        : {}),
+      status: 'in_progress',
+      assignedHandlerUid: actorUid,
+      assignedHandlerUsername: cleanText(input.actorUsername) || 'Handler',
+      startedAt: nowIso,
+      expiresAt: expiresAtIso,
+      updatedAt: nowIso,
+    };
+
+    await upsertCashoutTaskCache(client, taskId, {
+      coadminUid: taskScope,
+      playerUid,
+      playerUsername: cleanText(task.player_username),
+      amountNpr,
+      paymentDetails: cleanText(task.payment_details),
+      payoutMethod: cleanText(task.payout_method),
+      qrImageUrl: cleanText(task.qr_image_url),
+      paymentAppName: cleanText(task.payment_app_name),
+      paymentAppCashTag: cleanText(task.payment_app_cash_tag),
+      paymentAppAccountName: cleanText(task.payment_app_account_name),
+      cashDeductedOnRequest: task.cash_deducted_on_request === true,
+      status: 'in_progress',
+      assignedHandlerUid: actorUid,
+      assignedHandlerUsername: cleanText(input.actorUsername) || 'Handler',
+      startedAt: nowIso,
+      expiresAt: expiresAtIso,
+      createdAt: task.created_at,
+      source: 'authority_cashout_start',
+      rawFirestoreData: taskRaw,
+    });
+
+    await writeCashoutOutbox(client, {
+      playerUid,
+      coadminUid: taskScope,
+      taskId,
+      status: 'in_progress',
+      amountNpr,
+      eventType: 'cashout_start',
+      updatedAt: nowIso,
+    });
+
+    await client.query(
+      `UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`,
+      [operationKey, JSON.stringify({ taskId, expiresAtMs })]
+    );
+
+    await client.query('COMMIT');
+    return { success: true, duplicate: false, taskId, expiresAtMs };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;

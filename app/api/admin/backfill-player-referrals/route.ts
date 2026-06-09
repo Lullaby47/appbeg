@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
+import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
 import {
   findUniqueReferralCodeWithQueries,
   generateCandidateReferralCode,
@@ -34,6 +35,15 @@ export async function POST(request: Request) {
   try {
     const auth = await requireApiUser(request, ['admin']);
     if ('response' in auth) return auth.response;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      return NextResponse.json({
+        ok: true,
+        skipped: true,
+        reason: 'sql_authority_enabled',
+        success: true,
+      });
+    }
 
     const nowMs = Date.now();
     const metaSnap = await BACKFILL_META_DOC.get();

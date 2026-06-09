@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "audit:firestore": "node scripts/audit-firestore-authority-routes.cjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@types/pg": "^8.20.0",

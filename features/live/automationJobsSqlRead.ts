@@ -5,9 +5,9 @@ import {
 } from '@/features/automation/automationJobs';
 import { logCarerPageStartup, markCarerPageStartupStreamConnected } from '@/features/carer/carerStartupLogs';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
+import { isPublicAutomationJobsSqlReadEnabled } from '@/lib/client/sqlPublicFlags';
 
-export const AUTOMATION_JOBS_SQL_READ_ENABLED =
-  String(process.env.NEXT_PUBLIC_AUTOMATION_JOBS_SQL_READ || '').trim() === '1';
+export const AUTOMATION_JOBS_SQL_READ_ENABLED = isPublicAutomationJobsSqlReadEnabled();
 
 type SqlSnapshotJob = {
   id?: string;

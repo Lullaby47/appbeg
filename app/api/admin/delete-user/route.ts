@@ -12,6 +12,7 @@ import {
   getPlayerMirrorPool,
   runMirrorPoolQuery,
 } from '@/lib/sql/playerMirrorCommon';
+import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
 import { deactivateGameUsername } from '@/lib/sql/usernameRegistry';
 import { mirrorDeletedPlayerById } from '@/lib/sql/deletedPlayersCache';
 import { deleteUserDirectoryInSql } from '@/lib/sql/userDirectoryWrite';
@@ -43,20 +44,7 @@ function parseRawFirestoreData(value: unknown): Record<string, unknown> {
   return {};
 }
 
-async function resolveDeleteTarget(uid: string): Promise<ResolvedDeleteTarget | null> {
-  const userRef = adminDb.collection('users').doc(uid);
-  const userSnap = await userRef.get();
-
-  if (userSnap.exists) {
-    const userData = (userSnap.data() || {}) as Record<string, unknown>;
-    return {
-      sourceUsed: 'firestore',
-      userData,
-      firestoreExists: true,
-      email: cleanText(userData.email) || null,
-    };
-  }
-
+async function resolveDeleteTargetFromSql(uid: string): Promise<ResolvedDeleteTarget | null> {
   const db = getPlayerMirrorPool();
   if (!db) {
     return null;
@@ -115,6 +103,27 @@ async function resolveDeleteTarget(uid: string): Promise<ResolvedDeleteTarget | 
     firestoreExists: false,
     email: email || null,
   };
+}
+
+async function resolveDeleteTarget(uid: string): Promise<ResolvedDeleteTarget | null> {
+  if (isAuthoritySqlWriteEnabled()) {
+    return resolveDeleteTargetFromSql(uid);
+  }
+
+  const userRef = adminDb.collection('users').doc(uid);
+  const userSnap = await userRef.get();
+
+  if (userSnap.exists) {
+    const userData = (userSnap.data() || {}) as Record<string, unknown>;
+    return {
+      sourceUsed: 'firestore',
+      userData,
+      firestoreExists: true,
+      email: cleanText(userData.email) || null,
+    };
+  }
+
+  return resolveDeleteTargetFromSql(uid);
 }
 
 function isAuthUserNotFound(error: unknown) {
@@ -225,13 +234,15 @@ export async function POST(request: Request) {
     const isPlayer = targetRole === 'player';
 
     if (isPlayer && !permanent) {
-      await adminDb.collection('deletedPlayers').doc(uid).set({
-        ...userData,
-        uid,
-        role: 'player',
-        deletedAt: new Date().toISOString(),
-        deletedByUid,
-      });
+      if (!isAuthoritySqlWriteEnabled()) {
+        await adminDb.collection('deletedPlayers').doc(uid).set({
+          ...userData,
+          uid,
+          role: 'player',
+          deletedAt: new Date().toISOString(),
+          deletedByUid,
+        });
+      }
       void mirrorDeletedPlayerById(uid, 'appbeg_delete_user');
     }
 
@@ -291,9 +302,10 @@ export async function POST(request: Request) {
     }
 
     const firebaseMirrorOk = await mirrorFirebaseUserDeleted(uid, email);
-    const firestoreMirrorOk = firestoreExists
-      ? await mirrorFirestoreUserDeleted(userRef)
-      : true;
+    const firestoreMirrorOk =
+      isAuthoritySqlWriteEnabled() || !firestoreExists
+        ? true
+        : await mirrorFirestoreUserDeleted(userRef);
 
     if (isPlayer) {
       await deactivatePlayerLoginUsername({

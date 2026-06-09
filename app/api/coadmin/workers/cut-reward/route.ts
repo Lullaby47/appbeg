@@ -3,6 +3,11 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { cutWorkerRewardInSql } from '@/lib/sql/authorityAdminPlayer';
 import { mirrorRewardCutById } from '@/lib/sql/rewardCutsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
@@ -28,6 +33,20 @@ export async function POST(request: Request) {
     if (!workerUid) return apiError('workerUid is required.', 400);
     if (workerRole !== 'staff' && workerRole !== 'carer') return apiError('workerRole must be staff or carer.', 400);
     if (cutAmount <= 0) return apiError('Cut amount must be greater than 0.', 400);
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await cutWorkerRewardInSql({
+        coadminUid: auth.user.uid,
+        workerUid,
+        workerRole,
+        workerUsername,
+        amountNpr: cutAmount,
+        reason,
+        actorUid: auth.user.uid,
+      });
+      logAuthoritySqlWrite('/api/coadmin/workers/cut-reward', result);
+      return NextResponse.json({ authority: 'sql', ...result });
+    }
 
     const targetRef = adminDb.collection('users').doc(workerUid);
     const rewardCutRef = adminDb.collection('rewardCuts').doc();
@@ -81,4 +100,3 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status });
   }
 }
-

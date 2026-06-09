@@ -3,6 +3,11 @@ import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { setUserPasswordInSql } from '@/lib/sql/userDirectoryWrite';
 import { mirrorPlayerById } from '@/lib/sql/playersCache';
 
 type Body = {
@@ -35,6 +40,23 @@ export async function POST(request: Request) {
     }
 
     await adminAuth.updateUser(auth.user.uid, { password: newPassword });
+
+    if (isAuthoritySqlWriteEnabled()) {
+      await setUserPasswordInSql({
+        uid: auth.user.uid,
+        password: newPassword,
+        actorUid: auth.user.uid,
+        actorRole: 'player',
+        reason: 'player_self_reset',
+      });
+      logAuthoritySqlWrite('/api/player/reset-password', { uid: auth.user.uid });
+      return NextResponse.json({
+        authority: 'sql',
+        success: true,
+        username: auth.user.username,
+      });
+    }
+
     await adminDb.collection('users').doc(auth.user.uid).set(
       {
         passwordUpdatedAt: FieldValue.serverTimestamp(),

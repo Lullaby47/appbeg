@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
+import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
+import { lookupUserDirectoryFromSql } from '@/lib/sql/authorityLookup';
 import { setUserPasswordInSql } from '@/lib/sql/userDirectoryWrite';
 
 type AllowedRole = 'admin' | 'staff' | 'coadmin';
@@ -51,11 +53,20 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Password must be at least 6 characters.' }, { status: 400 });
     }
 
-    const targetSnap = await adminDb.collection('users').doc(targetUid).get();
-    if (!targetSnap.exists) {
-      return NextResponse.json({ error: 'Target user not found.' }, { status: 404 });
+    let targetRole = '';
+    if (isAuthoritySqlWriteEnabled()) {
+      const sqlUser = await lookupUserDirectoryFromSql(targetUid);
+      if (!sqlUser) {
+        return NextResponse.json({ error: 'Target user not found.' }, { status: 404 });
+      }
+      targetRole = String(sqlUser.role || '').toLowerCase();
+    } else {
+      const targetSnap = await adminDb.collection('users').doc(targetUid).get();
+      if (!targetSnap.exists) {
+        return NextResponse.json({ error: 'Target user not found.' }, { status: 404 });
+      }
+      targetRole = String(targetSnap.data()?.role || '').toLowerCase();
     }
-    const targetRole = String(targetSnap.data()?.role || '').toLowerCase();
     if (!isAllowedRole(targetRole)) {
       return NextResponse.json(
         { error: 'Admin can only reset admin, staff, or coadmin password.' },

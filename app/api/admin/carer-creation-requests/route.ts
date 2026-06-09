@@ -3,6 +3,10 @@ import { NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
 import {
+  isAuthoritySqlWriteEnabled,
+  logAuthorityFirestoreFallbackBlocked,
+} from '@/lib/server/authoritySqlWrite';
+import {
   getCarerCreationRequestSql,
   listPendingCarerCreationRequestsSql,
   mapFirestoreCarerCreationRequest,
@@ -186,21 +190,28 @@ export async function POST(request: Request) {
       }
 
       let firestoreMirrorOk = false;
-      try {
-        await mirrorFirestoreRequestStatus(requestId, {
-          status: 'rejected',
-          reviewedAt: new Date(),
-          reviewedByUid: admin.uid,
-          reviewedByUsername: admin.username,
-          note: null,
-        });
-        firestoreMirrorOk = true;
-      } catch (error) {
-        console.warn('[CARER_CREATION_REQUEST_SQL] firestore mirror failed', {
-          action: 'reject',
+      if (isAuthoritySqlWriteEnabled()) {
+        logAuthorityFirestoreFallbackBlocked('/api/admin/carer-creation-requests', 'carerCreationRequests.update', {
           requestId,
-          error: error instanceof Error ? error.message : String(error),
+          action: 'reject',
         });
+      } else {
+        try {
+          await mirrorFirestoreRequestStatus(requestId, {
+            status: 'rejected',
+            reviewedAt: new Date(),
+            reviewedByUid: admin.uid,
+            reviewedByUsername: admin.username,
+            note: null,
+          });
+          firestoreMirrorOk = true;
+        } catch (error) {
+          console.warn('[CARER_CREATION_REQUEST_SQL] firestore mirror failed', {
+            action: 'reject',
+            requestId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
 
       console.info('[CARER_CREATION_REQUEST_SQL]', {
@@ -226,12 +237,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Request payload is invalid.' }, { status: 400 });
     }
 
-    const existingUserSnap = await adminDb
-      .collection('users')
-      .where('username', '==', requestedUsername)
-      .limit(1)
-      .get();
-    if (!existingUserSnap.empty || (await isActiveUsernameTakenInSql(requestedUsername))) {
+    const authoritySql = isAuthoritySqlWriteEnabled();
+    const usernameTakenInFirestore = authoritySql
+      ? false
+      : !(await adminDb.collection('users').where('username', '==', requestedUsername).limit(1).get()).empty;
+    if (usernameTakenInFirestore || (await isActiveUsernameTakenInSql(requestedUsername))) {
       const rejectionNote = 'Username already exists at approval time.';
       const sqlRejectOk = await updateCarerCreationRequestStatusSql({
         requestId,
@@ -242,22 +252,30 @@ export async function POST(request: Request) {
       });
 
       let firestoreMirrorOk = false;
-      try {
-        await mirrorFirestoreRequestStatus(requestId, {
-          status: 'rejected',
-          reviewedAt: new Date(),
-          reviewedByUid: admin.uid,
-          reviewedByUsername: admin.username,
-          note: rejectionNote,
-        });
-        firestoreMirrorOk = true;
-      } catch (error) {
-        console.warn('[CARER_CREATION_REQUEST_SQL] firestore mirror failed', {
-          action: 'reject',
+      if (authoritySql) {
+        logAuthorityFirestoreFallbackBlocked('/api/admin/carer-creation-requests', 'carerCreationRequests.update', {
           requestId,
-          reason: 'username_exists_auto_reject',
-          error: error instanceof Error ? error.message : String(error),
+          action: 'reject',
+          reason: 'username_exists_at_approval',
         });
+      } else {
+        try {
+          await mirrorFirestoreRequestStatus(requestId, {
+            status: 'rejected',
+            reviewedAt: new Date(),
+            reviewedByUid: admin.uid,
+            reviewedByUsername: admin.username,
+            note: rejectionNote,
+          });
+          firestoreMirrorOk = true;
+        } catch (error) {
+          console.warn('[CARER_CREATION_REQUEST_SQL] firestore mirror failed', {
+            action: 'reject',
+            requestId,
+            reason: 'username_exists_auto_reject',
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
 
       console.info('[CARER_CREATION_REQUEST_SQL]', {
@@ -330,17 +348,23 @@ export async function POST(request: Request) {
     }
 
     let firestoreUserMirrorOk = false;
-    try {
-      await adminDb.collection('users').doc(authUser.uid).set(carerUser);
-      firestoreUserMirrorOk = true;
-      void mirrorUserBalanceSnapshotById(authUser.uid, 'appbeg_create_carer');
-    } catch (error) {
-      console.warn('[USER_DIRECTORY_SQL] firestore mirror failed', {
-        action: 'create_user',
-        route: 'approve_carer_request',
+    if (isAuthoritySqlWriteEnabled()) {
+      logAuthorityFirestoreFallbackBlocked('/api/admin/carer-creation-requests', 'users.set', {
         uid: authUser.uid,
-        error: error instanceof Error ? error.message : String(error),
       });
+    } else {
+      try {
+        await adminDb.collection('users').doc(authUser.uid).set(carerUser);
+        firestoreUserMirrorOk = true;
+        void mirrorUserBalanceSnapshotById(authUser.uid, 'appbeg_create_carer');
+      } catch (error) {
+        console.warn('[USER_DIRECTORY_SQL] firestore mirror failed', {
+          action: 'create_user',
+          route: 'approve_carer_request',
+          uid: authUser.uid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     const sqlApproveOk = await updateCarerCreationRequestStatusSql({
@@ -358,22 +382,29 @@ export async function POST(request: Request) {
     }
 
     let firestoreRequestMirrorOk = false;
-    try {
-      await mirrorFirestoreRequestStatus(requestId, {
-        status: 'approved',
-        reviewedAt: new Date(),
-        reviewedByUid: admin.uid,
-        reviewedByUsername: admin.username,
-        createdCarerUid: authUser.uid,
-        note: null,
-      });
-      firestoreRequestMirrorOk = true;
-    } catch (error) {
-      console.warn('[CARER_CREATION_REQUEST_SQL] firestore mirror failed', {
-        action: 'approve',
+    if (isAuthoritySqlWriteEnabled()) {
+      logAuthorityFirestoreFallbackBlocked('/api/admin/carer-creation-requests', 'carerCreationRequests.update', {
         requestId,
-        error: error instanceof Error ? error.message : String(error),
+        action: 'approve',
       });
+    } else {
+      try {
+        await mirrorFirestoreRequestStatus(requestId, {
+          status: 'approved',
+          reviewedAt: new Date(),
+          reviewedByUid: admin.uid,
+          reviewedByUsername: admin.username,
+          createdCarerUid: authUser.uid,
+          note: null,
+        });
+        firestoreRequestMirrorOk = true;
+      } catch (error) {
+        console.warn('[CARER_CREATION_REQUEST_SQL] firestore mirror failed', {
+          action: 'approve',
+          requestId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     createdAuthUid = null;

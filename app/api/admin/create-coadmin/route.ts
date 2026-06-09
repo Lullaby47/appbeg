@@ -3,6 +3,10 @@ import { NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
 import {
+  isAuthoritySqlWriteEnabled,
+  logAuthorityFirestoreFallbackBlocked,
+} from '@/lib/server/authoritySqlWrite';
+import {
   createUserDirectoryInSql,
   isActiveUsernameTakenInSql,
 } from '@/lib/sql/userDirectoryWrite';
@@ -49,13 +53,13 @@ export async function POST(request: Request) {
       );
     }
 
-    const usernameSnap = await adminDb
-      .collection('users')
-      .where('username', '==', username)
-      .limit(1)
-      .get();
+    const authoritySql = isAuthoritySqlWriteEnabled();
+    const usernameTakenInSql = await isActiveUsernameTakenInSql(username);
+    const usernameTakenInFirestore = authoritySql
+      ? false
+      : !(await adminDb.collection('users').where('username', '==', username).limit(1).get()).empty;
 
-    if (!usernameSnap.empty || (await isActiveUsernameTakenInSql(username))) {
+    if (usernameTakenInFirestore || usernameTakenInSql) {
       return NextResponse.json(
         { error: 'Username already exists.' },
         { status: 409 }
@@ -115,17 +119,23 @@ export async function POST(request: Request) {
     }
 
     let firestoreMirrorOk = false;
-    try {
-      await adminDb.collection('users').doc(authUser.uid).set(firestoreUser);
-      firestoreMirrorOk = true;
-      void mirrorUserBalanceSnapshotById(authUser.uid, 'appbeg_create_coadmin');
-    } catch (error) {
-      console.warn('[USER_DIRECTORY_SQL] firestore mirror failed', {
-        action: 'create_user',
-        route: 'create_coadmin',
+    if (authoritySql) {
+      logAuthorityFirestoreFallbackBlocked('/api/admin/create-coadmin', 'users.set', {
         uid: authUser.uid,
-        error: error instanceof Error ? error.message : String(error),
       });
+    } else {
+      try {
+        await adminDb.collection('users').doc(authUser.uid).set(firestoreUser);
+        firestoreMirrorOk = true;
+        void mirrorUserBalanceSnapshotById(authUser.uid, 'appbeg_create_coadmin');
+      } catch (error) {
+        console.warn('[USER_DIRECTORY_SQL] firestore mirror failed', {
+          action: 'create_user',
+          route: 'create_coadmin',
+          uid: authUser.uid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     createdAuthUid = null;

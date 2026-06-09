@@ -21,6 +21,14 @@ import { mirrorReferralById, mirrorReferralCodeByCode } from '@/lib/sql/referral
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 import {
+  isAuthoritySqlWriteEnabled,
+  logAuthorityFirestoreFallbackBlocked,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { createPlayerInSql } from '@/lib/sql/authorityAdminPlayer';
+import { lookupReferrerByCodeFromSql } from '@/lib/sql/authorityReferralCodes';
+import { lookupUserDirectoryFromSql } from '@/lib/sql/authorityLookup';
+import {
   createUserDirectoryInSql,
   isActiveUsernameTakenInSql,
 } from '@/lib/sql/userDirectoryWrite';
@@ -286,41 +294,54 @@ export async function POST(request: Request) {
       return apiError('Cannot create users outside your coadmin scope.', 403);
     }
 
-    const ownerSnap = await adminDb.collection('users').doc(ownerCoadminUid).get();
-    if (!ownerSnap.exists || String(ownerSnap.data()?.role || '').toLowerCase() !== 'coadmin') {
-      return apiError('Owner coadmin scope is invalid.', 403);
+    const authoritySql = isAuthoritySqlWriteEnabled();
+    if (authoritySql) {
+      const owner = await lookupUserDirectoryFromSql(ownerCoadminUid);
+      if (!owner || String(owner.role || '').toLowerCase() !== 'coadmin') {
+        return apiError('Owner coadmin scope is invalid.', 403);
+      }
+    } else {
+      const ownerSnap = await adminDb.collection('users').doc(ownerCoadminUid).get();
+      if (!ownerSnap.exists || String(ownerSnap.data()?.role || '').toLowerCase() !== 'coadmin') {
+        return apiError('Owner coadmin scope is invalid.', 403);
+      }
     }
 
-    const usernameSnap = await adminDb
-      .collection('users')
-      .where('username', '==', username)
-      .limit(1)
-      .get();
+    const usernameTakenInSql = await isActiveUsernameTakenInSql(username);
+    const usernameTakenInFirestore = authoritySql
+      ? false
+      : !(await adminDb.collection('users').where('username', '==', username).limit(1).get()).empty;
 
-    if (
-      !usernameSnap.empty ||
-      (role !== 'player' && (await isActiveUsernameTakenInSql(username)))
-    ) {
+    if (usernameTakenInFirestore || usernameTakenInSql) {
       return NextResponse.json({ error: 'Username already exists.' }, { status: 409 });
     }
 
     let validatedReferrerUid: string | null = null;
     let validatedReferrerUsername: string | null = null;
     if (role === 'player' && referralCodeInput) {
-      const referrerSnap = await adminDb
-        .collection('users')
-        .where('referralCode', '==', referralCodeInput)
-        .where('role', '==', 'player')
-        .limit(1)
-        .get();
+      if (authoritySql) {
+        const referrer = await lookupReferrerByCodeFromSql(referralCodeInput);
+        if (!referrer?.uid) {
+          return NextResponse.json({ error: 'Invalid referral code.' }, { status: 400 });
+        }
+        validatedReferrerUid = referrer.uid;
+        validatedReferrerUsername = referrer.username;
+      } else {
+        const referrerSnap = await adminDb
+          .collection('users')
+          .where('referralCode', '==', referralCodeInput)
+          .where('role', '==', 'player')
+          .limit(1)
+          .get();
 
-      if (referrerSnap.empty) {
-        return NextResponse.json({ error: 'Invalid referral code.' }, { status: 400 });
+        if (referrerSnap.empty) {
+          return NextResponse.json({ error: 'Invalid referral code.' }, { status: 400 });
+        }
+
+        const referrerDoc = referrerSnap.docs[0];
+        validatedReferrerUid = referrerDoc.id;
+        validatedReferrerUsername = String(referrerDoc.data().username || 'Player');
       }
-
-      const referrerDoc = referrerSnap.docs[0];
-      validatedReferrerUid = referrerDoc.id;
-      validatedReferrerUsername = String(referrerDoc.data().username || 'Player');
     }
 
     const email = makeHiddenEmail(username);
@@ -340,7 +361,38 @@ export async function POST(request: Request) {
     let referredByUsername: string | null = null;
     let referredByCode: string | null = null;
 
-    if (role === 'player') {
+    if (role === 'player' && authoritySql) {
+      const sqlResult = await createPlayerInSql({
+        uid: authUser.uid,
+        username,
+        email,
+        password,
+        ownerCoadminUid,
+        createdByStaffId,
+        referralCodeInput: referralCodeInput || null,
+        actorUid: auth.user.uid,
+        actorRole: auth.user.role,
+      });
+      createdAuthUid = null;
+      referralApplied = sqlResult.referralApplied;
+      referralBonusCoins = sqlResult.referralBonusCoins;
+      referredByUid = sqlResult.referredByUid;
+      referredByUsername = sqlResult.referredByUsername;
+      sqlResult.createdTaskIds.forEach((taskId) => {
+        console.info('[CREATE_PLAYER_TASK] task created id=%s authority=sql', taskId);
+      });
+      await recordPlayerLoginUsernameAfterFirebaseSave({
+        username,
+        playerUid: authUser.uid,
+        coadminUid: ownerCoadminUid,
+      });
+      logAuthoritySqlWrite('/api/admin/create-staff', {
+        role: 'player',
+        uid: authUser.uid,
+        referralApplied: sqlResult.referralApplied,
+        taskCount: sqlResult.createdTaskIds.length,
+      });
+    } else if (role === 'player') {
       const referralCandidates = buildUniqueReferralCodeCandidates(40);
       const gameTaskSeeds = await getGameLoginTaskSeedsForCoadmin(ownerCoadminUid);
       const now = new Date();
@@ -494,18 +546,25 @@ export async function POST(request: Request) {
       }
 
       let firestoreMirrorOk = false;
-      try {
-        await userRef.set(workerUser);
-        firestoreMirrorOk = true;
-        void mirrorUserBalanceSnapshotById(authUser.uid, 'appbeg_create_worker');
-      } catch (error) {
-        console.warn('[USER_DIRECTORY_SQL] firestore mirror failed', {
-          action: 'create_user',
-          route: 'create_staff',
+      if (authoritySql) {
+        logAuthorityFirestoreFallbackBlocked('/api/admin/create-staff', 'users.set', {
           uid: authUser.uid,
           role,
-          error: error instanceof Error ? error.message : String(error),
         });
+      } else {
+        try {
+          await userRef.set(workerUser);
+          firestoreMirrorOk = true;
+          void mirrorUserBalanceSnapshotById(authUser.uid, 'appbeg_create_worker');
+        } catch (error) {
+          console.warn('[USER_DIRECTORY_SQL] firestore mirror failed', {
+            action: 'create_user',
+            route: 'create_staff',
+            uid: authUser.uid,
+            role,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
 
       createdAuthUid = null;

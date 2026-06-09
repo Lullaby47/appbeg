@@ -64,22 +64,35 @@ export async function getPlayerCoadminMaintenanceBreak(playerUid: string): Promi
     throw new Error('Player profile not found.');
   }
 
-  const playerSnap = await adminDb.collection('users').doc(cleanPlayerUid).get();
-  if (!playerSnap.exists) {
-    throw new Error('Player profile not found.');
-  }
+  let coadminUid = '';
+  if (shouldReadMaintenanceFromSql()) {
+    const { lookupUserDirectoryFromSql } = await import('@/lib/sql/authorityLookup');
+    const player = await lookupUserDirectoryFromSql(cleanPlayerUid);
+    if (!player) {
+      throw new Error('Player profile not found.');
+    }
+    if (String(player.role || '').toLowerCase() !== 'player') {
+      throw new Error('Only players can use this action.');
+    }
+    coadminUid = String(player.coadminUid || '').trim() || String(player.createdBy || '').trim();
+  } else {
+    const playerSnap = await adminDb.collection('users').doc(cleanPlayerUid).get();
+    if (!playerSnap.exists) {
+      throw new Error('Player profile not found.');
+    }
 
-  const playerData = playerSnap.data() as {
-    role?: string;
-    coadminUid?: string | null;
-    createdBy?: string | null;
-  };
-  if (String(playerData.role || '').toLowerCase() !== 'player') {
-    throw new Error('Only players can use this action.');
-  }
+    const playerData = playerSnap.data() as {
+      role?: string;
+      coadminUid?: string | null;
+      createdBy?: string | null;
+    };
+    if (String(playerData.role || '').toLowerCase() !== 'player') {
+      throw new Error('Only players can use this action.');
+    }
 
-  const coadminUid =
-    String(playerData.coadminUid || '').trim() || String(playerData.createdBy || '').trim();
+    coadminUid =
+      String(playerData.coadminUid || '').trim() || String(playerData.createdBy || '').trim();
+  }
   if (!coadminUid) {
     throw new Error('Player coadmin scope not found.');
   }

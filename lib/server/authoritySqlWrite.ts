@@ -1,24 +1,17 @@
 import 'server-only';
 
-export function isAuthoritySqlWriteEnabled() {
-  return process.env.AUTHORITY_SQL_WRITE === '1';
-}
+import {
+  authoritySqlWriteEnvLogFields,
+  authoritySqlWriteEnvStatus,
+  isAuthoritySqlWriteEnabled,
+  shouldBlockFirestoreFallback,
+} from '@/lib/server/sqlRuntime';
 
-export function authoritySqlWriteEnvStatus() {
-  return {
-    authority_sql_write: isAuthoritySqlWriteEnabled(),
-    database_url_configured: Boolean(String(process.env.DATABASE_URL || '').trim()),
-  };
-}
-
-export function authoritySqlWriteEnvLogFields() {
-  const status = authoritySqlWriteEnvStatus();
-  return {
-    authority_sql_write: status.authority_sql_write,
-    database_url_configured: status.database_url_configured,
-    authority_source: status.authority_sql_write ? 'sql' : 'firestore',
-  };
-}
+export {
+  authoritySqlWriteEnvLogFields,
+  authoritySqlWriteEnvStatus,
+  isAuthoritySqlWriteEnabled,
+};
 
 export function logAuthoritySqlWrite(route: string, details: Record<string, unknown> = {}) {
   console.info('[AUTHORITY_SQL_WRITE]', {
@@ -37,7 +30,7 @@ export function logAuthorityFirestoreFallbackBlocked(
   console.info('[AUTHORITY_FIRESTORE_FALLBACK_BLOCKED]', {
     route,
     operation,
-    authority_sql_write: true,
+    authority_sql_write: shouldBlockFirestoreFallback(),
     ...details,
   });
 }

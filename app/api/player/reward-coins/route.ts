@@ -8,6 +8,11 @@ import {
   computeRewardCoinsAfterFee,
   REWARD_TRANSFER_FEE_PERCENT,
 } from '@/lib/rewardCoinTransferFee';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { rewardCoinsInSql } from '@/lib/sql/authorityRewardCoins';
 import { mirrorPlayerCoinRewardById } from '@/lib/sql/playerCoinRewardsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
@@ -115,6 +120,26 @@ export async function POST(request: Request) {
         { error: 'Reward amount is too low after the transfer fee.' },
         { status: 400 }
       );
+    }
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await rewardCoinsInSql({
+        senderUid,
+        targetUid,
+        amountCoins,
+      });
+      logAuthoritySqlWrite('/api/player/reward-coins', {
+        rewardId: result.rewardId,
+        duplicate: result.duplicate,
+      });
+      return NextResponse.json({
+        authority: 'sql',
+        success: true,
+        message: `Reward sent (${result.feeCoins}-coin fee, ${result.recipientCoins} credited to recipient).`,
+        amountCoins: result.amountCoins,
+        feeCoins: result.feeCoins,
+        recipientCoins: result.recipientCoins,
+      });
     }
 
     const senderRef = adminDb.collection('users').doc(senderUid);

@@ -2,6 +2,11 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { transferPlayerCoadminInSql } from '@/lib/sql/authorityAdminPlayer';
 import { mirrorPlayerById } from '@/lib/sql/playersCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
@@ -21,6 +26,20 @@ export async function POST(request: Request) {
         { error: 'playerUid and targetCoadminUid are required.' },
         { status: 400 }
       );
+    }
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await transferPlayerCoadminInSql({
+        playerUid,
+        targetCoadminUid,
+        actorUid: auth.user.uid,
+      });
+      logAuthoritySqlWrite('/api/admin/transfer-player-coadmin', result);
+      return NextResponse.json({
+        authority: 'sql',
+        ...result,
+        message: 'Player transferred successfully.',
+      });
     }
 
     const [playerSnap, coadminSnap] = await Promise.all([

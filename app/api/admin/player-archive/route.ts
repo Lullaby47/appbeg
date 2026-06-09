@@ -4,6 +4,16 @@ import { NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
 import { assertValidGameUsername } from '@/lib/games/gameUsernameRule';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import {
+  listDeletedPlayersFromSql,
+  lookupDeletedPlayerFromSql,
+  purgeDeletedPlayerArchiveInSql,
+  restorePlayerFromArchiveInSql,
+} from '@/lib/sql/authorityAdminPlayer';
 import { recordGameUsername } from '@/lib/sql/usernameRegistry';
 import { tombstoneDeletedPlayerCache } from '@/lib/sql/deletedPlayersCache';
 import { mirrorPlayerById } from '@/lib/sql/playersCache';
@@ -53,7 +63,7 @@ async function recordRestoredPlayerLoginUsername(input: {
       source: 'appbeg',
     });
   } catch (error) {
-    console.warn('[PLAYER_LOGIN_USERNAME_REGISTRY] record failed after Firebase player restore', {
+    console.warn('[PLAYER_LOGIN_USERNAME_REGISTRY] record failed after player restore', {
       username: input.username,
       playerUid: input.playerUid,
       coadminUid: input.coadminUid || null,
@@ -66,6 +76,11 @@ export async function GET(request: Request) {
   try {
     const auth = await requireApiUser(request, ['admin']);
     if ('response' in auth) return auth.response;
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const players = await listDeletedPlayersFromSql();
+      return NextResponse.json({ success: true, authority: 'sql', players });
+    }
 
     const snapshot = await adminDb
       .collection('deletedPlayers')
@@ -95,6 +110,71 @@ export async function POST(request: Request) {
 
     if (!uid) {
       return NextResponse.json({ error: 'Player uid is required.' }, { status: 400 });
+    }
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const archived = await lookupDeletedPlayerFromSql(uid);
+      if (!archived?.username) {
+        return NextResponse.json({ error: 'Deleted player not found.' }, { status: 404 });
+      }
+      const username = archived.username;
+      const email = archived.email || `${username}@app.local`;
+      const defaultPassword = defaultPasswordFor(username);
+      assertValidGameUsername(username);
+
+      try {
+        await adminAuth.createUser({
+          uid,
+          email,
+          password: defaultPassword,
+          displayName: username,
+          disabled: false,
+        });
+      } catch (error: unknown) {
+        const code =
+          typeof error === 'object' && error !== null && 'code' in error
+            ? String(error.code)
+            : '';
+        if (code === 'auth/email-already-exists') {
+          return NextResponse.json(
+            { error: 'Email is already in use. Contact admin for manual restore.' },
+            { status: 409 }
+          );
+        }
+        if (code === 'auth/uid-already-exists') {
+          await adminAuth.updateUser(uid, {
+            email,
+            password: defaultPassword,
+            displayName: username,
+            disabled: false,
+          });
+        } else {
+          throw error;
+        }
+      }
+
+      const result = await restorePlayerFromArchiveInSql({
+        uid,
+        password: defaultPassword,
+        defaultPassword,
+      });
+      assertValidGameUsername(result.username);
+      await recordRestoredPlayerLoginUsername({
+        username: result.username,
+        playerUid: uid,
+        coadminUid: result.coadminUid,
+      });
+      logAuthoritySqlWrite('/api/admin/player-archive', {
+        action: 'restore',
+        uid,
+        referralCode: result.referralCode,
+      });
+      return NextResponse.json({
+        authority: 'sql',
+        success: true,
+        message: 'Player recreated successfully.',
+        temporaryPassword: defaultPassword,
+      });
     }
 
     const deletedRef = adminDb.collection('deletedPlayers').doc(uid);
@@ -221,6 +301,16 @@ export async function DELETE(request: Request) {
 
     if (!uid) {
       return NextResponse.json({ error: 'Player uid is required.' }, { status: 400 });
+    }
+
+    if (isAuthoritySqlWriteEnabled()) {
+      await purgeDeletedPlayerArchiveInSql(uid);
+      logAuthoritySqlWrite('/api/admin/player-archive', { action: 'purge', uid });
+      return NextResponse.json({
+        authority: 'sql',
+        success: true,
+        message: 'Deleted player archive removed permanently.',
+      });
     }
 
     await adminDb.collection('deletedPlayers').doc(uid).delete();

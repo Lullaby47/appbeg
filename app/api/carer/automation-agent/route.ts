@@ -3,6 +3,14 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import {
+  linkAutomationAgentInSql,
+  unlinkAutomationAgentInSql,
+} from '@/lib/sql/authorityAutomationAgent';
 
 const AGENT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
@@ -43,11 +51,16 @@ export async function POST(request: Request) {
       return apiError('You can only update your own automation agent.', 403);
     }
 
-    const userRef = adminDb.collection('users').doc(auth.user.uid);
     const existingAgentId = String(auth.user.automationAgentId || '').trim();
 
     if (action === 'disconnect' || action === 'unlink') {
-      await userRef.update({
+      if (isAuthoritySqlWriteEnabled()) {
+        const result = await unlinkAutomationAgentInSql(auth.user.uid);
+        logAuthoritySqlWrite('/api/carer/automation-agent', { action: 'unlink', ...result });
+        return NextResponse.json({ authority: 'sql', ...result });
+      }
+
+      await adminDb.collection('users').doc(auth.user.uid).update({
         automationAgentId: null,
         automationAgentLinkedAt: null,
         automationAgentUpdatedAt: FieldValue.serverTimestamp(),
@@ -64,7 +77,20 @@ export async function POST(request: Request) {
       return apiError(agentCheck.error || 'Invalid agent ID.', 400);
     }
 
-    await userRef.update({
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await linkAutomationAgentInSql({
+        carerUid: auth.user.uid,
+        agentId: agentCheck.normalized,
+        existingAgentId,
+      });
+      logAuthoritySqlWrite('/api/carer/automation-agent', {
+        action: 'link',
+        agentId: agentCheck.normalized,
+      });
+      return NextResponse.json({ authority: 'sql', ...result });
+    }
+
+    await adminDb.collection('users').doc(auth.user.uid).update({
       automationAgentId: agentCheck.normalized,
       automationAgentUpdatedAt: FieldValue.serverTimestamp(),
       ...(!existingAgentId ? { automationAgentLinkedAt: FieldValue.serverTimestamp() } : {}),

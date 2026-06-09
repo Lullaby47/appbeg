@@ -1,102 +1,97 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AppBeg
 
-## Getting Started
+Next.js application with **PostgreSQL SQL authority** for app data. When SQL flags are enabled (default in production), Firestore app logic does not run. Firebase Auth remains for identity/token operations only.
 
-First, run the development server:
+## Getting started
+
+1. Copy environment template:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cp .env.local.example .env.local
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. Fill in `DATABASE_URL`, Firebase Auth variables (identity only), and automation secrets.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+3. Apply PostgreSQL migrations — see [docs/MIGRATIONS.md](docs/MIGRATIONS.md).
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+4. Run the development server:
 
-## Learn More
+```bash
+npm install
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Open [http://localhost:3000](http://localhost:3000).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## SQL-authoritative runtime
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Server flags (required)
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `AUTH_SQL_READ=1` | SQL cache reads for profiles, behaviours, history |
+| `PLAYER_SESSION_SQL_READ=1` | Player session validation from SQL |
+| `APP_SESSION_SQL_READ=1` | Staff/coadmin/carer app sessions from SQL |
+| `AUTHORITY_SQL_WRITE=1` | All money/task/admin writes go to SQL |
+
+In **production**, unset flags default to SQL-on. Missing `DATABASE_URL` fails startup.
+
+### Client flags (NEXT_PUBLIC, set at build time)
+
+| Variable | Purpose |
+|---|---|
+| `NEXT_PUBLIC_SQL_LOGIN_FIRST=1` | Prefer SQL login path |
+| `NEXT_PUBLIC_SQL_PLAYER_LOGIN=1` | Player SQL login |
+| `NEXT_PUBLIC_AUTOMATION_JOBS_SQL_READ=1` | Carer automation jobs from SQL/live |
+| `NEXT_PUBLIC_CARER_TASKS_SQL_READ=1` | Carer tasks from SQL/live |
+| `NEXT_PUBLIC_PLAYER_REQUESTS_SQL_READ=1` | Player game requests from SQL/live |
+
+### Firebase Auth only (not Firestore authority)
+
+| Variable | Purpose |
+|---|---|
+| `NEXT_PUBLIC_FIREBASE_API_KEY` | Firebase client SDK (Auth) |
+| `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN` | Firebase Auth domain |
+| `NEXT_PUBLIC_FIREBASE_PROJECT_ID` | Firebase project ID |
+| `NEXT_PUBLIC_FIREBASE_APP_ID` | Firebase app ID |
+| `FIREBASE_SERVICE_ACCOUNT_BASE64` | Admin SDK for Auth verify / password reset |
+
+Legacy Firestore code paths exist only when `AUTHORITY_SQL_WRITE=0` (development rollback).
+
+### Automation secrets
+
+| Variable | Purpose |
+|---|---|
+| `CARER_AUTOMATION_BROWSER_TICK_TOKEN_SECRET` | Browser auto-tick token signing |
+| `CARER_AUTOMATION_TICK_SECRET` | Server auto-tick route secret |
 
 ## Deploy on Vercel
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Set all SQL flags and `DATABASE_URL` in the Vercel project environment. Set `NEXT_PUBLIC_*` flags for **Production** and redeploy so client bundles pick them up.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Production startup runs `assertSqlRuntimeReady()` — missing `DATABASE_URL` or disabled SQL authority throws a clear error instead of falling back to Firestore.
 
-## Security Notes
+See `.env.example` for the full variable list.
 
-- Never commit service account keys (`serviceAccountKey.json`) to source control.
-- Keep Firebase service account keys outside the repository and load them from secure local paths or secret managers.
-- If a key was ever committed or shared, rotate it immediately in Firebase/GCP and replace local usage with the rotated key.
-- Admin bootstrap must be done by local Firebase Admin SDK tool, not browser.
-
-## Username Registry
-
-Set `USERNAME_REGISTRY_API_URL` and `USERNAME_REGISTRY_SECRET` in the AppBeg server
-environment. `USERNAME_REGISTRY_API_URL` may be an HTTP URL such as
-`http://103.214.71.5/username-registry` until HTTPS is configured. AppBeg calls the
-VPS username-registry API after Firebase saves a player game username; AppBeg does
-not connect to PostgreSQL directly. Firebase remains the source of truth for game
-login records.
-
-## Local Admin Tool
-
-Use `tools/admin_tool.py` for local-only administrator management. It uses the Firebase Admin SDK with a local service account JSON and requires a master secret before any action runs.
-
-Install the Python SDK if needed:
+## Verification
 
 ```bash
-python -m pip install firebase-admin
+npm run audit:firestore
+npx tsc --noEmit
+git diff --check
 ```
 
-The tool automatically loads local secrets from `C:\Shared\secrets\.adminsEnv` if the file exists:
+## Security notes
 
-```text
-APPBEG_SERVICE_ACCOUNT_PATH=C:\Shared\secrets\appbeg.service-account.json
-APPBEG_ADMIN_MASTER_SECRET=choose-a-long-local-secret
-```
+- Never commit service account keys or `.env.local`.
+- Rotate Firebase service account keys if exposed.
+- Admin bootstrap uses local Firebase Admin SDK tools, not the browser.
 
-Real shell environment variables still work and take precedence over values from `.adminsEnv`.
+## Username registry
 
-Or set the required environment variables in PowerShell:
+Set `USERNAME_REGISTRY_API_URL` and `USERNAME_REGISTRY_SECRET` for the external username-registry API. AppBeg records game usernames after player creation; the registry is a separate service.
 
-```powershell
-$env:APPBEG_SERVICE_ACCOUNT_PATH = "C:\secure\appbeg.service-account.json"
-$env:APPBEG_ADMIN_MASTER_SECRET = "choose-a-long-local-secret"
-```
+## Local admin tool
 
-Or in Command Prompt:
-
-```bash
-set APPBEG_SERVICE_ACCOUNT_PATH=C:\secure\appbeg.service-account.json
-set APPBEG_ADMIN_MASTER_SECRET=choose-a-long-local-secret
-```
-
-Then run the interactive menu:
-
-```bash
-python tools/admin_tool.py
-```
-
-Or run a specific action:
-
-```bash
-python tools/admin_tool.py --action create_admin
-python tools/admin_tool.py --action promote_to_admin
-python tools/admin_tool.py --action demote_admin
-python tools/admin_tool.py --action disable_user
-```
-
-The tool never prints passwords. Keep service account JSON files and secret env files out of git; `.gitignore` excludes `*.service-account.json`, `.adminsEnv`, and `secrets/`.
+Use `tools/admin_tool.py` for local-only administrator management via Firebase Admin SDK. See script docstring for `APPBEG_SERVICE_ACCOUNT_PATH` and `APPBEG_ADMIN_MASTER_SECRET`.

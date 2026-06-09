@@ -4,8 +4,18 @@ import { NextResponse } from 'next/server';
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
 import { assertValidGameUsername } from '@/lib/games/gameUsernameRule';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthorityFirestoreFallbackBlocked,
+} from '@/lib/server/authoritySqlWrite';
+import { lookupUserDirectoryFromSql } from '@/lib/sql/authorityLookup';
 import { mirrorPlayerById } from '@/lib/sql/playersCache';
-import { setUserPasswordInSql } from '@/lib/sql/userDirectoryWrite';
+import { cleanText } from '@/lib/sql/playerMirrorCommon';
+import {
+  isActiveUsernameTakenInSql,
+  setUserPasswordInSql,
+  updateUserUsernameInSql,
+} from '@/lib/sql/userDirectoryWrite';
 import { deactivateGameUsername, recordGameUsername } from '@/lib/sql/usernameRegistry';
 
 function makeHiddenEmail(username: string) {
@@ -133,12 +143,27 @@ export async function POST(request: Request) {
       );
     }
 
+    const authoritySql = isAuthoritySqlWriteEnabled();
     const targetRef = adminDb.collection('users').doc(targetUid);
-    const targetSnap = await targetRef.get();
-    if (!targetSnap.exists) {
-      return NextResponse.json({ error: 'User not found.' }, { status: 404 });
+    let target: Record<string, unknown>;
+    if (authoritySql) {
+      const sqlUser = await lookupUserDirectoryFromSql(targetUid);
+      if (!sqlUser) {
+        return NextResponse.json({ error: 'User not found.' }, { status: 404 });
+      }
+      target = {
+        role: sqlUser.role,
+        username: sqlUser.username,
+        coadminUid: sqlUser.coadminUid,
+        createdBy: sqlUser.createdBy,
+      };
+    } else {
+      const targetSnap = await targetRef.get();
+      if (!targetSnap.exists) {
+        return NextResponse.json({ error: 'User not found.' }, { status: 404 });
+      }
+      target = (targetSnap.data() || {}) as Record<string, unknown>;
     }
-    const target = targetSnap.data()!;
     const role = String(target.role || '');
 
     if (role !== 'staff' && role !== 'carer' && role !== 'player') {
@@ -175,13 +200,22 @@ export async function POST(request: Request) {
       if (role === 'player') {
         assertValidGameUsername(newUsername);
       }
-      const taken = await adminDb
-        .collection('users')
-        .where('username', '==', newUsername)
-        .limit(1)
-        .get();
-      if (!taken.empty && taken.docs[0].id !== targetUid) {
-        return NextResponse.json({ error: 'That username is already taken.' }, { status: 409 });
+      if (authoritySql) {
+        if (await isActiveUsernameTakenInSql(newUsername)) {
+          const currentUsername = cleanText(target.username).toLowerCase();
+          if (currentUsername !== newUsername) {
+            return NextResponse.json({ error: 'That username is already taken.' }, { status: 409 });
+          }
+        }
+      } else {
+        const taken = await adminDb
+          .collection('users')
+          .where('username', '==', newUsername)
+          .limit(1)
+          .get();
+        if (!taken.empty && taken.docs[0].id !== targetUid) {
+          return NextResponse.json({ error: 'That username is already taken.' }, { status: 409 });
+        }
       }
     }
 
@@ -248,10 +282,24 @@ export async function POST(request: Request) {
     }
 
     if (newUsername) {
-      await targetRef.update({
-        username: newUsername,
-        email: makeHiddenEmail(newUsername),
-      });
+      if (authoritySql) {
+        await updateUserUsernameInSql({
+          uid: targetUid,
+          username: newUsername,
+          actorUid: callerUid,
+          actorRole: auth.user.role,
+        });
+        logAuthorityFirestoreFallbackBlocked(
+          '/api/coadmin/reset-worker-credentials',
+          'users.update_username',
+          { uid: targetUid }
+        );
+      } else {
+        await targetRef.update({
+          username: newUsername,
+          email: makeHiddenEmail(newUsername),
+        });
+      }
       if (role === 'player') {
         await recordPlayerLoginUsernameChange({
           previousUsername: currentUsername,

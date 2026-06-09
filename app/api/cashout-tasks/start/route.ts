@@ -3,6 +3,11 @@ import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import {
+  isAuthoritySqlWriteEnabled,
+  logAuthoritySqlWrite,
+} from '@/lib/server/authoritySqlWrite';
+import { startPlayerCashoutTaskInSql } from '@/lib/sql/authorityCashout';
 import { mirrorPlayerCashoutTaskById } from '@/lib/sql/playerCashoutTasksCache';
 
 type Body = {
@@ -29,13 +34,34 @@ export async function POST(request: Request) {
     const caller = auth.user;
     const callerIsAdmin = caller.role === 'admin';
     const callerScope = scopedCoadminUid(caller);
-    const taskRef = adminDb.collection('playerCashoutTasks').doc(taskId);
 
     console.info('[CASHOUT_START_API] start requested', {
       taskId,
       callerUid: caller.uid,
       role: caller.role,
     });
+
+    if (isAuthoritySqlWriteEnabled()) {
+      const result = await startPlayerCashoutTaskInSql({
+        taskId,
+        actorUid: caller.uid,
+        actorUsername: caller.username,
+        actorRole: caller.role,
+        isAdmin: callerIsAdmin,
+        scopeUid: callerScope,
+      });
+      logAuthoritySqlWrite('/api/cashout-tasks/start', {
+        taskId,
+        duplicate: result.duplicate,
+        expiresAtMs: result.expiresAtMs,
+      });
+      return NextResponse.json({
+        authority: 'sql',
+        ...result,
+      });
+    }
+
+    const taskRef = adminDb.collection('playerCashoutTasks').doc(taskId);
 
     const result = await adminDb.runTransaction(async (transaction) => {
       const taskSnap = await transaction.get(taskRef);
