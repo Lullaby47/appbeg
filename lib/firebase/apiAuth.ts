@@ -27,6 +27,7 @@ import {
 } from '@/lib/server/playerSessionAuthCache';
 import {
   lookupPlayerSessionFromSqlCache,
+  lookupPlayerSessionOwnerFromSql,
   mirrorPlayerSessionById,
 } from '@/lib/sql/playerSessionsCache';
 import { timedRechargeFirestoreRead } from '@/lib/server/rechargeFirestoreInstrumentation';
@@ -594,11 +595,20 @@ async function validatePlayerApiSession(
   );
 
   if (options?.sqlOnly) {
+    const sessionRow = sessionSqlLookup.session;
+    timing.session_source = 'none';
     console.info('[API_AUTH] player request blocked', {
       uid,
       reason: sessionSqlLookup.missReason || 'sql_session_missing',
       sessionId,
       context: 'api_user_session_sql_only',
+      session_source: 'none',
+      sql_query_session_id: sessionId,
+      sql_query_uid: uid,
+      sql_row_player_uid: sessionRow?.playerUid ?? null,
+      sql_row_active: sessionRow?.active ?? null,
+      sql_row_expires_at: sessionRow?.expiresAt ?? null,
+      sql_row_ended_at: sessionRow?.endedAt ?? null,
     });
     return {
       ok: false,
@@ -862,47 +872,84 @@ export async function requirePlayerOwnedLiveAuth(
     return { ok: true as const, uid, timing };
   };
 
-  const appSessionAuth = await verifyAppSessionFromRequest(request);
-  if (appSessionAuth.hit && appSessionAuth.profile.role === 'player') {
-    if (appSessionAuth.uid !== expectedUid) {
+  const attemptAppSessionPlayerAuth = async () => {
+    timing.auth_path = 'app_session_sql_session_sql';
+    const appSessionAuth = await verifyAppSessionFromRequest(request);
+    if (!appSessionAuth.hit) {
+      console.info('[API_AUTH] player live auth app_session_miss', {
+        expected_uid: expectedUid,
+        app_session_id: appSessionId,
+        player_session_id: sessionId || null,
+        reason: appSessionAuth.reason,
+        session_source: 'none',
+      });
       timing.auth_ms = Date.now() - authStartedAt;
-      return { ok: false, response: apiError('Forbidden.', 403), timing };
+      return {
+        ok: false as const,
+        response: apiError('Invalid or expired app session.', 401),
+        timing,
+      };
+    }
+
+    if (appSessionAuth.profile.role !== 'player') {
+      timing.auth_ms = Date.now() - authStartedAt;
+      return { ok: false as const, response: apiError('Forbidden.', 403), timing };
+    }
+
+    const authUid = appSessionAuth.uid;
+    if (authUid !== expectedUid) {
+      console.info('[API_AUTH] player live auth uid_mismatch', {
+        expected_uid: expectedUid,
+        app_session_uid: authUid,
+        app_session_id: appSessionId,
+        player_session_id: sessionId || null,
+      });
+      timing.auth_ms = Date.now() - authStartedAt;
+      return { ok: false as const, response: apiError('Forbidden.', 403), timing };
     }
 
     if (!sessionId) {
       console.info('[API_AUTH] player request blocked', {
-        uid: appSessionAuth.uid,
+        uid: authUid,
         reason: 'missing_session_header',
         sessionId: null,
-        auth_path: 'app_session_sql',
+        auth_path: 'app_session_sql_session_sql',
+        app_session_id: appSessionId,
       });
       timing.auth_ms = Date.now() - authStartedAt;
-      return { ok: false, response: apiError('X-Player-Session-Id header is required.', 401), timing };
+      return {
+        ok: false as const,
+        response: apiError('X-Player-Session-Id header is required.', 401),
+        timing,
+      };
     }
 
     const sessionCheckStartedAt = Date.now();
-    const sessionValidation = await validatePlayerApiSession(
-      appSessionAuth.uid,
-      sessionId,
-      timing,
-      {
-        appSessionId: appSessionAuth.sessionId,
-        sqlOnly: sqlReadMode,
-      }
-    );
+    const sessionValidation = await validatePlayerApiSession(authUid, sessionId, timing, {
+      appSessionId: appSessionAuth.sessionId,
+      sqlOnly: sqlReadMode,
+    });
     timing.session_check_ms = Date.now() - sessionCheckStartedAt;
     if (!sessionValidation.ok) {
+      timing.auth_path =
+        timing.session_source === 'firestore'
+          ? 'app_session_sql_session_firestore'
+          : 'app_session_sql_session_sql';
       timing.auth_ms = Date.now() - authStartedAt;
-      return { ok: false, response: sessionValidation.response, timing };
+      return { ok: false as const, response: sessionValidation.response, timing };
     }
 
     return finishPlayerLiveAuth(
-      appSessionAuth.uid,
+      authUid,
       sessionValidation.sessionSource === 'sql'
         ? 'app_session_sql_session_sql'
         : 'app_session_sql_session_firestore',
       sessionValidation.sessionSource
     );
+  };
+
+  if (appSessionId) {
+    return await attemptAppSessionPlayerAuth();
   }
 
   const token = bearerToken(request);
@@ -1248,6 +1295,52 @@ export type PlayerApiAuthResult =
   | { user: ApiUser; authPath: PlayerLiveAuthPath; timing: PlayerLiveAuthTiming }
   | { response: NextResponse; timing: PlayerLiveAuthTiming };
 
+async function resolvePlayerRouteAuthUid(request: Request) {
+  const appSessionId = appSessionIdFromRequest(request);
+  const playerSessionHeaderId = playerSessionId(request);
+
+  if (appSessionId) {
+    const appAuth = await verifyAppSessionFromRequest(request);
+    if (appAuth.hit && appAuth.profile.role === 'player') {
+      return { uid: appAuth.uid, branch: 'app_session_sql' as const };
+    }
+    console.info('[API_AUTH] player_api_user resolve_failed', {
+      branch: 'app_session_invalid',
+      app_session_id: appSessionId,
+      player_session_id: playerSessionHeaderId || null,
+      reason: appAuth.hit ? 'role_not_player' : appAuth.reason,
+    });
+    return null;
+  }
+
+  if (playerSessionHeaderId) {
+    const owner = await lookupPlayerSessionOwnerFromSql(playerSessionHeaderId);
+    if (owner?.playerUid && owner.active) {
+      return { uid: owner.playerUid, branch: 'player_session_sql' as const };
+    }
+    console.info('[API_AUTH] player_api_user resolve_failed', {
+      branch: 'player_session_owner_missing',
+      player_session_id: playerSessionHeaderId,
+      owner_uid: owner?.playerUid || null,
+      owner_active: owner?.active ?? null,
+      owner_expires_at: owner?.expiresAt ?? null,
+      owner_ended_at: owner?.endedAt ?? null,
+    });
+  }
+
+  const token = bearerToken(request);
+  if (!token) {
+    return null;
+  }
+
+  try {
+    const verified = await verifyLiveCarerApiToken(token);
+    return { uid: verified.uid, branch: 'bearer_token' as const };
+  } catch {
+    return null;
+  }
+}
+
 export async function requirePlayerApiUser(
   request: Request,
   options?: { rechargeFirestoreInstrumentation?: boolean }
@@ -1256,67 +1349,33 @@ export async function requirePlayerApiUser(
   const sqlReadMode = isAuthSqlReadEnabled();
   const authStartedAt = Date.now();
 
-  let playerUid = '';
-  let resolveBranch = 'unknown';
-
-  const appSessionAuth = await verifyAppSessionFromRequest(request, {
-    acquireContext: mirrorAcquireContextFromRequest(request, 'player_api_user_auth'),
-  });
-  if (appSessionAuth.hit && appSessionAuth.profile.role === 'player') {
-    playerUid = appSessionAuth.uid;
-    resolveBranch = 'app_session_sql';
-    console.info('[API_AUTH] player_api_user resolve', {
-      branch: resolveBranch,
-      uid: playerUid,
-      app_session_id: appSessionAuth.sessionId,
+  const resolved = await resolvePlayerRouteAuthUid(request);
+  if (!resolved) {
+    const timing = emptyPlayerLiveAuthTiming(sqlReadMode);
+    timing.auth_ms = Date.now() - authStartedAt;
+    console.info('[API_AUTH] player_api_user blocked', {
+      branch: 'missing_credentials',
+      reason: 'unable_to_resolve_player_uid',
+      auth_path: timing.auth_path,
+      app_session_id: appSessionIdFromRequest(request) || null,
       player_session_id: playerSessionId(request) || null,
-      canonical_session_id: playerSessionId(request) || null,
-      sql_read_mode: sqlReadMode,
     });
-  } else {
-    const token = bearerToken(request);
-    if (!token) {
-      const timing = emptyPlayerLiveAuthTiming(sqlReadMode);
-      timing.auth_ms = Date.now() - authStartedAt;
-      console.info('[API_AUTH] player_api_user blocked', {
-        branch: 'missing_credentials',
-        reason: 'missing_app_session_and_bearer',
-        auth_path: timing.auth_path,
-        app_session_id: appSessionIdFromRequest(request) || null,
-        player_session_id: playerSessionId(request) || null,
-      });
-      return {
-        response: apiError('Missing or invalid authorization.', 401),
-        timing,
-      };
-    }
-
-    try {
-      const verified = await verifyLiveCarerApiToken(token);
-      playerUid = verified.uid;
-      resolveBranch = 'bearer_token';
-      console.info('[API_AUTH] player_api_user resolve', {
-        branch: resolveBranch,
-        uid: playerUid,
-        token_cache_hit: verified.cacheHit,
-        app_session_id: appSessionIdFromRequest(request) || null,
-        player_session_id: playerSessionId(request) || null,
-        canonical_session_id: playerSessionId(request) || null,
-        sql_read_mode: sqlReadMode,
-      });
-    } catch {
-      const timing = emptyPlayerLiveAuthTiming(sqlReadMode);
-      timing.auth_ms = Date.now() - authStartedAt;
-      console.info('[API_AUTH] player_api_user blocked', {
-        branch: 'invalid_bearer_token',
-        auth_path: timing.auth_path,
-      });
-      return {
-        response: apiError('Invalid or expired authorization token.', 401),
-        timing,
-      };
-    }
+    return {
+      response: apiError('Missing or invalid authorization.', 401),
+      timing,
+    };
   }
+
+  const playerUid = resolved.uid;
+  const resolveBranch = resolved.branch;
+  console.info('[API_AUTH] player_api_user resolve', {
+    branch: resolveBranch,
+    uid: playerUid,
+    app_session_id: appSessionIdFromRequest(request) || null,
+    player_session_id: playerSessionId(request) || null,
+    canonical_session_id: playerSessionId(request) || null,
+    sql_read_mode: sqlReadMode,
+  });
 
   const auth = await requirePlayerOwnedLiveAuth(request, playerUid);
   if (!auth.ok) {

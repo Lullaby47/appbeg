@@ -166,6 +166,8 @@ export function resolvePlayerApiHeaderMode(headers: Record<string, string>) {
 
 async function buildPlayerSessionRequestHeaders(contentType = false) {
   const sessionId = getLocalPlayerSessionId();
+  const sqlPlayerMode =
+    isSqlPlayerLoginEnabled() && Boolean(getLocalAppSessionId()) && Boolean(sessionId);
   const headers: Record<string, string> = {
     ...getAppSessionRequestHeaders(),
   };
@@ -176,7 +178,7 @@ async function buildPlayerSessionRequestHeaders(contentType = false) {
     headers['X-Player-Session-Id'] = sessionId;
   }
   const currentUser = auth.currentUser;
-  if (currentUser) {
+  if (currentUser && !sqlPlayerMode) {
     headers.Authorization = `Bearer ${await currentUser.getIdToken()}`;
   }
   return headers;

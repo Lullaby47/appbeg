@@ -190,6 +190,44 @@ export async function mirrorPlayerSessionById(sessionId: string, source = 'appbe
   }
 }
 
+export async function lookupPlayerSessionOwnerFromSql(sessionId: string) {
+  const cleanSessionId = cleanText(sessionId);
+  const db = getPlayerMirrorPool();
+  if (!db || !cleanSessionId) {
+    return null;
+  }
+
+  try {
+    const result = await db.query<Record<string, unknown>>(
+      `
+        SELECT session_id, player_uid, active, ended_at, expires_at
+        FROM public.player_sessions_cache
+        WHERE session_id = $1
+          AND deleted_at IS NULL
+        LIMIT 1
+      `,
+      [cleanSessionId]
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+    return {
+      sessionId: cleanText(row.session_id),
+      playerUid: cleanText(row.player_uid),
+      active: row.active === true,
+      endedAt: toIsoString(row.ended_at),
+      expiresAt: toIsoString(row.expires_at),
+    };
+  } catch (error) {
+    console.info('[PLAYER_SESSIONS_CACHE] owner_lookup_failed', {
+      sessionId: cleanSessionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
 export async function lookupPlayerSessionFromSqlCache(
   sessionId: string,
   expectedPlayerUid: string
