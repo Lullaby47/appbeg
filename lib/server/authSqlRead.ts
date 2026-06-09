@@ -7,6 +7,10 @@ export function isAuthSqlReadEnabled() {
   );
 }
 
+export function isPlayerSessionSqlReadEnabled() {
+  return process.env.PLAYER_SESSION_SQL_READ === '1';
+}
+
 export function authSqlReadEnvStatus() {
   return {
     authSqlRead: process.env.AUTH_SQL_READ === '1',

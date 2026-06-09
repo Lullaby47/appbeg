@@ -354,7 +354,7 @@ export async function verifyAppSessionFromRequest(
   writeAppSessionAuthCache(sessionId, verified);
   timing.auth_finalize_ms = Date.now() - finalizeStartedAt;
   timing.total_ms = Date.now() - verifyStartedAt;
-  scheduleAppSessionTouchIfDue(sessionId);
+  scheduleAppSessionTouchIfDue(sessionId, { role });
 
   console.info(
     '[APP_SESSION_AUTH] hit=true uid=%s role=%s sessionId=%s lookup_ms=%s profile_ms=%s shared_client=%s pool_acquire_ms=%s session_lookup_ms=%s profile_lookup_ms=%s client_release_ms=%s auth_finalize_ms=%s total_ms=%s',

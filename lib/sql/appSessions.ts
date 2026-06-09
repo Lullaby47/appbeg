@@ -3,6 +3,7 @@ import 'server-only';
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 
+import { isPlayerSessionSqlReadEnabled } from '@/lib/server/authSqlRead';
 import {
   acquirePlayerMirrorClient,
   cleanText,
@@ -33,6 +34,7 @@ const globalAppSessionTouch = globalThis as typeof globalThis & {
     lastTouchAt: Map<string, number>;
     inflight: Set<string>;
     lastFailureLogAt: Map<string, number>;
+    lastSkipLogAt: Map<string, number>;
   };
 };
 
@@ -42,9 +44,29 @@ function appSessionTouchState() {
       lastTouchAt: new Map(),
       inflight: new Set(),
       lastFailureLogAt: new Map(),
+      lastSkipLogAt: new Map(),
     };
   }
   return globalAppSessionTouch.__appbegAppSessionTouchState;
+}
+
+function shouldSkipAppSessionTouchForRole(role: string) {
+  return cleanText(role).toLowerCase() === 'player' && isPlayerSessionSqlReadEnabled();
+}
+
+function logAppSessionTouchSkipped(sessionId: string) {
+  const state = appSessionTouchState();
+  const now = Date.now();
+  const lastLog = state.lastSkipLogAt.get(sessionId) || 0;
+  if (now - lastLog < APP_SESSION_TOUCH_FAILURE_LOG_THROTTLE_MS) {
+    return;
+  }
+  state.lastSkipLogAt.set(sessionId, now);
+  console.info('[APP_SESSIONS]', {
+    app_session_touch_skipped: true,
+    reason: 'player_sql_session_authoritative',
+    sessionIdPrefix: sessionId.slice(0, 8),
+  });
 }
 
 function shouldRetryAppSessionTouch(error: unknown) {
@@ -84,9 +106,17 @@ function logAppSessionTouchFailure(sessionId: string, error: unknown, retried: b
  * Fire-and-forget last_seen update. Non-fatal: auth must not depend on this succeeding.
  * Debounced globally (per warm serverless instance) to avoid pool contention.
  */
-export function scheduleAppSessionTouchIfDue(sessionId: string) {
+export function scheduleAppSessionTouchIfDue(
+  sessionId: string,
+  options?: { role?: string }
+) {
   const cleanSessionId = cleanText(sessionId);
   if (!cleanSessionId || !getPlayerMirrorPool()) {
+    return;
+  }
+
+  if (shouldSkipAppSessionTouchForRole(options?.role || '')) {
+    logAppSessionTouchSkipped(cleanSessionId);
     return;
   }
 

@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 
-import { mirrorPlayerSessionEndToFirestore } from '@/lib/server/playerSessionFirestoreMirror';
+import {
+  authSqlReadEnvLogFields,
+  isPlayerSessionSqlReadEnabled,
+} from '@/lib/server/authSqlRead';
 import { requirePlayerSessionActor } from '@/lib/server/playerSessionRouteAuth';
 import { invalidatePlayerSessionStatusCache } from '@/lib/server/playerSessionStatus';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
@@ -44,15 +47,20 @@ export async function POST(request: Request) {
       reason,
     });
 
-    let firestoreMirrorOk = false;
-    if (endResult.ok) {
+    const sqlReadMode = isPlayerSessionSqlReadEnabled();
+    let firestoreMirrorOk: boolean | null = null;
+    if (endResult.ok && !sqlReadMode) {
       try {
+        const { mirrorPlayerSessionEndToFirestore } = await import(
+          '@/lib/server/playerSessionFirestoreMirror'
+        );
         firestoreMirrorOk = await mirrorPlayerSessionEndToFirestore({
           playerUid: uid,
           sessionId,
           reason,
         });
       } catch (error) {
+        firestoreMirrorOk = false;
         console.warn('[PLAYER_SESSION_SQL] firestore mirror failed', {
           action: 'end',
           uid,
@@ -60,6 +68,14 @@ export async function POST(request: Request) {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+    } else if (endResult.ok && sqlReadMode) {
+      console.info('[PLAYER_SESSION_SQL]', {
+        action: 'end_mirror_skipped',
+        uid,
+        sessionId,
+        reason: 'player_session_sql_read',
+        ...authSqlReadEnvLogFields(),
+      });
     }
 
     console.info('[PLAYER_SESSION_SQL]', {

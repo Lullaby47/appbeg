@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 
-import { mirrorPlayerSessionTouchToFirestore } from '@/lib/server/playerSessionFirestoreMirror';
+import {
+  authSqlReadEnvLogFields,
+  isPlayerSessionSqlReadEnabled,
+} from '@/lib/server/authSqlRead';
 import { requirePlayerSessionActor } from '@/lib/server/playerSessionRouteAuth';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { touchPlayerSessionInSql } from '@/lib/sql/playerSessionWrite';
@@ -36,7 +39,11 @@ export async function POST(request: Request) {
       deviceId: cleanText(body.deviceId) || null,
     });
 
-    if (touchResult.ok) {
+    const sqlReadMode = isPlayerSessionSqlReadEnabled();
+    if (touchResult.ok && !sqlReadMode) {
+      const { mirrorPlayerSessionTouchToFirestore } = await import(
+        '@/lib/server/playerSessionFirestoreMirror'
+      );
       void mirrorPlayerSessionTouchToFirestore({
         playerUid: uid,
         sessionId,
@@ -58,6 +65,14 @@ export async function POST(request: Request) {
             error: error instanceof Error ? error.message : String(error),
           });
         });
+    } else if (touchResult.ok && sqlReadMode) {
+      console.info('[PLAYER_SESSION_SQL]', {
+        action: 'touch_mirror_skipped',
+        uid,
+        sessionId,
+        reason: 'player_session_sql_read',
+        ...authSqlReadEnvLogFields(),
+      });
     }
 
     const durationMs = Date.now() - startedAt;
@@ -67,7 +82,7 @@ export async function POST(request: Request) {
       sessionId,
       sql_ok: touchResult.ok,
       firestore_mirror_ok: null,
-      firestore_mirror_async: touchResult.ok,
+      firestore_mirror_async: sqlReadMode ? null : touchResult.ok,
       previousSessionCount: 0,
       durationMs,
       reason: touchResult.reason || null,
@@ -77,8 +92,8 @@ export async function POST(request: Request) {
       ok: touchResult.ok,
       reason: touchResult.reason || null,
       sqlOk: touchResult.ok,
-      firestoreMirrorOk: null,
-      firestoreMirrorAsync: touchResult.ok,
+      firestoreMirrorOk: sqlReadMode ? null : null,
+      firestoreMirrorAsync: sqlReadMode ? null : touchResult.ok,
       durationMs,
     });
   } catch (error) {

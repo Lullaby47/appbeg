@@ -1,9 +1,6 @@
 import { NextResponse } from 'next/server';
 
-import {
-  mirrorPlayerSessionStartToFirestore,
-} from '@/lib/server/playerSessionFirestoreMirror';
-import { authSqlReadEnvLogFields, isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { authSqlReadEnvLogFields, isAuthSqlReadEnabled, isPlayerSessionSqlReadEnabled } from '@/lib/server/authSqlRead';
 import { requireFirebasePlayerUser } from '@/lib/server/playerSessionRouteAuth';
 import { invalidatePlayerSessionStatusCache } from '@/lib/server/playerSessionStatus';
 import { logRouteSessionValidation } from '@/lib/server/sessionAuthLog';
@@ -79,9 +76,13 @@ export async function POST(request: Request) {
       );
     }
 
-    let firestoreMirrorOk = false;
-    if (!isAuthSqlReadEnabled()) {
+    const sqlReadMode = isPlayerSessionSqlReadEnabled();
+    let firestoreMirrorOk: boolean | null = null;
+    if (!sqlReadMode) {
       try {
+        const { mirrorPlayerSessionStartToFirestore } = await import(
+          '@/lib/server/playerSessionFirestoreMirror'
+        );
         firestoreMirrorOk = await mirrorPlayerSessionStartToFirestore({
           playerUid: uid,
           sessionId,
@@ -103,7 +104,7 @@ export async function POST(request: Request) {
         action: 'start_mirror_skipped',
         uid,
         sessionId,
-        reason: 'auth_sql_read_mode',
+        reason: 'player_session_sql_read',
         ...authSqlReadEnvLogFields(),
       });
     }

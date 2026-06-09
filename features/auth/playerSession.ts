@@ -833,7 +833,7 @@ export async function touchPlayerSession(user?: User | null) {
 
   const resolvedUser = user === undefined ? auth.currentUser : user;
   const sqlOk = await touchPlayerSessionViaApi(sessionId);
-  if (!sqlOk && resolvedUser) {
+  if (!sqlOk && resolvedUser && !isSqlPlayerAppSessionMode()) {
     await touchPlayerSessionViaFirestore(resolvedUser, sessionId);
   }
 }
@@ -879,7 +879,7 @@ export async function endLocalPlayerSession(reason = 'logout') {
   const currentUser = auth.currentUser;
   try {
     const sqlOk = await endLocalPlayerSessionViaApi(sessionId, reason);
-    if (!sqlOk && currentUser) {
+    if (!sqlOk && currentUser && !isSqlPlayerAppSessionMode()) {
       await endLocalPlayerSessionViaFirestore(sessionId, reason);
     }
   } catch {
