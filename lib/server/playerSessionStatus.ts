@@ -137,7 +137,20 @@ async function readPlayerSessionStatusFromSql(
   }
 
   if (sessionLookup.missReason === 'row_missing') {
-    return { available: true as const, incomplete: true as const };
+    // players_cache.active_session_id is authoritative during SQL auth migration;
+    // do not fall through to Firestore (it may still have a stale activeSessionId).
+    return {
+      available: true as const,
+      result: {
+        ok: true,
+        active: true,
+        uid,
+        activeSessionId,
+        sessionId,
+        replaced: false,
+        source: 'sql' as const,
+      } satisfies PlayerSessionStatusResult,
+    };
   }
 
   return {

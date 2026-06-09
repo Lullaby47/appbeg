@@ -12,7 +12,6 @@ import {
 } from 'firebase/firestore';
 
 import { getAppSessionRequestHeaders, getLocalAppSessionId } from '@/features/auth/appSession';
-import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
 import { getCachedSessionUser } from '@/features/auth/sessionUser';
 import { auth, db } from '@/lib/firebase/client';
 
@@ -21,6 +20,11 @@ export const PLAYER_SESSION_ID_KEY = 'appbeg:playerSessionId';
 export const PLAYER_REPLACED_LOGIN_MESSAGE =
   'You were logged out because this account logged in on another device.';
 export const PLAYER_SESSION_REPLACED_LOGIN_PATH = '/login?reason=session_replaced';
+
+/** SQL app + player session pair from bootstrap (independent of NEXT_PUBLIC_SQL_PLAYER_LOGIN). */
+export function isSqlPlayerAppSessionMode() {
+  return Boolean(getLocalAppSessionId()) && Boolean(getLocalPlayerSessionId());
+}
 
 let forcedPlayerLogout = false;
 
@@ -166,8 +170,7 @@ export function resolvePlayerApiHeaderMode(headers: Record<string, string>) {
 
 async function buildPlayerSessionRequestHeaders(contentType = false) {
   const sessionId = getLocalPlayerSessionId();
-  const sqlPlayerMode =
-    isSqlPlayerLoginEnabled() && Boolean(getLocalAppSessionId()) && Boolean(sessionId);
+  const sqlPlayerMode = isSqlPlayerAppSessionMode() && Boolean(sessionId);
   const headers: Record<string, string> = {
     ...getAppSessionRequestHeaders(),
   };
@@ -476,8 +479,7 @@ async function resolveActivePlayerSession(
 
   const currentUser = auth.currentUser;
   const localSessionId = getLocalPlayerSessionId();
-  const sqlPlayerMode =
-    isSqlPlayerLoginEnabled() && Boolean(getLocalAppSessionId()) && Boolean(localSessionId);
+  const sqlPlayerMode = isSqlPlayerAppSessionMode();
 
   if (!localSessionId || forcedPlayerLogout) {
     return {
@@ -600,8 +602,7 @@ export async function assertActivePlayerSession() {
 
 export async function getPlayerApiHeaders(contentType = true) {
   const localSessionId = getLocalPlayerSessionId();
-  const sqlPlayerMode =
-    isSqlPlayerLoginEnabled() && Boolean(getLocalAppSessionId()) && Boolean(localSessionId);
+  const sqlPlayerMode = isSqlPlayerAppSessionMode();
   const cached =
     localSessionId && !forcedPlayerLogout
       ? readPlayerSessionVerifyCache(localSessionId)
@@ -890,6 +891,10 @@ export function listenForPlayerSessionReplacement(
   user: User,
   onMismatch?: () => void
 ) {
+  if (getLocalAppSessionId()) {
+    return () => {};
+  }
+
   const localSessionId = getLocalPlayerSessionId();
   if (!localSessionId) {
     return () => {};

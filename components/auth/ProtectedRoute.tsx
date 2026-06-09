@@ -8,7 +8,6 @@ import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase/client';
 import { isValidRole, UserRole } from '@/lib/auth/roles';
 import { getLocalAppSessionId } from '@/features/auth/appSession';
-import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
 import { discardStalePlayerSessionIdForRole } from '@/features/auth/playerSession';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { recordDevActiveSession } from '@/features/dev/devUsageEstimates';
@@ -19,6 +18,7 @@ import {
   forcePlayerSessionLogout,
   getLocalPlayerSessionId,
   isPlayerForcedLogout,
+  isSqlPlayerAppSessionMode,
   listenForPlayerSessionReplacement,
   startPlayerSessionStatusPolling,
   touchPlayerSession,
@@ -55,7 +55,7 @@ export default function ProtectedRoute({
     let unsubscribeFirebase: (() => void) | undefined;
 
     async function tryPlayerAppSessionGuard(): Promise<'allowed' | 'fallback' | 'denied'> {
-      if (!routeIsPlayerOnly(allowedRoles) || !isSqlPlayerLoginEnabled()) {
+      if (!routeIsPlayerOnly(allowedRoles) || !isSqlPlayerAppSessionMode()) {
         return 'fallback';
       }
 
@@ -246,10 +246,7 @@ export default function ProtectedRoute({
         }
 
         if (role === 'player') {
-          const sqlPlayerMode =
-            isSqlPlayerLoginEnabled() &&
-            Boolean(getLocalAppSessionId()) &&
-            Boolean(getLocalPlayerSessionId());
+          const sqlPlayerMode = isSqlPlayerAppSessionMode();
           const sessionStatus = await verifyActivePlayerSession();
           if (!sessionStatus.ok) {
             if (sessionStatus.reason === 'session_replaced' && sessionStatus.activeSessionId) {
@@ -373,8 +370,7 @@ export default function ProtectedRoute({
       onInactive: handlePollKick,
     });
 
-    const sqlPlayerAppSession =
-      isSqlPlayerLoginEnabled() && Boolean(getLocalAppSessionId());
+    const sqlPlayerAppSession = isSqlPlayerAppSessionMode();
 
     if (currentUser && !sqlPlayerAppSession) {
       stopSessionListener = listenForPlayerSessionReplacement(currentUser, () => {

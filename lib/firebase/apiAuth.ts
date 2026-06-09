@@ -504,6 +504,51 @@ type PlayerApiSessionTiming = {
   session_sql_total_ms?: number;
 };
 
+type PlayerSessionSqlProfileHint = {
+  role?: string;
+  activeSessionId?: string | null;
+};
+
+async function acceptPlayerSessionBySqlProfile(
+  uid: string,
+  sessionId: string,
+  missReason: 'row_missing' | 'postgres_unavailable' | 'lookup_failed' | 'player_mismatch' | 'inactive' | 'expired' | null,
+  knownProfile?: PlayerSessionSqlProfileHint | null
+) {
+  if (missReason !== 'row_missing' && missReason !== 'postgres_unavailable') {
+    return false;
+  }
+
+  const profile =
+    knownProfile || (await lookupApiUserProfileFromSqlCache(uid)).profile || null;
+  if (!profile || profile.role !== 'player') {
+    return false;
+  }
+
+  return cleanText(profile.activeSessionId) === cleanText(sessionId);
+}
+
+function writePlayerSessionSqlAuthSuccess(
+  appSessionId: string,
+  uid: string,
+  sessionId: string,
+  reason: string
+) {
+  writePlayerSessionAuthCache(
+    { appSessionId, playerSessionId: sessionId, uid },
+    {
+      ok: true,
+      active: true,
+      uid,
+      activeSessionId: sessionId,
+      sessionId,
+      replaced: false,
+      source: 'sql',
+    },
+    { reason }
+  );
+}
+
 function applyPlayerSessionAuthCacheHit(
   timing: PlayerApiSessionTiming,
   sessionSource: 'sql' | 'firestore'
@@ -529,6 +574,7 @@ async function validatePlayerApiSession(
   timing: PlayerApiSessionTiming,
   options?: {
     appSessionId?: string;
+    knownProfile?: PlayerSessionSqlProfileHint | null;
     rechargeFirestoreInstrumentation?: boolean;
     sqlOnly?: boolean;
   }
@@ -571,19 +617,32 @@ async function validatePlayerApiSession(
 
   if (sessionSqlLookup.missReason === null) {
     timing.session_source = 'sql';
-    writePlayerSessionAuthCache(
-      { appSessionId, playerSessionId: sessionId, uid },
-      {
-        ok: true,
-        active: true,
-        uid,
-        activeSessionId: sessionId,
-        sessionId,
-        replaced: false,
-        source: 'sql',
-      },
-      { reason: 'api_auth_sql_success' }
+    writePlayerSessionSqlAuthSuccess(appSessionId, uid, sessionId, 'api_auth_sql_success');
+    return { ok: true, sessionSource: 'sql' };
+  }
+
+  if (
+    options?.sqlOnly &&
+    (await acceptPlayerSessionBySqlProfile(
+      uid,
+      sessionId,
+      sessionSqlLookup.missReason,
+      options.knownProfile
+    ))
+  ) {
+    timing.session_source = 'sql';
+    writePlayerSessionSqlAuthSuccess(
+      appSessionId,
+      uid,
+      sessionId,
+      'api_auth_sql_profile_authority'
     );
+    console.info('[API_AUTH] player session accepted via sql profile authority', {
+      uid,
+      sessionId,
+      missReason: sessionSqlLookup.missReason,
+      context: 'api_user_session_sql_only',
+    });
     return { ok: true, sessionSource: 'sql' };
   }
 
@@ -609,6 +668,7 @@ async function validatePlayerApiSession(
       sql_row_active: sessionRow?.active ?? null,
       sql_row_expires_at: sessionRow?.expiresAt ?? null,
       sql_row_ended_at: sessionRow?.endedAt ?? null,
+      profile_active_session_id: cleanText(options.knownProfile?.activeSessionId) || null,
     });
     return {
       ok: false,
@@ -743,6 +803,7 @@ async function authenticateApiUserFromAppSession(
     const profileActiveSessionId = String(profile.activeSessionId || '').trim();
     const sessionValidation = await validatePlayerApiSession(session.uid, sessionHeaderId, timing, {
       appSessionId: sessionId,
+      knownProfile: profile,
       rechargeFirestoreInstrumentation: options?.rechargeFirestoreInstrumentation,
       sqlOnly: sqlReadMode,
     });
@@ -927,6 +988,7 @@ export async function requirePlayerOwnedLiveAuth(
     const sessionCheckStartedAt = Date.now();
     const sessionValidation = await validatePlayerApiSession(authUid, sessionId, timing, {
       appSessionId: appSessionAuth.sessionId,
+      knownProfile: appSessionAuth.profile,
       sqlOnly: sqlReadMode,
     });
     timing.session_check_ms = Date.now() - sessionCheckStartedAt;
@@ -1028,6 +1090,7 @@ export async function requirePlayerOwnedLiveAuth(
     const sessionCheckStartedAt = Date.now();
     const sessionValidation = await validatePlayerApiSession(identityUid, sessionId, timing, {
       appSessionId,
+      knownProfile: sqlProfileLookup.profile,
       sqlOnly: true,
     });
     timing.session_check_ms = Date.now() - sessionCheckStartedAt;
@@ -1086,6 +1149,7 @@ export async function requirePlayerOwnedLiveAuth(
   const sessionCheckStartedAt = Date.now();
   const sessionValidation = await validatePlayerApiSession(identityUid, sessionId, timing, {
     appSessionId,
+    knownProfile: sqlProfileLookup.profile,
     sqlOnly: sqlReadMode,
   });
   timing.session_check_ms = Date.now() - sessionCheckStartedAt;
@@ -1648,6 +1712,7 @@ export async function requireApiUser(
 
     const sessionValidation = await validatePlayerApiSession(identityUid, sessionId, timing, {
       appSessionId,
+      knownProfile: sqlProfileLookup.profile,
       sqlOnly: isAuthSqlReadEnabled(),
     });
     if (!sessionValidation.ok) {
