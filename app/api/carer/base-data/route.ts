@@ -39,6 +39,8 @@ function logCarerBaseData(
   console.info('[CARER_BASE_DATA]', {
     source: payload.source,
     auth_path: authPath,
+    auth_source: authPath === 'api_user_firestore' ? 'firestore' : 'sql',
+    firestore_fallback: authPath === 'api_user_firestore',
     shared_client: payload.timing.shared_client,
     parallel: payload.timing.parallel,
     client_acquire_ms: payload.timing.client_acquire_ms,
@@ -84,6 +86,16 @@ export async function GET(request: Request) {
 
   const payload = await readCarerBaseDataForCoadmin(coadminUid);
   logCarerBaseData(auth.authPath, coadminUid, payload);
+  if (auth.timing) {
+    console.info('[CARER_BASE_DATA_AUTH]', {
+      auth_path: auth.authPath,
+      source: auth.authPath === 'api_user_firestore' ? 'firestore' : 'sql',
+      firestore_fallback: auth.authPath === 'api_user_firestore',
+      sql_profile_ms: auth.timing.sql_profile_ms,
+      user_doc_ms: auth.timing.user_doc_ms,
+      auth_ms: auth.timing.auth_ms,
+    });
+  }
 
   return NextResponse.json({
     players: payload.players,

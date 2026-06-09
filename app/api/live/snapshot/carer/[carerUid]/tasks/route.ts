@@ -111,6 +111,8 @@ function authTimingDetails(timing: {
   sql_profile_total_ms: number;
   user_doc_ms: number;
   token_cache_hit: boolean;
+  firestore_fallback?: boolean;
+  source?: string;
 }) {
   return {
     auth_path: timing.auth_path,
@@ -123,6 +125,8 @@ function authTimingDetails(timing: {
     sql_profile_query_exec_ms: timing.sql_profile_query_exec_ms,
     sql_profile_total_ms: timing.sql_profile_total_ms,
     user_doc_ms: timing.user_doc_ms,
+    source: timing.source || (timing.firestore_fallback ? 'firestore' : 'sql'),
+    firestore_fallback: timing.firestore_fallback ?? timing.user_doc_ms > 0,
   };
 }
 

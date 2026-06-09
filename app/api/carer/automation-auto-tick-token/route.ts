@@ -22,17 +22,16 @@ export async function POST(request: Request) {
 
   try {
     stage = 'load_api_auth';
-    const { apiError, requireApiUser } = await import('@/lib/firebase/apiAuth');
+    const { apiError, requireCarerApiUser } = await import('@/lib/firebase/apiAuth');
     console.info('[AUTO_TICK_TOKEN] firebaseAdminReady=%s', true);
 
     stage = 'verify_user';
-    const auth = await requireApiUser(request, ['carer']);
+    const auth = await requireCarerApiUser(request);
     if ('response' in auth) {
       console.info('[AUTO_TICK_TOKEN] auth_failed=true authPath=unknown');
       return auth.response;
     }
-    console.info('[AUTO_TICK_TOKEN] userVerified uid=%s authPath=%s', auth.user.uid, auth.authPath);
-    console.info('[AUTO_TICK_TOKEN] carerProfileSource=sql');
+    console.info('[AUTO_TICK_TOKEN] userVerified uid=%s authPath=%s source=%s firestore_fallback=%s sql_profile_ms=%s user_doc_ms=%s', auth.user.uid, auth.authPath, auth.timing.source, auth.timing.firestore_fallback, auth.timing.sql_profile_ms, auth.timing.user_doc_ms);
 
     let body: { agentId?: unknown };
     stage = 'parse_body';

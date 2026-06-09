@@ -16,10 +16,11 @@ import { AUTOMATION_AUTO_STATE_COLLECTION } from '@/features/automation/automati
 import { verifyAutoTickBrowserToken } from '@/lib/automation/autoTickBrowserToken';
 import {
   apiError,
-  requireApiUser,
+  requireCarerApiUser,
   type ApiUser,
   type ApiUserAuthPath,
 } from '@/lib/firebase/apiAuth';
+import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
 import {
   acquireAutomationAutoTickLeaseSql,
   disableAutomationAutoStateSql,
@@ -82,8 +83,17 @@ type AutoTickCarerProfile = {
 type AutoTickAuthSource = 'api_user_sql' | 'api_user_sql_session_sql' | 'firestore_fallback';
 
 function mapAutoTickAuthSource(authPath: ApiUserAuthPath | null): AutoTickAuthSource {
-  if (authPath === 'api_user_sql') return 'api_user_sql';
-  if (authPath === 'api_user_sql_session_sql') return 'api_user_sql_session_sql';
+  if (
+    authPath === 'api_user_sql' ||
+    authPath === 'carer_token_sql' ||
+    authPath === 'carer_app_session_sql' ||
+    authPath === 'app_session_sql'
+  ) {
+    return 'api_user_sql';
+  }
+  if (authPath === 'api_user_sql_session_sql' || authPath === 'app_session_sql_session_sql') {
+    return 'api_user_sql_session_sql';
+  }
   return 'firestore_fallback';
 }
 
@@ -198,6 +208,18 @@ async function resolveAutoTickCarerProfile(params: {
       reason: 'sql_miss',
       missReason: sqlLookup.missReason,
     });
+  }
+
+  if (isAuthSqlReadEnabled()) {
+    const reason = sqlLookup.missReason || 'row_missing';
+    console.info('[AUTO_TICK_AUTH_SOURCE] source=sql_blocked authPath=%s firestore_fallback=false reason=%s', authPath, reason);
+    if (reason === 'postgres_unavailable' || reason === 'lookup_failed') {
+      return {
+        ok: false,
+        response: apiError('SQL auth is unavailable. Configure DATABASE_URL on the server.', 503),
+      };
+    }
+    return { ok: false, response: apiError('Carer profile not found in SQL cache.', 404) };
   }
 
   const userSnap = await adminDb.collection('users').doc(carerUid).get();
@@ -347,10 +369,31 @@ async function resolveAutomationAutoTickState(
 
   if (sqlStateLookup.missReason) {
     console.info(
-      '[AUTO_TICK_STATE_FALLBACK] reason=%s carerUid=%s',
+      '[AUTO_TICK_STATE_FALLBACK] reason=%s carerUid=%s firestore_fallback=%s',
       sqlStateLookup.missReason,
-      carerUid
+      carerUid,
+      !isAuthSqlReadEnabled()
     );
+  }
+
+  if (isAuthSqlReadEnabled()) {
+    stateTiming.state_source = 'sql';
+    logAutoTickTiming('state_read', stateReadStartedAt, {
+      carerUid,
+      exists: false,
+      state_source: stateTiming.state_source,
+      state_sql_ms: stateTiming.state_sql_ms,
+      state_doc_ms: 0,
+      firestore_fallback: false,
+      missReason: sqlStateLookup.missReason || 'row_missing',
+    });
+    return {
+      ok: true,
+      enabled: false,
+      stateExists: false,
+      stateCoadminUidIgnored: null,
+      usedSqlState: true,
+    };
   }
 
   const stateDocStartedAt = Date.now();
@@ -429,11 +472,23 @@ async function resolveAutoTickPendingCandidates(
   }
 
   console.info(
-    '[AUTO_TICK_PENDING_FALLBACK] reason=%s coadminUid=%s carerUid=%s',
+    '[AUTO_TICK_PENDING_FALLBACK] reason=%s coadminUid=%s carerUid=%s firestore_fallback=%s',
     sqlResult.missReason || 'lookup_failed',
     coadminUid,
-    carerUid
+    carerUid,
+    !isAuthSqlReadEnabled()
   );
+
+  if (isAuthSqlReadEnabled()) {
+    return {
+      candidates: [],
+      timing: {
+        pending_source: 'sql',
+        pending_sql_ms,
+        pending_firestore_ms: 0,
+      },
+    };
+  }
 
   const firestoreStartedAt = Date.now();
   const pendingSnap = await adminDb
@@ -524,6 +579,22 @@ async function resolveAutoTickTaskRecheck(
     };
   }
 
+  if (isAuthSqlReadEnabled()) {
+    timing.task_recheck_source = 'sql';
+    console.info('[AUTO_TICK_TASK_RECHECK_SQL]', {
+      taskId,
+      source: 'sql_miss',
+      pending_source: pendingSource,
+      durationMs: timing.task_recheck_sql_ms,
+      sql_miss_reason: sqlResult.missReason,
+      firestore_fallback: false,
+    });
+    return {
+      latestFields: null,
+      timing,
+    };
+  }
+
   const firestoreStartedAt = Date.now();
   const latestTaskSnap = await adminDb.collection('carerTasks').doc(taskId).get();
   timing.task_recheck_firestore_ms = Date.now() - firestoreStartedAt;
@@ -578,7 +649,7 @@ export async function POST(request: Request) {
     tokenCheck.payload.automationAgentId === agentId;
   const auth = hasValidSecret || hasValidBrowserToken
     ? null
-    : await requireApiUser(request, ['carer']);
+    : await requireCarerApiUser(request);
   logAutoTickTiming('auth', authStartedAt, {
     authMode: hasValidSecret ? 'secret' : hasValidBrowserToken ? 'browser_token' : 'firebase',
     ok: !(auth && 'response' in auth),

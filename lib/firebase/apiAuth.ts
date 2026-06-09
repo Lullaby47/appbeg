@@ -457,6 +457,9 @@ export type ApiUserAuthPath =
   | 'api_user_sql_session_sql'
   | 'api_user_sql_session_firestore'
   | 'api_user_firestore'
+  | 'carer_app_session_sql'
+  | 'carer_token_sql'
+  | 'carer_token_firestore'
   | PlayerLiveAuthPath;
 
 export type ApiUserAuthTiming = {
@@ -1183,7 +1186,76 @@ export type CarerLiveAuthTiming = {
   sql_profile_total_ms: number;
   user_doc_ms: number;
   token_cache_hit: boolean;
+  firestore_fallback: boolean;
+  source: 'sql' | 'firestore';
 };
+
+function emptyCarerLiveAuthTiming(): CarerLiveAuthTiming {
+  return {
+    auth_path: 'carer_token_firestore',
+    auth_ms: 0,
+    verify_token_ms: 0,
+    sql_profile_ms: 0,
+    sql_profile_query_ms: 0,
+    sql_profile_pool_acquire_ms: 0,
+    sql_profile_query_exec_ms: 0,
+    sql_profile_total_ms: 0,
+    user_doc_ms: 0,
+    token_cache_hit: false,
+    firestore_fallback: false,
+    source: 'sql',
+  };
+}
+
+function carerAuthPathToApiUserAuthPath(
+  path: CarerLiveAuthTiming['auth_path']
+): ApiUserAuthPath {
+  if (path === 'carer_app_session_sql') return 'carer_app_session_sql';
+  if (path === 'carer_token_sql') return 'carer_token_sql';
+  return 'carer_token_firestore';
+}
+
+function carerLiveAuthTimingToApiUserTiming(timing: CarerLiveAuthTiming): ApiUserAuthTiming {
+  return {
+    auth_path: carerAuthPathToApiUserAuthPath(timing.auth_path),
+    verify_token_ms: timing.verify_token_ms,
+    sql_profile_ms: timing.sql_profile_total_ms || timing.sql_profile_ms,
+    sql_session_ms: 0,
+    user_doc_ms: timing.user_doc_ms,
+    session_doc_ms: 0,
+    session_source: timing.source === 'firestore' ? 'firestore' : 'sql',
+    auth_ms: timing.auth_ms,
+    token_cache_hit: timing.token_cache_hit,
+  };
+}
+
+async function resolveCarerRouteAuthUid(request: Request) {
+  const appSessionId = appSessionIdFromRequest(request);
+  if (appSessionId) {
+    const appAuth = await verifyAppSessionFromRequest(request);
+    if (appAuth.hit && appAuth.profile.role === 'carer') {
+      return { uid: appAuth.uid, branch: 'app_session_sql' as const };
+    }
+    console.info('[API_AUTH] carer_api_user resolve_failed', {
+      branch: 'app_session_invalid',
+      app_session_id: appSessionId,
+      reason: appAuth.hit ? 'role_not_carer' : appAuth.reason,
+    });
+    return null;
+  }
+
+  const token = bearerToken(request);
+  if (!token) {
+    return null;
+  }
+
+  try {
+    const verified = await verifyLiveCarerApiToken(token);
+    return { uid: verified.uid, branch: 'bearer_token' as const };
+  } catch {
+    return null;
+  }
+}
 
 export async function requireCarerOwnedLiveAuth(
   request: Request,
@@ -1195,18 +1267,8 @@ export async function requireCarerOwnedLiveAuth(
 > {
   const authStartedAt = Date.now();
   const expectedUid = String(expectedCarerUid || '').trim();
-  const timing: CarerLiveAuthTiming = {
-    auth_path: 'carer_token_firestore',
-    auth_ms: 0,
-    verify_token_ms: 0,
-    sql_profile_ms: 0,
-    sql_profile_query_ms: 0,
-    sql_profile_pool_acquire_ms: 0,
-    sql_profile_query_exec_ms: 0,
-    sql_profile_total_ms: 0,
-    user_doc_ms: 0,
-    token_cache_hit: false,
-  };
+  const sqlReadMode = isAuthSqlReadEnabled();
+  const timing = emptyCarerLiveAuthTiming();
 
   if (!expectedUid) {
     timing.auth_ms = Date.now() - authStartedAt;
@@ -1222,7 +1284,19 @@ export async function requireCarerOwnedLiveAuth(
     ) {
       timing.auth_path = 'carer_app_session_sql';
       timing.sql_profile_ms = appSessionAuth.profileMs;
+      timing.sql_profile_total_ms = appSessionAuth.profileMs;
+      timing.source = 'sql';
+      timing.firestore_fallback = false;
       timing.auth_ms = Date.now() - authStartedAt;
+      console.info('[API_AUTH] carer live auth allowed', {
+        uid: expectedUid,
+        auth_path: timing.auth_path,
+        source: timing.source,
+        firestore_fallback: timing.firestore_fallback,
+        sql_profile_ms: timing.sql_profile_ms,
+        user_doc_ms: 0,
+        sql_read_mode: sqlReadMode,
+      });
       return {
         ok: true,
         uid: expectedUid,
@@ -1264,16 +1338,92 @@ export async function requireCarerOwnedLiveAuth(
   timing.sql_profile_query_exec_ms = sqlProfileLookup.timing.query_exec_ms;
   timing.sql_profile_total_ms = sqlProfileLookup.timing.total_ms;
 
-  if (sqlProfileLookup.profile?.role === 'carer') {
+  const finishCarerSqlAuth = (coadminUid: string | null) => {
     timing.auth_path = 'carer_token_sql';
+    timing.source = 'sql';
+    timing.firestore_fallback = false;
     timing.auth_ms = Date.now() - authStartedAt;
-    return {
-      ok: true,
+    console.info('[API_AUTH] carer live auth allowed', {
       uid: identityUid,
-      coadminUid: sqlProfileLookup.profile.coadminUid,
+      auth_path: timing.auth_path,
+      source: timing.source,
+      firestore_fallback: timing.firestore_fallback,
+      sql_profile_ms: timing.sql_profile_ms,
+      user_doc_ms: 0,
+      sql_read_mode: sqlReadMode,
+    });
+    return {
+      ok: true as const,
+      uid: identityUid,
+      coadminUid,
+      timing,
+    };
+  };
+
+  if (sqlProfileLookup.profile?.role === 'carer') {
+    return finishCarerSqlAuth(sqlProfileLookup.profile.coadminUid);
+  }
+
+  if (sqlReadMode) {
+    if (
+      sqlProfileLookup.missReason === 'row_missing' ||
+      sqlProfileLookup.missReason === 'role_mismatch'
+    ) {
+      try {
+        await mirrorPlayerById(identityUid, 'carer_live_auth_hydrate');
+      } catch (error) {
+        console.info('[API_AUTH] carer live auth hydrate_failed', {
+          uid: identityUid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      const retryLookup = await lookupCarerProfileFromSqlCache(identityUid, options?.mirrorClient);
+      timing.sql_profile_ms = Date.now() - sqlProfileStartedAt;
+      timing.sql_profile_query_ms = retryLookup.timing.total_ms;
+      timing.sql_profile_pool_acquire_ms = retryLookup.timing.pool_acquire_ms;
+      timing.sql_profile_query_exec_ms = retryLookup.timing.query_exec_ms;
+      timing.sql_profile_total_ms = retryLookup.timing.total_ms;
+      if (retryLookup.profile?.role === 'carer') {
+        return finishCarerSqlAuth(retryLookup.profile.coadminUid);
+      }
+    }
+
+    const reason = sqlProfileLookup.missReason || 'row_missing';
+    timing.source = 'sql';
+    timing.firestore_fallback = false;
+    timing.auth_ms = Date.now() - authStartedAt;
+    console.info('[API_AUTH] carer live auth blocked', {
+      uid: identityUid,
+      reason,
+      auth_path: timing.auth_path,
+      source: timing.source,
+      firestore_fallback: timing.firestore_fallback,
+      sql_profile_ms: timing.sql_profile_ms,
+      user_doc_ms: 0,
+      sql_read_mode: sqlReadMode,
+    });
+    if (reason === 'postgres_unavailable' || reason === 'lookup_failed') {
+      return {
+        ok: false,
+        response: apiError('SQL auth is unavailable. Configure DATABASE_URL on the server.', 503),
+        timing,
+      };
+    }
+    return {
+      ok: false,
+      response: apiError(
+        'Carer profile not found in SQL cache. Ensure players_cache is populated for this user.',
+        404
+      ),
       timing,
     };
   }
+
+  console.info('[API_AUTH_FIRESTORE_FALLBACK] reason=%s uid=%s context=carer_live_auth', {
+    reason: sqlProfileLookup.missReason || 'row_missing',
+    uid: identityUid,
+    firestore_fallback: true,
+  });
 
   const userDocStartedAt = Date.now();
   const userSnap = await adminDb.collection('users').doc(identityUid).get();
@@ -1301,12 +1451,126 @@ export async function requireCarerOwnedLiveAuth(
   }
 
   timing.auth_path = 'carer_token_firestore';
+  timing.source = 'firestore';
+  timing.firestore_fallback = true;
   timing.auth_ms = Date.now() - authStartedAt;
+  console.info('[API_AUTH] carer live auth allowed', {
+    uid: identityUid,
+    auth_path: timing.auth_path,
+    source: timing.source,
+    firestore_fallback: timing.firestore_fallback,
+    sql_profile_ms: timing.sql_profile_ms,
+    user_doc_ms: timing.user_doc_ms,
+    sql_read_mode: sqlReadMode,
+  });
   return {
     ok: true,
     uid: identityUid,
     coadminUid,
     timing,
+  };
+}
+
+export async function requireCarerApiUser(
+  request: Request
+): Promise<
+  | { user: ApiUser; authPath: ApiUserAuthPath; timing: CarerLiveAuthTiming }
+  | { response: NextResponse; timing: CarerLiveAuthTiming }
+> {
+  const authStartedAt = Date.now();
+  const sqlReadMode = isAuthSqlReadEnabled();
+  const resolved = await resolveCarerRouteAuthUid(request);
+  if (!resolved) {
+    const timing = emptyCarerLiveAuthTiming();
+    timing.auth_ms = Date.now() - authStartedAt;
+    console.info('[API_AUTH] carer_api_user blocked', {
+      branch: 'missing_credentials',
+      reason: 'unable_to_resolve_carer_uid',
+      sql_read_mode: sqlReadMode,
+    });
+    return {
+      response: apiError('Missing or invalid authorization.', 401),
+      timing,
+    };
+  }
+
+  console.info('[API_AUTH] carer_api_user resolve', {
+    branch: resolved.branch,
+    uid: resolved.uid,
+    app_session_id: appSessionIdFromRequest(request) || null,
+    sql_read_mode: sqlReadMode,
+  });
+
+  const auth = await requireCarerOwnedLiveAuth(request, resolved.uid);
+  if (!auth.ok) {
+    console.info('[API_AUTH] carer_api_user blocked', {
+      branch: resolved.branch,
+      uid: resolved.uid,
+      reason: 'live_auth_denied',
+      auth_path: auth.timing.auth_path,
+      source: auth.timing.source,
+      firestore_fallback: auth.timing.firestore_fallback,
+    });
+    return { response: auth.response, timing: auth.timing };
+  }
+
+  let profileLookup = await lookupApiUserProfileFromSqlCache(auth.uid);
+  if (!profileLookup.profile) {
+    try {
+      await mirrorPlayerById(auth.uid, 'carer_api_auth_hydrate');
+    } catch (error) {
+      console.info('[API_AUTH] carer_api_user hydrate_failed', {
+        uid: auth.uid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    profileLookup = await lookupApiUserProfileFromSqlCache(auth.uid);
+  }
+
+  if (!profileLookup.profile || profileLookup.profile.role !== 'carer') {
+    const reason = profileLookup.missReason || 'row_missing';
+    console.info('[API_AUTH] carer_api_user blocked', {
+      branch: resolved.branch,
+      uid: auth.uid,
+      reason,
+      auth_path: auth.timing.auth_path,
+      source: 'sql',
+      firestore_fallback: false,
+      sql_read_mode: sqlReadMode,
+    });
+    if (reason === 'postgres_unavailable' || reason === 'lookup_failed') {
+      return {
+        response: apiError('SQL auth is unavailable. Configure DATABASE_URL on the server.', 503),
+        timing: auth.timing,
+      };
+    }
+    return {
+      response: apiError(
+        'Carer profile not found in SQL cache. Ensure players_cache is populated for this user.',
+        404
+      ),
+      timing: auth.timing,
+    };
+  }
+
+  const authPath = carerAuthPathToApiUserAuthPath(auth.timing.auth_path);
+  auth.timing.auth_ms = Date.now() - authStartedAt;
+  console.info('[API_AUTH] carer_api_user allowed', {
+    branch: resolved.branch,
+    uid: auth.uid,
+    auth_path: authPath,
+    source: auth.timing.source,
+    firestore_fallback: auth.timing.firestore_fallback,
+    sql_profile_ms: auth.timing.sql_profile_ms,
+    user_doc_ms: auth.timing.user_doc_ms,
+    sql_read_mode: sqlReadMode,
+    auth_ms: auth.timing.auth_ms,
+  });
+
+  return {
+    user: apiUserFromSqlProfile(profileLookup.profile),
+    authPath,
+    timing: auth.timing,
   };
 }
 
@@ -1532,6 +1796,38 @@ export async function requireApiUser(
     token_cache_hit: false,
   };
 
+  if (allowedRoles.length === 1 && allowedRoles[0] === 'carer') {
+    const carerAuth = await requireCarerApiUser(request);
+    if ('response' in carerAuth) {
+      return {
+        response: carerAuth.response,
+        timing: carerLiveAuthTimingToApiUserTiming(carerAuth.timing),
+      };
+    }
+    const carerTiming = carerLiveAuthTimingToApiUserTiming(carerAuth.timing);
+    carerTiming.auth_ms = Date.now() - authStartedAt;
+    console.info('[API_AUTH] request allowed', {
+      uid: carerAuth.user.uid,
+      role: carerAuth.user.role,
+      auth_path: carerAuth.authPath,
+      source: carerAuth.timing.source,
+      firestore_fallback: carerAuth.timing.firestore_fallback,
+      session_source: carerTiming.session_source,
+      token_cache_hit: carerTiming.token_cache_hit,
+      verify_token_ms: carerTiming.verify_token_ms,
+      sql_profile_ms: carerTiming.sql_profile_ms,
+      sql_session_ms: 0,
+      user_doc_ms: carerTiming.user_doc_ms,
+      session_doc_ms: 0,
+      auth_ms: carerTiming.auth_ms,
+    });
+    return {
+      user: carerAuth.user,
+      authPath: carerAuth.authPath,
+      timing: carerTiming,
+    };
+  }
+
   if (allowedRoles.length === 1 && allowedRoles[0] === 'player') {
     const playerAuth = await requirePlayerApiUser(request, options);
     if ('response' in playerAuth) {
@@ -1656,6 +1952,42 @@ export async function requireApiUser(
   }
 
   if (!usedSqlProfile) {
+    if (isAuthSqlReadEnabled()) {
+      const reason = sqlProfileLookup.missReason || 'row_missing';
+      timing.auth_ms = Date.now() - authStartedAt;
+      console.info('[API_AUTH] request blocked', {
+        uid: identityUid,
+        allowedRoles,
+        reason,
+        auth_path: timing.auth_path,
+        source: 'sql',
+        firestore_fallback: false,
+        sql_profile_ms: timing.sql_profile_ms,
+        user_doc_ms: 0,
+        sql_read_mode: true,
+      });
+      if (reason === 'postgres_unavailable' || reason === 'lookup_failed') {
+        return {
+          response: apiError('SQL auth is unavailable. Configure DATABASE_URL on the server.', 503),
+          timing,
+        };
+      }
+      return {
+        response: apiError(
+          'User profile not found in SQL cache. Ensure players_cache is populated for this user.',
+          404
+        ),
+        timing,
+      };
+    }
+
+    console.info('[API_AUTH_FIRESTORE_FALLBACK]', {
+      reason: sqlProfileLookup.missReason || 'row_missing',
+      uid: identityUid,
+      context: 'api_user_profile',
+      firestore_fallback: true,
+    });
+
     const userDocStartedAt = Date.now();
     const snap = await adminDb.collection('users').doc(identityUid).get();
     timing.user_doc_ms = Date.now() - userDocStartedAt;
@@ -1675,6 +2007,7 @@ export async function requireApiUser(
     user = apiUserFromFirestore(identityUid, data);
     activeSessionId = String(data.activeSessionId || '').trim();
     timing.auth_path = 'api_user_firestore';
+    timing.session_source = 'firestore';
 
     try {
       await mirrorPlayerById(identityUid, 'api_user_auth_hydrate');
@@ -1754,6 +2087,8 @@ export async function requireApiUser(
     uid: user.uid,
     role: user.role,
     auth_path: timing.auth_path,
+    source: timing.auth_path === 'api_user_firestore' ? 'firestore' : 'sql',
+    firestore_fallback: timing.auth_path === 'api_user_firestore',
     session_source: timing.session_source,
     token_cache_hit: timing.token_cache_hit,
     verify_token_ms: timing.verify_token_ms,
