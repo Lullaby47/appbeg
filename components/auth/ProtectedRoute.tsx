@@ -183,8 +183,10 @@ export default function ProtectedRoute({
       });
 
       setCurrentRole(sessionUser.role);
+      if (sessionUser.role !== 'player') {
+        discardStalePlayerSessionIdForRole(sessionUser.role, 'protected_route_non_player');
+      }
       if (sessionUser.role === 'carer') {
-        discardStalePlayerSessionIdForRole(sessionUser.role, 'protected_route_carer');
         recordDevActiveSession(sessionUser.role, sessionUser.uid);
       }
       setChecking(false);
@@ -309,6 +311,10 @@ export default function ProtectedRoute({
         });
 
         setCurrentRole(role);
+
+        if (role !== 'player') {
+          discardStalePlayerSessionIdForRole(role, 'protected_route_non_player');
+        }
 
         if (role === 'player' || role === 'carer') {
           recordDevActiveSession(role, firebaseUser.uid);

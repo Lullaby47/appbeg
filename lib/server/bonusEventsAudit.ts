@@ -1,5 +1,7 @@
 import 'server-only';
 
+import { NextResponse } from 'next/server';
+
 import {
   authSqlReadEnvLogFields,
   isAppSessionSqlReadEnabled,
@@ -30,6 +32,7 @@ export function logBonusEventsBlocked(values: {
   route: string;
   role?: string | null;
   uid?: string | null;
+  coadminUid?: string | null;
   reason: string;
   requiredAuth?: string;
   receivedAuth?: string | null;
@@ -41,6 +44,7 @@ export function logBonusEventsBlocked(values: {
     route: values.route,
     role: values.role ?? null,
     uid: values.uid ?? null,
+    coadminUid: values.coadminUid ?? null,
     reason: values.reason,
     requiredAuth: values.requiredAuth ?? null,
     receivedAuth: values.receivedAuth ?? null,
@@ -112,8 +116,36 @@ export function logBonusEventsEnsureAuth(
     coadminUid: values.coadminUid,
     auth_path: values.auth_path,
     source: values.source,
+    ...bonusEventsSqlModeFlags(),
     ...bonusEventsRequestHeaderFlags(request),
   });
+}
+
+export function resolveCoadminBonusAuthFailure(
+  request: Request,
+  route: string,
+  auth: { response: NextResponse; timing?: { auth_path?: string | null } },
+  coadminUid?: string | null
+) {
+  const headerFlags = bonusEventsRequestHeaderFlags(request);
+  const hasAppSession = headerFlags.has_app_session_header;
+  const reason = hasAppSession ? 'auth_failed' : 'app_session_required';
+  logBonusEventsBlocked({
+    route,
+    coadminUid: coadminUid ?? null,
+    reason,
+    requiredAuth: 'app_session_sql',
+    receivedAuth: auth.timing?.auth_path || null,
+    hasAppSessionId: hasAppSession,
+    hasPlayerSessionId: headerFlags.has_player_session_header,
+  });
+  if (!hasAppSession) {
+    return NextResponse.json(
+      { error: 'App session required.', reason: 'app_session_required' },
+      { status: 401 }
+    );
+  }
+  return auth.response;
 }
 
 export function logBonusEventsEnsureSql(values: {

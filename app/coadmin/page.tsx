@@ -116,7 +116,9 @@ import {
   getCoadminAutoBonusPercentRange,
   MAX_ACTIVE_BONUS_EVENTS,
   listenBonusEventsByCoadmin,
+  getCoadminBonusApiHeaders,
   logBonusEventsUiGuard,
+  logBonusEventsUiRequest,
   setCoadminAutoBonusPercentRange,
 } from '../../features/bonusEvents/bonusEvents';
 import {
@@ -1307,6 +1309,15 @@ export default function CoadminPage() {
                     ? error.message
                     : 'Failed to auto-create bonus events.';
                 console.info('[bonusEvents] ensure-error', { message: msg });
+                logBonusEventsUiGuard({
+                  page: 'coadmin_page_bonus_events_ensure',
+                  reason: msg,
+                  message: msg,
+                  blocked: true,
+                  coadminUid: coadminActorUid || null,
+                  isCoadminView: true,
+                  isPlayerView: false,
+                });
                 setMessage(msg);
               }
             } finally {
@@ -1342,6 +1353,9 @@ export default function CoadminPage() {
               logBonusEventsUiGuard({
                 page: 'coadmin_page_bonus_events',
                 reason: errMsg,
+                message: errMsg,
+                blocked: true,
+                coadminUid: coadminActorUid || null,
                 isCoadminView: true,
                 isPlayerView: false,
               });
@@ -1361,6 +1375,9 @@ export default function CoadminPage() {
           logBonusEventsUiGuard({
             page: 'coadmin_page_bonus_events_start',
             reason: errMsg,
+            message: errMsg,
+            blocked: true,
+            coadminUid: coadminActorUid || null,
             isCoadminView: true,
             isPlayerView: false,
           });
@@ -2743,16 +2760,18 @@ export default function CoadminPage() {
     bonusEventsLastEnsureAttemptAtMsRef.current = nowMs;
     bonusEventsLastMissingCountRef.current = missingCount;
     try {
-      const currentUser = auth.currentUser;
-      if (!currentUser) {
-        console.info('[coadmin] bonus-events:ensure-skip', {
-          reason: 'missing-current-user',
-        });
-        return;
-      }
-      const response = await fetch('/api/coadmin/bonus-events/ensure-capacity', {
+      const url = '/api/coadmin/bonus-events/ensure-capacity';
+      const headers = await getCoadminBonusApiHeaders();
+      logBonusEventsUiRequest({
+        action: 'ensure_bonus_capacity',
+        page: 'coadmin_bonus_events',
+        coadminUid: coadminActorUid || null,
+        url,
+        headers,
+      });
+      const response = await fetch(url, {
         method: 'POST',
-        headers: await getFirebaseApiHeaders(),
+        headers,
         body: JSON.stringify({ activeCountHint: resolvedActiveCount }),
       });
       const data = (await response.json()) as {
@@ -2798,6 +2817,15 @@ export default function CoadminPage() {
       const msg =
         error instanceof Error ? error.message : 'Failed to auto-create bonus events.';
       console.info('[bonusEvents] ensure-error', { message: msg });
+      logBonusEventsUiGuard({
+        page: 'coadmin_page_bonus_events_ensure',
+        reason: msg,
+        message: msg,
+        blocked: true,
+        coadminUid: coadminActorUid || null,
+        isCoadminView: true,
+        isPlayerView: false,
+      });
       setMessage(msg);
     } finally {
       bonusAutoFillBusyRef.current = false;

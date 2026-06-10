@@ -21,8 +21,8 @@ import { upsertCarerTaskForPlayerGameRequest } from '@/features/games/carerTasks
 import type { PlayerGameRequest } from '@/features/games/playerGameRequests';
 import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getLocalPlayerSessionId, getPlayerApiHeaders } from '@/features/auth/playerSession';
-import { getCachedSessionUser } from '@/features/auth/sessionUser';
-import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
+import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
+import { getStaffAppSessionApiHeaders, staffApiHeaderFlags } from '@/lib/client/staffApiHeaders';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 const BONUS_EVENTS_DEBUG =
@@ -284,14 +284,20 @@ function normalizeAutoBonusPercentRange(values: {
 }
 
 async function fetchCoadminAutoBonusPercentRangeFromApi(coadminUid: string) {
-  const response = await fetch(
-    `/api/coadmin/bonus-events/cache?coadminUid=${encodeURIComponent(coadminUid)}`,
-    {
-      method: 'GET',
-      headers: await getCoadminBonusApiHeaders(false),
-      cache: 'no-store',
-    }
-  );
+  const url = `/api/coadmin/bonus-events/cache?coadminUid=${encodeURIComponent(coadminUid)}`;
+  const headers = await getCoadminBonusApiHeaders(false);
+  logBonusEventsUiRequest({
+    action: 'fetch_auto_bonus_range',
+    page: 'coadmin_bonus_events',
+    coadminUid,
+    url,
+    headers,
+  });
+  const response = await fetch(url, {
+    method: 'GET',
+    headers,
+    cache: 'no-store',
+  });
   const payload = (await response.json().catch(() => ({}))) as {
     autoBonusPercentRange?: { minPercent?: number; maxPercent?: number };
     error?: string;
@@ -339,14 +345,20 @@ function pickFunnyBonusName(usedNames: Set<string>, fallbackIndex: number) {
 }
 
 async function getCoadminGameNamesFromApi(coadminUid: string): Promise<string[]> {
-  const response = await fetch(
-    `/api/game-logins/cache?coadminUid=${encodeURIComponent(coadminUid)}`,
-    {
-      method: 'GET',
-      headers: await getCoadminBonusApiHeaders(false),
-      cache: 'no-store',
-    }
-  );
+  const url = `/api/game-logins/cache?coadminUid=${encodeURIComponent(coadminUid)}`;
+  const headers = await getCoadminBonusApiHeaders(false);
+  logBonusEventsUiRequest({
+    action: 'fetch_game_logins_cache',
+    page: 'coadmin_bonus_events',
+    coadminUid,
+    url,
+    headers,
+  });
+  const response = await fetch(url, {
+    method: 'GET',
+    headers,
+    cache: 'no-store',
+  });
   const payload = (await response.json().catch(() => ({}))) as {
     gameLogins?: Array<{ gameName?: string }>;
   };
@@ -401,9 +413,9 @@ export async function createBonusEvent(values: {
   description: string;
   bonusPercentage: number;
 }) {
-  const currentUser = auth.currentUser;
-
-  if (!currentUser) {
+  const sessionUser = getCachedSessionUser() || (await getSessionUserOnce().catch(() => null));
+  const actorUid = sessionUser?.uid || auth.currentUser?.uid;
+  if (!actorUid) {
     throw new Error('Not authenticated.');
   }
 
@@ -447,14 +459,20 @@ export async function createBonusEvent(values: {
     throw new Error('Bonus percentage cannot be more than 50%.');
   }
 
-  const userSnap = await getDoc(doc(db, 'users', currentUser.uid));
+  const userSnap = isClientSqlReadMode()
+    ? null
+    : await getDoc(doc(db, 'users', actorUid));
 
-  if (!userSnap.exists()) {
+  let username = sessionUser?.username || 'User';
+  let role = String(sessionUser?.role || '').toLowerCase();
+
+  if (userSnap?.exists()) {
+    const userData = userSnap.data() as { username?: string; role?: string };
+    username = String(userData.username || username);
+    role = String(userData.role || role).toLowerCase();
+  } else if (!role) {
     throw new Error('Current user profile not found.');
   }
-
-  const userData = userSnap.data() as { username?: string; role?: string };
-  const role = String(userData.role || '').toLowerCase();
 
   if (role !== 'staff' && role !== 'coadmin') {
     throw new Error('Only staff and coadmin can create bonus events.');
@@ -513,9 +531,9 @@ export async function createBonusEvent(values: {
     description,
     bonusPercentage,
     bonus_percentage: bonusPercentage,
-    createdByUid: currentUser.uid,
-    created_by: currentUser.uid,
-    createdByUsername: userData.username?.trim() || 'User',
+    createdByUid: actorUid,
+    created_by: actorUid,
+    createdByUsername: username.trim() || 'User',
     createdByRole: role as BonusEvent['createdByRole'],
     creator_role: role as BonusEvent['createdByRole'],
     status: 'active' as const,
@@ -536,7 +554,7 @@ export async function createBonusEvent(values: {
   });
 
   console.info('[bonusEvents] createBonusEvent', {
-    byUid: currentUser.uid,
+    byUid: actorUid,
     role,
     coadminUid,
     manualEventId: manualRef.id,
@@ -664,25 +682,25 @@ export async function setCoadminAutoBonusPercentRange(values: {
   minPercent: number;
   maxPercent: number;
 }) {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-
-  const userSnap = await getDoc(doc(db, 'users', currentUser.uid));
-  if (!userSnap.exists()) {
-    throw new Error('Current user profile not found.');
-  }
-
-  const userData = userSnap.data() as { role?: string };
-  if (String(userData.role || '').toLowerCase() !== 'coadmin') {
+  const sessionUser = getCachedSessionUser() || (await getSessionUserOnce().catch(() => null));
+  const role = String(sessionUser?.role || '').toLowerCase();
+  if (role !== 'coadmin') {
     throw new Error('Only coadmin can change auto-created bonus ranges.');
   }
 
   const normalizedRange = normalizeAutoBonusPercentRange(values);
-  const response = await fetch('/api/coadmin/bonus-events/update-range', {
+  const url = '/api/coadmin/bonus-events/update-range';
+  const headers = await getCoadminBonusApiHeaders();
+  logBonusEventsUiRequest({
+    action: 'update_auto_bonus_range',
+    page: 'coadmin_bonus_events',
+    coadminUid: sessionUser?.uid || null,
+    url,
+    headers,
+  });
+  const response = await fetch(url, {
     method: 'POST',
-    headers: await getCoadminBonusApiHeaders(),
+    headers,
     body: JSON.stringify({
       minPercent: normalizedRange.minPercent,
       maxPercent: normalizedRange.maxPercent,
@@ -727,6 +745,9 @@ function mapApiBonusEvent(event: Record<string, unknown>): BonusEvent {
 export function logBonusEventsUiGuard(values: {
   page: string;
   reason: string;
+  message?: string;
+  blocked?: boolean;
+  coadminUid?: string | null;
   isCoadminView?: boolean;
   isPlayerView?: boolean;
 }) {
@@ -736,17 +757,58 @@ export function logBonusEventsUiGuard(values: {
     page: values.page,
     role: cached?.role || null,
     uid: cached?.uid || currentUser?.uid || null,
+    coadminUid:
+      values.coadminUid ??
+      (cached?.role === 'coadmin' ? cached.uid : cached?.coadminUid ?? null),
     hasAppSessionId: Boolean(getLocalAppSessionId()),
     hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
     isCoadminView: values.isCoadminView ?? true,
     isPlayerView: values.isPlayerView ?? false,
+    blocked: values.blocked ?? true,
     reason: values.reason,
+    message: values.message ?? values.reason,
   });
 }
 
-/** Coadmin/admin bonus management: app session + bearer only (no player session). */
-async function getCoadminBonusApiHeaders(contentType = false) {
-  return getFirebaseApiHeaders(contentType);
+export function logBonusEventsUiRequest(values: {
+  action: string;
+  page: string;
+  url: string;
+  role?: string | null;
+  uid?: string | null;
+  coadminUid?: string | null;
+  isCoadminView?: boolean;
+  isPlayerView?: boolean;
+  headers?: Record<string, string>;
+}) {
+  const cached = getCachedSessionUser();
+  const headerFlags = values.headers
+    ? staffApiHeaderFlags(values.headers)
+    : {
+        hasAppSessionId: Boolean(getLocalAppSessionId()),
+        hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+        usesAuthorizationHeader: Boolean(auth.currentUser),
+        usesPlayerSessionHeader: Boolean(getLocalPlayerSessionId()),
+      };
+  console.info('[BONUS_EVENTS_UI_REQUEST]', {
+    action: values.action,
+    page: values.page,
+    role: values.role ?? cached?.role ?? null,
+    uid: values.uid ?? cached?.uid ?? auth.currentUser?.uid ?? null,
+    coadminUid: values.coadminUid ?? null,
+    isCoadminView: values.isCoadminView ?? true,
+    isPlayerView: values.isPlayerView ?? false,
+    hasAppSessionId: headerFlags.hasAppSessionId,
+    hasPlayerSessionId: headerFlags.hasPlayerSessionId,
+    usesAuthorizationHeader: headerFlags.usesAuthorizationHeader,
+    usesPlayerSessionHeader: headerFlags.usesPlayerSessionHeader,
+    url: values.url,
+  });
+}
+
+/** Coadmin/admin bonus management: app session only (no player session). */
+export async function getCoadminBonusApiHeaders(contentType = false) {
+  return getStaffAppSessionApiHeaders(contentType);
 }
 
 async function getBonusEventsListHeaders() {
@@ -758,14 +820,20 @@ async function fetchBonusEventsFromApi(
   options?: { skipTimeWindowFilter?: boolean }
 ) {
   try {
-    const response = await fetch(
-      `/api/bonus-events/list?coadminUid=${encodeURIComponent(coadminUid)}`,
-      {
-        method: 'GET',
-        headers: await getBonusEventsListHeaders(),
-        cache: 'no-store',
-      }
-    );
+    const url = `/api/bonus-events/list?coadminUid=${encodeURIComponent(coadminUid)}`;
+    const headers = await getBonusEventsListHeaders();
+    logBonusEventsUiRequest({
+      action: 'list_bonus_events',
+      page: 'coadmin_bonus_events',
+      coadminUid,
+      url,
+      headers,
+    });
+    const response = await fetch(url, {
+      method: 'GET',
+      headers,
+      cache: 'no-store',
+    });
     const payload = (await response.json().catch(() => ({}))) as {
       events?: Array<Record<string, unknown>>;
       error?: string;
@@ -775,6 +843,9 @@ async function fetchBonusEventsFromApi(
       logBonusEventsUiGuard({
         page: 'coadmin_bonus_events_list',
         reason,
+        message: payload.error || reason,
+        blocked: true,
+        coadminUid,
         isCoadminView: true,
         isPlayerView: false,
       });
@@ -791,6 +862,9 @@ async function fetchBonusEventsFromApi(
       logBonusEventsUiGuard({
         page: 'coadmin_bonus_events_list',
         reason: 'player_session_required_blocked_on_coadmin_view',
+        message,
+        blocked: true,
+        coadminUid,
         isCoadminView: true,
         isPlayerView: false,
       });
@@ -854,6 +928,9 @@ export function listenBonusEventsByCoadmin(
           logBonusEventsUiGuard({
             page: 'coadmin_bonus_events_listener',
             reason: err.message,
+            message: err.message,
+            blocked: true,
+            coadminUid,
             isCoadminView: true,
             isPlayerView: false,
           });

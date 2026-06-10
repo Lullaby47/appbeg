@@ -8,10 +8,9 @@ import {
   logAuthoritySqlWrite,
 } from '@/lib/server/authoritySqlWrite';
 import {
-  bonusEventsRequestHeaderFlags,
-  logBonusEventsBlocked,
   logBonusEventsEnsureAuth,
   logBonusEventsEnsureSql,
+  resolveCoadminBonusAuthFailure,
 } from '@/lib/server/bonusEventsAudit';
 import { ensureBonusCapacityInSql } from '@/lib/sql/authorityBonus';
 
@@ -352,16 +351,7 @@ export async function POST(request: Request) {
     const authStartedAt = Date.now();
     const auth = await requireApiUser(request, ['coadmin']);
     if ('response' in auth) {
-      const headerFlags = bonusEventsRequestHeaderFlags(request);
-      logBonusEventsBlocked({
-        route: ROUTE,
-        reason: 'auth_failed',
-        requiredAuth: 'coadmin',
-        receivedAuth: auth.timing?.auth_path || null,
-        hasAppSessionId: headerFlags.has_app_session_header,
-        hasPlayerSessionId: headerFlags.has_player_session_header,
-      });
-      return auth.response;
+      return resolveCoadminBonusAuthFailure(request, ROUTE, auth);
     }
     const callerUid = auth.user.uid;
 
