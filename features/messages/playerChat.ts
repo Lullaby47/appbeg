@@ -26,7 +26,10 @@ import { computeRewardCoinsAfterFee } from '@/lib/rewardCoinTransferFee';
 import { auth, db } from '@/lib/firebase/client';
 import { uploadImageToCloudinary } from '@/lib/cloudinary/uploadImage';
 import { chatMessageTtl } from '@/lib/firestore/ttl';
-import { getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { getLocalAppSessionId } from '@/features/auth/appSession';
+import { getLocalPlayerSessionId, getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { getCachedSessionUser } from '@/features/auth/sessionUser';
+import { fetchChatApi } from '@/lib/client/chatLogoutDiagnostics';
 
 const DIRECT_CONVERSATIONS = 'playerConversations';
 const GROUP_CONVERSATIONS = 'playerGroupConversations';
@@ -596,14 +599,26 @@ export async function rewardCoinsToPlayer(targetUid: string, amountCoins: number
     throw new Error(`Maximum reward per transfer is ${MAX_REWARD_COINS_PER_TRANSFER} coins.`);
   }
 
-  const response = await fetch('/api/player/reward-coins', {
-    method: 'POST',
-    headers: await getPlayerApiHeaders(),
-    body: JSON.stringify({
-      targetUid: cleanTargetUid,
-      amountCoins: cleanAmount,
-    }),
-  });
+  const headers = await getPlayerApiHeaders(false, { route: '/api/player/reward-coins' });
+  const cached = getCachedSessionUser();
+  const response = await fetchChatApi(
+    '/api/player/reward-coins',
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        targetUid: cleanTargetUid,
+        amountCoins: cleanAmount,
+      }),
+    },
+    {
+      role: cached?.role ?? 'player',
+      uid: cached?.uid ?? self.uid,
+      hasAppSessionId: Boolean(getLocalAppSessionId()),
+      hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+      headersSent: Object.keys(headers),
+    }
+  );
 
   const data = (await response.json()) as {
     error?: string;
@@ -613,6 +628,9 @@ export async function rewardCoinsToPlayer(targetUid: string, amountCoins: number
     recipientCoins?: number;
   };
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error(data.error || 'Reward coins unauthorized.');
+    }
     throw new Error(data.error || 'Failed to reward coins.');
   }
 

@@ -19,6 +19,14 @@ import {
   isPlayerRouteNavigationActive,
   isRealAppUnloadEvent,
 } from '@/lib/client/playerSessionNavigationGuard';
+import {
+  isPlayerChatRoute,
+  logChatLogoutTrigger,
+} from '@/lib/client/chatLogoutDiagnostics';
+import {
+  resetConsecutiveInvalidSessionStatus,
+  shouldLogoutAfterInvalidPlayerSessionStatus,
+} from '@/lib/client/playerSessionInvalidGuard';
 import { logClientFirestoreSkipped, isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { auth, db } from '@/lib/firebase/client';
 
@@ -428,6 +436,12 @@ export function clearPlayerBrowserState() {
   if (typeof window === 'undefined') {
     return;
   }
+  logChatLogoutTrigger({
+    file: 'features/auth/playerSession.ts',
+    function: 'clearPlayerBrowserState',
+    reason: 'clearing_local_session',
+    trigger: 'clearPlayerBrowserState',
+  });
   console.info('[SESSION_GUARD] clearing local session');
   const deviceId = window.localStorage.getItem(PLAYER_DEVICE_ID_KEY);
   window.localStorage.clear();
@@ -534,11 +548,18 @@ export function startPlayerSessionStatusPolling(
           sessionId: pollSessionId,
           activeSessionId: status.activeSessionId || null,
         });
+        if (!shouldLogoutAfterInvalidPlayerSessionStatus(status.reason)) {
+          scheduleNext(intervalMs);
+          return;
+        }
         stop();
         options.onReplaced?.();
         await forcePlayerSessionLogout({
           redirect: options.redirect,
           markSessionInactive: true,
+          trigger: 'player_session_poll',
+          sourceFile: 'features/auth/playerSession.ts',
+          sourceFunction: 'startPlayerSessionStatusPolling',
         });
         return;
       }
@@ -548,11 +569,18 @@ export function startPlayerSessionStatusPolling(
           status: 'session_inactive',
           sessionId: pollSessionId,
         });
+        if (!shouldLogoutAfterInvalidPlayerSessionStatus(status.reason)) {
+          scheduleNext(intervalMs);
+          return;
+        }
         stop();
         options.onInactive?.();
         await forcePlayerSessionLogout({
           redirect: options.redirect,
           markSessionInactive: true,
+          trigger: 'player_session_poll',
+          sourceFile: 'features/auth/playerSession.ts',
+          sourceFunction: 'startPlayerSessionStatusPolling',
         });
         return;
       }
@@ -584,16 +612,30 @@ export function startPlayerSessionStatusPolling(
 export async function forcePlayerSessionLogout(options?: {
   redirect?: (url: string) => void;
   markSessionInactive?: boolean;
+  trigger?: string;
+  sourceFile?: string;
+  sourceFunction?: string;
+  reason?: string;
 }) {
   stopPlayerSessionStatusPolling();
 
   if (forcedPlayerLogout) {
     return;
   }
+
+  logChatLogoutTrigger({
+    file: options?.sourceFile || 'features/auth/playerSession.ts',
+    function: options?.sourceFunction || 'forcePlayerSessionLogout',
+    reason: options?.reason || 'force_player_session_logout',
+    trigger: options?.trigger || 'forcePlayerSessionLogout',
+  });
+
   forcedPlayerLogout = true;
 
   if (options?.markSessionInactive !== false) {
-    await endLocalPlayerSession('replaced_by_new_login');
+    await endLocalPlayerSession('replaced_by_new_login', {
+      trigger: options?.trigger || 'forcePlayerSessionLogout',
+    });
   }
   clearPlayerBrowserState();
 
@@ -754,6 +796,7 @@ async function resolveActivePlayerSession(
   const apiResult = await verifyActivePlayerSessionViaApi(localSessionId);
   if (apiResult) {
     if (apiResult.ok) {
+      resetConsecutiveInvalidSessionStatus('api_verify_ok');
       writePlayerSessionVerifyCache(localSessionId, apiResult);
     } else {
       invalidatePlayerSessionVerifyCache('api_verify_failed');
@@ -767,6 +810,7 @@ async function resolveActivePlayerSession(
       localSessionId
     );
     if (firestoreResult.ok) {
+      resetConsecutiveInvalidSessionStatus('firestore_verify_ok');
       writePlayerSessionVerifyCache(localSessionId, firestoreResult);
     } else {
       invalidatePlayerSessionVerifyCache('firestore_verify_failed');
@@ -830,11 +874,20 @@ export async function assertActivePlayerSession() {
       });
     }
 
-    await forcePlayerSessionLogout({
-      markSessionInactive:
-        result.reason === 'session_replaced' || result.reason === 'session_inactive',
-    });
-    throw new Error(PLAYER_REPLACED_LOGIN_MESSAGE);
+    if (
+      shouldLogoutAfterInvalidPlayerSessionStatus(result.reason)
+    ) {
+      await forcePlayerSessionLogout({
+        markSessionInactive:
+          result.reason === 'session_replaced' || result.reason === 'session_inactive',
+        trigger: 'assertActivePlayerSession',
+        sourceFile: 'features/auth/playerSession.ts',
+        sourceFunction: 'assertActivePlayerSession',
+        reason: result.reason,
+      });
+      throw new Error(PLAYER_REPLACED_LOGIN_MESSAGE);
+    }
+    throw new Error('Player session required.');
   }
 
   console.info('[SESSION_GUARD] allowed player session check', {
@@ -896,10 +949,15 @@ export async function getPlayerApiHeaders(
       assertPlayerSessionRequestCurrent(generationAtStart, localSessionId);
       if (
         !result.ok &&
-        (result.reason === 'session_replaced' || result.reason === 'session_inactive')
+        (result.reason === 'session_replaced' || result.reason === 'session_inactive') &&
+        shouldLogoutAfterInvalidPlayerSessionStatus(result.reason)
       ) {
         await forcePlayerSessionLogout({
           markSessionInactive: true,
+          trigger: 'getPlayerApiHeaders',
+          sourceFile: 'features/auth/playerSession.ts',
+          sourceFunction: 'getPlayerApiHeaders',
+          reason: result.reason,
         });
         throw new Error(PLAYER_REPLACED_LOGIN_MESSAGE);
       }
@@ -1219,10 +1277,25 @@ export async function endLocalPlayerSession(
     return;
   }
 
-  logValues.willSendEnd = context?.willSendEnd !== false;
+  const blockedOnChatNavigation =
+    isPlayerChatRoute(logValues.currentPath) &&
+    reason === 'browser_closed' &&
+    (logValues.isRouteNavigation || context?.willSendEnd === false);
+
+  logValues.willSendEnd =
+    context?.willSendEnd !== false && !blockedOnChatNavigation;
   logPlayerSessionEndClient(logValues);
 
-  if (context?.willSendEnd === false) {
+  if (context?.willSendEnd === false || blockedOnChatNavigation) {
+    if (blockedOnChatNavigation) {
+      logChatLogoutTrigger({
+        file: 'features/auth/playerSession.ts',
+        function: 'endLocalPlayerSession',
+        reason: 'blocked_player_session_end_on_chat_navigation',
+        trigger: context?.trigger || reason,
+        currentPath: logValues.currentPath,
+      });
+    }
     return;
   }
 

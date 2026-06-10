@@ -2,7 +2,7 @@
 
 import '@/styles/player-fire.css';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   collection,
@@ -12,7 +12,11 @@ import {
 } from 'firebase/firestore';
 
 
+import { getLocalAppSessionId } from '@/features/auth/appSession';
+import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
+import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { computeRewardCoinsAfterFee } from '@/lib/rewardCoinTransferFee';
+import { logChatPageMount } from '@/lib/client/chatLogoutDiagnostics';
 import { auth, db } from '@/lib/firebase/client';
 import { useIsPlayerSessionRole } from '@/features/player/useIsPlayerSessionRole';
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
@@ -54,6 +58,7 @@ function toTime(value: { toMillis?: () => number } | null | undefined) {
 
 export default function PlayerChatPage() {
   const isPlayerRole = useIsPlayerSessionRole();
+  const mountLoggedRef = useRef(false);
   const [allPlayers, setAllPlayers] = useState<PlayerPeer[]>([]);
   const [selectedPeer, setSelectedPeer] = useState<PlayerPeer | null>(null);
   const [messages, setMessages] = useState<PlayerChatMessage[]>([]);
@@ -78,6 +83,31 @@ export default function PlayerChatPage() {
   const [referralLoading, setReferralLoading] = useState(false);
   const [referralError, setReferralError] = useState('');
   const [referralNotice, setReferralNotice] = useState('');
+
+  useEffect(() => {
+    if (mountLoggedRef.current) {
+      return;
+    }
+    mountLoggedRef.current = true;
+
+    void (async () => {
+      const cached = getCachedSessionUser();
+      const sessionUser =
+        cached?.role === 'player'
+          ? cached
+          : await getSessionUserOnce().catch(() => null);
+      const appSessionId = getLocalAppSessionId();
+      const playerSessionId = getLocalPlayerSessionId();
+      logChatPageMount({
+        role: sessionUser?.role ?? cached?.role ?? null,
+        uid: sessionUser?.uid ?? cached?.uid ?? auth.currentUser?.uid ?? null,
+        hasAppSessionId: Boolean(appSessionId),
+        hasPlayerSessionId: Boolean(playerSessionId),
+        appSessionIdPrefix: appSessionId ? appSessionId.slice(0, 8) : null,
+        playerSessionIdPrefix: playerSessionId ? playerSessionId.slice(0, 8) : null,
+      });
+    })();
+  }, []);
 
   useEffect(() => {
     if (!isPlayerRole) {

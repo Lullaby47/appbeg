@@ -10,6 +10,10 @@ import {
   where,
 } from 'firebase/firestore';
 
+import { getLocalAppSessionId } from '@/features/auth/appSession';
+import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
+import { getCachedSessionUser } from '@/features/auth/sessionUser';
+import { fetchChatApi } from '@/lib/client/chatLogoutDiagnostics';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { checkPlayerPollRole } from '@/lib/client/playerPollGuard';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
@@ -38,18 +42,35 @@ function stableUidListKey(uids: string[]) {
   );
 }
 
-async function fetchPresenceBatch(uids: string[]) {
+async function fetchPresenceBatch(uids: string[], options?: { logAsChatApi?: boolean }) {
   if (!uids.length) {
     return {} as Record<string, number | null>;
   }
-  const response = await fetch(
-    `/api/presence/batch?uids=${encodeURIComponent(uids.join(','))}`,
-    {
-      method: 'GET',
-      headers: await getSqlApiReadHeaders(false),
-      cache: 'no-store',
-    }
-  );
+  const url = `/api/presence/batch?uids=${encodeURIComponent(uids.join(','))}`;
+  const headers = await getSqlApiReadHeaders(false);
+  const cached = getCachedSessionUser();
+  const requestContext = {
+    role: cached?.role ?? null,
+    uid: cached?.uid ?? null,
+    hasAppSessionId: Boolean(getLocalAppSessionId()),
+    hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+    headersSent: Object.keys(headers),
+  };
+  const response = options?.logAsChatApi
+    ? await fetchChatApi(
+        url,
+        {
+          method: 'GET',
+          headers,
+          cache: 'no-store',
+        },
+        requestContext
+      )
+    : await fetch(url, {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+      });
   const payload = (await response.json().catch(() => ({}))) as {
     presence?: Array<{ uid?: string; lastSeenAt?: string }>;
   };
@@ -124,7 +145,9 @@ export function usePresenceOnlineMap(
         try {
           for (let i = 0; i < uniqueSorted.length; i += CHUNK) {
             const chunk = uniqueSorted.slice(i, i + CHUNK);
-            const batch = await fetchPresenceBatch(chunk);
+            const batch = await fetchPresenceBatch(chunk, {
+              logAsChatApi: options?.requirePlayerRole === true,
+            });
             if (cancelled) {
               return;
             }

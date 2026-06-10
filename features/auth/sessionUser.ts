@@ -1,6 +1,10 @@
 'use client';
 
 import { isValidRole } from '@/lib/auth/roles';
+import {
+  isPlayerChatRoute,
+  logChatLogoutTrigger,
+} from '@/lib/client/chatLogoutDiagnostics';
 
 const APP_SESSION_ID_KEY = 'appbeg:appSessionId';
 const APP_SESSION_EXPIRES_AT_KEY = 'appbeg:appSessionExpiresAt';
@@ -28,6 +32,16 @@ function readLocalAppSessionId() {
 function clearLocalAppSessionStorage() {
   if (typeof window === 'undefined') {
     return;
+  }
+  if (isPlayerChatRoute() && cachedUser?.role === 'player') {
+    logChatLogoutTrigger({
+      file: 'features/auth/sessionUser.ts',
+      function: 'clearLocalAppSessionStorage',
+      reason: 'app_session_clear_on_player_chat',
+      trigger: 'clearLocalAppSessionStorage',
+      role: cachedUser.role,
+      uid: cachedUser.uid,
+    });
   }
   window.localStorage.removeItem(APP_SESSION_ID_KEY);
   window.localStorage.removeItem(APP_SESSION_EXPIRES_AT_KEY);
@@ -124,12 +138,28 @@ async function fetchSessionUserFromApi(): Promise<SessionUser | null> {
           typeof document !== 'undefined' ? document.visibilityState : null,
         reason: meReason,
       });
+      const protectChatAppSession =
+        isPlayerChatRoute() &&
+        (cachedUser?.role === 'player' || payload.role === 'player');
       if (
         payload.reason === 'invalid_or_expired' ||
         payload.reason === 'account_not_active' ||
         payload.reason === 'uid_mismatch'
       ) {
-        clearLocalAppSessionStorage();
+        if (protectChatAppSession && payload.reason === 'invalid_or_expired') {
+          console.info('[APP_SESSION_ME_CLIENT_STATE]', {
+            route: typeof window !== 'undefined' ? window.location.pathname || '' : '',
+            hasAppSessionId: Boolean(sessionId),
+            appSessionIdPrefix: sessionId ? sessionId.slice(0, 8) : null,
+            role: payload.role ?? cachedUser?.role ?? null,
+            visibilityState:
+              typeof document !== 'undefined' ? document.visibilityState : null,
+            reason: meReason,
+            deferredAppSessionClear: true,
+          });
+        } else {
+          clearLocalAppSessionStorage();
+        }
       }
       clearCachedSessionUser(payload.reason || 'fetch_invalid');
       return null;

@@ -3,6 +3,10 @@
 import { Timestamp } from 'firebase/firestore';
 
 import type { FirestoreChatMessage } from '@/features/messages/chatMessages';
+import { fetchChatApi } from '@/lib/client/chatLogoutDiagnostics';
+import { getLocalAppSessionId } from '@/features/auth/appSession';
+import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
+import { getCachedSessionUser } from '@/features/auth/sessionUser';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { checkPlayerPollRole } from '@/lib/client/playerPollGuard';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
@@ -30,29 +34,65 @@ function mapCachedMessage(row: Record<string, unknown>): FirestoreChatMessage {
   };
 }
 
+async function readChatApiContext() {
+  const cached = getCachedSessionUser();
+  const headers = await getSqlApiReadHeaders(false);
+  return {
+    role: cached?.role ?? null,
+    uid: cached?.uid ?? null,
+    hasAppSessionId: Boolean(getLocalAppSessionId()),
+    hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+    headersSent: Object.keys(headers),
+    headers,
+  };
+}
+
 export async function fetchSqlUnreadCounts() {
-  const response = await fetch('/api/chat/unread-counts', {
-    method: 'GET',
-    headers: await getSqlApiReadHeaders(false),
-    cache: 'no-store',
-  });
+  const context = await readChatApiContext();
+  const response = await fetchChatApi(
+    '/api/chat/unread-counts',
+    {
+      method: 'GET',
+      headers: context.headers,
+      cache: 'no-store',
+    },
+    {
+      role: context.role,
+      uid: context.uid,
+      hasAppSessionId: context.hasAppSessionId,
+      hasPlayerSessionId: context.hasPlayerSessionId,
+      headersSent: context.headersSent,
+    }
+  );
   const payload = (await response.json().catch(() => ({}))) as {
     unreadCounts?: Record<string, number>;
     error?: string;
   };
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error(payload.error || 'Chat unread counts unauthorized.');
+    }
     throw new Error(payload.error || 'Failed to load unread counts.');
   }
   return payload.unreadCounts || {};
 }
 
 export async function fetchSqlChatMessages(peerUid: string, limit = 50) {
-  const response = await fetch(
-    `/api/chat/messages?peerUid=${encodeURIComponent(peerUid)}&limit=${limit}`,
+  const context = await readChatApiContext();
+  const url = `/api/chat/messages?peerUid=${encodeURIComponent(peerUid)}&limit=${limit}`;
+  const response = await fetchChatApi(
+    url,
     {
       method: 'GET',
-      headers: await getSqlApiReadHeaders(false),
+      headers: context.headers,
       cache: 'no-store',
+    },
+    {
+      role: context.role,
+      uid: context.uid,
+      hasAppSessionId: context.hasAppSessionId,
+      hasPlayerSessionId: context.hasPlayerSessionId,
+      headersSent: context.headersSent,
     }
   );
   const payload = (await response.json().catch(() => ({}))) as {
@@ -60,6 +100,9 @@ export async function fetchSqlChatMessages(peerUid: string, limit = 50) {
     error?: string;
   };
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error(payload.error || 'Chat messages unauthorized.');
+    }
     throw new Error(payload.error || 'Failed to load chat messages.');
   }
   return (payload.messages || []).map(mapCachedMessage);
