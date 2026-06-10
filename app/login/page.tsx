@@ -30,6 +30,12 @@ import { attemptSqlLogin, isSqlLoginFirstEnabled } from '@/features/auth/sqlLogi
 import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { rememberPlayerLoginCredentials } from '@/features/auth/rememberedPlayerLogin';
+import {
+  failLoginUiProgress,
+  getLoginUiProgress,
+  setLoginUiProgressStep,
+  startLoginUiProgress,
+} from '@/lib/client/loginUiProgress';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -202,7 +208,22 @@ export default function LoginPage() {
     return null;
   }
 
+  function readLoginProgressContext(cleanUsername: string) {
+    const current = getLoginUiProgress();
+    return {
+      startedAt: current?.startedAt ?? Date.now(),
+      username: current?.username || cleanUsername,
+    };
+  }
+
   async function performFirebaseLogin(cleanUsername: string) {
+    const progress = readLoginProgressContext(cleanUsername);
+
+    setLoginUiProgressStep('verifying_password', {
+      ...progress,
+      reason: 'firebase_lookup_user',
+    });
+
     const userDoc = await findLoginUserDoc(cleanUsername);
     if (!userDoc) {
       throw new Error('User not found.');
@@ -219,6 +240,12 @@ export default function LoginPage() {
 
     const hiddenEmail = userData.email;
 
+    setLoginUiProgressStep('verifying_password', {
+      ...progress,
+      role: userRole,
+      reason: 'firebase_sign_in',
+    });
+
     const credential = await signInWithEmailAndPassword(auth, hiddenEmail, password);
 
     await migrateCredentialsAfterFirebaseLogin(password);
@@ -228,6 +255,12 @@ export default function LoginPage() {
     if (!isValidRole(role)) {
       throw new Error('Invalid role.');
     }
+
+    setLoginUiProgressStep('creating_secure_session', {
+      ...progress,
+      role,
+      reason: 'firebase_bootstrap',
+    });
 
     const bootstrapped = await bootstrapAppSessionAfterFirebaseLogin({
       roleHint: role,
@@ -254,11 +287,20 @@ export default function LoginPage() {
       to,
       reason: 'firebase_login_success',
     });
+    setLoginUiProgressStep('loading_dashboard', {
+      ...progress,
+      role,
+      reason: 'firebase_login_success',
+    });
     router.replace(to);
   }
 
   async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+
+    if (loginInProgressRef.current || loading) {
+      return;
+    }
 
     const cleanUsername = username.trim();
 
@@ -270,10 +312,19 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
     loginInProgressRef.current = true;
+    const startedAt = startLoginUiProgress(cleanUsername, 'login_form_submit');
     clearPlayerSessionBeforeLogin('login_form_submit');
+
+    let loginSucceeded = false;
 
     try {
       if (isSqlLoginFirstEnabled()) {
+        setLoginUiProgressStep('verifying_password', {
+          startedAt,
+          username: cleanUsername,
+          reason: 'sql_login_start',
+        });
+
         const sqlLoginResult = await attemptSqlLogin({
           username: cleanUsername,
           password,
@@ -285,13 +336,28 @@ export default function LoginPage() {
               uid: sqlLoginResult.uid,
               role: sqlLoginResult.role,
             });
+            setLoginUiProgressStep('creating_secure_session', {
+              startedAt,
+              username: cleanUsername,
+              role: sqlLoginResult.role,
+              reason: 'sql_bootstrap_expected',
+            });
             await performFirebaseLogin(cleanUsername);
+            loginSucceeded = true;
             return;
           }
 
           if (!isValidRole(sqlLoginResult.role)) {
             throw new Error('Invalid role.');
           }
+
+          setLoginUiProgressStep('creating_secure_session', {
+            startedAt,
+            username: cleanUsername,
+            role: sqlLoginResult.role,
+            reason: 'sql_sessions_stored',
+          });
+
           if (sqlLoginResult.role === 'player') {
             rememberPlayerLoginCredentials(cleanUsername, password);
           }
@@ -303,7 +369,14 @@ export default function LoginPage() {
             to,
             reason: 'sql_login_success',
           });
+          setLoginUiProgressStep('loading_dashboard', {
+            startedAt,
+            username: cleanUsername,
+            role: sqlLoginResult.role,
+            reason: 'sql_login_success',
+          });
           router.replace(to);
+          loginSucceeded = true;
           return;
         }
 
@@ -317,10 +390,18 @@ export default function LoginPage() {
       }
 
       await performFirebaseLogin(cleanUsername);
+      loginSucceeded = true;
     } catch (err) {
       console.error(err);
+      failLoginUiProgress('login_failed');
       setError('Invalid username or password.');
-    } finally {
+      loginInProgressRef.current = false;
+      setLoading(false);
+      return;
+    }
+
+    if (!loginSucceeded) {
+      failLoginUiProgress('login_incomplete');
       loginInProgressRef.current = false;
       setLoading(false);
     }
@@ -398,9 +479,10 @@ export default function LoginPage() {
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
                       required
+                      disabled={loading}
                       placeholder="Username"
                       autoComplete="username"
-                      className="h-14 w-full rounded-xl border border-slate-200 bg-white/80 px-4 text-base text-slate-800 outline-none transition-all duration-200 placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-200/80"
+                      className="h-14 w-full rounded-xl border border-slate-200 bg-white/80 px-4 text-base text-slate-800 outline-none transition-all duration-200 placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-200/80 disabled:cursor-not-allowed disabled:opacity-60"
                     />
                   </div>
 
@@ -413,9 +495,10 @@ export default function LoginPage() {
                       type="password"
                       required
                       minLength={6}
+                      disabled={loading}
                       placeholder="Password"
                       autoComplete="current-password"
-                      className="h-14 w-full rounded-xl border border-slate-200 bg-white/80 px-4 text-base text-slate-800 outline-none transition-all duration-200 placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-200/80"
+                      className="h-14 w-full rounded-xl border border-slate-200 bg-white/80 px-4 text-base text-slate-800 outline-none transition-all duration-200 placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-200/80 disabled:cursor-not-allowed disabled:opacity-60"
                     />
                   </div>
 
@@ -426,8 +509,10 @@ export default function LoginPage() {
                   )}
 
                   <button
+                    type="submit"
                     disabled={loading}
-                    className="group relative h-12 w-full overflow-hidden rounded-xl bg-gradient-to-r from-blue-600 to-blue-500 font-semibold text-white shadow-md shadow-blue-500/25 transition-all duration-200 hover:shadow-lg hover:shadow-blue-500/30 active:scale-[0.98] disabled:opacity-60 disabled:hover:scale-100"
+                    aria-busy={loading}
+                    className="group relative h-12 w-full overflow-hidden rounded-xl bg-gradient-to-r from-blue-600 to-blue-500 font-semibold text-white shadow-md shadow-blue-500/25 transition-all duration-200 hover:shadow-lg hover:shadow-blue-500/30 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:scale-100"
                   >
                     <span className="relative z-10">
                       {loading ? 'Signing in...' : 'Login'}

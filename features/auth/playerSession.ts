@@ -204,7 +204,113 @@ export function storePlayerLoginSessionPair(values: {
   });
 }
 
-export function isPlayerSessionReady() {
+function readPlayerSessionReadyContext() {
+  const cached = getCachedSessionUser();
+  return {
+    route: currentClientPath(),
+    uid: cached?.uid ?? auth.currentUser?.uid ?? null,
+    role: cached?.role ?? null,
+    appSessionId: getLocalAppSessionId() || null,
+    playerSessionId: getLocalPlayerSessionId() || null,
+  };
+}
+
+export function logPlayerSessionReadyState(values: {
+  source: string;
+  sessionReady: boolean;
+  loading?: boolean;
+}) {
+  const context = readPlayerSessionReadyContext();
+  console.info('[PLAYER_SESSION_READY_STATE]', {
+    route: context.route,
+    uid: context.uid,
+    role: context.role,
+    appSessionId: context.appSessionId,
+    playerSessionId: context.playerSessionId,
+    sessionReady: values.sessionReady,
+    loading: values.loading ?? isPlayerSessionLoading(),
+    source: values.source,
+    inMemoryReady: playerSessionReady,
+    expectedPlayerSessionId: expectedPlayerSessionId || null,
+  });
+}
+
+function logPlayerSessionWait(values: {
+  startedAt: number;
+  timeoutMs: number;
+  result: 'ready' | 'timeout' | 'started';
+  appSessionExists: boolean;
+  playerSessionExists: boolean;
+}) {
+  const durationMs = Date.now() - values.startedAt;
+  console.info('[PLAYER_SESSION_WAIT]', {
+    startedAt: values.startedAt,
+    appSessionExists: values.appSessionExists,
+    playerSessionExists: values.playerSessionExists,
+    timeoutMs: values.timeoutMs,
+    result: values.result,
+    durationMs,
+  });
+}
+
+/**
+ * Reconcile in-memory ready flags from localStorage when both session IDs exist.
+ * After a full page load, localStorage can have valid IDs while module state is still false.
+ */
+export function syncPlayerSessionReadyFromStorage(source: string) {
+  const appSessionId = getLocalAppSessionId();
+  const localSessionId = getLocalPlayerSessionId();
+  if (!appSessionId || !localSessionId || forcedPlayerLogout) {
+    return false;
+  }
+
+  if (expectedPlayerSessionId && expectedPlayerSessionId !== localSessionId) {
+    logPlayerSessionReadyState({
+      source: `${source}:storage_mismatch`,
+      sessionReady: false,
+      loading: true,
+    });
+    return false;
+  }
+
+  const changed =
+    !playerSessionReady ||
+    !expectedPlayerSessionId ||
+    expectedPlayerSessionId !== localSessionId;
+
+  expectedPlayerSessionId = localSessionId;
+  playerSessionReady = true;
+  if (changed) {
+    notifyPlayerSessionReadyWaiters();
+    logPlayerSessionClientState({
+      phase: 'storage_hydrate',
+      oldPlayerSessionId: null,
+      newPlayerSessionId: localSessionId,
+      appSessionId,
+      reason: source,
+    });
+    logPlayerSessionReadyState({
+      source,
+      sessionReady: true,
+      loading: false,
+    });
+  }
+  return true;
+}
+
+export function isPlayerSessionLoading() {
+  const appSessionId = getLocalAppSessionId();
+  const localSessionId = getLocalPlayerSessionId();
+  if (!appSessionId || !localSessionId || forcedPlayerLogout) {
+    return false;
+  }
+  if (expectedPlayerSessionId && expectedPlayerSessionId !== localSessionId) {
+    return false;
+  }
+  return !isPlayerSessionReadyInternal();
+}
+
+function isPlayerSessionReadyInternal() {
   const localSessionId = getLocalPlayerSessionId();
   return (
     playerSessionReady &&
@@ -215,14 +321,51 @@ export function isPlayerSessionReady() {
   );
 }
 
+export function isPlayerSessionReady() {
+  syncPlayerSessionReadyFromStorage('isPlayerSessionReady');
+  return isPlayerSessionReadyInternal();
+}
+
 export async function waitForPlayerSessionReady(timeoutMs = 15_000) {
-  if (isPlayerSessionReady()) {
+  const startedAt = Date.now();
+  const appSessionExists = Boolean(getLocalAppSessionId());
+  const playerSessionExists = Boolean(getLocalPlayerSessionId());
+
+  logPlayerSessionWait({
+    startedAt,
+    timeoutMs,
+    result: 'started',
+    appSessionExists,
+    playerSessionExists,
+  });
+
+  syncPlayerSessionReadyFromStorage('waitForPlayerSessionReady:enter');
+  if (isPlayerSessionReadyInternal()) {
+    logPlayerSessionWait({
+      startedAt,
+      timeoutMs,
+      result: 'ready',
+      appSessionExists,
+      playerSessionExists,
+    });
     return;
   }
 
-  const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
-    if (isPlayerSessionReady()) {
+    syncPlayerSessionReadyFromStorage('waitForPlayerSessionReady:poll');
+    if (isPlayerSessionReadyInternal()) {
+      logPlayerSessionWait({
+        startedAt,
+        timeoutMs,
+        result: 'ready',
+        appSessionExists,
+        playerSessionExists,
+      });
+      logPlayerSessionReadyState({
+        source: 'waitForPlayerSessionReady',
+        sessionReady: true,
+        loading: false,
+      });
       return;
     }
     await new Promise<void>((resolve) => {
@@ -231,7 +374,20 @@ export async function waitForPlayerSessionReady(timeoutMs = 15_000) {
     });
   }
 
-  if (!isPlayerSessionReady()) {
+  syncPlayerSessionReadyFromStorage('waitForPlayerSessionReady:final');
+  if (!isPlayerSessionReadyInternal()) {
+    logPlayerSessionWait({
+      startedAt,
+      timeoutMs,
+      result: 'timeout',
+      appSessionExists: Boolean(getLocalAppSessionId()),
+      playerSessionExists: Boolean(getLocalPlayerSessionId()),
+    });
+    logPlayerSessionReadyState({
+      source: 'waitForPlayerSessionReady:timeout',
+      sessionReady: false,
+      loading: Boolean(getLocalAppSessionId()) && Boolean(getLocalPlayerSessionId()),
+    });
     throw new Error('Player session not ready.');
   }
 }

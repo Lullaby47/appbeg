@@ -23,7 +23,9 @@ import { getLocalAppSessionId } from '@/features/auth/appSession';
 import {
   getLocalPlayerSessionId,
   getPlayerApiHeaders,
+  isPlayerSessionLoading,
   isPlayerSessionReady,
+  logPlayerSessionReadyState,
   waitForPlayerSessionReady,
 } from '@/features/auth/playerSession';
 import { checkPlayerPollRole } from '@/lib/client/playerPollGuard';
@@ -908,7 +910,14 @@ async function fetchBonusEventsFromApi(
   if (isPlayerView) {
     const appSessionId = getLocalAppSessionId();
     const playerSessionId = getLocalPlayerSessionId();
-    if (!appSessionId || !playerSessionId || !isPlayerSessionReady()) {
+    const sessionReady = isPlayerSessionReady();
+    const sessionLoading = isPlayerSessionLoading();
+    logPlayerSessionReadyState({
+      source: 'fetchBonusEventsFromApi',
+      sessionReady,
+      loading: sessionLoading,
+    });
+    if (!appSessionId || !playerSessionId || !sessionReady) {
       logPlayerBonusRequestHeaders({
         action: 'list_bonus_events',
         url,
@@ -921,7 +930,10 @@ async function fetchBonusEventsFromApi(
         playerSessionIdPrefix: sessionIdPrefix(playerSessionId),
         headersSent: [],
         blocked: true,
-        reason: 'player_session_not_ready',
+        reason:
+          appSessionId && playerSessionId
+            ? 'player_session_loading'
+            : 'player_session_not_ready',
       });
       options?.onSessionLoading?.(true);
       return null;
@@ -1279,7 +1291,14 @@ export async function initiateBonusEventPlay(values: {
   const url = '/api/bonus-events/initiate-play';
   const requestContext = await resolvePlayerBonusRequestContext();
 
-  if (!isPlayerSessionReady()) {
+  const sessionReady = isPlayerSessionReady();
+  const sessionLoading = isPlayerSessionLoading();
+  logPlayerSessionReadyState({
+    source: 'initiateBonusEventPlay',
+    sessionReady,
+    loading: sessionLoading,
+  });
+  if (!sessionReady) {
     logPlayerBonusRequestHeaders({
       action: 'initiate_bonus_play',
       url,
@@ -1292,12 +1311,16 @@ export async function initiateBonusEventPlay(values: {
       playerSessionIdPrefix: sessionIdPrefix(getLocalPlayerSessionId()),
       headersSent: [],
       blocked: true,
-      reason: 'player_session_not_ready',
+      reason: sessionLoading ? 'player_session_loading' : 'player_session_not_ready',
     });
     throw new Error('Loading session...');
   }
 
-  await waitForPlayerSessionReady();
+  try {
+    await waitForPlayerSessionReady();
+  } catch {
+    throw new Error('Loading session...');
+  }
   const headers = await getPlayerApiHeaders(true, { route: url });
   logPlayerBonusRequestHeaders({
     action: 'initiate_bonus_play',

@@ -143,9 +143,10 @@ export default function ProtectedRoute({
         console.info('[PROTECTED_ROUTE_AUTH]', {
           source: 'player_app_session',
           ok: false,
-          reason: 'player_session_not_ready',
+          reason: 'player_session_wait_timeout',
+          hasAppSessionId: Boolean(getLocalAppSessionId()),
+          hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
         });
-        return 'fallback';
       }
 
       if (!isPlayerSessionReady()) {

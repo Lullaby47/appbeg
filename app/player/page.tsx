@@ -2001,7 +2001,11 @@ export default function PlayerPage() {
       (error) => {
         console.error('[player bonusEvents] error', error);
         const message = error.message || 'Failed to load bonus events.';
-        if (/X-Player-Session-Id|Player session required|Loading session/i.test(message)) {
+        if (
+          /X-Player-Session-Id|Player session required|Loading session|player session not ready/i.test(
+            message
+          )
+        ) {
           setBonusEventsSessionLoading(true);
           return;
         }
@@ -2988,6 +2992,14 @@ export default function PlayerPage() {
       const errorMessage =
         error instanceof Error ? error.message : 'Failed to activate bonus event.';
       const lower = errorMessage.toLowerCase();
+      if (
+        lower.includes('loading session') ||
+        lower.includes('player session not ready') ||
+        lower.includes('player session required')
+      ) {
+        setBonusEventsSessionLoading(true);
+        return;
+      }
       if (
         lower.includes('low coin') ||
         lower.includes('already') ||
