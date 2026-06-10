@@ -3266,6 +3266,15 @@ export default function CarerPage() {
       automationStatus: task.automationStatus || null,
       sectionStatus: task.status,
     });
+    console.info('[CARER_RETURN_TO_PENDING_CLICK]', {
+      taskId: task.id,
+      statusBefore: task.status,
+      assignedCarerUid: task.assignedCarerUid ?? null,
+      carerUid: carerIdentity.uid,
+      coadminUid,
+      hasAppSessionId: Boolean(getLocalAppSessionId()),
+      sqlMode: isClientSqlReadMode(),
+    });
 
     setTaskLoadingId(task.id);
     setErrorMessage('');
@@ -3273,6 +3282,24 @@ export default function CarerPage() {
 
     try {
       await returnTaskToPendingAndCancelAutomation(task.id);
+      setTasks((previous) =>
+        sortByNewest(
+          previous.map((current) =>
+            current.id === task.id
+              ? {
+                  ...current,
+                  status: 'pending',
+                  assignedCarerUid: null,
+                  assignedCarerUsername: null,
+                  claimedByUid: null,
+                  claimedStatus: null,
+                  automationStatus: null,
+                  automationJobId: null,
+                }
+              : current
+          )
+        )
+      );
       setAutomationStatusByTaskId((previous) => {
         const next = { ...previous };
         delete next[task.id];

@@ -499,12 +499,17 @@ async function writeTaskOutboxInTxn(
     status: string;
     type?: string;
     gameName?: string;
+    playerUid?: string;
     requestId?: string | null;
+    assignedCarerUid?: string | null;
+    claimedByUid?: string | null;
+    automationStatus?: string | null;
+    automationJobId?: string | null;
     updatedAt: string;
     eventType?: string;
   }
 ) {
-  const payload = {
+  const payload: Record<string, unknown> = {
     entityId: input.taskId,
     taskId: input.taskId,
     coadminUid: input.coadminUid,
@@ -515,6 +520,22 @@ async function writeTaskOutboxInTxn(
     updatedAt: input.updatedAt,
     source: 'authority',
   };
+  const playerUid = cleanText(input.playerUid);
+  if (playerUid) {
+    payload.playerUid = playerUid;
+  }
+  if (input.assignedCarerUid !== undefined) {
+    payload.assignedCarerUid = input.assignedCarerUid;
+  }
+  if (input.claimedByUid !== undefined) {
+    payload.claimedByUid = input.claimedByUid;
+  }
+  if (input.automationStatus !== undefined) {
+    payload.automationStatus = input.automationStatus;
+  }
+  if (input.automationJobId !== undefined) {
+    payload.automationJobId = input.automationJobId;
+  }
   const eventType = cleanText(input.eventType) || 'task.upserted';
   await insertLiveOutboxEventWithClient(client, {
     channel: coadminTaskLiveChannel(input.coadminUid),
@@ -1036,6 +1057,13 @@ export async function returnTaskToPendingInSql(input: {
     if (!RESETTABLE_TASK_STATUSES.has(oldTaskStatus)) {
       throw new Error('Task is not resettable.');
     }
+    const beforeAssignedCarerUid = cleanText(task.assigned_carer_uid) || null;
+    if (input.actorRole === 'carer') {
+      const assignedUid = beforeAssignedCarerUid || cleanText(task.claimed_by_uid);
+      if (assignedUid && assignedUid !== input.actorUid) {
+        throw new Error('Forbidden: only the assigned carer can return this task.');
+      }
+    }
 
     const nowIso = new Date().toISOString();
     const legacyJobId = automationJobDocId(input.actorUid, taskId);
@@ -1155,15 +1183,34 @@ export async function returnTaskToPendingInSql(input: {
       __setAutomationUpdatedAt: true,
     }, 'authority_task_return');
 
+    const returnCarerUid = beforeAssignedCarerUid || input.actorUid;
     await writeTaskOutboxInTxn(client, {
       coadminUid: taskScope,
+      carerUid: returnCarerUid,
       taskId,
       status: 'pending',
       type: cleanText(task.type),
       gameName: cleanText(task.game_name),
+      playerUid: cleanText(task.player_uid),
       requestId,
       updatedAt: nowIso,
       eventType: 'task.returned_to_pending',
+      assignedCarerUid: null,
+      claimedByUid: null,
+      automationStatus: null,
+      automationJobId: null,
+    });
+
+    console.info('[CARER_RETURN_TO_PENDING_SQL_WRITE]', {
+      taskId,
+      beforeStatus: oldTaskStatus,
+      afterStatus: 'pending',
+      beforeAssignedCarerUid,
+      afterAssignedCarerUid: null,
+      automationJobCancelled: cancelledJobs > 0,
+      outboxInserted: true,
+      ok: true,
+      reason: null,
     });
 
     const outcome = { oldTaskStatus, cancelledJobs, linkedRequestReset: Boolean(requestId) };

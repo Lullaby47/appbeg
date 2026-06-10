@@ -1401,12 +1401,25 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
   }
 
   const taskRef = doc(db, 'carerTasks', taskId);
+  const headers = await getAuthHeaders('return_to_pending');
   const response = await fetch('/api/carer/tasks/return-to-pending', {
     method: 'POST',
-    headers: await getAuthHeaders('return_to_pending'),
+    headers,
     body: JSON.stringify({ taskId }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  console.info('[CARER_RETURN_TO_PENDING_REQUEST]', {
+    route: '/api/carer/tasks/return-to-pending',
+    method: 'POST',
+    taskId,
+    status: response.status,
+    responseBody: payload,
+    authSource: isClientSqlReadMode() ? 'app_session_sql' : 'firebase_token',
+    hasAppSessionId: Boolean(
+      (headers as Record<string, string>)['X-App-Session-Id'] ||
+        (headers as Record<string, string>)['x-app-session-id']
+    ),
+  });
   if (!response.ok) {
     throw new Error(readApiError('Failed to move task back to pending.', payload));
   }

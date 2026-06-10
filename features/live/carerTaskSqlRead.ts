@@ -135,6 +135,7 @@ function mergePayloadIntoCarerTask(
 ): CarerTask {
   const id = cleanText(payload.entityId || payload.taskId || existing?.id);
   const status = cleanText(payload.status);
+  const clearingToPending = status.toLowerCase() === 'pending';
   return {
     id,
     coadminUid: cleanText(payload.coadminUid) || existing?.coadminUid || fallbackCoadminUid,
@@ -153,18 +154,24 @@ function mergePayloadIntoCarerTask(
     assignedCarerUid:
       payload.assignedCarerUid !== undefined
         ? cleanText(payload.assignedCarerUid) || null
-        : existing?.assignedCarerUid ?? null,
-    assignedCarerUsername: existing?.assignedCarerUsername ?? null,
+        : clearingToPending
+          ? null
+          : existing?.assignedCarerUid ?? null,
+    assignedCarerUsername: clearingToPending ? null : existing?.assignedCarerUsername ?? null,
     claimedByUid:
       payload.claimedByUid !== undefined
         ? cleanText(payload.claimedByUid) || null
-        : existing?.claimedByUid ?? null,
+        : clearingToPending
+          ? null
+          : existing?.claimedByUid ?? null,
     automationStatus:
       payload.automationStatus !== undefined
         ? ((cleanText(payload.automationStatus) || null) as CarerTask['automationStatus'])
-        : existing?.automationStatus ?? null,
+        : clearingToPending
+          ? null
+          : existing?.automationStatus ?? null,
     createdAt: existing?.createdAt ?? isoToTimestamp(cleanText(payload.updatedAt)),
-    completedAt: existing?.completedAt ?? null,
+    completedAt: clearingToPending ? null : existing?.completedAt ?? null,
   };
 }
 
@@ -280,7 +287,7 @@ export function attachCarerTaskSqlReadListener(
         continue;
       }
 
-      if (parsed.event === 'task.upserted') {
+      if (parsed.event === 'task.upserted' || parsed.event === 'task.returned_to_pending') {
         const merged = mergePayloadIntoCarerTask(
           parsed.payload,
           tasksById.get(parsed.entityId),
