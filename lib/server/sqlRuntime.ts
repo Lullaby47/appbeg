@@ -140,6 +140,9 @@ export function logSqlRuntimeMode(context = 'runtime') {
     context,
     ...getSqlRuntimeStatus(),
   });
+  void import('@/lib/server/authoritySchemaAudit')
+    .then(({ logSqlRuntimeDbAuditWithDatabase }) => logSqlRuntimeDbAuditWithDatabase(context))
+    .catch(() => undefined);
 }
 
 export function assertSqlRuntimeReady(context = 'runtime') {

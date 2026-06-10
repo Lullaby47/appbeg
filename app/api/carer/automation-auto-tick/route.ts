@@ -22,6 +22,7 @@ import {
 } from '@/lib/firebase/apiAuth';
 import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
 import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
+import { logAuthorityAutoTickDb } from '@/lib/server/authoritySchemaAudit';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import {
   acquireAutomationAutoTickLeaseSql,
@@ -1275,6 +1276,13 @@ export async function POST(request: Request) {
       playerUid,
       beforeFields: taskDebugFields(task),
     });
+
+    if (isAuthoritySqlWriteEnabled()) {
+      await logAuthorityAutoTickDb({
+        route: '/api/carer/automation-auto-tick',
+        taskId,
+      });
+    }
 
     const claimStartedAt = Date.now();
     try {
