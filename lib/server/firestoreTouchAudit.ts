@@ -1,5 +1,7 @@
 import 'server-only';
 
+import { logFirebaseUsageAudit } from '@/lib/server/firebaseUsageAudit';
+
 /**
  * Firestore touch classification for migration tracking.
  *
@@ -39,5 +41,19 @@ export function logFirestoreTouch(input: {
     sql_read_mode: input.sql_read_mode ?? null,
     skipped: input.skipped ?? false,
     ...(input.details || {}),
+  });
+
+  logFirebaseUsageAudit({
+    file: 'lib/server/firestoreTouchAudit.ts',
+    route: input.route,
+    feature: input.collection || input.firestore_touch_type,
+    operation: input.operation,
+    runtime: 'server',
+    allowed: input.skipped === true ? false : undefined,
+    reason: input.skipped ? 'firestore_touch_skipped_sql_mode' : input.firestore_touch_type,
+    details: {
+      document_id: input.document_id ?? null,
+      ...(input.details || {}),
+    },
   });
 }

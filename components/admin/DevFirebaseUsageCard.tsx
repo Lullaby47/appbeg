@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { auth, db } from '@/lib/firebase/client';
 import {
   devUsageTodayDocId,
@@ -26,6 +28,13 @@ export default function DevFirebaseUsageCard() {
       snapUnsub?.();
       snapUnsub = null;
       if (!user) {
+        setData(null);
+        return;
+      }
+      if (
+        isClientSqlReadMode() ||
+        assertClientFirestoreDisabled('dev_firebase_usage_card', 'onSnapshot')
+      ) {
         setData(null);
         return;
       }

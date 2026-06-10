@@ -19,6 +19,7 @@ import {
   getLocalAppSessionId,
 } from '@/features/auth/appSession';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { resolvePlayerRoleForFetch } from '@/lib/client/playerFetchGuard';
 import { auth, db } from '@/lib/firebase/client';
 import { belongsToCoadmin, getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
@@ -183,6 +184,10 @@ async function getGameLoginsByField(
   field: 'createdBy' | 'coadminUid',
   value: string
 ) {
+  if (assertClientFirestoreDisabled('game_logins_get_by_field', 'getDocs', { field, value })) {
+    return [];
+  }
+
   const gameQuery = query(collection(db, 'gameLogins'), where(field, '==', value));
   const snapshot = await getDocs(gameQuery);
 

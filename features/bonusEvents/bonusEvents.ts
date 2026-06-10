@@ -22,15 +22,17 @@ import type { PlayerGameRequest } from '@/features/games/playerGameRequests';
 import { getLocalAppSessionId } from '@/features/auth/appSession';
 import {
   getLocalPlayerSessionId,
+  ensurePlayerSessionGateReady,
   getPlayerApiHeaders,
   isPlayerSessionLoading,
   isPlayerSessionReady,
   logPlayerSessionReadyState,
-  waitForPlayerSessionReady,
+  PLAYER_SESSION_LOADING_MESSAGE,
 } from '@/features/auth/playerSession';
 import { checkPlayerPollRole } from '@/lib/client/playerPollGuard';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { getStaffAppSessionApiHeaders, staffApiHeaderFlags } from '@/lib/client/staffApiHeaders';
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 const BONUS_EVENTS_DEBUG =
@@ -825,7 +827,7 @@ function sessionIdPrefix(value: string | null | undefined) {
 }
 
 function isPlayerBonusSessionError(message: string) {
-  return /X-Player-Session-Id header is required|Player session required|player session not ready|Not authenticated/i.test(
+  return /X-Player-Session-Id header is required|Player session required|player session not ready|Loading secure session|Loading session|Not authenticated/i.test(
     message
   );
 }
@@ -910,38 +912,42 @@ async function fetchBonusEventsFromApi(
   if (isPlayerView) {
     const appSessionId = getLocalAppSessionId();
     const playerSessionId = getLocalPlayerSessionId();
-    const sessionReady = isPlayerSessionReady();
-    const sessionLoading = isPlayerSessionLoading();
     logPlayerSessionReadyState({
-      source: 'fetchBonusEventsFromApi',
-      sessionReady,
-      loading: sessionLoading,
+      source: 'fetchBonusEventsFromApi:before_gate',
+      sessionReady: isPlayerSessionReady(),
+      loading: isPlayerSessionLoading(),
     });
-    if (!appSessionId || !playerSessionId || !sessionReady) {
+
+    const gate = await ensurePlayerSessionGateReady({
+      source: 'fetchBonusEventsFromApi',
+    });
+
+    logPlayerSessionReadyState({
+      source: 'fetchBonusEventsFromApi:after_gate',
+      sessionReady: gate.state === 'ready',
+      loading: gate.state === 'loading',
+    });
+
+    if (gate.state === 'loading') {
       logPlayerBonusRequestHeaders({
         action: 'list_bonus_events',
         url,
         method: 'GET',
         role: requestContext.role,
         uid: requestContext.uid,
-        hasAppSessionId: Boolean(appSessionId),
-        hasPlayerSessionId: Boolean(playerSessionId),
-        appSessionIdPrefix: sessionIdPrefix(appSessionId),
-        playerSessionIdPrefix: sessionIdPrefix(playerSessionId),
+        hasAppSessionId: Boolean(appSessionId || getLocalAppSessionId()),
+        hasPlayerSessionId: Boolean(playerSessionId || getLocalPlayerSessionId()),
+        appSessionIdPrefix: sessionIdPrefix(appSessionId || getLocalAppSessionId()),
+        playerSessionIdPrefix: sessionIdPrefix(playerSessionId || getLocalPlayerSessionId()),
         headersSent: [],
         blocked: true,
-        reason:
-          appSessionId && playerSessionId
-            ? 'player_session_loading'
-            : 'player_session_not_ready',
+        reason: gate.reason || 'player_session_loading',
       });
       options?.onSessionLoading?.(true);
       return null;
     }
 
-    try {
-      await waitForPlayerSessionReady();
-    } catch {
+    if (gate.state === 'failed') {
       logPlayerBonusRequestHeaders({
         action: 'list_bonus_events',
         url,
@@ -954,7 +960,7 @@ async function fetchBonusEventsFromApi(
         playerSessionIdPrefix: sessionIdPrefix(getLocalPlayerSessionId()),
         headersSent: [],
         blocked: true,
-        reason: 'wait_for_player_session_timeout',
+        reason: gate.reason,
       });
       options?.onSessionLoading?.(true);
       return null;
@@ -1208,6 +1214,11 @@ export function listenBonusEventsByCoadmin(
     };
   }
 
+  if (assertClientFirestoreDisabled('bonus_events_by_coadmin', 'onSnapshot', { coadminUid })) {
+    onChange([]);
+    return () => {};
+  }
+
   let recordedFirstSnapshot = false;
   if (BONUS_EVENTS_DEBUG) {
     console.info('[bonusEvents] listener:start', { coadminUid, limit: MAX_ACTIVE_BONUS_EVENTS });
@@ -1291,14 +1302,15 @@ export async function initiateBonusEventPlay(values: {
   const url = '/api/bonus-events/initiate-play';
   const requestContext = await resolvePlayerBonusRequestContext();
 
-  const sessionReady = isPlayerSessionReady();
-  const sessionLoading = isPlayerSessionLoading();
+  const gate = await ensurePlayerSessionGateReady({
+    source: 'initiateBonusEventPlay',
+  });
   logPlayerSessionReadyState({
     source: 'initiateBonusEventPlay',
-    sessionReady,
-    loading: sessionLoading,
+    sessionReady: gate.state === 'ready',
+    loading: gate.state === 'loading',
   });
-  if (!sessionReady) {
+  if (gate.state !== 'ready') {
     logPlayerBonusRequestHeaders({
       action: 'initiate_bonus_play',
       url,
@@ -1311,15 +1323,9 @@ export async function initiateBonusEventPlay(values: {
       playerSessionIdPrefix: sessionIdPrefix(getLocalPlayerSessionId()),
       headersSent: [],
       blocked: true,
-      reason: sessionLoading ? 'player_session_loading' : 'player_session_not_ready',
+      reason: gate.reason || 'player_session_loading',
     });
-    throw new Error('Loading session...');
-  }
-
-  try {
-    await waitForPlayerSessionReady();
-  } catch {
-    throw new Error('Loading session...');
+    throw new Error(PLAYER_SESSION_LOADING_MESSAGE);
   }
   const headers = await getPlayerApiHeaders(true, { route: url });
   logPlayerBonusRequestHeaders({

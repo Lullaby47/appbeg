@@ -30,6 +30,12 @@ import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getLocalPlayerSessionId, getPlayerApiHeaders } from '@/features/auth/playerSession';
 import { getCachedSessionUser } from '@/features/auth/sessionUser';
 import { fetchChatApi } from '@/lib/client/chatLogoutDiagnostics';
+import {
+  assertClientFirestoreDisabled,
+  noopFirestoreUnsubscribe,
+  shouldSkipClientFirestore,
+} from '@/lib/client/clientFirestoreGuard';
+import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 
 const DIRECT_CONVERSATIONS = 'playerConversations';
 const GROUP_CONVERSATIONS = 'playerGroupConversations';
@@ -93,11 +99,17 @@ function toMillis(value: unknown) {
 }
 
 function assertAuthUid() {
-  const uid = auth.currentUser?.uid;
+  const cached = getCachedSessionUser();
+  const uid = cached?.uid || auth.currentUser?.uid;
   if (!uid) {
     throw new Error('Not authenticated.');
   }
   return uid;
+}
+
+function resolveListenerSelfUid() {
+  const cached = getCachedSessionUser();
+  return cached?.uid || auth.currentUser?.uid || '';
 }
 
 function cleanText(text: string) {
@@ -247,7 +259,19 @@ export function listenDirectMessages(
   otherUid: string,
   onNext: (messages: PlayerChatMessage[]) => void
 ) {
-  const selfUid = auth.currentUser?.uid;
+  if (
+    shouldSkipClientFirestore({
+      file: 'features/messages/playerChat.ts',
+      feature: 'player_chat_direct_messages',
+      collection: 'playerConversations/messages',
+      operation: 'onSnapshot',
+    })
+  ) {
+    onNext([]);
+    return noopFirestoreUnsubscribe();
+  }
+
+  const selfUid = resolveListenerSelfUid();
   if (!selfUid) {
     onNext([]);
     return () => {};
@@ -265,6 +289,9 @@ export function listenDirectMessages(
 }
 
 export async function markDirectConversationSeen(otherUid: string) {
+  if (isClientSqlReadMode()) {
+    return;
+  }
   const selfUid = assertAuthUid();
   const conversationId = getDirectConversationId(selfUid, otherUid);
 
@@ -302,7 +329,19 @@ export function listenDirectTyping(
   otherUid: string,
   onNext: (typing: boolean) => void
 ) {
-  const selfUid = auth.currentUser?.uid;
+  if (
+    shouldSkipClientFirestore({
+      file: 'features/messages/playerChat.ts',
+      feature: 'player_chat_direct_typing',
+      collection: 'playerConversations',
+      operation: 'onSnapshot',
+    })
+  ) {
+    onNext(false);
+    return noopFirestoreUnsubscribe();
+  }
+
+  const selfUid = resolveListenerSelfUid();
   if (!selfUid) {
     onNext(false);
     return () => {};
@@ -336,7 +375,19 @@ export async function setDirectTyping(otherUid: string, typing: boolean) {
 }
 
 export function listenDirectChatList(onNext: (rows: PlayerChatListItem[]) => void) {
-  const selfUid = auth.currentUser?.uid;
+  if (
+    shouldSkipClientFirestore({
+      file: 'features/messages/playerChat.ts',
+      feature: 'player_chat_direct_list',
+      collection: 'playerConversations',
+      operation: 'onSnapshot',
+    })
+  ) {
+    onNext([]);
+    return noopFirestoreUnsubscribe();
+  }
+
+  const selfUid = resolveListenerSelfUid();
   if (!selfUid) {
     onNext([]);
     return () => {};
@@ -453,6 +504,18 @@ export async function sendGlobalGroupTextMessage(text: string) {
 }
 
 export function listenGlobalGroupMessages(onNext: (messages: PlayerChatMessage[]) => void) {
+  if (
+    shouldSkipClientFirestore({
+      file: 'features/messages/playerChat.ts',
+      feature: 'player_chat_global_group_messages',
+      collection: 'playerGroupConversations/messages',
+      operation: 'onSnapshot',
+    })
+  ) {
+    onNext([]);
+    return noopFirestoreUnsubscribe();
+  }
+
   const q = query(
     collection(db, GROUP_CONVERSATIONS, GLOBAL_GROUP_ID, 'messages'),
     orderBy('createdAt', 'asc'),
@@ -532,7 +595,19 @@ export async function acceptFriendRequest(otherUid: string) {
 }
 
 export function listenFriendLinks(onNext: (links: FriendLink[]) => void) {
-  const selfUid = auth.currentUser?.uid;
+  if (
+    shouldSkipClientFirestore({
+      file: 'features/messages/playerChat.ts',
+      feature: 'player_chat_friend_links',
+      collection: 'playerFriendLinks',
+      operation: 'onSnapshot',
+    })
+  ) {
+    onNext([]);
+    return noopFirestoreUnsubscribe();
+  }
+
+  const selfUid = resolveListenerSelfUid();
   if (!selfUid) {
     onNext([]);
     return () => {};
@@ -555,6 +630,9 @@ export function listenFriendLinks(onNext: (links: FriendLink[]) => void) {
 }
 
 export async function ensureReferralFriendLinks() {
+  if (isClientSqlReadMode()) {
+    return;
+  }
   const selfUid = assertAuthUid();
   const referredSnap = await getDocs(
     query(collection(db, 'users'), where('role', '==', 'player'), where('referredByUid', '==', selfUid))

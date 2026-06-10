@@ -27,7 +27,12 @@ import {
   resetConsecutiveInvalidSessionStatus,
   shouldLogoutAfterInvalidPlayerSessionStatus,
 } from '@/lib/client/playerSessionInvalidGuard';
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { logClientFirestoreSkipped, isClientSqlReadMode } from '@/lib/client/sqlReadMode';
+import {
+  isSqlPlayerRuntimeMode,
+  logSqlPlayerRuntimeAuth,
+} from '@/lib/client/sqlPlayerRuntimeAuth';
 import { auth, db } from '@/lib/firebase/client';
 
 export const PLAYER_DEVICE_ID_KEY = 'appbeg:playerDeviceId';
@@ -35,6 +40,7 @@ export const PLAYER_SESSION_ID_KEY = 'appbeg:playerSessionId';
 export const PLAYER_REPLACED_LOGIN_MESSAGE =
   'You were logged out because this account logged in on another device.';
 export const PLAYER_SESSION_REPLACED_LOGIN_PATH = '/login?reason=session_replaced';
+export const PLAYER_SESSION_LOADING_MESSAGE = 'Loading secure session...';
 
 /** SQL app + player session pair from bootstrap (independent of NEXT_PUBLIC_SQL_PLAYER_LOGIN). */
 export function isSqlPlayerAppSessionMode() {
@@ -113,6 +119,8 @@ let expectedPlayerSessionId = '';
 let playerSessionReady = false;
 let playerSessionGeneration = 0;
 let playerSessionReadyWaiters: Array<() => void> = [];
+let gateValidatedSessionId: string | null = null;
+let ensurePlayerSessionGateInflight: Promise<PlayerSessionGateResult> | null = null;
 
 export class PlayerSessionStaleError extends Error {
   constructor(reason: string) {
@@ -147,6 +155,7 @@ export function clearPlayerSessionBeforeLogin(reason = 'login_start') {
   const oldPlayerSessionId = getLocalPlayerSessionId() || null;
   playerSessionReady = false;
   expectedPlayerSessionId = '';
+  gateValidatedSessionId = null;
   playerSessionGeneration += 1;
   invalidatePlayerSessionVerifyCache(reason);
   if (typeof window !== 'undefined' && oldPlayerSessionId) {
@@ -178,10 +187,12 @@ export function storePlayerLoginSessionPair(values: {
   forcedPlayerLogout = false;
   invalidatePlayerSessionVerifyCache('login_session_pair_stored');
 
+  const keysWritten = [APP_SESSION_ID_KEY, PLAYER_SESSION_ID_KEY];
   if (typeof window !== 'undefined') {
     window.localStorage.setItem(APP_SESSION_ID_KEY, nextAppSessionId);
     if (values.appSessionExpiresAt) {
       window.localStorage.setItem(APP_SESSION_EXPIRES_AT_KEY, values.appSessionExpiresAt);
+      keysWritten.push(APP_SESSION_EXPIRES_AT_KEY);
     }
     window.localStorage.setItem(PLAYER_SESSION_ID_KEY, nextPlayerSessionId);
   }
@@ -193,7 +204,16 @@ export function storePlayerLoginSessionPair(values: {
   expectedPlayerSessionId = nextPlayerSessionId;
   playerSessionGeneration += 1;
   playerSessionReady = true;
+  gateValidatedSessionId = nextPlayerSessionId;
   notifyPlayerSessionReadyWaiters();
+
+  logPlayerSessionStorageWrite({
+    source: values.phase,
+    appSessionIdPrefix: sessionIdPrefix(nextAppSessionId),
+    playerSessionIdPrefix: sessionIdPrefix(nextPlayerSessionId),
+    keysWritten,
+    role: 'player',
+  });
 
   logPlayerSessionClientState({
     phase: values.phase,
@@ -212,6 +232,14 @@ function readPlayerSessionReadyContext() {
     role: cached?.role ?? null,
     appSessionId: getLocalAppSessionId() || null,
     playerSessionId: getLocalPlayerSessionId() || null,
+  };
+}
+
+export function readPlayerSessionGateDebugState() {
+  return {
+    inMemoryReady: playerSessionReady,
+    expectedPlayerSessionId: expectedPlayerSessionId || null,
+    gateValidatedSessionId,
   };
 }
 
@@ -253,6 +281,30 @@ function logPlayerSessionWait(values: {
   });
 }
 
+export function logPlayerSessionStorageWrite(values: {
+  source: string;
+  appSessionIdPrefix: string | null;
+  playerSessionIdPrefix: string | null;
+  keysWritten: string[];
+  role: string | null;
+}) {
+  console.info('[PLAYER_SESSION_STORAGE_WRITE]', values);
+}
+
+function logPlayerSessionStorageHydrate(values: {
+  hasAppSessionId: boolean;
+  hasPlayerSessionId: boolean;
+  appSessionIdPrefix: string | null;
+  playerSessionIdPrefix: string | null;
+  beforeReady: boolean;
+  beforeExpected: string | null;
+  afterReady: boolean;
+  afterExpected: string | null;
+  reason: string;
+}) {
+  console.info('[PLAYER_SESSION_STORAGE_HYDRATE]', values);
+}
+
 /**
  * Reconcile in-memory ready flags from localStorage when both session IDs exist.
  * After a full page load, localStorage can have valid IDs while module state is still false.
@@ -273,6 +325,8 @@ export function syncPlayerSessionReadyFromStorage(source: string) {
     return false;
   }
 
+  const beforeReady = playerSessionReady;
+  const beforeExpected = expectedPlayerSessionId || null;
   const changed =
     !playerSessionReady ||
     !expectedPlayerSessionId ||
@@ -280,6 +334,17 @@ export function syncPlayerSessionReadyFromStorage(source: string) {
 
   expectedPlayerSessionId = localSessionId;
   playerSessionReady = true;
+  logPlayerSessionStorageHydrate({
+    hasAppSessionId: true,
+    hasPlayerSessionId: true,
+    appSessionIdPrefix: sessionIdPrefix(appSessionId),
+    playerSessionIdPrefix: sessionIdPrefix(localSessionId),
+    beforeReady,
+    beforeExpected,
+    afterReady: playerSessionReady,
+    afterExpected: expectedPlayerSessionId,
+    reason: source,
+  });
   if (changed) {
     notifyPlayerSessionReadyWaiters();
     logPlayerSessionClientState({
@@ -299,15 +364,39 @@ export function syncPlayerSessionReadyFromStorage(source: string) {
 }
 
 export function isPlayerSessionLoading() {
-  const appSessionId = getLocalAppSessionId();
-  const localSessionId = getLocalPlayerSessionId();
-  if (!appSessionId || !localSessionId || forcedPlayerLogout) {
+  if (forcedPlayerLogout) {
     return false;
   }
+
+  const cached = getCachedSessionUser();
+  const appSessionId = getLocalAppSessionId();
+  const localSessionId = getLocalPlayerSessionId();
+
+  if (cached?.role === 'player' && appSessionId && !localSessionId) {
+    return true;
+  }
+
+  if (!appSessionId || !localSessionId) {
+    return false;
+  }
+
   if (expectedPlayerSessionId && expectedPlayerSessionId !== localSessionId) {
     return false;
   }
-  return !isPlayerSessionReadyInternal();
+
+  syncPlayerSessionReadyFromStorage('isPlayerSessionLoading');
+
+  if (gateValidatedSessionId === localSessionId) {
+    return false;
+  }
+
+  const cachedVerify = readPlayerSessionVerifyCache(localSessionId);
+  if (cachedVerify?.ok) {
+    gateValidatedSessionId = localSessionId;
+    return false;
+  }
+
+  return true;
 }
 
 function isPlayerSessionReadyInternal() {
@@ -323,7 +412,252 @@ function isPlayerSessionReadyInternal() {
 
 export function isPlayerSessionReady() {
   syncPlayerSessionReadyFromStorage('isPlayerSessionReady');
-  return isPlayerSessionReadyInternal();
+  if (!isPlayerSessionReadyInternal()) {
+    return false;
+  }
+  const localSessionId = getLocalPlayerSessionId();
+  if (!localSessionId) {
+    return false;
+  }
+  if (gateValidatedSessionId === localSessionId) {
+    return true;
+  }
+  const cachedVerify = readPlayerSessionVerifyCache(localSessionId);
+  return Boolean(cachedVerify?.ok);
+}
+
+export type PlayerSessionGateResult =
+  | { state: 'ready' }
+  | { state: 'loading'; reason: string }
+  | { state: 'failed'; reason: string };
+
+async function recoverPlayerSessionIdFromSessionMe(source: string) {
+  const hadLocalPlayerSessionId = Boolean(getLocalPlayerSessionId());
+  const appSessionId = getLocalAppSessionId();
+
+  const logRecovery = (values: {
+    sessionMePlayerSessionIdPrefix?: string | null;
+    wroteStorage: boolean;
+    statusCheckStarted: boolean;
+    statusOk: boolean;
+    reason: string;
+  }) => {
+    console.info('[PLAYER_SESSION_RECOVER_FROM_SESSION_ME]', {
+      hadLocalPlayerSessionId,
+      sessionMePlayerSessionIdPrefix: values.sessionMePlayerSessionIdPrefix ?? null,
+      wroteStorage: values.wroteStorage,
+      statusCheckStarted: values.statusCheckStarted,
+      statusOk: values.statusOk,
+      reason: values.reason,
+    });
+  };
+
+  if (!appSessionId) {
+    logRecovery({
+      wroteStorage: false,
+      statusCheckStarted: false,
+      statusOk: false,
+      reason: 'missing_app_session',
+    });
+    return null;
+  }
+
+  if (hadLocalPlayerSessionId) {
+    return getLocalPlayerSessionId();
+  }
+
+  try {
+    const sessionUser = await getSessionUserOnce();
+    if (!sessionUser || sessionUser.role !== 'player') {
+      logRecovery({
+        wroteStorage: false,
+        statusCheckStarted: false,
+        statusOk: false,
+        reason: 'session_me_not_player',
+      });
+      return null;
+    }
+
+    const recoveredId = String(
+      sessionUser.playerSessionId || sessionUser.canonicalSessionId || ''
+    ).trim();
+    if (!recoveredId) {
+      logRecovery({
+        wroteStorage: false,
+        statusCheckStarted: false,
+        statusOk: false,
+        reason: 'session_me_missing_player_session_id',
+      });
+      return null;
+    }
+
+    storeLocalPlayerSessionId(recoveredId);
+    syncPlayerSessionReadyFromStorage(`${source}:session_me_recovery`);
+    logPlayerSessionStorageWrite({
+      source: `${source}:session_me_recovery`,
+      appSessionIdPrefix: sessionIdPrefix(appSessionId),
+      playerSessionIdPrefix: sessionIdPrefix(recoveredId),
+      keysWritten: [PLAYER_SESSION_ID_KEY],
+      role: 'player',
+    });
+
+    let statusOk = false;
+    const status = await verifyActivePlayerSession({ forceRefresh: true });
+    statusOk = status.ok;
+    if (statusOk) {
+      gateValidatedSessionId = recoveredId;
+      seedPlayerSessionVerifyCache(status);
+    }
+
+    logRecovery({
+      sessionMePlayerSessionIdPrefix: sessionIdPrefix(recoveredId),
+      wroteStorage: true,
+      statusCheckStarted: true,
+      statusOk,
+      reason: statusOk
+        ? 'recovered_and_verified'
+        : !status.ok
+          ? status.reason
+          : 'status_pending',
+    });
+    return recoveredId;
+  } catch {
+    logRecovery({
+      wroteStorage: false,
+      statusCheckStarted: false,
+      statusOk: false,
+      reason: 'session_me_fetch_failed',
+    });
+    return null;
+  }
+}
+
+export async function ensurePlayerSessionGateReady(options?: {
+  source?: string;
+  forceRefresh?: boolean;
+}): Promise<PlayerSessionGateResult> {
+  const source = String(options?.source || 'unknown').trim() || 'unknown';
+
+  if (ensurePlayerSessionGateInflight && !options?.forceRefresh) {
+    return ensurePlayerSessionGateInflight;
+  }
+
+  const run = async (): Promise<PlayerSessionGateResult> => {
+    const cached = getCachedSessionUser();
+    const sessionUser =
+      cached?.role === 'player' ? cached : await getSessionUserOnce().catch(() => null);
+
+    if (!sessionUser || sessionUser.role !== 'player') {
+      return { state: 'failed', reason: 'not_player_role' };
+    }
+
+    const appSessionId = getLocalAppSessionId();
+    if (!appSessionId) {
+      return { state: 'failed', reason: 'missing_app_session' };
+    }
+
+    if (!getLocalPlayerSessionId()) {
+      await recoverPlayerSessionIdFromSessionMe(source);
+    }
+
+    const playerSessionId = getLocalPlayerSessionId();
+    if (!playerSessionId) {
+      return { state: 'loading', reason: 'missing_player_session_id' };
+    }
+
+    syncPlayerSessionReadyFromStorage(`${source}:gate`);
+
+    if (
+      !options?.forceRefresh &&
+      gateValidatedSessionId === playerSessionId &&
+      isPlayerSessionReadyInternal()
+    ) {
+      const cachedVerify = readPlayerSessionVerifyCache(playerSessionId);
+      if (cachedVerify?.ok) {
+        return { state: 'ready' };
+      }
+    }
+
+    const status = await verifyActivePlayerSession({
+      forceRefresh: options?.forceRefresh,
+    });
+
+    if (status.ok) {
+      gateValidatedSessionId = playerSessionId;
+      resetConsecutiveInvalidSessionStatus('gate_status_ok');
+      seedPlayerSessionVerifyCache(status);
+      syncPlayerSessionReadyFromStorage(`${source}:gate_verified`);
+      logSqlPlayerRuntimeAuth({
+        source: 'session_me',
+        uid: sessionUser.uid,
+        role: sessionUser.role,
+        coadminUid: sessionUser.coadminUid ?? null,
+        appSessionIdPrefix: sessionIdPrefix(appSessionId),
+        playerSessionIdPrefix: sessionIdPrefix(playerSessionId),
+        sessionSource: sessionUser.sessionSource ?? 'sql',
+        firebaseIgnored: isSqlPlayerRuntimeMode(),
+        ready: true,
+        blocked: false,
+        reason: 'gate_ready',
+      });
+      return { state: 'ready' };
+    }
+
+    if (status.reason === 'session_replaced' || status.reason === 'session_inactive') {
+      if (shouldLogoutAfterInvalidPlayerSessionStatus(status.reason)) {
+        logSqlPlayerRuntimeAuth({
+          source: 'session_me',
+          uid: sessionUser.uid,
+          role: sessionUser.role,
+          coadminUid: sessionUser.coadminUid ?? null,
+          appSessionIdPrefix: sessionIdPrefix(appSessionId),
+          playerSessionIdPrefix: sessionIdPrefix(playerSessionId),
+          sessionSource: sessionUser.sessionSource ?? 'sql',
+          firebaseIgnored: isSqlPlayerRuntimeMode(),
+          ready: false,
+          blocked: true,
+          reason: status.reason,
+        });
+        return { state: 'failed', reason: status.reason };
+      }
+      logSqlPlayerRuntimeAuth({
+        source: 'session_me',
+        uid: sessionUser.uid,
+        role: sessionUser.role,
+        coadminUid: sessionUser.coadminUid ?? null,
+        appSessionIdPrefix: sessionIdPrefix(appSessionId),
+        playerSessionIdPrefix: sessionIdPrefix(playerSessionId),
+        sessionSource: sessionUser.sessionSource ?? 'sql',
+        firebaseIgnored: isSqlPlayerRuntimeMode(),
+        ready: false,
+        blocked: false,
+        reason: status.reason,
+      });
+      return { state: 'loading', reason: status.reason };
+    }
+
+    logSqlPlayerRuntimeAuth({
+      source: 'session_me',
+      uid: sessionUser.uid,
+      role: sessionUser.role,
+      coadminUid: sessionUser.coadminUid ?? null,
+      appSessionIdPrefix: sessionIdPrefix(appSessionId),
+      playerSessionIdPrefix: sessionIdPrefix(playerSessionId),
+      sessionSource: sessionUser.sessionSource ?? 'sql',
+      firebaseIgnored: isSqlPlayerRuntimeMode(),
+      ready: false,
+      blocked: false,
+      reason: status.reason || 'status_pending',
+    });
+    return { state: 'loading', reason: status.reason || 'status_pending' };
+  };
+
+  ensurePlayerSessionGateInflight = run();
+  try {
+    return await ensurePlayerSessionGateInflight;
+  } finally {
+    ensurePlayerSessionGateInflight = null;
+  }
 }
 
 export async function waitForPlayerSessionReady(timeoutMs = 15_000) {
@@ -339,57 +673,44 @@ export async function waitForPlayerSessionReady(timeoutMs = 15_000) {
     playerSessionExists,
   });
 
-  syncPlayerSessionReadyFromStorage('waitForPlayerSessionReady:enter');
-  if (isPlayerSessionReadyInternal()) {
-    logPlayerSessionWait({
-      startedAt,
-      timeoutMs,
-      result: 'ready',
-      appSessionExists,
-      playerSessionExists,
-    });
-    return;
-  }
-
   while (Date.now() - startedAt < timeoutMs) {
-    syncPlayerSessionReadyFromStorage('waitForPlayerSessionReady:poll');
-    if (isPlayerSessionReadyInternal()) {
+    const gate = await ensurePlayerSessionGateReady({
+      source: 'waitForPlayerSessionReady',
+    });
+    if (gate.state === 'ready') {
       logPlayerSessionWait({
         startedAt,
         timeoutMs,
         result: 'ready',
-        appSessionExists,
-        playerSessionExists,
-      });
-      logPlayerSessionReadyState({
-        source: 'waitForPlayerSessionReady',
-        sessionReady: true,
-        loading: false,
+        appSessionExists: Boolean(getLocalAppSessionId()),
+        playerSessionExists: Boolean(getLocalPlayerSessionId()),
       });
       return;
     }
+    if (gate.state === 'failed') {
+      logPlayerSessionWait({
+        startedAt,
+        timeoutMs,
+        result: 'timeout',
+        appSessionExists: Boolean(getLocalAppSessionId()),
+        playerSessionExists: Boolean(getLocalPlayerSessionId()),
+      });
+      throw new Error(PLAYER_SESSION_LOADING_MESSAGE);
+    }
     await new Promise<void>((resolve) => {
       playerSessionReadyWaiters.push(resolve);
-      window.setTimeout(resolve, 50);
+      window.setTimeout(resolve, 100);
     });
   }
 
-  syncPlayerSessionReadyFromStorage('waitForPlayerSessionReady:final');
-  if (!isPlayerSessionReadyInternal()) {
-    logPlayerSessionWait({
-      startedAt,
-      timeoutMs,
-      result: 'timeout',
-      appSessionExists: Boolean(getLocalAppSessionId()),
-      playerSessionExists: Boolean(getLocalPlayerSessionId()),
-    });
-    logPlayerSessionReadyState({
-      source: 'waitForPlayerSessionReady:timeout',
-      sessionReady: false,
-      loading: Boolean(getLocalAppSessionId()) && Boolean(getLocalPlayerSessionId()),
-    });
-    throw new Error('Player session not ready.');
-  }
+  logPlayerSessionWait({
+    startedAt,
+    timeoutMs,
+    result: 'timeout',
+    appSessionExists: Boolean(getLocalAppSessionId()),
+    playerSessionExists: Boolean(getLocalPlayerSessionId()),
+  });
+  throw new Error(PLAYER_SESSION_LOADING_MESSAGE);
 }
 
 export function getPlayerSessionGeneration() {
@@ -397,7 +718,7 @@ export function getPlayerSessionGeneration() {
 }
 
 export function assertPlayerSessionRequestCurrent(capturedGeneration: number, capturedSessionId: string) {
-  if (!isSqlPlayerAppSessionMode()) {
+  if (!isSqlPlayerAppSessionMode() && !isSqlPlayerRuntimeMode()) {
     return;
   }
   if (capturedGeneration !== playerSessionGeneration) {
@@ -496,11 +817,20 @@ export function discardStalePlayerSessionIdForRole(role: string, reason = 'non_p
 export function storeLocalPlayerSessionId(sessionId: string) {
   forcedPlayerLogout = false;
   invalidatePlayerSessionVerifyCache('session_id_replaced');
-  if (typeof window === 'undefined') {
+  const cleanSessionId = String(sessionId || '').trim();
+  if (!cleanSessionId || typeof window === 'undefined') {
     return;
   }
-  window.localStorage.setItem(PLAYER_SESSION_ID_KEY, sessionId);
-  markPlayerSessionReady(sessionId, 'session_id_stored', 'local_player_session_updated');
+  window.localStorage.setItem(PLAYER_SESSION_ID_KEY, cleanSessionId);
+  markPlayerSessionReady(cleanSessionId, 'session_id_stored', 'local_player_session_updated');
+  gateValidatedSessionId = cleanSessionId;
+  logPlayerSessionStorageWrite({
+    source: 'storeLocalPlayerSessionId',
+    appSessionIdPrefix: sessionIdPrefix(getLocalAppSessionId()),
+    playerSessionIdPrefix: sessionIdPrefix(cleanSessionId),
+    keysWritten: [PLAYER_SESSION_ID_KEY],
+    role: getCachedSessionUser()?.role ?? 'player',
+  });
 }
 
 export function invalidatePlayerSessionVerifyCache(reason = 'manual') {
@@ -562,7 +892,7 @@ export function resolvePlayerApiHeaderMode(headers: Record<string, string>) {
 
 async function buildPlayerSessionRequestHeaders(contentType = false) {
   const sessionId = getLocalPlayerSessionId();
-  const sqlPlayerMode = isSqlPlayerAppSessionMode() && Boolean(sessionId);
+  const sqlPlayerMode = isSqlPlayerRuntimeMode() || isSqlPlayerAppSessionMode();
   const headers: Record<string, string> = {
     ...getAppSessionRequestHeaders(),
   };
@@ -587,6 +917,7 @@ export function clearPlayerBrowserState() {
   invalidatePlayerSessionVerifyCache('browser_state_cleared');
   playerSessionReady = false;
   expectedPlayerSessionId = '';
+  gateValidatedSessionId = null;
   playerSessionGeneration += 1;
   notifyPlayerSessionReadyWaiters();
   if (typeof window === 'undefined') {
@@ -830,9 +1161,20 @@ export type PlayerSessionVerifyResult =
 async function verifyActivePlayerSessionViaApi(
   localSessionId: string
 ): Promise<PlayerSessionVerifyResult | null> {
+  syncPlayerSessionReadyFromStorage('verifyActivePlayerSessionViaApi');
+  const currentLocalSessionId = getLocalPlayerSessionId();
+  if (!currentLocalSessionId || currentLocalSessionId !== localSessionId) {
+    return {
+      ok: false,
+      reason: 'session_replaced',
+      activeSessionId: expectedPlayerSessionId || currentLocalSessionId || null,
+      source: 'sql',
+    };
+  }
+
   if (
-    !isPlayerSessionReady() ||
-    localSessionId !== getLocalPlayerSessionId() ||
+    !isSqlPlayerRuntimeMode() &&
+    expectedPlayerSessionId &&
     localSessionId !== expectedPlayerSessionId
   ) {
     return {
@@ -921,7 +1263,7 @@ async function resolveActivePlayerSession(
 
   const currentUser = auth.currentUser;
   const localSessionId = getLocalPlayerSessionId();
-  const sqlPlayerMode = isSqlPlayerAppSessionMode();
+  const sqlPlayerMode = isSqlPlayerRuntimeMode() || isSqlPlayerAppSessionMode();
 
   if (!localSessionId || forcedPlayerLogout) {
     return {
@@ -1066,7 +1408,9 @@ export async function getPlayerApiHeaders(
       ? cachedRoleUser
       : await getSessionUserOnce().catch(() => null);
   const role = String(sessionUser?.role || '').trim() || null;
-  const uid = String(sessionUser?.uid || auth.currentUser?.uid || '').trim() || null;
+  const uid = String(
+    sessionUser?.uid || (isSqlPlayerRuntimeMode() ? '' : auth.currentUser?.uid) || ''
+  ).trim() || null;
 
   if (role && role !== 'player') {
     logPlayerFetchBlockedRole({
@@ -1087,14 +1431,21 @@ export async function getPlayerApiHeaders(
     throw new Error('Player role required.');
   }
 
-  if (isSqlPlayerAppSessionMode()) {
-    await waitForPlayerSessionReady();
+  if (isSqlPlayerRuntimeMode() || isSqlPlayerAppSessionMode()) {
+    const gate = await ensurePlayerSessionGateReady({
+      source: `getPlayerApiHeaders:${route}`,
+    });
+    if (gate.state === 'loading') {
+      await waitForPlayerSessionReady();
+    } else if (gate.state === 'failed') {
+      throw new Error(PLAYER_SESSION_LOADING_MESSAGE);
+    }
   }
 
   assertPlayerSessionRequestCurrent(generationAtStart, getLocalPlayerSessionId());
 
   const localSessionId = getLocalPlayerSessionId();
-  const sqlPlayerMode = isSqlPlayerAppSessionMode();
+  const sqlPlayerMode = isSqlPlayerRuntimeMode() || isSqlPlayerAppSessionMode();
   const cached =
     localSessionId && !forcedPlayerLogout
       ? readPlayerSessionVerifyCache(localSessionId)
@@ -1348,7 +1699,7 @@ export async function touchPlayerSession(user?: User | null) {
 
   const resolvedUser = user === undefined ? auth.currentUser : user;
   const sqlOk = await touchPlayerSessionViaApi(sessionId);
-  if (!sqlOk && resolvedUser && !isSqlPlayerAppSessionMode()) {
+  if (!sqlOk && resolvedUser && !isSqlPlayerRuntimeMode() && !isSqlPlayerAppSessionMode()) {
     await touchPlayerSessionViaFirestore(resolvedUser, sessionId);
   }
 }
@@ -1495,6 +1846,9 @@ export function listenForPlayerSessionReplacement(
   onMismatch?: () => void
 ) {
   if (
+    assertClientFirestoreDisabled('player_session_replacement_listener', 'onSnapshot', {
+      uid: user.uid,
+    }) ||
     getLocalAppSessionId() ||
     isSqlPlayerAppSessionMode() ||
     isSqlPlayerLoginEnabled() ||

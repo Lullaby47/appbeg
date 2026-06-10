@@ -25,6 +25,7 @@ import { jobCompleteGuard } from '@/lib/automation/jobCompleteGuard';
 import { getAppSessionRequestHeaders, getLocalAppSessionId } from '@/features/auth/appSession';
 import { attachCarerRechargeRedeemTotalsSqlPoll } from '@/features/live/coadminCarerTotalsSqlRead';
 import { clientOnSnapshot } from '@/lib/client/clientFirestoreQuery';
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import { assertActivePlayerSession } from '@/features/auth/playerSession';
@@ -1838,6 +1839,11 @@ export function listenToAvailableCarerTasks(
   callback: (tasks: CarerTask[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (assertClientFirestoreDisabled('carer_tasks_available_listener', 'onSnapshot', { coadminUid })) {
+    callback([]);
+    return () => {};
+  }
+
   const activeTasksQuery = query(
     collection(db, 'carerTasks'),
     where('coadminUid', '==', coadminUid),

@@ -1,5 +1,6 @@
 import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { auth, db } from '@/lib/firebase/client';
 import {
@@ -362,6 +363,10 @@ async function getUsersByRoleFirestore<T extends ManagedUser | CoadminUser>(
   role: T['role'],
   options?: UsersListScopeOptions
 ): Promise<T[]> {
+  if (assertClientFirestoreDisabled('admin_users_by_role', 'getDocs', { role })) {
+    return [];
+  }
+
   const coadminUid = await resolveUsersListScope(options);
   const q = query(collection(db, 'users'), where('role', '==', role));
   const snapshot = await getDocs(q);

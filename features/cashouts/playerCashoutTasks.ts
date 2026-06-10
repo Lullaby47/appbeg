@@ -21,6 +21,7 @@ import {
   attachPlayerCashoutTasksSqlPoll,
   isPlayerCashoutSqlReadEnabled,
 } from '@/features/live/playerCashoutSqlRead';
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 
 export type PlayerCashoutTaskStatus = 'pending' | 'in_progress' | 'completed' | 'declined';
@@ -508,6 +509,11 @@ export function listenPlayerCashoutTasksByPlayer(
       onChange,
       onError,
     });
+  }
+
+  if (assertClientFirestoreDisabled('player_cashout_tasks_listener', 'onSnapshot', { playerUid })) {
+    onChange([]);
+    return () => {};
   }
 
   const tasksQuery = query(

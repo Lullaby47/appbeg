@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, doc, getDoc, getDocs, onSnapshot, query, where } from 'firebase/firestore';
+
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 
 import ProtectedRoute from '../../components/auth/ProtectedRoute';
@@ -502,6 +505,13 @@ export default function StaffPage() {
   useEffect(() => {
     if (!staffAuthUid) {
       setStaffCashBoxNpr(0);
+      return;
+    }
+
+    if (
+      isClientSqlReadMode() ||
+      assertClientFirestoreDisabled('staff_cash_box_listener', 'onSnapshot', { staffAuthUid })
+    ) {
       return;
     }
 

@@ -33,13 +33,17 @@ function resolveClientRoute(explicit?: string) {
 }
 
 export function logClientFirestoreQuery(meta: ClientFirestoreQueryMeta) {
+  const sqlMode = isClientSqlReadMode();
   console.info('[CLIENT_FIRESTORE_QUERY]', {
     file: meta.file,
-    hook: meta.hook,
+    feature: meta.hook,
     collection: meta.collection,
+    operation: 'query',
     where: meta.where ?? null,
     orderBy: meta.orderBy ?? null,
-    sql_read_mode: isClientSqlReadMode(),
+    sqlMode,
+    skipped: sqlMode,
+    reason: sqlMode ? 'sql_read_mode' : 'firestore_allowed',
     route: resolveClientRoute(meta.route),
   });
 }
@@ -96,6 +100,10 @@ export function clientOnSnapshot<T>(
   onNext: (snapshot: QuerySnapshot<T>) => void,
   onError?: (error: Error) => void
 ): Unsubscribe {
+  if (isClientSqlReadMode()) {
+    logClientFirestoreQuery(meta);
+    return () => {};
+  }
   logClientFirestoreQuery(meta);
   return onSnapshot(
     firestoreQuery,
@@ -117,6 +125,10 @@ export function clientOnSnapshotDoc<T>(
   onNext: (snapshot: DocumentSnapshot<T>) => void,
   onError?: (error: Error) => void
 ): Unsubscribe {
+  if (isClientSqlReadMode()) {
+    logClientFirestoreQuery(meta);
+    return () => {};
+  }
   logClientFirestoreQuery(meta);
   return onSnapshot(
     ref,

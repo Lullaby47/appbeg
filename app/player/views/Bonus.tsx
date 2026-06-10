@@ -74,7 +74,7 @@ export default function Bonus(props: Props) {
                       </p>
                       <p className="mt-4 text-base font-bold text-violet-100">
                         {bonusEventsSessionLoading
-                          ? 'Loading session...'
+                          ? 'Loading secure session...'
                           : 'No bonus events right now. Check back soon.'}
                       </p>
                     </div>

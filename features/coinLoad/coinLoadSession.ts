@@ -14,6 +14,7 @@ import {
   where,
 } from 'firebase/firestore';
 
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { auth, db } from '@/lib/firebase/client';
 import { uploadImageToCloudinary } from '@/lib/cloudinary/uploadImage';
 
@@ -188,6 +189,11 @@ export function listenCoinLoadSession(
   onNext: (session: CoinLoadSession | null) => void,
   onError?: (e: Error) => void
 ) {
+  if (assertClientFirestoreDisabled('coin_load_session_listener', 'onSnapshot', { sessionId })) {
+    onNext(null);
+    return () => {};
+  }
+
   return onSnapshot(
     doc(db, SESSIONS, sessionId),
     (snap) => {

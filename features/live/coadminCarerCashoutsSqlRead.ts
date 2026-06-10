@@ -4,6 +4,7 @@ import { Timestamp } from 'firebase/firestore';
 
 import type { CarerCashoutRequest } from '@/features/cashouts/carerCashouts';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 const POLL_MS = 10_000;
@@ -61,6 +62,9 @@ export function attachPendingCarerCashoutsSqlPoll(input: {
   onChange: (items: CarerCashoutRequest[]) => void;
   onError?: (error: Error) => void;
 }) {
+  void assertClientFirestoreDisabled('pending_carer_cashouts_sql_poll', 'onSnapshot', {
+    coadminUid: input.coadminUid,
+  });
   logClientFirestoreSkipped('pending_carer_cashouts_listener', {
     coadminUid: input.coadminUid,
   });

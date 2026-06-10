@@ -111,6 +111,11 @@ export async function GET(request: Request) {
         })
       : null;
 
+  const playerSessionId =
+    auth.role === 'player'
+      ? String(auth.profile.activeSessionId || '').trim() || null
+      : null;
+
   const body = {
 
     ok: true as const,
@@ -126,6 +131,17 @@ export async function GET(request: Request) {
     status: auth.profile.status,
 
     expiresAt: auth.session.expiresAt,
+
+    appSessionId: auth.sessionId,
+
+    sessionSource: 'sql' as const,
+
+    ...(playerSessionId
+      ? {
+          playerSessionId,
+          canonicalSessionId: playerSessionId,
+        }
+      : {}),
 
     ...(playerExtras
       ? {

@@ -92,13 +92,27 @@ import {
   loadPlayerProfileSnapshotOnce,
   type PlayerProfileSqlSnapshot,
 } from '@/features/player/playerProfileSqlPoll';
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import {
   getCoadminMaintenanceBreakClient,
   listenCoadminMaintenanceBreak,
 } from '@/features/maintenance/maintenanceBreak';
 import { normalizeMaintenanceBreak, type MaintenanceBreak } from '@/lib/maintenance/config';
-import { endLocalPlayerSession, getPlayerApiHeaders, PlayerSessionStaleError } from '@/features/auth/playerSession';
+import {
+  ensurePlayerSessionGateReady,
+  endLocalPlayerSession,
+  getPlayerApiHeaders,
+  PlayerSessionStaleError,
+} from '@/features/auth/playerSession';
+import {
+  logPlayerPageSessionGate,
+  readPlayerPageSessionGateSnapshot,
+} from '@/lib/client/playerPageSessionGate';
+import {
+  isSqlPlayerRuntimeMode,
+  logSqlPlayerRuntimeAuth,
+} from '@/lib/client/sqlPlayerRuntimeAuth';
 import { rememberPlayerLoginCredentials } from '@/features/auth/rememberedPlayerLogin';
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
@@ -1604,20 +1618,22 @@ export default function PlayerPage() {
               .filter(Boolean)
           ),
         ];
-        const nameEntries = await Promise.all(
-          creatorUids.map(async (uid) => {
-            try {
-              const snap = await getDoc(doc(db, 'users', uid));
-              if (!snap.exists()) {
-                return [uid, 'Unknown Creator'] as const;
-              }
-              const userData = snap.data() as { role?: string; username?: string };
-              return [uid, buildCreatorDisplayLabel(userData)] as const;
-            } catch {
-              return [uid, 'Unknown Creator'] as const;
-            }
-          })
-        );
+        const nameEntries = isClientSqlReadMode()
+          ? creatorUids.map((uid) => [uid, 'Creator'] as const)
+          : await Promise.all(
+              creatorUids.map(async (uid) => {
+                try {
+                  const snap = await getDoc(doc(db, 'users', uid));
+                  if (!snap.exists()) {
+                    return [uid, 'Unknown Creator'] as const;
+                  }
+                  const userData = snap.data() as { role?: string; username?: string };
+                  return [uid, buildCreatorDisplayLabel(userData)] as const;
+                } catch {
+                  return [uid, 'Unknown Creator'] as const;
+                }
+              })
+            );
         const nextCreatorNames: Record<string, string> = {};
         for (const [uid, label] of nameEntries) {
           nextCreatorNames[uid] = label;
@@ -1633,7 +1649,166 @@ export default function PlayerPage() {
   );
 
   useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      const snapshot = readPlayerPageSessionGateSnapshot();
+      logPlayerPageSessionGate({
+        ...snapshot,
+        blocked: true,
+        reason: 'player_page_mount',
+      });
+
+      const gate = await ensurePlayerSessionGateReady({ source: 'player_page_mount' });
+      if (cancelled) {
+        return;
+      }
+
+      const after = readPlayerPageSessionGateSnapshot();
+      logPlayerPageSessionGate({
+        ...after,
+        blocked: gate.state !== 'ready',
+        reason: gate.state === 'ready' ? 'gate_ready' : gate.reason,
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const pageLoadStartedAt = Date.now();
+
+    const clearPlayerState = () => {
+      setIsBlockedPlayer(false);
+      setWallet({ coin: 0, cash: 0 });
+      setPlayerUsername('');
+      setPlayerCoadminUid('');
+      setPaymentDetailsNoticeVersion(0);
+      setDismissedPaymentDetailsNoticeVersion(0);
+      setShowCashoutSuccessSplash(false);
+      hasSeenCashoutTaskSnapshotRef.current = false;
+      knownCompletedCashoutTaskIdsRef.current = new Set();
+      cashoutSplashSeenIdsRef.current = new Set();
+      knownCashoutStatusByIdRef.current = {};
+      setAgents([]);
+      setGameLogins([]);
+      setBonusEvents([]);
+      setUsernameCarersByGame({});
+      setCreatorNames({});
+      setSelectedCreatorUid(null);
+      setRequestHistory([]);
+    };
+
+    const loadPlayerProfileForUid = async (
+      nextPlayerUid: string,
+      sessionUser?: { username?: string | null; coadminUid?: string | null; status?: string | null } | null
+    ) => {
+      try {
+        if (isClientSqlReadMode()) {
+          if (sessionUser) {
+            setPlayerUsername(String(sessionUser.username || '').trim());
+            setPlayerCoadminUid(String(sessionUser.coadminUid || '').trim());
+            setIsBlockedPlayer(sessionUser.status === 'disabled');
+          }
+          const profile = await loadPlayerProfileSnapshotOnce();
+          if (profile) {
+            applyPlayerProfileSnapshot(profile, nextPlayerUid);
+          }
+        } else {
+          const playerSnap = await getDoc(doc(db, 'users', nextPlayerUid));
+          const playerData = playerSnap.data() as
+            | { status?: string; coin?: number; cash?: number; username?: string }
+            | undefined;
+          setIsBlockedPlayer(playerData?.status === 'disabled');
+          setWallet({
+            coin: Number(playerData?.coin || 0),
+            cash: Number(playerData?.cash || 0),
+          });
+          setPlayerUsername(String(playerData?.username || '').trim());
+          const resolvedCoadminUid = resolveCoadminUid({
+            uid: nextPlayerUid,
+            ...(playerData as Record<string, unknown>),
+          });
+          if (!resolvedCoadminUid) {
+            setPaymentDetailsNoticeVersion(0);
+          }
+          setPlayerCoadminUid(resolvedCoadminUid ? String(resolvedCoadminUid) : '');
+        }
+      } catch {
+        setIsBlockedPlayer(false);
+        setWallet({ coin: 0, cash: 0 });
+        setPlayerUsername('');
+        setPlayerCoadminUid('');
+        setBonusEvents([]);
+        setUsernameCarersByGame({});
+      }
+    };
+
+    const syncSqlPlayerRuntime = async () => {
+      const gate = await ensurePlayerSessionGateReady({ source: 'player_page_runtime_sync' });
+      const sessionUser =
+        getCachedSessionUser()?.role === 'player'
+          ? getCachedSessionUser()
+          : await getSessionUserOnce().catch(() => null);
+
+      logSqlPlayerRuntimeAuth({
+        route: '/player',
+        source: 'session_me',
+        uid: sessionUser?.uid ?? null,
+        role: sessionUser?.role ?? null,
+        coadminUid: sessionUser?.coadminUid ?? null,
+        sessionSource: sessionUser?.sessionSource ?? 'sql',
+        firebaseIgnored: true,
+        ready: gate.state === 'ready',
+        blocked: gate.state === 'failed',
+        reason: gate.state === 'ready' ? 'runtime_sync_ok' : gate.reason,
+      });
+
+      if (!sessionUser || sessionUser.role !== 'player') {
+        if (sessionUser && sessionUser.role !== 'player') {
+          console.info('[PLAYER_FETCH_BLOCKED_ROLE]', {
+            route: '/player',
+            uid: sessionUser.uid,
+            role: sessionUser.role,
+            expectedRole: 'player',
+            reason: 'non_player_role_sql_runtime_sync',
+          });
+          setPlayerUid('');
+          setPlayerCoadminUid('');
+        }
+        return;
+      }
+
+      setPlayerUid(sessionUser.uid);
+      await loadPlayerProfileForUid(sessionUser.uid, sessionUser);
+    };
+
+    if (isSqlPlayerRuntimeMode()) {
+      let cancelled = false;
+      const run = async () => {
+        if (cancelled) {
+          return;
+        }
+        await syncSqlPlayerRuntime();
+      };
+      void run();
+      const retryTimer = window.setInterval(() => {
+        void run();
+      }, 3000);
+
+      console.info('[PLAYER_PAGE_LOAD]', {
+        stage: 'init_sql_runtime',
+        durationMs: Date.now() - pageLoadStartedAt,
+      });
+
+      return () => {
+        cancelled = true;
+        window.clearInterval(retryTimer);
+      };
+    }
+
     const syncPlayerUidFromSession = async () => {
       const cached = getCachedSessionUser();
       if (cached?.role === 'player' && cached.uid) {
@@ -1679,7 +1854,7 @@ export default function PlayerPage() {
           sessionUid = resolved.uid;
         }
       }
-      const nextPlayerUid = user?.uid || sessionUid;
+      const nextPlayerUid = sessionUid || user?.uid || '';
       if (nextPlayerUid && sessionUser?.role && sessionUser.role !== 'player') {
         setPlayerUid('');
         return;
@@ -1687,70 +1862,11 @@ export default function PlayerPage() {
       setPlayerUid(nextPlayerUid);
 
       if (!nextPlayerUid) {
-        setIsBlockedPlayer(false);
-        setWallet({ coin: 0, cash: 0 });
-        setPlayerUsername('');
-        setPlayerCoadminUid('');
-        setPaymentDetailsNoticeVersion(0);
-        setDismissedPaymentDetailsNoticeVersion(0);
-        setShowCashoutSuccessSplash(false);
-        hasSeenCashoutTaskSnapshotRef.current = false;
-        knownCompletedCashoutTaskIdsRef.current = new Set();
-        cashoutSplashSeenIdsRef.current = new Set();
-        knownCashoutStatusByIdRef.current = {};
-        setAgents([]);
-        setGameLogins([]);
-        setBonusEvents([]);
-        setUsernameCarersByGame({});
-        setCreatorNames({});
-        setSelectedCreatorUid(null);
-        setRequestHistory([]);
+        clearPlayerState();
         return;
       }
 
-      try {
-        if (isClientSqlReadMode()) {
-          const sessionUser =
-            getCachedSessionUser() ||
-            (await getSessionUserOnce()) ||
-            null;
-          if (sessionUser?.uid === nextPlayerUid) {
-            setPlayerUsername(String(sessionUser.username || '').trim());
-            setPlayerCoadminUid(String(sessionUser.coadminUid || '').trim());
-            setIsBlockedPlayer(sessionUser.status === 'disabled');
-          }
-          const profile = await loadPlayerProfileSnapshotOnce();
-          if (profile) {
-            applyPlayerProfileSnapshot(profile, nextPlayerUid);
-          }
-        } else {
-          const playerSnap = await getDoc(doc(db, 'users', nextPlayerUid));
-          const playerData = playerSnap.data() as
-            | { status?: string; coin?: number; cash?: number; username?: string }
-            | undefined;
-          setIsBlockedPlayer(playerData?.status === 'disabled');
-          setWallet({
-            coin: Number(playerData?.coin || 0),
-            cash: Number(playerData?.cash || 0),
-          });
-          setPlayerUsername(String(playerData?.username || '').trim());
-          const resolvedCoadminUid = resolveCoadminUid({
-            uid: nextPlayerUid,
-            ...(playerData as Record<string, unknown>),
-          });
-          if (!resolvedCoadminUid) {
-            setPaymentDetailsNoticeVersion(0);
-          }
-          setPlayerCoadminUid(resolvedCoadminUid ? String(resolvedCoadminUid) : '');
-        }
-      } catch {
-        setIsBlockedPlayer(false);
-        setWallet({ coin: 0, cash: 0 });
-        setPlayerUsername('');
-        setPlayerCoadminUid('');
-        setBonusEvents([]);
-        setUsernameCarersByGame({});
-      }
+      await loadPlayerProfileForUid(nextPlayerUid, sessionUser);
     });
 
     console.info('[PLAYER_PAGE_LOAD]', {
@@ -1775,7 +1891,13 @@ export default function PlayerPage() {
   }, [playerCoadminUid]);
 
   useEffect(() => {
-    if (!playerCoadminUid || isClientSqlReadMode()) {
+    if (
+      !playerCoadminUid ||
+      isClientSqlReadMode() ||
+      assertClientFirestoreDisabled('player_coadmin_payment_notice', 'onSnapshot', {
+        coadminUid: playerCoadminUid,
+      })
+    ) {
       return;
     }
 
@@ -1836,32 +1958,35 @@ export default function PlayerPage() {
 
     const liveShadowCompare = attachPlayerRequestLiveShadowCompare(playerUid);
     let sqlReadDispose: (() => void) | null = null;
-    let useFirebaseForUi = !PLAYER_REQUESTS_SQL_READ_ENABLED;
+    const sqlRequestsRead =
+      isClientSqlReadMode() || PLAYER_REQUESTS_SQL_READ_ENABLED;
+    let unsubscribeRequests: (() => void) | null = null;
 
-    const unsubscribeRequests = listenToPlayerGameRequestsByPlayer(
-      playerUid,
-      (requests) => {
-        if (useFirebaseForUi) {
+    if (!sqlRequestsRead) {
+      unsubscribeRequests = listenToPlayerGameRequestsByPlayer(
+        playerUid,
+        (requests) => {
           setRequestHistory(sortByNewest(requests));
-        }
-        liveShadowCompare.reportFirebaseSnapshot(requests);
-      },
-      (error) => {
-        if (useFirebaseForUi) {
+          liveShadowCompare.reportFirebaseSnapshot(requests);
+        },
+        (error) => {
           setMessage(error.message || 'Failed to load request history.');
         }
-      }
-    );
+      );
+    }
 
-    if (PLAYER_REQUESTS_SQL_READ_ENABLED) {
+    if (sqlRequestsRead) {
       const sqlRead = attachPlayerRequestSqlReadListener(
         playerUid,
         (requests) => {
           setRequestHistory(sortByNewest(requests));
           setMessage('');
         },
-        () => {
-          useFirebaseForUi = true;
+        (reason) => {
+          console.info('[PLAYER_REQUESTS_SQL_READ] ui_fallback_blocked', {
+            reason,
+            sqlMode: isClientSqlReadMode(),
+          });
         }
       );
       sqlReadDispose = sqlRead.dispose;
@@ -1869,7 +1994,7 @@ export default function PlayerPage() {
 
     return () => {
       unsubscribeLogins();
-      unsubscribeRequests();
+      unsubscribeRequests?.();
       sqlReadDispose?.();
       liveShadowCompare.dispose();
     };
@@ -2002,7 +2127,7 @@ export default function PlayerPage() {
         console.error('[player bonusEvents] error', error);
         const message = error.message || 'Failed to load bonus events.';
         if (
-          /X-Player-Session-Id|Player session required|Loading session|player session not ready/i.test(
+          /X-Player-Session-Id|Player session required|Loading secure session|Loading session|player session not ready/i.test(
             message
           )
         ) {
@@ -2040,7 +2165,10 @@ export default function PlayerPage() {
       return;
     }
 
-    if (isClientSqlReadMode()) {
+    if (
+      isClientSqlReadMode() ||
+      assertClientFirestoreDisabled('player_profile_listener', 'onSnapshot', { playerUid })
+    ) {
       return attachPlayerProfileSqlPoll((profile) => {
         applyPlayerProfileSnapshot(profile, playerUid);
       });
@@ -2993,6 +3121,7 @@ export default function PlayerPage() {
         error instanceof Error ? error.message : 'Failed to activate bonus event.';
       const lower = errorMessage.toLowerCase();
       if (
+        lower.includes('loading secure session') ||
         lower.includes('loading session') ||
         lower.includes('player session not ready') ||
         lower.includes('player session required')
@@ -3154,9 +3283,11 @@ export default function PlayerPage() {
     }
 
     try {
-      await updateDoc(doc(db, 'users', playerUid), {
-        dismissedPaymentDetailsNoticeVersion: paymentDetailsNoticeVersion,
-      });
+      if (!isClientSqlReadMode()) {
+        await updateDoc(doc(db, 'users', playerUid), {
+          dismissedPaymentDetailsNoticeVersion: paymentDetailsNoticeVersion,
+        });
+      }
       setDismissedPaymentDetailsNoticeVersion(paymentDetailsNoticeVersion);
     } catch (error) {
       setMessage(

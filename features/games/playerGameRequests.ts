@@ -30,6 +30,8 @@ import {
   type CoadminScopedRecord,
 } from '@/lib/coadmin/scope';
 import { completedPlayerGameRequestTtl } from '@/lib/firestore/ttl';
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 export type PlayerGameRequestType = 'recharge' | 'redeem';
 export type PlayerGameRequestStatus =
@@ -679,6 +681,20 @@ export function listenToPlayerGameRequestsByPlayer(
   onChange: (requests: PlayerGameRequest[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (
+    isClientSqlReadMode() ||
+    assertClientFirestoreDisabled('player_game_requests_listener', 'onSnapshot', { playerUid })
+  ) {
+    logClientFirestoreSkipped('player_game_requests_listener', {
+      file: 'features/games/playerGameRequests.ts',
+      collection: 'playerGameRequests',
+      operation: 'onSnapshot',
+      playerUid,
+    });
+    onChange([]);
+    return () => {};
+  }
+
   const recentRequestsQuery = query(
     collection(db, 'playerGameRequests'),
     where('playerUid', '==', playerUid),

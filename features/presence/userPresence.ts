@@ -16,6 +16,7 @@ import { getCachedSessionUser } from '@/features/auth/sessionUser';
 import { fetchChatApi } from '@/lib/client/chatLogoutDiagnostics';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { checkPlayerPollRole } from '@/lib/client/playerPollGuard';
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { db } from '@/lib/firebase/client';
 
@@ -170,6 +171,11 @@ export function usePresenceOnlineMap(
           timer = null;
         }
       };
+    }
+
+    if (assertClientFirestoreDisabled('user_presence_listener', 'onSnapshot')) {
+      setLastSeenMsByUid({});
+      return;
     }
 
     const unsubs: (() => void)[] = [];

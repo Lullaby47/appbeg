@@ -23,6 +23,8 @@ import {
 } from '@/lib/client/chatLogoutDiagnostics';
 import { shouldLogoutAfterInvalidPlayerSessionStatus } from '@/lib/client/playerSessionInvalidGuard';
 import { markPlayerClientRouteNavigation } from '@/lib/client/playerSessionNavigationGuard';
+import { isSqlPlayerRuntimeMode } from '@/lib/client/sqlPlayerRuntimeAuth';
+import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import {
   endLocalPlayerSessionOnBrowserLeave,
   forcePlayerSessionLogout,
@@ -34,8 +36,8 @@ import {
   startPlayerSessionStatusPolling,
   touchPlayerSession,
   seedPlayerSessionVerifyCache,
+  ensurePlayerSessionGateReady,
   verifyActivePlayerSession,
-  waitForPlayerSessionReady,
 } from '@/features/auth/playerSession';
 
 type ProtectedRouteProps = {
@@ -124,36 +126,56 @@ export default function ProtectedRoute({
     let unsubscribeFirebase: (() => void) | undefined;
 
     async function tryPlayerAppSessionGuard(): Promise<'allowed' | 'fallback' | 'denied'> {
-      if (!routeIsPlayerOnly(allowedRoles) || !isSqlPlayerAppSessionMode()) {
+      if (!routeIsPlayerOnly(allowedRoles)) {
         return 'fallback';
       }
 
-      if (!getLocalAppSessionId() || !getLocalPlayerSessionId()) {
+      if (!getLocalAppSessionId()) {
         console.info('[PROTECTED_ROUTE_AUTH]', {
           source: 'player_app_session',
           ok: false,
-          reason: 'missing_session_ids',
+          reason: 'missing_app_session_id',
         });
         return 'fallback';
       }
 
-      try {
-        await waitForPlayerSessionReady();
-      } catch {
+      const gate = await ensurePlayerSessionGateReady({
+        source: 'tryPlayerAppSessionGuard',
+      });
+      if (gate.state === 'loading') {
+        const loadingSessionUser =
+          getCachedSessionUser()?.role === 'player'
+            ? getCachedSessionUser()
+            : await getSessionUserOnce().catch(() => null);
+        if (loadingSessionUser?.role === 'player') {
+          console.info('[PROTECTED_ROUTE_AUTH]', {
+            source: 'player_app_session',
+            ok: true,
+            uid: loadingSessionUser.uid,
+            role: 'player',
+            reason: gate.reason || 'player_session_gate_loading',
+            hasAppSessionId: Boolean(getLocalAppSessionId()),
+            hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+          });
+          setCurrentRole('player');
+          recordDevActiveSession('player', loadingSessionUser.uid);
+          setChecking(false);
+          return 'allowed';
+        }
         console.info('[PROTECTED_ROUTE_AUTH]', {
           source: 'player_app_session',
-          ok: false,
-          reason: 'player_session_wait_timeout',
+          ok: true,
+          reason: gate.reason || 'player_session_gate_loading',
           hasAppSessionId: Boolean(getLocalAppSessionId()),
           hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
         });
-      }
-
-      if (!isPlayerSessionReady()) {
+      } else if (gate.state === 'failed') {
         console.info('[PROTECTED_ROUTE_AUTH]', {
           source: 'player_app_session',
           ok: false,
-          reason: 'player_session_not_ready',
+          reason: gate.reason,
+          hasAppSessionId: Boolean(getLocalAppSessionId()),
+          hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
         });
         return 'fallback';
       }
@@ -354,6 +376,18 @@ export default function ProtectedRoute({
             role: cachedPlayer?.role ?? null,
           });
           return;
+        }
+
+        if (isClientSqlReadMode()) {
+          const sessionUser = await getSessionUserOnce().catch(() => null);
+          if (sessionUser && isValidRole(sessionUser.role) && allowedRoles.includes(sessionUser.role)) {
+            setCurrentRole(sessionUser.role);
+            if (sessionUser.role === 'player' || sessionUser.role === 'carer') {
+              recordDevActiveSession(sessionUser.role, sessionUser.uid);
+            }
+            setChecking(false);
+            return;
+          }
         }
 
         const userRef = doc(db, 'users', firebaseUser.uid);
@@ -567,6 +601,26 @@ export default function ProtectedRoute({
         return;
       }
 
+      if (routeIsPlayerOnly(allowedRoles) && isSqlPlayerRuntimeMode()) {
+        const sessionUser = await getSessionUserOnce().catch(() => null);
+        if (cancelled) {
+          return;
+        }
+        if (sessionUser?.role === 'player') {
+          console.info('[PROTECTED_ROUTE_AUTH]', {
+            source: 'sql_player_runtime',
+            ok: true,
+            uid: sessionUser.uid,
+            role: 'player',
+            reason: 'firebase_skipped_sql_runtime',
+          });
+          setCurrentRole('player');
+          recordDevActiveSession('player', sessionUser.uid);
+          setChecking(false);
+          return;
+        }
+      }
+
       startFirebaseGuard();
     })();
 
@@ -586,16 +640,17 @@ export default function ProtectedRoute({
       return;
     }
 
-    if (!isPlayerSessionReady()) {
+    const sqlRuntime = isSqlPlayerRuntimeMode();
+    if (!sqlRuntime && !isPlayerSessionReady()) {
       return;
     }
 
     const sessionId = getLocalPlayerSessionId();
-    if (!sessionId) {
+    if (!sessionId && !sqlRuntime) {
       return;
     }
 
-    const currentUser = auth.currentUser;
+    const currentUser = sqlRuntime ? null : auth.currentUser;
     let stopSessionListener = () => {};
 
     const handlePollKick = () => {
@@ -611,7 +666,7 @@ export default function ProtectedRoute({
       onInactive: handlePollKick,
     });
 
-    const sqlPlayerAppSession = isSqlPlayerAppSessionMode();
+    const sqlPlayerAppSession = isSqlPlayerAppSessionMode() || sqlRuntime;
 
     if (currentUser && !sqlPlayerAppSession) {
       stopSessionListener = listenForPlayerSessionReplacement(currentUser, () => {
@@ -631,7 +686,7 @@ export default function ProtectedRoute({
 
     void touchPlayerSession(currentUser);
     const heartbeat = window.setInterval(() => {
-      void touchPlayerSession(auth.currentUser);
+      void touchPlayerSession(sqlRuntime ? null : auth.currentUser);
     }, 45_000);
     const mountedAt = Date.now();
     const markInactive = (event: Event) => {

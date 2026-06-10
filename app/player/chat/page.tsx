@@ -4,20 +4,13 @@ import '@/styles/player-fire.css';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import {
-  collection,
-  onSnapshot,
-  query,
-  where,
-} from 'firebase/firestore';
-
-
 import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { computeRewardCoinsAfterFee } from '@/lib/rewardCoinTransferFee';
 import { logChatPageMount } from '@/lib/client/chatLogoutDiagnostics';
-import { auth, db } from '@/lib/firebase/client';
+import { shouldSkipClientFirestore } from '@/lib/client/clientFirestoreGuard';
+import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { useIsPlayerSessionRole } from '@/features/player/useIsPlayerSessionRole';
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 import {
@@ -42,13 +35,6 @@ import {
   setDirectConversationMuted,
   setDirectTyping,
 } from '@/features/messages/playerChat';
-
-type PlayerUserDoc = {
-  uid?: string;
-  username?: string;
-  role?: string;
-  status?: string;
-};
 
 function toTime(value: { toMillis?: () => number } | null | undefined) {
   const ms = value?.toMillis?.() ?? 0;
@@ -83,6 +69,32 @@ export default function PlayerChatPage() {
   const [referralLoading, setReferralLoading] = useState(false);
   const [referralError, setReferralError] = useState('');
   const [referralNotice, setReferralNotice] = useState('');
+  const [selfUid, setSelfUid] = useState('');
+  const [chatLoading, setChatLoading] = useState(true);
+
+  useEffect(() => {
+    if (!isPlayerRole) {
+      setSelfUid('');
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const cached = getCachedSessionUser();
+      const sessionUser =
+        cached?.role === 'player'
+          ? cached
+          : await getSessionUserOnce().catch(() => null);
+      if (cancelled) {
+        return;
+      }
+      if (sessionUser?.role === 'player' && sessionUser.uid) {
+        setSelfUid(sessionUser.uid);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isPlayerRole]);
 
   useEffect(() => {
     if (mountLoggedRef.current) {
@@ -100,7 +112,7 @@ export default function PlayerChatPage() {
       const playerSessionId = getLocalPlayerSessionId();
       logChatPageMount({
         role: sessionUser?.role ?? cached?.role ?? null,
-        uid: sessionUser?.uid ?? cached?.uid ?? auth.currentUser?.uid ?? null,
+        uid: sessionUser?.uid ?? cached?.uid ?? null,
         hasAppSessionId: Boolean(appSessionId),
         hasPlayerSessionId: Boolean(playerSessionId),
         appSessionIdPrefix: appSessionId ? appSessionId.slice(0, 8) : null,
@@ -111,28 +123,26 @@ export default function PlayerChatPage() {
 
   useEffect(() => {
     if (!isPlayerRole) {
+      setChatLoading(false);
       return;
     }
+
+    if (
+      shouldSkipClientFirestore({
+        file: 'app/player/chat/page.tsx',
+        feature: 'player_chat_active_players_list',
+        collection: 'users',
+        operation: 'onSnapshot',
+      })
+    ) {
+      setAllPlayers([]);
+      setChatLoading(false);
+      return;
+    }
+
     void ensureReferralFriendLinks();
-    const q = query(
-      collection(db, 'users'),
-      where('role', '==', 'player'),
-      where('status', '==', 'active')
-    );
-    return onSnapshot(q, (snap) => {
-      const me = auth.currentUser?.uid || '';
-      const list = snap.docs
-        .map((d) => {
-          const data = d.data() as PlayerUserDoc;
-          return {
-            uid: d.id,
-            username: String(data.username || '').trim() || 'Player',
-          };
-        })
-        .filter((p) => p.uid !== me);
-      setAllPlayers(list);
-    });
-  }, [isPlayerRole]);
+    setChatLoading(false);
+  }, [isPlayerRole, selfUid]);
 
   const onlineByUid = usePresenceOnlineMap(allPlayers.map((p) => p.uid), {
     requirePlayerRole: true,
@@ -160,7 +170,6 @@ export default function PlayerChatPage() {
       return;
     }
     return listenFriendLinks((links: FriendLink[]) => {
-      const selfUid = auth.currentUser?.uid || '';
       const next: Record<string, { status: 'pending' | 'accepted'; requestedByUid: string }> = {};
       links.forEach((link) => {
         const otherUid = (link.participants || []).find((uid) => uid !== selfUid) || '';
@@ -172,12 +181,11 @@ export default function PlayerChatPage() {
       });
       setFriendByUid(next);
     });
-  }, [isPlayerRole]);
+  }, [isPlayerRole, selfUid]);
 
   useEffect(() => {
     if (!isPlayerRole || !selectedPeer) return;
     const unsubMessages = listenDirectMessages(selectedPeer.uid, (list) => {
-      const selfUid = auth.currentUser?.uid || '';
       const visible = list.filter((m) => !Array.isArray(m.deletedFor) || !m.deletedFor.includes(selfUid));
       setMessages(visible);
     });
@@ -188,7 +196,7 @@ export default function PlayerChatPage() {
       unsubTyping();
       void setDirectTyping(selectedPeer.uid, false);
     };
-  }, [isPlayerRole, selectedPeer]);
+  }, [isPlayerRole, selectedPeer, selfUid]);
 
   useEffect(() => {
     setShowRewardPanel(false);
@@ -203,7 +211,6 @@ export default function PlayerChatPage() {
 
   const selectedMuted = selectedPeer ? Boolean(chatList[selectedPeer.uid]?.muted) : false;
   const selectedFriend = selectedPeer ? friendByUid[selectedPeer.uid] : null;
-  const selfUid = auth.currentUser?.uid || '';
   const filteredPlayers = useMemo(() => {
     const term = playerSearchTerm.trim().toLowerCase();
     if (!term) {
@@ -339,9 +346,15 @@ export default function PlayerChatPage() {
               className="mb-3 w-full rounded-xl border border-white/15 bg-black/45 px-3 py-2 text-sm"
             />
             <div className="max-h-[32dvh] space-y-2 overflow-y-auto pr-1 lg:max-h-[70dvh]">
-              {filteredPlayers.length === 0 ? (
+              {chatLoading ? (
                 <p className="rounded-xl border border-white/10 bg-black/40 p-3 text-sm text-amber-100/60">
-                  No matching players found.
+                  Chat loading...
+                </p>
+              ) : filteredPlayers.length === 0 ? (
+                <p className="rounded-xl border border-white/10 bg-black/40 p-3 text-sm text-amber-100/60">
+                  {isClientSqlReadMode()
+                    ? 'Chat temporarily unavailable.'
+                    : 'No matching players found.'}
                 </p>
               ) : (
                 filteredPlayers.map((p) => {
@@ -494,13 +507,17 @@ export default function PlayerChatPage() {
                 ) : null}
 
                 <div className="flex-1 space-y-2 overflow-y-auto p-3">
-                  {messages.length === 0 ? (
+                  {chatLoading ? (
+                    <div className="pt-14 text-center text-sm text-amber-100/45">
+                      Chat loading...
+                    </div>
+                  ) : messages.length === 0 ? (
                     <div className="pt-14 text-center text-sm text-amber-100/45">
                       No messages yet.
                     </div>
                   ) : (
                     messages.map((m) => {
-                      const mine = m.senderUid === auth.currentUser?.uid;
+                      const mine = m.senderUid === selfUid;
                       const delivered = mine && (m.deliveredTo || []).length > 1;
                       const seen = mine && (m.seenBy || []).length > 1;
                       const status = seen ? 'Seen' : delivered ? 'Delivered' : 'Sent';

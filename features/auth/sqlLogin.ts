@@ -4,6 +4,7 @@ import { storeAppSessionLocal } from '@/features/auth/appSession';
 import {
   clearPlayerSessionBeforeLogin,
   getOrCreatePlayerDeviceId,
+  logPlayerSessionStorageWrite,
   storePlayerLoginSessionPair,
 } from '@/features/auth/playerSession';
 import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
@@ -139,6 +140,15 @@ export async function attemptSqlLogin(input: {
         });
       } else {
         storeAppSessionLocal(payload.sessionId, String(payload.expiresAt || ''));
+        if (payload.role === 'player') {
+          logPlayerSessionStorageWrite({
+            source: 'sql_login_app_session_only',
+            appSessionIdPrefix: String(payload.sessionId || '').slice(0, 8) || null,
+            playerSessionIdPrefix: null,
+            keysWritten: ['appbeg:appSessionId', 'appbeg:appSessionExpiresAt'],
+            role: 'player',
+          });
+        }
       }
       seedSessionUserCache(
         {

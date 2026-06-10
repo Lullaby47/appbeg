@@ -1,5 +1,7 @@
 import { collection, onSnapshot, query, where, type Timestamp } from 'firebase/firestore';
 
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+
 import { db } from '@/lib/firebase/client';
 
 export type ReferredPlayer = {
@@ -42,6 +44,11 @@ export function listenReferredPlayersByReferrer(
   onChange: (players: ReferredPlayer[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (assertClientFirestoreDisabled('player_referrals_listener', 'onSnapshot', { referrerUid })) {
+    onChange([]);
+    return () => {};
+  }
+
   const q = query(collection(db, 'users'), where('referredByUid', '==', referrerUid));
 
   return onSnapshot(

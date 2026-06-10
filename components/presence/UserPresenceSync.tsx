@@ -6,6 +6,7 @@ import { useEffect } from 'react';
 
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
+import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { auth, db } from '@/lib/firebase/client';
 
 const HEARTBEAT_MS = 90_000;
@@ -24,13 +25,13 @@ export default function UserPresenceSync() {
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const startHeartbeat = (uid: string) => {
       for (const c of cleanups) {
         c();
       }
       cleanups.length = 0;
 
-      if (!user) {
+      if (!uid) {
         return;
       }
 
@@ -78,7 +79,7 @@ export default function UserPresenceSync() {
           return;
         }
         if (sqlReadMode) {
-          logClientFirestoreSkipped('user_presence_heartbeat', { uid: user.uid });
+          logClientFirestoreSkipped('user_presence_heartbeat', { uid });
           void (async () => {
             try {
               await fetch('/api/presence/heartbeat', {
@@ -91,7 +92,7 @@ export default function UserPresenceSync() {
           })();
           return;
         }
-        const ref = doc(db, 'userPresence', user.uid);
+        const ref = doc(db, 'userPresence', uid);
         setDoc(ref, { lastSeenAt: serverTimestamp() }, { merge: true }).catch(
           () => undefined
         );
@@ -170,9 +171,28 @@ export default function UserPresenceSync() {
         window.removeEventListener('pageshow', onPageShow);
         window.removeEventListener('beforeunload', onBeforeUnload);
       });
+    };
+
+    let cancelled = false;
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user?.uid) {
+        startHeartbeat(user.uid);
+      }
     });
 
+    if (isClientSqlReadMode()) {
+      void (async () => {
+        const cached = getCachedSessionUser();
+        const sessionUser =
+          cached?.uid ? cached : await getSessionUserOnce().catch(() => null);
+        if (!cancelled && sessionUser?.uid) {
+          startHeartbeat(sessionUser.uid);
+        }
+      })();
+    }
+
     return () => {
+      cancelled = true;
       for (const c of cleanups) {
         c();
       }

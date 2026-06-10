@@ -13,6 +13,7 @@ import {
   where,
 } from 'firebase/firestore';
 
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { auth, db, getClientDb } from '@/lib/firebase/client';
 import type { CarerTaskStatus } from '@/features/games/carerTasks';
 import {
@@ -1352,6 +1353,11 @@ export function listenAutomationUiStatusByTask(
   ) => void,
   onError?: (error: Error) => void
 ) {
+  if (assertClientFirestoreDisabled('automation_jobs_ui_listener', 'onSnapshot', { createdByUid })) {
+    onChange({}, {});
+    return () => {};
+  }
+
   const jobsQuery = query(
     collection(db, 'automation_jobs'),
     where('createdByUid', '==', createdByUid),

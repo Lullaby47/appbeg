@@ -16,6 +16,10 @@ export type SessionUser = {
   coadminUid?: string | null;
   status?: string | null;
   expiresAt?: string | null;
+  appSessionId?: string | null;
+  playerSessionId?: string | null;
+  canonicalSessionId?: string | null;
+  sessionSource?: string | null;
 };
 
 let cachedUser: SessionUser | null = null;
@@ -83,6 +87,10 @@ function mapPayloadToSessionUser(payload: {
   username?: string;
   status?: string | null;
   expiresAt?: string;
+  appSessionId?: string;
+  playerSessionId?: string;
+  canonicalSessionId?: string;
+  sessionSource?: string;
 }): SessionUser | null {
   if (!payload.uid || !payload.role || !isValidRole(payload.role)) {
     return null;
@@ -97,6 +105,14 @@ function mapPayloadToSessionUser(payload: {
     username: String(payload.username || ''),
     status: payload.status ?? null,
     expiresAt: String(payload.expiresAt || ''),
+    appSessionId: String(payload.appSessionId || '').trim() || null,
+    playerSessionId:
+      String(payload.playerSessionId || payload.canonicalSessionId || '').trim() ||
+      null,
+    canonicalSessionId:
+      String(payload.canonicalSessionId || payload.playerSessionId || '').trim() ||
+      null,
+    sessionSource: String(payload.sessionSource || '').trim() || null,
   };
 }
 
@@ -125,6 +141,10 @@ async function fetchSessionUserFromApi(): Promise<SessionUser | null> {
       username?: string;
       status?: string | null;
       expiresAt?: string;
+      appSessionId?: string;
+      playerSessionId?: string;
+      canonicalSessionId?: string;
+      sessionSource?: string;
     };
 
     if (!response.ok || !payload.ok) {

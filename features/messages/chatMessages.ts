@@ -28,6 +28,10 @@ import {
 import { auth, db } from '@/lib/firebase/client';
 import { uploadImageToCloudinary } from '@/lib/cloudinary/uploadImage';
 import { chatMessageTtl } from '@/lib/firestore/ttl';
+import {
+  assertClientFirestoreDisabled,
+  noopFirestoreUnsubscribe,
+} from '@/lib/client/clientFirestoreGuard';
 import { logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 export type FirestoreChatMessage = {
@@ -211,15 +215,20 @@ export function listenToMessages(
   callback: (messages: FirestoreChatMessage[]) => void,
   options?: ListenToMessagesOptions
 ) {
+  if (isChatSqlReadEnabled()) {
+    return attachSqlChatMessagesPoll(receiverUid, callback, options, undefined);
+  }
+
+  if (assertClientFirestoreDisabled('chat_messages_listener', 'onSnapshot')) {
+    callback([]);
+    return noopFirestoreUnsubscribe();
+  }
+
   const currentUser = auth.currentUser;
 
   if (!currentUser) {
     callback([]);
     return () => {};
-  }
-
-  if (isChatSqlReadEnabled()) {
-    return attachSqlChatMessagesPoll(receiverUid, callback, options, undefined);
   }
 
   const conversationId = getConversationId(currentUser.uid, receiverUid);
@@ -339,15 +348,20 @@ export function listenToUnreadCounts(
   callback: (unreadCounts: Record<string, number>) => void,
   options?: { requirePlayerRole?: boolean }
 ) {
+  if (isChatSqlReadEnabled()) {
+    return attachSqlUnreadCountsPoll(callback, undefined, options);
+  }
+
+  if (assertClientFirestoreDisabled('chat_unread_counts_listener', 'onSnapshot')) {
+    callback({});
+    return noopFirestoreUnsubscribe();
+  }
+
   const currentUser = auth.currentUser;
 
   if (!currentUser) {
     callback({});
     return () => {};
-  }
-
-  if (isChatSqlReadEnabled()) {
-    return attachSqlUnreadCountsPoll(callback, undefined, options);
   }
 
   const conversationsQuery = query(
@@ -379,13 +393,6 @@ export function listenToUnreadCounts(
 export function listenToUnreadNotices(
   callback: (notices: UnreadConversationNotice[]) => void
 ) {
-  const currentUser = auth.currentUser;
-
-  if (!currentUser) {
-    callback([]);
-    return () => {};
-  }
-
   if (isChatSqlReadEnabled()) {
     return attachSqlUnreadCountsPoll((counts) => {
       callback(
@@ -396,6 +403,13 @@ export function listenToUnreadNotices(
         }))
       );
     });
+  }
+
+  const currentUser = auth.currentUser;
+
+  if (!currentUser) {
+    callback([]);
+    return () => {};
   }
 
   const conversationsQuery = query(

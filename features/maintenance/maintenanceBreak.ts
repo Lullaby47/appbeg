@@ -9,6 +9,7 @@ import {
 
 import { auth, db } from '@/lib/firebase/client';
 import { getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import {
   DEFAULT_MAINTENANCE_MESSAGE,
@@ -28,7 +29,12 @@ export function listenCoadminMaintenanceBreak(
     return () => {};
   }
 
-  if (isClientSqlReadMode()) {
+  if (
+    isClientSqlReadMode() ||
+    assertClientFirestoreDisabled('coadmin_maintenance_break_listener', 'onSnapshot', {
+      coadminUid: cleanCoadminUid,
+    })
+  ) {
     logClientFirestoreSkipped('coadmin_maintenance_break_listener', { coadminUid: cleanCoadminUid });
     onChange(normalizeMaintenanceBreak(null));
     return () => {};

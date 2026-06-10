@@ -18,6 +18,7 @@ import {
 import { auth, db } from '@/lib/firebase/client';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 export type PlayerGameLogin = {
@@ -288,6 +289,11 @@ export function listenToPlayerGameLoginsByPlayer(
       onChange,
       onError,
     });
+  }
+
+  if (assertClientFirestoreDisabled('player_game_logins_listener', 'onSnapshot', { playerUid })) {
+    onChange([]);
+    return () => {};
   }
 
   const q = query(collection(db, 'playerGameLogins'), where('playerUid', '==', playerUid));

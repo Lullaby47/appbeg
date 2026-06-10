@@ -14,6 +14,7 @@ import {
   where,
 } from 'firebase/firestore';
 
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { auth, db } from '@/lib/firebase/client';
 import { resolveCoadminUid } from '@/lib/coadmin/scope';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
@@ -727,6 +728,11 @@ export function listenPendingTransferRequestsByCoadminOrGlobal(
   onChange: (requests: TransferRequest[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (assertClientFirestoreDisabled('transfer_requests_pending_listener', 'onSnapshot', { coadminUid })) {
+    onChange([]);
+    return () => {};
+  }
+
   const scopedQuery = coadminUid
     ? query(
         collection(db, 'transferRequests'),
@@ -752,6 +758,11 @@ export function listenTransferRequestsByPlayer(
   onChange: (requests: TransferRequest[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (assertClientFirestoreDisabled('transfer_requests_player_listener', 'onSnapshot', { playerUid })) {
+    onChange([]);
+    return () => {};
+  }
+
   const transfersQuery = query(collection(db, 'transferRequests'), where('playerUid', '==', playerUid));
 
   return onSnapshot(
@@ -771,6 +782,11 @@ export function listenPlayerRiskSnapshotsByCoadmin(
   onChange: (snapshots: PlayerRiskSnapshot[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (assertClientFirestoreDisabled('player_risk_snapshots_listener', 'onSnapshot', { coadminUid })) {
+    onChange([]);
+    return () => {};
+  }
+
   const riskQuery = coadminUid
     ? query(collection(db, 'playerRiskSnapshots'), where('coadminUid', '==', coadminUid))
     : collection(db, 'playerRiskSnapshots');

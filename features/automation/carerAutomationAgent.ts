@@ -1,5 +1,7 @@
 import { doc, getDoc } from 'firebase/firestore';
 
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+
 import { auth, db } from '@/lib/firebase/client';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 
@@ -51,6 +53,14 @@ async function postAutomationAgentUpdate(body: Record<string, unknown>) {
 export async function getCarerAutomationAgent(
   carerUid: string
 ): Promise<CarerAutomationAgentSettings> {
+  if (assertClientFirestoreDisabled('carer_automation_agent_get', 'getDoc', { carerUid })) {
+    return {
+      automationAgentId: null,
+      automationAgentLinkedAt: null,
+      automationAgentUpdatedAt: null,
+    };
+  }
+
   const snap = await getDoc(doc(db, 'users', carerUid));
   if (!snap.exists()) {
     return {

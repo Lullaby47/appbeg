@@ -271,5 +271,20 @@ export async function logSqlRuntimeDbAuditWithDatabase(context = 'runtime') {
     authority_operations_exists: audit.present_tables.includes('authority_operations'),
     missing_authority_tables: audit.missing_tables,
   });
+
+  console.info('[SQL_RUNTIME_READY]', {
+    database_url_hash: audit.database_url_hash,
+    missingTables: audit.missing_tables,
+    missingIndexes: [],
+    missingPermissions: [],
+    firebaseFirestoreBlocked:
+      isAuthoritySqlWriteEnabled() || isAuthSqlReadEnabled(),
+    runtimeSource: 'postgres',
+    context,
+    all_required_tables_present: audit.all_required_tables_present,
+    skipped: audit.skipped ?? false,
+    reason: audit.reason ?? null,
+  });
+
   return audit;
 }

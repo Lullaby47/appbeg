@@ -24,6 +24,8 @@ import { fetchCarerDashboardProfile } from '@/features/carer/carerProfileClient'
 import { logCarerPageStartup, logCarerPageTaskSync, resetCarerPageStartupTiming, tryLogCarerPageStartupReady } from '@/features/carer/carerStartupLogs';
 import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 import ImageUploadField from '@/components/common/ImageUploadField';
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { auth, db, getClientDb } from '@/lib/firebase/client';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import {
@@ -1250,7 +1252,7 @@ export default function CarerPage() {
     let sqlReadDispose: (() => void) | null = null;
     let firebaseUnsubscribe: (() => void) | null = null;
     const attachFirebaseListener =
-      !CARER_TASKS_SQL_READ_ENABLED || LIVE_SHADOW_COMPARE_ENABLED;
+      (!CARER_TASKS_SQL_READ_ENABLED || LIVE_SHADOW_COMPARE_ENABLED) && !isClientSqlReadMode();
 
     if (attachFirebaseListener) {
       firebaseUnsubscribe = listenToAvailableCarerTasks(
@@ -1448,6 +1450,15 @@ export default function CarerPage() {
       String(carerIdentity.automationAgentId || '').trim() ||
       String(agentInputDraft || '').trim();
     if (!linkedAgentId) {
+      return;
+    }
+
+    if (
+      isClientSqlReadMode() ||
+      assertClientFirestoreDisabled('carer_auto_pending_tasks_listener', 'onSnapshot', {
+        coadminUid,
+      })
+    ) {
       return;
     }
 

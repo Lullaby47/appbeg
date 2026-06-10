@@ -4,6 +4,7 @@
  */
 import { doc, increment, serverTimestamp, setDoc } from 'firebase/firestore';
 
+import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { db } from '@/lib/firebase/client';
 
 const COLLECTION = 'devUsageEstimates';
@@ -75,6 +76,9 @@ export function recordDevUsageEstimate(delta: DevUsageDelta): void {
 
 export async function flushDevUsageEstimatesNow(): Promise<void> {
   if (!isDevUsageEstimatesEnabled()) {
+    return;
+  }
+  if (assertClientFirestoreDisabled('dev_usage_estimates_flush', 'write')) {
     return;
   }
   if (!Object.keys(pending).length) {
