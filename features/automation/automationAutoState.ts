@@ -1,7 +1,9 @@
 import { doc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
 
 import { auth, getClientDb } from '@/lib/firebase/client';
+import { logCarerPageRequestAudit } from '@/lib/client/carerPageRequestAudit';
 import { logClientFirestoreSkipped, isClientSqlReadMode } from '@/lib/client/sqlReadMode';
+import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 
 export const AUTOMATION_AUTO_STATE_COLLECTION = 'automation_auto_state';
@@ -23,15 +25,27 @@ async function fetchCarerAutomationAutoStateSql(
 ): Promise<CarerAutomationAutoStateDoc | null> {
   const response = await fetch('/api/carer/automation-auto-state', {
     method: 'GET',
-    headers: await getFirebaseApiHeaders(),
+    headers: await getSqlApiReadHeaders(false),
     cache: 'no-store',
   });
-  if (!response.ok) {
-    throw new Error('Failed to load automation auto state.');
-  }
   const payload = (await response.json().catch(() => ({}))) as {
     state?: CarerAutomationAutoStateDoc | null;
+    error?: string;
   };
+  logCarerPageRequestAudit({
+    route: '/api/carer/automation-auto-state',
+    method: 'GET',
+    status: response.status,
+    carerUid,
+    role: 'carer',
+    authPath: 'firebase_bearer',
+    reason: response.ok
+      ? 'automation_auto_state_ok'
+      : String(payload.error || `http_${response.status}`),
+  });
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to load automation auto state.');
+  }
   return payload.state ?? null;
 }
 
@@ -102,6 +116,32 @@ export async function setCarerAutomationAutoEnabled(input: {
   const coadmin = String(input.coadminUid || '').trim();
   if (!coadmin) {
     throw new Error('Coadmin scope is required.');
+  }
+
+  if (isClientSqlReadMode()) {
+    const response = await fetch('/api/carer/automation-auto-state', {
+      method: 'POST',
+      headers: await getSqlApiReadHeaders(true),
+      body: JSON.stringify({ enabled: input.enabled }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    if (!response.ok) {
+      throw new Error(payload.error || 'Failed to save automation auto state.');
+    }
+    console.info('[CARER_AUTOMATION_STATE_SQL_WRITE]', {
+      carerUid: input.carerUid,
+      enabled: input.enabled,
+      source: 'sql',
+      firestoreAttempted: false,
+    });
+    console.info('[AUTO_UI] backend state written', {
+      carerUid: input.carerUid,
+      coadminUid: coadmin,
+      enabled: input.enabled,
+      autoTickRequestFiredByUi: false,
+      reason: 'persistent automation is polled by the local automation agent',
+    });
+    return;
   }
 
   const db = getClientDb('setCarerAutomationAutoEnabled');

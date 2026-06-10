@@ -23,6 +23,7 @@ import {
 import { jobCompleteGuard } from '@/lib/automation/jobCompleteGuard';
 
 import { getAppSessionRequestHeaders, getLocalAppSessionId } from '@/features/auth/appSession';
+import { logCarerPageRequestAudit } from '@/lib/client/carerPageRequestAudit';
 import { attachCarerRechargeRedeemTotalsSqlPoll } from '@/features/live/coadminCarerTotalsSqlRead';
 import { clientOnSnapshot } from '@/lib/client/clientFirestoreQuery';
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
@@ -1684,17 +1685,30 @@ async function tryReadCarerBaseDataFromCombinedApi(
       }
     );
 
-    if (!response.ok) {
-      return { ok: false, reason: `api_status_${response.status}` };
-    }
-
-    const payload = (await response.json()) as {
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string;
       players?: PlayerUser[];
       gameLogins?: GameLogin[];
       playerGameLogins?: PlayerGameLogin[];
       source?: string;
       snapshotAt?: string;
     };
+
+    logCarerPageRequestAudit({
+      route: `/api/carer/base-data?coadminUid=${encodeURIComponent(coadminUid)}`,
+      method: 'GET',
+      status: response.status,
+      coadminUid,
+      role: 'carer',
+      authPath: 'firebase_bearer_only_missing_app_session_header',
+      reason: response.ok
+        ? 'base_data_ok'
+        : String(payload.error || `api_status_${response.status}`),
+    });
+
+    if (!response.ok) {
+      return { ok: false, reason: `api_status_${response.status}` };
+    }
 
     if (
       !Array.isArray(payload.players) ||

@@ -69,35 +69,69 @@ async function readFirestoreCarerTotals(
 
 export async function GET(request: Request) {
   const startedAt = Date.now();
-  const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff']);
-  if ('response' in auth) {
-    return auth.response;
-  }
-
   const scope = resolveScope(request);
   if (scope !== 'carer_totals') {
     return apiError('scope query parameter must be carer_totals.', 400);
   }
 
+  const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer']);
+  if ('response' in auth) {
+    return auth.response;
+  }
+
   const url = new URL(request.url);
   const requestedCoadminUid = cleanText(url.searchParams.get('coadminUid'));
   const scopedCoadmin = scopedCoadminUid(auth.user);
-  const coadminUid =
-    auth.user.role === 'coadmin'
-      ? auth.user.uid
-      : requestedCoadminUid || scopedCoadmin || '';
+
+  let coadminUid = '';
+  let allowed = true;
+  let reason = 'ok';
+
+  if (auth.user.role === 'coadmin') {
+    coadminUid = auth.user.uid;
+    reason = 'coadmin_self';
+  } else if (auth.user.role === 'carer') {
+    if (!scopedCoadmin) {
+      allowed = false;
+      reason = 'carer_missing_coadmin_scope';
+    } else if (requestedCoadminUid && requestedCoadminUid !== scopedCoadmin) {
+      allowed = false;
+      reason = 'carer_coadmin_mismatch';
+    } else {
+      coadminUid = scopedCoadmin;
+      reason = 'carer_own_coadmin';
+    }
+  } else {
+    coadminUid =
+      auth.user.role === 'admin'
+        ? requestedCoadminUid || scopedCoadmin || ''
+        : requestedCoadminUid || scopedCoadmin || '';
+    if (
+      auth.user.role !== 'admin' &&
+      scopedCoadmin &&
+      coadminUid &&
+      coadminUid !== scopedCoadmin
+    ) {
+      allowed = false;
+      reason = 'staff_scope_mismatch';
+    }
+  }
+
+  console.info('[CARER_TOTALS_AUTH]', {
+    role: auth.user.role,
+    uid: auth.user.uid,
+    requestedCoadminUid: requestedCoadminUid || null,
+    authCoadminUid: scopedCoadmin,
+    allowed,
+    reason,
+  });
+
+  if (!allowed) {
+    return apiError('Forbidden.', 403);
+  }
 
   if (!coadminUid) {
     return NextResponse.json({ tasks: [], source: 'postgres' });
-  }
-
-  if (
-    auth.user.role !== 'admin' &&
-    auth.user.role !== 'coadmin' &&
-    scopedCoadmin &&
-    coadminUid !== scopedCoadmin
-  ) {
-    return apiError('Forbidden.', 403);
   }
 
   const windowStartMs = Math.max(

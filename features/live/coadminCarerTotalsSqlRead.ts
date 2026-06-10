@@ -1,6 +1,7 @@
 'use client';
 
 import type { CarerRechargeRedeemTotals } from '@/features/games/carerTasks';
+import { logCarerPageRequestAudit } from '@/lib/client/carerPageRequestAudit';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
@@ -53,6 +54,17 @@ async function fetchCarerTotals(coadminUid: string) {
     tasks?: CachedCarerTotalsTask[];
     error?: string;
   };
+  logCarerPageRequestAudit({
+    route: `/api/carer-tasks/cache?scope=carer_totals&coadminUid=${encodeURIComponent(coadminUid)}`,
+    method: 'GET',
+    status: response.status,
+    coadminUid,
+    role: 'carer',
+    authPath: 'sql_api_poll',
+    reason: response.ok
+      ? 'carer_totals_ok'
+      : String(payload.error || `http_${response.status}`),
+  });
   if (!response.ok) {
     throw new Error(payload.error || 'Failed to load carer totals.');
   }

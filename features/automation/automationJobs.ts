@@ -14,6 +14,8 @@ import {
 } from 'firebase/firestore';
 
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { auth, db, getClientDb } from '@/lib/firebase/client';
 import type { CarerTaskStatus } from '@/features/games/carerTasks';
 import {
@@ -242,6 +244,44 @@ export async function claimTaskAndCreateJob(input: {
   if (!currentUser) {
     throw new Error('Not authenticated.');
   }
+
+  if (isClientSqlReadMode()) {
+    const response = await fetch('/api/carer/tasks/claim', {
+      method: 'POST',
+      headers: await getSqlApiReadHeaders(true),
+      body: JSON.stringify({
+        taskId: input.taskId,
+        currentUsername: input.currentUsername ?? null,
+        carerName: input.carerName ?? null,
+        gameLoginDetails: input.gameLoginDetails ?? null,
+      }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      jobId?: string;
+      taskId?: string;
+      status?: string;
+      reusedExistingJob?: boolean;
+    };
+    if (!response.ok) {
+      throw new Error(payload.error || 'Failed to claim task.');
+    }
+    console.info(
+      '[START_TIMING] server write completed at=%s durationMs=%s taskId=%s jobId=%s status=%s source=sql_claim_api',
+      new Date().toISOString(),
+      Date.now() - serverClaimStartedAt,
+      payload.taskId || input.taskId,
+      payload.jobId || null,
+      payload.status || 'queued'
+    );
+    return {
+      jobId: String(payload.jobId || ''),
+      taskId: String(payload.taskId || input.taskId),
+      status: String(payload.status || 'queued'),
+      reusedExistingJob: Boolean(payload.reusedExistingJob),
+    };
+  }
+
   const firestoreDb = getClientDb('claimTaskAndCreateJob');
   const taskRef = doc(firestoreDb, 'carerTasks', input.taskId);
   const userRef = doc(firestoreDb, 'users', currentUser.uid);

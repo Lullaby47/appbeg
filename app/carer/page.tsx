@@ -25,6 +25,11 @@ import { logCarerPageStartup, logCarerPageTaskSync, resetCarerPageStartupTiming,
 import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 import ImageUploadField from '@/components/common/ImageUploadField';
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+import { logCarerFirestoreBlockedSuppressed } from '@/lib/client/carerPageRequestAudit';
+import {
+  reportCarerUiError,
+  shouldSuppressCarerFirestoreBlockedUiError,
+} from '@/lib/client/carerPageError';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { auth, db, getClientDb } from '@/lib/firebase/client';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
@@ -1331,7 +1336,13 @@ export default function CarerPage() {
         setAllPlayerLogins(sortByNewest(incomingLogins));
       },
       (error) => {
-        setErrorMessage(error.message || 'Failed to listen for player game logins.');
+        reportCarerUiError(
+          'player_game_logins_listener',
+          error,
+          setErrorMessage,
+          'Failed to listen for player game logins.',
+          { file: 'app/carer/page.tsx', operation: 'listenToPlayerGameLoginsByCoadmin' }
+        );
       }
     );
 
@@ -1411,7 +1422,13 @@ export default function CarerPage() {
         setAutomationAutoStateDoc(data);
       },
       (error) => {
-        setErrorMessage(error.message || 'Failed to load persistent automation state.');
+        reportCarerUiError(
+          'automation_auto_state',
+          error,
+          setErrorMessage,
+          'Failed to load persistent automation state.',
+          { file: 'app/carer/page.tsx', operation: 'subscribeCarerAutomationAutoState' }
+        );
       }
     );
 
@@ -1596,7 +1613,13 @@ export default function CarerPage() {
         setRiskSnapshots(snapshots);
       },
       (error) => {
-        setErrorMessage(error.message || 'Failed to load risk snapshots.');
+        reportCarerUiError(
+          'risk_snapshots',
+          error,
+          setErrorMessage,
+          'Failed to load risk snapshots.',
+          { file: 'app/carer/page.tsx', operation: 'listenPlayerRiskSnapshotsByCoadmin' }
+        );
       }
     );
 
@@ -1613,7 +1636,13 @@ export default function CarerPage() {
       coadminUid,
       setCarerRechargeRedeemTotals,
       (error) => {
-        setErrorMessage(error.message || 'Failed to load recharge/redeem totals.');
+        reportCarerUiError(
+          'carer_recharge_redeem_totals',
+          error,
+          setErrorMessage,
+          'Failed to load recharge/redeem totals.',
+          { file: 'app/carer/page.tsx', operation: 'listenCarerRechargeRedeemTotalsByCoadmin' }
+        );
       }
     );
 
@@ -2003,6 +2032,16 @@ export default function CarerPage() {
   }
 
   async function runBackgroundCarerTaskSync(nextCoadminUid: string, baseData: CarerBaseData) {
+    if (isClientSqlReadMode()) {
+      console.info('[CARER_BACKGROUND_SYNC_SKIPPED]', {
+        coadminUid: nextCoadminUid,
+        carerUid: carerIdentity?.uid ?? null,
+        sqlMode: true,
+        reason: 'sql_task_listener_authoritative',
+      });
+      return;
+    }
+
     const taskSyncStartedAt = Date.now();
     setTaskSyncRunning(true);
     setTaskSyncError(null);
@@ -2067,11 +2106,19 @@ export default function CarerPage() {
           ? (error as { code: number }).code
           : null);
 
-      setTaskSyncError(
-        quotaExhausted
-          ? 'Task sync skipped because Firebase quota is exhausted'
-          : message
-      );
+      if (shouldSuppressCarerFirestoreBlockedUiError(error)) {
+        logCarerFirestoreBlockedSuppressed({
+          feature: 'task_sync',
+          file: 'features/games/carerTasks.ts',
+          operation: 'syncCarerTasksForCoadmin',
+        });
+      } else {
+        setTaskSyncError(
+          quotaExhausted
+            ? 'Task sync skipped because Firebase quota is exhausted'
+            : message
+        );
+      }
 
       logCarerPageTaskSync({
         stage: 'error',
@@ -2604,7 +2651,16 @@ export default function CarerPage() {
     setNoticeMessage('');
 
     try {
-      getClientDb('handleStartTask');
+      if (isClientSqlReadMode()) {
+        console.info('[CARER_START_TASK_SQL_ONLY]', {
+          taskId: task.id,
+          carerUid: carerIdentity.uid,
+          coadminUid,
+          firestoreAttempted: false,
+        });
+      } else {
+        getClientDb('handleStartTask');
+      }
       console.info('[CARER_UI] canStart=True start-task', {
         taskId: task.id,
       });
@@ -2721,14 +2777,21 @@ export default function CarerPage() {
         console.error('[START_TASK] commit failed code=%s', String((error as { code?: string } | null | undefined)?.code || 'failed-precondition'));
         console.info('[START_TASK] refetch after failed-precondition');
         await refreshPageData(false);
-        try {
-          const latestSnap = await getDocFromServer(doc(db, 'carerTasks', task.id));
-          console.info('[SERVER_REFETCH] taskId=%s exists=%s status=%s', task.id, latestSnap.exists(), latestSnap.exists() ? String((latestSnap.data() as any).status || '') : null);
-        } catch (err) {
-          console.error('[SERVER_REFETCH] failed for taskId=%s err=%o', task.id, err);
+        if (!isClientSqlReadMode()) {
+          try {
+            const latestSnap = await getDocFromServer(doc(db, 'carerTasks', task.id));
+            console.info('[SERVER_REFETCH] taskId=%s exists=%s status=%s', task.id, latestSnap.exists(), latestSnap.exists() ? String((latestSnap.data() as any).status || '') : null);
+          } catch (err) {
+            console.error('[SERVER_REFETCH] failed for taskId=%s err=%o', task.id, err);
+          }
         }
         console.info('[START_TASK] restoring UI taskId=%s', task.id);
         setErrorMessage('Task was already changed. Please refresh and try again.');
+      } else if (fallback === 'Task already claimed' && isClientSqlReadMode()) {
+        await refreshPageData(false);
+        setErrorMessage(
+          'This task was already claimed or changed. The latest state has been refreshed.'
+        );
       } else if (fallback === 'Task already claimed') {
         const latestTaskSnap = await getDocFromServer(doc(db, 'carerTasks', task.id));
         console.info('[FIRESTORE] forced server refresh taskId=%s', task.id);
@@ -2790,7 +2853,10 @@ export default function CarerPage() {
       } else if (fallback === 'Task not found') {
         setErrorMessage('This task no longer exists.');
       } else {
-        setErrorMessage(fallback);
+        reportCarerUiError('start_task', error, setErrorMessage, fallback, {
+          file: 'app/carer/page.tsx',
+          operation: 'handleStartTask',
+        });
       }
     } finally {
       startTaskInFlightIdsRef.current.delete(task.id);
