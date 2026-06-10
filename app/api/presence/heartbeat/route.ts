@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 
 import { requireApiUser } from '@/lib/firebase/apiAuth';
 import { isCacheSqlAuthoritative, logCacheSqlRead } from '@/lib/server/cacheSqlRead';
-import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import { upsertUserPresenceCache } from '@/lib/sql/userPresenceCache';
 
 const ROUTE = '/api/presence/heartbeat';
@@ -22,22 +21,28 @@ export async function POST(request: Request) {
   const startedAt = Date.now();
   const sqlReadMode = isCacheSqlAuthoritative();
   const ok = await upsertUserPresenceCache(auth.user.uid);
+  const durationMs = Date.now() - startedAt;
+
   if (sqlReadMode) {
-    logCacheSqlRead(ROUTE, {
+    console.info('[PRESENCE_SQL_HEARTBEAT]', {
       uid: auth.user.uid,
-      ok,
-      durationMs: Date.now() - startedAt,
+      role: auth.user.role,
+      source: 'sql',
+      firestoreAttempted: false,
+      durationMs,
     });
-    logFirestoreTouch({
-      firestore_touch_type: 'legacy_read_remove_now',
-      route: ROUTE,
-      operation: 'write',
-      collection: 'userPresence',
-      skipped: true,
-      sql_read_mode: true,
-      details: { uid: auth.user.uid, reason: 'sql_presence_heartbeat' },
+    return NextResponse.json({
+      ok,
+      source: 'sql',
+      firestore_fallback: false,
     });
   }
+
+  logCacheSqlRead(ROUTE, {
+    uid: auth.user.uid,
+    ok,
+    durationMs,
+  });
 
   return NextResponse.json({
     ok,
