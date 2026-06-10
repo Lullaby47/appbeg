@@ -2306,6 +2306,74 @@ export default function CarerPage() {
     }
   }
 
+  async function persistCarerAutomationEnabled(
+    enabled: boolean,
+    source: 'dashboard' | 'tasks_header'
+  ) {
+    if (!carerIdentity?.uid || !coadminUid) {
+      setErrorMessage('Coadmin scope is not ready yet.');
+      return;
+    }
+
+    logCarerAction({
+      action: enabled ? 'start_automation' : 'stop_automation',
+      file: 'app/carer/page.tsx',
+      function: 'persistCarerAutomationEnabled',
+      route: '/api/carer/automation-auto-state',
+      method: 'POST',
+      carerUid: carerIdentity.uid,
+      coadminUid,
+      role: 'carer',
+      authHeaderMode: 'app_session_sql',
+    });
+
+    setErrorMessage('');
+    try {
+      await setCarerAutomationAutoEnabled({
+        carerUid: carerIdentity.uid,
+        coadminUid,
+        enabled,
+      });
+      setAutomationAutoStateDoc((previous) => ({
+        ...(previous || {}),
+        enabled,
+      }));
+      if (enabled) {
+        setAutoDrainRequestId((current) => current + 1);
+      } else {
+        window.setTimeout(() => {
+          autoAutomationEnabledRef.current = false;
+        }, 0);
+      }
+      setNoticeMessage(
+        enabled
+          ? source === 'dashboard'
+            ? 'Claiming pending task...'
+            : 'Claiming pending task...'
+          : 'Auto automation stopped.'
+      );
+      if (enabled && source === 'dashboard') {
+        setActiveView('tasks');
+        void refreshPageData();
+      }
+    } catch (error) {
+      reportCarerActionError(
+        enabled ? 'start_automation' : 'stop_automation',
+        error,
+        setErrorMessage,
+        enabled ? 'Failed to start automation.' : 'Failed to update automation.',
+        {
+          route: '/api/carer/automation-auto-state',
+          method: 'POST',
+          carerUid: carerIdentity.uid,
+          coadminUid,
+          allowedRoles: ['carer'],
+          authPath: 'app_session_sql',
+        }
+      );
+    }
+  }
+
   function buildAutomationAgentEnvFileSnippet() {
     if (!carerIdentity) {
       return '';
@@ -3981,39 +4049,7 @@ export default function CarerPage() {
                 setErrorMessage('Coadmin scope is not ready yet.');
                 return;
               }
-              void (async () => {
-                try {
-                  console.info('[AUTO_UI] Start Automation clicked', {
-                    source: 'dashboard',
-                    carerUid: carerIdentity.uid,
-                    carerUsername: carerIdentity.username || null,
-                    coadminUid,
-                    nextEnabled: true,
-                    autoTickRequestFiredByUi: true,
-                  });
-                  await setCarerAutomationAutoEnabled({
-                    carerUid: carerIdentity.uid,
-                    coadminUid,
-                    enabled: true,
-                  });
-                  console.info('[AUTO_UI] Start Automation persisted', {
-                    source: 'dashboard',
-                    carerUid: carerIdentity.uid,
-                    coadminUid,
-                    enabled: true,
-                    autoTickRequestFiredByUi: true,
-                    claimLoopOwner: 'browser_and_python_carer_agent',
-                  });
-                  setAutoDrainRequestId((current) => current + 1);
-                  setActiveView('tasks');
-                  setNoticeMessage('Claiming pending task...');
-                  void refreshPageData();
-                } catch (error) {
-                  setErrorMessage(
-                    error instanceof Error ? error.message : 'Failed to start automation.'
-                  );
-                }
-              })();
+              void persistCarerAutomationEnabled(true, 'dashboard');
             }}
             aria-busy={isTickRunning || isQueueDraining}
             data-listener-active={isListenerActive}
@@ -4579,48 +4615,7 @@ export default function CarerPage() {
                   return;
                 }
                 const next = !autoAutomationEnabled;
-                void (async () => {
-                  try {
-                    console.info('[AUTO_UI] Start Automation clicked', {
-                      source: 'tasks_header',
-                      carerUid: carerIdentity.uid,
-                      carerUsername: carerIdentity.username || null,
-                      coadminUid,
-                      previousEnabled: autoAutomationEnabled,
-                      nextEnabled: next,
-                      autoTickRequestFiredByUi: next,
-                    });
-                    await setCarerAutomationAutoEnabled({
-                      carerUid: carerIdentity.uid,
-                      coadminUid,
-                      enabled: next,
-                    });
-                    console.info('[AUTO_UI] Start Automation persisted', {
-                      source: 'tasks_header',
-                      carerUid: carerIdentity.uid,
-                      coadminUid,
-                      enabled: next,
-                      autoTickRequestFiredByUi: next,
-                      claimLoopOwner: next ? 'browser_and_python_carer_agent' : null,
-                    });
-                    if (next) {
-                      setAutoDrainRequestId((current) => current + 1);
-                    } else {
-                      window.setTimeout(() => {
-                        autoAutomationEnabledRef.current = false;
-                      }, 0);
-                    }
-                    setNoticeMessage(
-                      next
-                        ? 'Claiming pending task...'
-                        : 'Auto automation stopped.'
-                    );
-                  } catch (error) {
-                    setErrorMessage(
-                      error instanceof Error ? error.message : 'Failed to update automation.'
-                    );
-                  }
-                })();
+                void persistCarerAutomationEnabled(next, 'tasks_header');
               }}
               aria-busy={isTickRunning || isQueueDraining}
               data-listener-active={isListenerActive}
