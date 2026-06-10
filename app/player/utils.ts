@@ -1,4 +1,5 @@
 import type { PlayerGameRequest } from '@/features/games/playerGameRequests';
+import { INTERNAL_SQL_FIRESTORE_BLOCKED_MESSAGE } from '@/lib/client/sqlFirestoreError';
 import type { PlayerAlertInfo, PlayerGameRequestType } from './types';
 import {
   DEFAULT_GAME_BACKGROUND_IMAGE,
@@ -223,7 +224,7 @@ export function isClipboardBannerMessage(raw: string) {
 export function getPlayerAlertInfo(raw: string): PlayerAlertInfo | null {
   const text = raw.trim();
 
-  if (!text) {
+  if (!text || text === INTERNAL_SQL_FIRESTORE_BLOCKED_MESSAGE) {
     return null;
   }
 

@@ -5,6 +5,7 @@ import { getAuth } from 'firebase/auth';
 import { getFirestore, type Firestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
+import { INTERNAL_SQL_FIRESTORE_BLOCKED_MESSAGE } from '@/lib/client/sqlFirestoreError';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 
 const firebaseConfig = {
@@ -38,7 +39,7 @@ export function getClientFirestore(context = 'firebase-client'): Firestore {
       operation: 'init',
       context,
     });
-    throw new Error('client_firestore_disabled_sql_mode');
+    throw new Error(INTERNAL_SQL_FIRESTORE_BLOCKED_MESSAGE);
   }
 
   if (!clientFirestore) {
@@ -63,7 +64,7 @@ export const db: Firestore = new Proxy({} as Firestore, {
         operation: 'access',
         prop: String(prop),
       });
-      throw new Error('client_firestore_disabled_sql_mode');
+      throw new Error(INTERNAL_SQL_FIRESTORE_BLOCKED_MESSAGE);
     }
     const realDb = getClientFirestore('db_proxy');
     const value = (realDb as unknown as Record<string | symbol, unknown>)[prop];

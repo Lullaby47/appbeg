@@ -93,6 +93,7 @@ import {
   type PlayerProfileSqlSnapshot,
 } from '@/features/player/playerProfileSqlPoll';
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+import { reportPlayerUiError } from '@/lib/client/sqlFirestoreError';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import {
   getCoadminMaintenanceBreakClient,
@@ -1435,8 +1436,7 @@ export default function PlayerPage() {
 
     referralCodeEnsureInFlightRef.current = true;
     try {
-      const currentUser = auth.currentUser;
-      if (!currentUser) {
+      if (!isClientSqlReadMode() && !auth.currentUser) {
         return;
       }
       const res = await fetch('/api/player/ensure-referral-code', {
@@ -1597,9 +1597,7 @@ export default function PlayerPage() {
         return;
       }
       setAgents([]);
-      setMessage(
-        error instanceof Error ? error.message : 'Failed to load agents.'
-      );
+      reportPlayerUiError('player_staff_list', error, setMessage, 'Failed to load agents.');
       console.info('[PLAYER_STAFF_LIST]', {
         ok: false,
         reason: error instanceof Error ? error.message : 'load_failed',
@@ -1644,8 +1642,11 @@ export default function PlayerPage() {
         }
         setCreatorNames(nextCreatorNames);
       } catch (error) {
-        setMessage(
-          error instanceof Error ? error.message : 'Failed to load credential details.'
+        reportPlayerUiError(
+          'player_credential_sidecars',
+          error,
+          setMessage,
+          'Failed to load credential details.'
         );
       }
     },
@@ -1956,7 +1957,12 @@ export default function PlayerPage() {
       },
       (error) => {
         setLoadingList(false);
-        setMessage(error.message || 'Failed to listen for credential updates.');
+        reportPlayerUiError(
+          'player_game_logins_listener',
+          error,
+          setMessage,
+          'Failed to listen for credential updates.'
+        );
       }
     );
 
@@ -1974,7 +1980,12 @@ export default function PlayerPage() {
           liveShadowCompare.reportFirebaseSnapshot(requests);
         },
         (error) => {
-          setMessage(error.message || 'Failed to load request history.');
+          reportPlayerUiError(
+            'player_game_requests_listener',
+            error,
+            setMessage,
+            'Failed to load request history.'
+          );
         }
       );
     }
@@ -2068,7 +2079,12 @@ export default function PlayerPage() {
         knownCashoutStatusByIdRef.current = nextStatusById;
       },
       (error) => {
-        setMessage(error.message || 'Failed to confirm cashout completion.');
+        reportPlayerUiError(
+          'player_cashout_tasks_listener',
+          error,
+          setMessage,
+          'Failed to confirm cashout completion.'
+        );
       }
     );
 
@@ -2138,7 +2154,7 @@ export default function PlayerPage() {
           setBonusEventsSessionLoading(true);
           return;
         }
-        setMessage(message);
+        reportPlayerUiError('player_bonus_events_listener', error, setMessage, message);
       },
       {
         skipTimeWindowFilter: true,
@@ -2273,7 +2289,12 @@ export default function PlayerPage() {
       const groups = await fetchMyReferralRewards();
       setReferralRewardGroups(groups);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to load referral rewards.');
+      reportPlayerUiError(
+        'player_referral_rewards',
+        error,
+        setMessage,
+        'Failed to load referral rewards.'
+      );
     } finally {
       setReferralRewardsLoading(false);
     }
@@ -2294,7 +2315,12 @@ export default function PlayerPage() {
       setEarnedRewardSplashCoins(Math.max(0, Number(result.rewardCoins || 0)));
       await loadReferralRewards({ force: true });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to claim referral reward.');
+      reportPlayerUiError(
+        'player_referral_reward_claim',
+        error,
+        setMessage,
+        'Failed to claim referral reward.'
+      );
     } finally {
       setClaimingReferredPlayerUid(null);
     }
@@ -2315,7 +2341,12 @@ export default function PlayerPage() {
       setHasPendingFreeplayGift(pendingGift.hasPendingGift);
       setPendingFreeplayGiftId(pendingGift.giftId);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to load FreePlay gift.');
+      reportPlayerUiError(
+        'player_freeplay_load',
+        error,
+        setMessage,
+        'Failed to load FreePlay gift.'
+      );
     }
   }, [playerUid, shouldSkipIndividualLoader]);
 
@@ -2442,7 +2473,12 @@ export default function PlayerPage() {
         result.message || `You got ${result.amount} FreePlay coins!`
       );
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to claim FreePlay gift.');
+      reportPlayerUiError(
+        'player_freeplay_claim',
+        error,
+        setMessage,
+        'Failed to claim FreePlay gift.'
+      );
       await loadFreeplayGift({ force: true });
     } finally {
       setClaimingFreeplayGift(false);
@@ -2602,7 +2638,7 @@ export default function PlayerPage() {
       }
       setPlayAmount('');
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Request failed.');
+      reportPlayerUiError('player_game_request', error, setMessage, 'Request failed.');
     } finally {
       setRequestLoading(false);
       setPlayRequestSplash(null);
@@ -2617,7 +2653,12 @@ export default function PlayerPage() {
       await dismissPlayerRedeemRequest(request.id);
       setMessage('Redeem request dismissed.');
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to dismiss redeem request.');
+      reportPlayerUiError(
+        'player_redeem_dismiss',
+        error,
+        setMessage,
+        'Failed to dismiss redeem request.'
+      );
     } finally {
       setDismissRedeemLoadingId(null);
     }
@@ -2676,7 +2717,7 @@ export default function PlayerPage() {
           : 'Recreate username task created successfully.'
       );
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to create task.');
+      reportPlayerUiError('player_credential_task', error, setMessage, 'Failed to create task.');
     } finally {
       setCredentialTaskLoadingKey(null);
     }
@@ -2737,7 +2778,7 @@ export default function PlayerPage() {
         setNewMessage('');
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to send message.');
+      reportPlayerUiError('player_agent_chat', error, setMessage, 'Failed to send message.');
     } finally {
       setSendingImage(false);
     }
@@ -3086,7 +3127,12 @@ export default function PlayerPage() {
       setCashoutCashTag('');
       setCashoutAccountName('');
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to create cashout request.');
+      reportPlayerUiError(
+        'player_cashout_create',
+        error,
+        setMessage,
+        'Failed to create cashout request.'
+      );
     } finally {
       setCashoutLoading(false);
     }
@@ -3141,7 +3187,12 @@ export default function PlayerPage() {
       ) {
         setBonusErrorSplashMessage(errorMessage);
       } else {
-        setMessage(errorMessage);
+        reportPlayerUiError(
+          'player_bonus_activate',
+          error,
+          setMessage,
+          'Failed to activate bonus event.'
+        );
       }
     } finally {
       setActivatingBonusEventId(null);
@@ -3241,7 +3292,7 @@ export default function PlayerPage() {
       setCashoutInquiryMessage('');
       setShowCashoutInquiryPanel(false);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to send inquiry.');
+      reportPlayerUiError('player_cashout_inquiry', error, setMessage, 'Failed to send inquiry.');
     } finally {
       setSendingCashoutInquiry(false);
     }
@@ -3340,8 +3391,11 @@ export default function PlayerPage() {
       }
       setDismissedPaymentDetailsNoticeVersion(paymentDetailsNoticeVersion);
     } catch (error) {
-      setMessage(
-        error instanceof Error ? error.message : 'Failed to dismiss payment details notice.'
+      reportPlayerUiError(
+        'player_payment_details_notice_dismiss',
+        error,
+        setMessage,
+        'Failed to dismiss payment details notice.'
       );
     }
   }

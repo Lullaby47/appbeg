@@ -2903,6 +2903,14 @@ export async function getCompletedUsernameCarersByPlayer(playerUid: string) {
     return {} as Record<string, string[]>;
   }
 
+  if (
+    assertClientFirestoreDisabled('completed_username_carers_by_player', 'getDocs', {
+      playerUid,
+    })
+  ) {
+    return {} as Record<string, string[]>;
+  }
+
   const tasksQuery = query(
     collection(db, 'carerTasks'),
     where('playerUid', '==', playerUid),
