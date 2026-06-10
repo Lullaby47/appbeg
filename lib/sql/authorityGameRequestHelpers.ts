@@ -9,6 +9,7 @@ import {
 } from '@/lib/games/requestLinkedCarerTask';
 import { cleanText, toIsoString } from '@/lib/sql/playerMirrorCommon';
 import {
+  carerTaskLiveChannel,
   coadminTaskLiveChannel,
   insertLiveOutboxEventWithClient,
   playerRequestLiveChannel,
@@ -359,6 +360,21 @@ export async function tombstoneLinkedCarerTaskInTxn(
   source = 'authority'
 ) {
   const taskId = requestLinkedCarerTaskId(requestId);
+  const nowIso = new Date().toISOString();
+  const taskResult = await client.query(
+    `
+      SELECT coadmin_uid, assigned_carer_uid, claimed_by_uid
+      FROM public.carer_tasks_cache
+      WHERE firebase_id = $1 AND deleted_at IS NULL
+      FOR UPDATE
+    `,
+    [taskId]
+  );
+  if (!taskResult.rows.length) {
+    return taskId;
+  }
+
+  const task = taskResult.rows[0] as Record<string, unknown>;
   await client.query(
     `
       UPDATE public.carer_tasks_cache
@@ -367,6 +383,39 @@ export async function tombstoneLinkedCarerTaskInTxn(
     `,
     [taskId, source]
   );
+
+  const payload = {
+    entityId: taskId,
+    taskId,
+    requestId,
+    status: 'tombstoned',
+    updatedAt: nowIso,
+    source: 'authority',
+  };
+  const coadminUid = cleanText(task.coadmin_uid);
+  const carerUid = cleanText(task.assigned_carer_uid) || cleanText(task.claimed_by_uid);
+  if (coadminUid) {
+    await insertLiveOutboxEventWithClient(client, {
+      channel: coadminTaskLiveChannel(coadminUid),
+      eventType: 'task.tombstoned',
+      entityType: 'carer_task',
+      entityId: taskId,
+      source,
+      mirroredAt: nowIso,
+      payload,
+    });
+  }
+  if (carerUid) {
+    await insertLiveOutboxEventWithClient(client, {
+      channel: carerTaskLiveChannel(carerUid),
+      eventType: 'task.tombstoned',
+      entityType: 'carer_task',
+      entityId: taskId,
+      source,
+      mirroredAt: nowIso,
+      payload,
+    });
+  }
   return taskId;
 }
 

@@ -863,7 +863,25 @@ export async function dismissPendingRedeemAsCarer(requestId: string) {
  * Carers may dismiss a pending recharge manually when they decide to remove it.
  * Marks the request dismissed and removes the linked carer task.
  */
-export async function dismissPendingRechargeAsCarer(requestId: string) {
+export type DismissRechargeAsCarerResult = {
+  ok?: boolean;
+  success?: boolean;
+  duplicate?: boolean;
+  alreadyDismissed?: boolean;
+  alreadyHandled?: boolean;
+  refunded?: boolean;
+  taskDeleted?: boolean;
+};
+
+export async function dismissPendingRechargeAsCarer(
+  requestId: string,
+  context?: {
+    taskId?: string | null;
+    taskStatus?: string | null;
+    amount?: number | null;
+    playerUid?: string | null;
+  }
+): Promise<DismissRechargeAsCarerResult> {
   const { isClientSqlReadMode } = await import('@/lib/client/sqlReadMode');
   const { getSqlApiReadHeaders } = await import('@/lib/client/sqlApiHeaders');
   const headers = isClientSqlReadMode()
@@ -881,10 +899,42 @@ export async function dismissPendingRechargeAsCarer(requestId: string) {
   const response = await fetch('/api/carer/game-requests/dismiss-recharge', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ requestId }),
+    body: JSON.stringify({
+      requestId,
+      taskId: context?.taskId || null,
+      taskStatus: context?.taskStatus || null,
+      amount: context?.amount ?? null,
+      playerUid: context?.playerUid || null,
+    }),
   });
-  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  const payload = (await response.json().catch(() => ({}))) as DismissRechargeAsCarerResult & {
+    error?: string;
+  };
   if (!response.ok) {
-    throw new Error(readApiError('Failed to dismiss recharge request.', payload));
+    const message = readApiError('Failed to dismiss recharge request.', payload);
+    const normalized = message.toLowerCase();
+    if (
+      response.status === 400 ||
+      response.status === 409 ||
+      payload.alreadyHandled ||
+      payload.alreadyDismissed
+    ) {
+      if (
+        normalized.includes('not pending') ||
+        normalized.includes('not found') ||
+        normalized.includes('already')
+      ) {
+        return {
+          ok: true,
+          success: true,
+          duplicate: true,
+          alreadyDismissed: true,
+          alreadyHandled: true,
+          refunded: payload.refunded === true,
+        };
+      }
+    }
+    throw new Error(message);
   }
+  return payload;
 }

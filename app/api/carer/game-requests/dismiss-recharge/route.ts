@@ -15,6 +15,10 @@ import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCac
 
 type Body = {
   requestId?: unknown;
+  taskId?: unknown;
+  taskStatus?: unknown;
+  amount?: unknown;
+  playerUid?: unknown;
   idempotencyKey?: unknown;
 };
 
@@ -40,6 +44,17 @@ export async function POST(request: Request) {
     const idempotencyKey =
       String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
 
+    console.info('[DISMISS_RECHARGE_REQUEST_BODY]', {
+      requestId,
+      taskId: String(body.taskId || '').trim() || `request__${requestId}`,
+      taskStatus: String(body.taskStatus || '').trim() || null,
+      gameRequestStatus: null,
+      amount: Number.isFinite(Number(body.amount)) ? Number(body.amount) : null,
+      playerUid: String(body.playerUid || '').trim() || null,
+      carerUid: caller.uid,
+      coadminUid: callerScope,
+    });
+
     if (isAuthoritySqlWriteEnabled()) {
       const outcome = await dismissRechargeRequestInSql({
         requestId,
@@ -55,6 +70,7 @@ export async function POST(request: Request) {
         refunded: outcome.refunded,
       });
       return NextResponse.json({
+        ok: true,
         success: true,
         alreadyDismissed: outcome.alreadyDismissed,
         refunded: outcome.refunded,
@@ -222,6 +238,35 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, ...outcome });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to dismiss recharge request.';
+    const normalized = message.toLowerCase();
+    if (
+      normalized.includes('not pending') ||
+      normalized.includes('already dismissed') ||
+      normalized.includes('already handled') ||
+      normalized.includes('request not found')
+    ) {
+      console.info('[DISMISS_RECHARGE_SQL_STATE]', {
+        requestId: null,
+        beforeStatus: 'unknown',
+        afterStatus: 'dismissed',
+        alreadyDismissed: true,
+        alreadyRefunded: false,
+        duplicateOperation: true,
+        refundApplied: false,
+        taskUpdated: false,
+        outboxInserted: false,
+        ok: true,
+        reason: message,
+      });
+      return NextResponse.json({
+        ok: true,
+        success: true,
+        duplicate: true,
+        alreadyDismissed: true,
+        refunded: false,
+        alreadyHandled: true,
+      });
+    }
     const status =
       /not authenticated|authorization|token/i.test(message)
         ? 401
@@ -232,6 +277,19 @@ export async function POST(request: Request) {
             : /required|not found|only/i.test(message)
               ? 400
               : 500;
+    console.warn('[DISMISS_RECHARGE_SQL_STATE]', {
+      requestId: null,
+      beforeStatus: 'unknown',
+      afterStatus: 'unknown',
+      alreadyDismissed: false,
+      alreadyRefunded: false,
+      duplicateOperation: false,
+      refundApplied: false,
+      taskUpdated: false,
+      outboxInserted: false,
+      ok: false,
+      reason: message,
+    });
     return NextResponse.json({ error: message }, { status });
   }
 }

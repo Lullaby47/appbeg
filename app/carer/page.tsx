@@ -642,6 +642,9 @@ export default function CarerPage() {
   const [dismissRechargeRequestId, setDismissRechargeRequestId] = useState<
     string | null
   >(null);
+  const [dismissedRechargeRequestIds, setDismissedRechargeRequestIds] = useState<
+    Record<string, true>
+  >({});
   const [deletingPendingTaskId, setDeletingPendingTaskId] = useState<string | null>(null);
   const [showRevTotals, setShowRevTotals] = useState(false);
   const [carerRechargeRedeemTotals, setCarerRechargeRedeemTotals] = useState<
@@ -3094,6 +3097,42 @@ export default function CarerPage() {
     }
   }
 
+  function applyDismissedRechargeTaskUi(task: CarerTask, requestId: string, reason: string) {
+    const wasInProgress = String(task.status || '').trim().toLowerCase() === 'in_progress';
+    const wasPending = String(task.status || '').trim().toLowerCase() === 'pending';
+    setDismissedRechargeRequestIds((previous) => ({
+      ...previous,
+      [requestId]: true,
+    }));
+    setTasks((previous) => previous.filter((current) => current.id !== task.id));
+    setAutomationStatusByTaskId((previous) => {
+      if (!previous[task.id]) return previous;
+      const next = { ...previous };
+      delete next[task.id];
+      return next;
+    });
+    setFreshAutomationJobByTaskId((previous) => {
+      if (!previous[task.id]) return previous;
+      const next = { ...previous };
+      delete next[task.id];
+      return next;
+    });
+    setLocalAutomationProcessingByTaskId((previous) => {
+      if (!previous[task.id]) return previous;
+      const next = { ...previous };
+      delete next[task.id];
+      return next;
+    });
+    console.info('[CARER_DISMISS_RECHARGE_UI_UPDATE]', {
+      taskId: task.id,
+      requestId,
+      removedFromInProgress: wasInProgress,
+      removedFromPending: wasPending,
+      disabledButton: true,
+      reason,
+    });
+  }
+
   async function handleDismissPendingRecharge(task: CarerTask) {
     const requestId = task.requestId?.trim();
 
@@ -3103,6 +3142,15 @@ export default function CarerPage() {
     }
 
     if (task.type !== 'recharge') {
+      return;
+    }
+
+    if (dismissedRechargeRequestIds[requestId]) {
+      applyDismissedRechargeTaskUi(task, requestId, 'already_dismissed_local');
+      return;
+    }
+
+    if (dismissRechargeRequestId === requestId) {
       return;
     }
 
@@ -3119,13 +3167,24 @@ export default function CarerPage() {
     setNoticeMessage('');
 
     try {
-      await dismissPendingRechargeAsCarer(requestId);
-      console.info('[CARER_DELETE_TASK] requestId=%s', requestId);
-      console.info('[CARER_DELETE_TASK] optimisticRemoveTaskId=%s', task.id);
-      setTasks((previous) => previous.filter((current) => current.id !== task.id));
-      setNoticeMessage('Pending recharge request dismissed.');
-      console.info('[CARER_DELETE_TASK] refreshAfterDelete=true');
-      await refreshPageData(false);
+      const outcome = await dismissPendingRechargeAsCarer(requestId, {
+        taskId: task.id,
+        taskStatus: task.status,
+        amount: typeof task.amount === 'number' ? task.amount : null,
+        playerUid: task.playerUid,
+      });
+      applyDismissedRechargeTaskUi(
+        task,
+        requestId,
+        outcome.duplicate || outcome.alreadyDismissed
+          ? 'duplicate_success'
+          : 'dismiss_success'
+      );
+      setNoticeMessage(
+        outcome.duplicate || outcome.alreadyDismissed
+          ? 'This recharge request was already dismissed.'
+          : 'Pending recharge request dismissed.'
+      );
     } catch (error) {
       reportCarerActionError(
         'dismiss_recharge',
@@ -3170,7 +3229,16 @@ export default function CarerPage() {
         await dismissPendingRedeemAsCarer(requestId);
       } else if (task.type === 'recharge' && requestId) {
         setDismissRechargeRequestId(requestId);
-        await dismissPendingRechargeAsCarer(requestId);
+        await dismissPendingRechargeAsCarer(requestId, {
+          taskId: task.id,
+          taskStatus: task.status,
+          amount: typeof task.amount === 'number' ? task.amount : null,
+          playerUid: task.playerUid,
+        });
+        setDismissedRechargeRequestIds((previous) => ({
+          ...previous,
+          [requestId]: true,
+        }));
       } else {
         await deletePendingCarerTask(task.id);
       }
@@ -4697,14 +4765,16 @@ export default function CarerPage() {
                   type="button"
                   onClick={() => void handleDismissPendingRecharge(task)}
                   disabled={
-                    dismissRechargeRequestId === task.requestId ||
-                    taskLoadingId === task.id
+                    dismissedRechargeRequestIds[task.requestId] === true ||
+                    dismissRechargeRequestId === task.requestId
                   }
                   className="rounded-xl border border-amber-500/40 bg-amber-500/15 px-4 py-2 text-sm font-bold text-amber-100 hover:bg-amber-500/25 disabled:opacity-60"
                 >
                   {dismissRechargeRequestId === task.requestId
                     ? 'Dismissing...'
-                    : 'Dismiss recharge'}
+                    : dismissedRechargeRequestIds[task.requestId]
+                      ? 'Dismissed'
+                      : 'Dismiss recharge'}
                 </button>
               )}
               <button

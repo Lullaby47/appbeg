@@ -143,6 +143,29 @@ export async function claimAuthorityOperation(
   return { claimed: false, duplicate: true };
 }
 
+export async function readAuthorityOperationExists(operationKey: string): Promise<boolean> {
+  const key = cleanText(operationKey);
+  if (!key) {
+    return false;
+  }
+
+  const db = getPlayerMirrorPool();
+  if (!db) {
+    return false;
+  }
+
+  const result = await db.query(
+    `
+      SELECT 1
+      FROM public.authority_operations
+      WHERE operation_key = $1
+      LIMIT 1
+    `,
+    [key]
+  );
+  return result.rows.length > 0;
+}
+
 export async function readAuthorityOperationPayload(
   operationKey: string
 ): Promise<Record<string, unknown> | null> {

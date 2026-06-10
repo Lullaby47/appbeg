@@ -38,6 +38,14 @@ function mapCarerActionErrorMessage(action: string, message: string) {
   if (normalized.includes('outside your scope')) {
     return 'You no longer have access to this task.';
   }
+  if (
+    action === 'dismiss_recharge' &&
+    (normalized.includes('not pending') ||
+      normalized.includes('not found') ||
+      normalized.includes('already'))
+  ) {
+    return 'This request was already handled.';
+  }
   return message || 'Action unavailable.';
 }
 

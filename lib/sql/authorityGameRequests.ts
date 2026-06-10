@@ -8,6 +8,7 @@ import { getCoadminMaintenanceBreak } from '@/lib/maintenance/admin';
 import {
   claimAuthorityOperation,
   insertAuthorityLedgerEvent,
+  readAuthorityOperationExists,
   readAuthorityOperationPayload,
 } from '@/lib/sql/authorityLedger';
 import {
@@ -35,6 +36,7 @@ const PLAYER_GAME_REDEEM_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
 const FIRST_RECHARGE_MATCH_PERCENT = 50;
 
 const DISMISSIBLE_REDEEM_STATUSES = new Set(['pending', 'poked', 'pending_review']);
+const DISMISSIBLE_RECHARGE_STATUSES = new Set(['pending', 'poked', 'pending_review', 'failed']);
 
 export type AuthorityRechargeCreateInput = {
   playerUid: string;
@@ -1204,6 +1206,124 @@ export async function completeRechargeRedeemTaskInSql(
   }
 }
 
+function buildDismissRechargeSqlResult(input: {
+  requestId: string;
+  linkedTaskId: string;
+  duplicate: boolean;
+  alreadyDismissed: boolean;
+  refunded: boolean;
+  taskDeleted: boolean;
+}): AuthorityDismissRechargeResult {
+  return {
+    success: true,
+    duplicate: input.duplicate,
+    alreadyDismissed: input.alreadyDismissed,
+    refunded: input.refunded,
+    requestId: input.requestId,
+    linkedTaskId: input.linkedTaskId,
+    taskDeleted: input.taskDeleted,
+  };
+}
+
+function logDismissRechargeSqlState(input: {
+  requestId: string;
+  beforeStatus: string;
+  afterStatus: string;
+  alreadyDismissed: boolean;
+  alreadyRefunded: boolean;
+  duplicateOperation: boolean;
+  refundApplied: boolean;
+  taskUpdated: boolean;
+  outboxInserted: boolean;
+  ok: boolean;
+  reason: string | null;
+}) {
+  console.info('[DISMISS_RECHARGE_SQL_STATE]', input);
+}
+
+async function readDismissRechargeRequestStatus(requestId: string) {
+  const db = getPlayerMirrorPool();
+  if (!db) {
+    return null;
+  }
+  const result = await db.query(
+    `
+      SELECT status, coin_refunded_on_dismissal
+      FROM public.player_game_requests_cache
+      WHERE firebase_id = $1 AND deleted_at IS NULL
+      LIMIT 1
+    `,
+    [requestId]
+  );
+  if (!result.rows.length) {
+    return null;
+  }
+  const row = result.rows[0] as Record<string, unknown>;
+  return {
+    status: cleanText(row.status).toLowerCase(),
+    alreadyRefunded: row.coin_refunded_on_dismissal === true,
+  };
+}
+
+async function resolveDismissRechargeDuplicate(
+  requestId: string,
+  linkedTaskId: string,
+  payload: Record<string, unknown> | null | undefined
+): Promise<AuthorityDismissRechargeResult | null> {
+  if (payload?.requestId) {
+    const result = buildDismissRechargeSqlResult({
+      requestId,
+      linkedTaskId,
+      duplicate: true,
+      alreadyDismissed: true,
+      refunded: payload.refunded === true,
+      taskDeleted: payload.taskDeleted === true,
+    });
+    logDismissRechargeSqlState({
+      requestId,
+      beforeStatus: 'unknown',
+      afterStatus: 'dismissed',
+      alreadyDismissed: true,
+      alreadyRefunded: payload.refunded === true,
+      duplicateOperation: true,
+      refundApplied: false,
+      taskUpdated: payload.taskDeleted === true,
+      outboxInserted: false,
+      ok: true,
+      reason: 'authority_operation_duplicate',
+    });
+    return result;
+  }
+
+  const requestState = await readDismissRechargeRequestStatus(requestId);
+  if (requestState?.status === 'dismissed') {
+    const result = buildDismissRechargeSqlResult({
+      requestId,
+      linkedTaskId,
+      duplicate: true,
+      alreadyDismissed: true,
+      refunded: requestState.alreadyRefunded,
+      taskDeleted: true,
+    });
+    logDismissRechargeSqlState({
+      requestId,
+      beforeStatus: 'dismissed',
+      afterStatus: 'dismissed',
+      alreadyDismissed: true,
+      alreadyRefunded: requestState.alreadyRefunded,
+      duplicateOperation: true,
+      refundApplied: false,
+      taskUpdated: false,
+      outboxInserted: false,
+      ok: true,
+      reason: 'request_already_dismissed',
+    });
+    return result;
+  }
+
+  return null;
+}
+
 export async function dismissRechargeRequestInSql(
   input: AuthorityDismissRechargeInput
 ): Promise<AuthorityDismissRechargeResult> {
@@ -1215,16 +1335,15 @@ export async function dismissRechargeRequestInSql(
   const linkedTaskId = `request__${requestId}`;
 
   const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.requestId) {
-    return {
-      success: true,
-      duplicate: true,
-      alreadyDismissed: existing.alreadyDismissed === true,
-      refunded: existing.refunded === true,
-      requestId,
-      linkedTaskId,
-      taskDeleted: existing.taskDeleted === true,
-    };
+  const duplicateResult = await resolveDismissRechargeDuplicate(requestId, linkedTaskId, existing);
+  if (duplicateResult) {
+    return duplicateResult;
+  }
+  if (await readAuthorityOperationExists(operationKey)) {
+    const inFlightDuplicate = await resolveDismissRechargeDuplicate(requestId, linkedTaskId, existing);
+    if (inFlightDuplicate) {
+      return inFlightDuplicate;
+    }
   }
 
   const db = getPlayerMirrorPool();
@@ -1245,16 +1364,9 @@ export async function dismissRechargeRequestInSql(
     if (!claim.claimed) {
       await client.query('ROLLBACK');
       const payload = await readAuthorityOperationPayload(operationKey);
-      if (payload?.requestId) {
-        return {
-          success: true,
-          duplicate: true,
-          alreadyDismissed: payload.alreadyDismissed === true,
-          refunded: payload.refunded === true,
-          requestId,
-          linkedTaskId,
-          taskDeleted: payload.taskDeleted === true,
-        };
+      const duplicate = await resolveDismissRechargeDuplicate(requestId, linkedTaskId, payload);
+      if (duplicate) {
+        return duplicate;
       }
       throw new Error('Duplicate dismiss in progress.');
     }
@@ -1268,7 +1380,14 @@ export async function dismissRechargeRequestInSql(
       `,
       [requestId]
     );
-    if (!requestResult.rows.length) throw new Error('Request not found.');
+    if (!requestResult.rows.length) {
+      const duplicate = await resolveDismissRechargeDuplicate(requestId, linkedTaskId, existing);
+      if (duplicate) {
+        await client.query('ROLLBACK');
+        return duplicate;
+      }
+      throw new Error('Request not found.');
+    }
     const request = requestResult.rows[0] as Record<string, unknown>;
     if (cleanText(request.type).toLowerCase() !== 'recharge') {
       throw new Error('Only recharge requests can be dismissed.');
@@ -1280,9 +1399,14 @@ export async function dismissRechargeRequestInSql(
       throw new Error('Forbidden: request is outside your scope.');
     }
 
-    const currentStatus = cleanText(request.status).toLowerCase();
-    const alreadyDismissed = currentStatus === 'dismissed';
-    if (!alreadyDismissed && currentStatus !== 'pending') {
+    const beforeStatus = cleanText(request.status).toLowerCase();
+    const alreadyDismissed = beforeStatus === 'dismissed';
+    const alreadyRefunded = request.coin_refunded_on_dismissal === true;
+    if (
+      !alreadyDismissed &&
+      !DISMISSIBLE_RECHARGE_STATUSES.has(beforeStatus) &&
+      beforeStatus !== 'completed'
+    ) {
       throw new Error('Request is not pending.');
     }
 
@@ -1300,7 +1424,7 @@ export async function dismissRechargeRequestInSql(
     let refunded = false;
     const playerUid = cleanText(request.player_uid);
 
-    if (alreadyDismissed) {
+    if (alreadyDismissed || beforeStatus === 'completed') {
       if (taskExists) {
         await tombstoneLinkedCarerTaskInTxn(client, requestId, 'authority_dismiss_recharge');
       }
@@ -1309,20 +1433,32 @@ export async function dismissRechargeRequestInSql(
         JSON.stringify({
           requestId,
           alreadyDismissed: true,
-          refunded: false,
+          refunded: alreadyRefunded,
           taskDeleted: taskExists,
         }),
       ]);
       await client.query('COMMIT');
-      return {
-        success: true,
-        duplicate: false,
+      logDismissRechargeSqlState({
+        requestId,
+        beforeStatus,
+        afterStatus: beforeStatus === 'completed' ? 'completed' : 'dismissed',
         alreadyDismissed: true,
-        refunded: false,
+        alreadyRefunded,
+        duplicateOperation: true,
+        refundApplied: false,
+        taskUpdated: taskExists,
+        outboxInserted: taskExists,
+        ok: true,
+        reason: 'request_already_handled',
+      });
+      return buildDismissRechargeSqlResult({
         requestId,
         linkedTaskId,
+        duplicate: true,
+        alreadyDismissed: true,
+        refunded: alreadyRefunded,
         taskDeleted: taskExists,
-      };
+      });
     }
 
     if (!playerUid) throw new Error('Request player not found.');
@@ -1450,16 +1586,6 @@ export async function dismissRechargeRequestInSql(
       eventType: 'recharge_dismiss',
       updatedAt: nowIso,
     });
-    if (taskExists) {
-      await writeCarerTaskOutboxInTxn(client, {
-        coadminUid: requestCoadminUid,
-        taskId: linkedTaskId,
-        requestId,
-        status: 'deleted',
-        eventType: 'recharge_task_dismiss',
-        updatedAt: nowIso,
-      });
-    }
     if (refunded) {
       await insertLiveOutboxEventWithClient(client, {
         channel: playerRequestLiveChannel(playerUid),
@@ -1482,15 +1608,27 @@ export async function dismissRechargeRequestInSql(
       }),
     ]);
     await client.query('COMMIT');
-    return {
-      success: true,
+    logDismissRechargeSqlState({
+      requestId,
+      beforeStatus,
+      afterStatus: 'dismissed',
+      alreadyDismissed: false,
+      alreadyRefunded,
+      duplicateOperation: false,
+      refundApplied: refunded,
+      taskUpdated: taskExists,
+      outboxInserted: true,
+      ok: true,
+      reason: null,
+    });
+    return buildDismissRechargeSqlResult({
+      requestId,
+      linkedTaskId,
       duplicate: false,
       alreadyDismissed: false,
       refunded,
-      requestId,
-      linkedTaskId,
       taskDeleted: taskExists,
-    };
+    });
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
