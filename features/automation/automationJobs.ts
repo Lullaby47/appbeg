@@ -266,15 +266,29 @@ export async function claimTaskAndCreateJob(input: {
 }) {
   const serverClaimStartedAt = Date.now();
   console.info('[START_TIMING] server claim start at=%s taskId=%s source=client_claimTaskAndCreateJob', new Date(serverClaimStartedAt).toISOString(), input.taskId);
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
 
   if (isClientSqlReadMode()) {
+    const headers = await getSqlApiReadHeaders(true);
+    const hasAppSessionId = Boolean(
+      (headers as Record<string, string>)['X-App-Session-Id'] ||
+        (headers as Record<string, string>)['x-app-session-id']
+    );
+    console.info('[CARER_RESET_PASSWORD_ACTION]', {
+      action: 'claim_task',
+      taskId: input.taskId,
+      playerUid: null,
+      playerGameLoginId: null,
+      gameId: null,
+      carerUid: null,
+      coadminUid: null,
+      sqlMode: true,
+      hasAppSessionId,
+      authSource: 'app_session_sql',
+      firebaseAttempted: false,
+    });
     const response = await fetch('/api/carer/tasks/claim', {
       method: 'POST',
-      headers: await getSqlApiReadHeaders(true),
+      headers,
       body: JSON.stringify({
         taskId: input.taskId,
         currentUsername: input.currentUsername ?? null,
@@ -289,8 +303,29 @@ export async function claimTaskAndCreateJob(input: {
       status?: string;
       reusedExistingJob?: boolean;
     };
+    console.info('[CARER_RESET_PASSWORD_REQUEST]', {
+      route: '/api/carer/tasks/claim',
+      method: 'POST',
+      status: response.status,
+      responseBody: payload,
+      authSource: 'app_session_sql',
+      hasAppSessionId,
+      firebaseAttempted: false,
+    });
     if (!response.ok) {
-      throw new Error(payload.error || 'Failed to claim task.');
+      const message = payload.error || 'Failed to claim task.';
+      if (/not authenticated/i.test(message)) {
+        console.info('[CARER_RESET_PASSWORD_NOT_AUTHENTICATED]', {
+          file: 'features/automation/automationJobs.ts',
+          function: 'claimTaskAndCreateJob',
+          reason: message,
+          authCurrentUserUid: null,
+          sessionUid: null,
+          expectedCarerUid: null,
+          sqlMode: true,
+        });
+      }
+      throw new Error(message);
     }
     console.info(
       '[START_TIMING] server write completed at=%s durationMs=%s taskId=%s jobId=%s status=%s source=sql_claim_api',
@@ -306,6 +341,20 @@ export async function claimTaskAndCreateJob(input: {
       status: String(payload.status || 'queued'),
       reusedExistingJob: Boolean(payload.reusedExistingJob),
     };
+  }
+
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    console.info('[CARER_RESET_PASSWORD_NOT_AUTHENTICATED]', {
+      file: 'features/automation/automationJobs.ts',
+      function: 'claimTaskAndCreateJob',
+      reason: 'missing_firebase_current_user',
+      authCurrentUserUid: null,
+      sessionUid: null,
+      expectedCarerUid: null,
+      sqlMode: false,
+    });
+    throw new Error('Not authenticated.');
   }
 
   const firestoreDb = getClientDb('claimTaskAndCreateJob');

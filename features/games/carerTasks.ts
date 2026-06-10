@@ -1878,6 +1878,21 @@ export async function syncCarerTasksForCoadmin(
 ) {
   const cleanCoadminUid = String(coadminUid || '').trim();
   const { players, games, logins } = baseData;
+
+  if (isClientSqlReadMode()) {
+    console.info('[CARER_TASK_SYNC_SKIPPED]', {
+      coadminUid: cleanCoadminUid,
+      reason: 'sql_mode_authoritative_sse',
+    });
+    return {
+      players,
+      games,
+      logins,
+      pendingRequests: [],
+      completedRequests: [],
+    };
+  }
+
   const pendingRequestsRaw = await getPendingPlayerGameRequestsByCoadmin(cleanCoadminUid);
   const pendingRequests = await dropPendingRechargeRequestsWithoutEnoughCoin(
     pendingRequestsRaw.filter((request) => players.some((player) => player.uid === request.playerUid)),
@@ -2627,9 +2642,33 @@ export async function completeCarerTask(taskId: string) {
 export async function completeUsernameTaskForPlayerGame(
   coadminUid: string,
   playerUid: string,
-  gameName: string
+  gameName: string,
+  options?: {
+    taskType?: 'reset_password' | 'recreate_username' | 'create_game_username';
+    taskId?: string | null;
+    playerGameLoginId?: string | null;
+  }
 ) {
+  const sqlMode = isClientSqlReadMode();
   const headers = await getAuthHeaders('complete_username');
+  const hasAppSessionId = Boolean(
+    (headers as Record<string, string>)['X-App-Session-Id'] ||
+      (headers as Record<string, string>)['x-app-session-id']
+  );
+  console.info('[CARER_RESET_PASSWORD_ACTION]', {
+    action: 'complete_username_task',
+    taskId: options?.taskId || null,
+    playerUid,
+    playerGameLoginId: options?.playerGameLoginId || null,
+    gameId: gameName,
+    carerUid: null,
+    coadminUid,
+    sqlMode,
+    hasAppSessionId,
+    authSource: sqlMode ? 'app_session_sql' : 'firebase_token',
+    firebaseAttempted: false,
+    taskType: options?.taskType || 'create_game_username',
+  });
   const response = await fetch('/api/carer/tasks/complete-username', {
     method: 'POST',
     headers,
@@ -2644,12 +2683,35 @@ export async function completeUsernameTaskForPlayerGame(
     completedTaskCount?: number;
     totalAwardNpr?: number;
   };
+  console.info('[CARER_RESET_PASSWORD_REQUEST]', {
+    route: '/api/carer/tasks/complete-username',
+    method: 'POST',
+    status: response.status,
+    responseBody: payload,
+    authSource: sqlMode ? 'app_session_sql' : 'firebase_token',
+    hasAppSessionId,
+    firebaseAttempted: false,
+  });
   if (!response.ok) {
-    throw new Error(readApiError('Failed to complete username task.', payload));
+    const message = readApiError('Failed to complete username task.', payload);
+    if (/not authenticated/i.test(message)) {
+      console.info('[CARER_RESET_PASSWORD_NOT_AUTHENTICATED]', {
+        file: 'features/games/carerTasks.ts',
+        function: 'completeUsernameTaskForPlayerGame',
+        reason: message,
+        authCurrentUserUid: auth.currentUser?.uid || null,
+        sessionUid: null,
+        expectedCarerUid: null,
+        sqlMode,
+      });
+    }
+    throw new Error(message);
   }
-  const taskId = usernameTaskId(coadminUid, playerUid, gameName);
+  const taskId = options?.taskId || usernameTaskId(coadminUid, playerUid, gameName);
   await forceRefreshTaskFromServer(taskId, doc(db, 'carerTasks', taskId));
-  void mirrorCarerTaskCacheBestEffort(taskId);
+  if (!sqlMode) {
+    void mirrorCarerTaskCacheBestEffort(taskId);
+  }
   return {
     completedTaskCount: Number(payload.completedTaskCount || 0),
     totalAwardNpr: Number(payload.totalAwardNpr || 0),

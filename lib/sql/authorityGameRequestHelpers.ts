@@ -300,7 +300,7 @@ export async function upsertLinkedCarerTaskInTxn(
         blocked: true,
         reason: 'tombstoned_row_preserved',
       });
-      return taskId;
+      return { taskId, inserted: false };
     }
   }
 
@@ -379,7 +379,7 @@ export async function upsertLinkedCarerTaskInTxn(
       JSON.stringify(raw),
     ]
   );
-  return taskId;
+  return { taskId, inserted: true };
 }
 
 export async function tombstoneLinkedCarerTaskInTxn(

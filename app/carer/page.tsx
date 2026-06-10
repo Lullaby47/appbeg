@@ -2748,7 +2748,17 @@ export default function CarerPage() {
       const rewardSummary = await completeUsernameTaskForPlayerGame(
         coadminUid,
         selectedPlayer.uid,
-        gameName.trim()
+        gameName.trim(),
+        {
+          taskType: activeUsernameTask
+            ? (getTaskTypeKey(activeUsernameTask) as
+                | 'reset_password'
+                | 'recreate_username'
+                | 'create_game_username')
+            : 'create_game_username',
+          taskId: activeUsernameTask?.id || null,
+          playerGameLoginId: (loginToUpdate || existingLoginForSelectedGame)?.id || null,
+        }
       );
 
       if (rewardSummary.totalAwardNpr > 0) {
@@ -3745,11 +3755,25 @@ export default function CarerPage() {
       return;
     }
 
+    const loginForTask =
+      allPlayerLogins.find(
+        (login) =>
+          login.playerUid === uid &&
+          normalizeGameName(login.gameName || '') === normalizeGameName(task.gameName || '')
+      ) || null;
+
     setSelectedPlayerUid(uid);
     setActiveUsernameTask(task);
     setEditingLogin(null);
     setGameName(task.gameName || '');
-    setGameUsername('');
+    setGameUsername(
+      String(
+        loginForTask?.gameUsername ||
+          (task as { currentUsername?: string | null }).currentUsername ||
+          (task as { gameAccountUsername?: string | null }).gameAccountUsername ||
+          ''
+      ).trim()
+    );
     setGamePassword('');
     setActiveView('create-username');
     setShowTaskSplash(false);
