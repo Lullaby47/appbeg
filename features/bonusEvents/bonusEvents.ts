@@ -20,7 +20,8 @@ import { getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
 import { upsertCarerTaskForPlayerGameRequest } from '@/features/games/carerTasks';
 import type { PlayerGameRequest } from '@/features/games/playerGameRequests';
 import { getLocalAppSessionId } from '@/features/auth/appSession';
-import { getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { getLocalPlayerSessionId, getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { getCachedSessionUser } from '@/features/auth/sessionUser';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
@@ -287,7 +288,7 @@ async function fetchCoadminAutoBonusPercentRangeFromApi(coadminUid: string) {
     `/api/coadmin/bonus-events/cache?coadminUid=${encodeURIComponent(coadminUid)}`,
     {
       method: 'GET',
-      headers: await getFirebaseApiHeaders(),
+      headers: await getCoadminBonusApiHeaders(false),
       cache: 'no-store',
     }
   );
@@ -342,7 +343,7 @@ async function getCoadminGameNamesFromApi(coadminUid: string): Promise<string[]>
     `/api/game-logins/cache?coadminUid=${encodeURIComponent(coadminUid)}`,
     {
       method: 'GET',
-      headers: await getFirebaseApiHeaders(),
+      headers: await getCoadminBonusApiHeaders(false),
       cache: 'no-store',
     }
   );
@@ -681,7 +682,7 @@ export async function setCoadminAutoBonusPercentRange(values: {
   const normalizedRange = normalizeAutoBonusPercentRange(values);
   const response = await fetch('/api/coadmin/bonus-events/update-range', {
     method: 'POST',
-    headers: await getFirebaseApiHeaders(),
+    headers: await getCoadminBonusApiHeaders(),
     body: JSON.stringify({
       minPercent: normalizedRange.minPercent,
       maxPercent: normalizedRange.maxPercent,
@@ -723,37 +724,79 @@ function mapApiBonusEvent(event: Record<string, unknown>): BonusEvent {
   } as BonusEvent;
 }
 
+export function logBonusEventsUiGuard(values: {
+  page: string;
+  reason: string;
+  isCoadminView?: boolean;
+  isPlayerView?: boolean;
+}) {
+  const cached = getCachedSessionUser();
+  const currentUser = auth.currentUser;
+  console.info('[BONUS_EVENTS_UI_GUARD]', {
+    page: values.page,
+    role: cached?.role || null,
+    uid: cached?.uid || currentUser?.uid || null,
+    hasAppSessionId: Boolean(getLocalAppSessionId()),
+    hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+    isCoadminView: values.isCoadminView ?? true,
+    isPlayerView: values.isPlayerView ?? false,
+    reason: values.reason,
+  });
+}
+
+/** Coadmin/admin bonus management: app session + bearer only (no player session). */
+async function getCoadminBonusApiHeaders(contentType = false) {
+  return getFirebaseApiHeaders(contentType);
+}
+
 async function getBonusEventsListHeaders() {
-  if (getLocalAppSessionId()) {
-    return getPlayerApiHeaders(false);
-  }
-  return getFirebaseApiHeaders();
+  return getCoadminBonusApiHeaders(false);
 }
 
 async function fetchBonusEventsFromApi(
   coadminUid: string,
   options?: { skipTimeWindowFilter?: boolean }
 ) {
-  const response = await fetch(
-    `/api/bonus-events/list?coadminUid=${encodeURIComponent(coadminUid)}`,
-    {
-      method: 'GET',
-      headers: await getBonusEventsListHeaders(),
-      cache: 'no-store',
+  try {
+    const response = await fetch(
+      `/api/bonus-events/list?coadminUid=${encodeURIComponent(coadminUid)}`,
+      {
+        method: 'GET',
+        headers: await getBonusEventsListHeaders(),
+        cache: 'no-store',
+      }
+    );
+    const payload = (await response.json().catch(() => ({}))) as {
+      events?: Array<Record<string, unknown>>;
+      error?: string;
+    };
+    if (!response.ok) {
+      const reason = payload.error || `http_${response.status}`;
+      logBonusEventsUiGuard({
+        page: 'coadmin_bonus_events_list',
+        reason,
+        isCoadminView: true,
+        isPlayerView: false,
+      });
+      throw new Error(payload.error || 'Failed to load bonus events.');
     }
-  );
-  const payload = (await response.json().catch(() => ({}))) as {
-    events?: Array<Record<string, unknown>>;
-    error?: string;
-  };
-  if (!response.ok) {
-    throw new Error(payload.error || 'Failed to load bonus events.');
+    const events = (payload.events || []).map(mapApiBonusEvent);
+    const filtered = options?.skipTimeWindowFilter
+      ? sortByNewest(events)
+      : sortByNewest(events).filter((event) => isBonusEventActive(event));
+    return filtered;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('Player session required')) {
+      logBonusEventsUiGuard({
+        page: 'coadmin_bonus_events_list',
+        reason: 'player_session_required_blocked_on_coadmin_view',
+        isCoadminView: true,
+        isPlayerView: false,
+      });
+    }
+    throw error instanceof Error ? error : new Error(message);
   }
-  const events = (payload.events || []).map(mapApiBonusEvent);
-  const filtered = options?.skipTimeWindowFilter
-    ? sortByNewest(events)
-    : sortByNewest(events).filter((event) => isBonusEventActive(event));
-  return filtered;
 }
 
 export function listenBonusEventsByCoadmin(
@@ -807,7 +850,14 @@ export function listenBonusEventsByCoadmin(
         onChange(events);
       } catch (error) {
         if (!cancelled) {
-          onError?.(error instanceof Error ? error : new Error(String(error)));
+          const err = error instanceof Error ? error : new Error(String(error));
+          logBonusEventsUiGuard({
+            page: 'coadmin_bonus_events_listener',
+            reason: err.message,
+            isCoadminView: true,
+            isPlayerView: false,
+          });
+          onError?.(err);
         }
       } finally {
         if (!cancelled) {

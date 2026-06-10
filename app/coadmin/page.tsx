@@ -116,6 +116,7 @@ import {
   getCoadminAutoBonusPercentRange,
   MAX_ACTIVE_BONUS_EVENTS,
   listenBonusEventsByCoadmin,
+  logBonusEventsUiGuard,
   setCoadminAutoBonusPercentRange,
 } from '../../features/bonusEvents/bonusEvents';
 import {
@@ -1337,7 +1338,14 @@ export default function CoadminPage() {
           },
           (error) => {
             if (!isCancelled) {
-              setMessage(error.message || 'Failed to listen for bonus events.');
+              const errMsg = error.message || 'Failed to listen for bonus events.';
+              logBonusEventsUiGuard({
+                page: 'coadmin_page_bonus_events',
+                reason: errMsg,
+                isCoadminView: true,
+                isPlayerView: false,
+              });
+              setMessage(errMsg);
               scheduleBonusEventsRetry(() => {
                 if (!isCancelled) {
                   void startBonusEventsListener();
@@ -1350,6 +1358,12 @@ export default function CoadminPage() {
       } catch (error: any) {
         if (!isCancelled) {
           const errMsg = error?.message || 'Failed to start bonus events listener.';
+          logBonusEventsUiGuard({
+            page: 'coadmin_page_bonus_events_start',
+            reason: errMsg,
+            isCoadminView: true,
+            isPlayerView: false,
+          });
           setMessage(errMsg);
           if (String(errMsg).toLowerCase().includes('not authenticated')) {
             bonusEventsRetryCountRef.current = 0;

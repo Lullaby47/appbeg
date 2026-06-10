@@ -7,9 +7,15 @@ import {
   isAuthoritySqlWriteEnabled,
   logAuthoritySqlWrite,
 } from '@/lib/server/authoritySqlWrite';
+import {
+  bonusEventsRequestHeaderFlags,
+  logBonusEventsBlocked,
+  logBonusEventsRangeSql,
+} from '@/lib/server/bonusEventsAudit';
 import { updateBonusRangeInSql } from '@/lib/sql/authorityBonus';
 import { mirrorCoadminBonusSettingsSnapshot } from '@/lib/sql/coadminBonusSettingsCache';
 
+const ROUTE = '/api/coadmin/bonus-events/update-range';
 const COADMIN_MIN_PERCENT = 5;
 const COADMIN_MAX_PERCENT = 10;
 const COADMIN_AUTO_BONUS_PERCENT_MIN = 5;
@@ -92,6 +98,15 @@ export async function POST(request: Request) {
   try {
     const auth = await requireApiUser(request, ['coadmin']);
     if ('response' in auth) {
+      const headerFlags = bonusEventsRequestHeaderFlags(request);
+      logBonusEventsBlocked({
+        route: ROUTE,
+        reason: 'auth_failed',
+        requiredAuth: 'coadmin',
+        receivedAuth: auth.timing?.auth_path || null,
+        hasAppSessionId: headerFlags.has_app_session_header,
+        hasPlayerSessionId: headerFlags.has_player_session_header,
+      });
       return auth.response;
     }
     const callerUid = auth.user.uid;
@@ -111,7 +126,19 @@ export async function POST(request: Request) {
         maxPercent: Number(body?.maxPercent),
         idempotencyKey,
       });
-      logAuthoritySqlWrite('/api/coadmin/bonus-events/update-range', {
+      logBonusEventsRangeSql({
+        route: ROUTE,
+        coadminUid: callerUid,
+        oldMin: null,
+        oldMax: null,
+        newMin: result.minPercent,
+        newMax: result.maxPercent,
+        affectedEvents: result.adjustedEventCount,
+        authority_sql_write: true,
+        firestore_fallback: false,
+        reason: result.duplicate ? 'duplicate_idempotency' : 'coadmin_bonus_settings_cache_update',
+      });
+      logAuthoritySqlWrite(ROUTE, {
         coadminUid: callerUid,
         adjustedEventCount: result.adjustedEventCount,
         duplicate: result.duplicate || false,

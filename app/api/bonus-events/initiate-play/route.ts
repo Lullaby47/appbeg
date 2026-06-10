@@ -17,6 +17,11 @@ import {
   isAuthoritySqlWriteEnabled,
   logAuthoritySqlWrite,
 } from '@/lib/server/authoritySqlWrite';
+import {
+  bonusEventsRequestHeaderFlags,
+  logBonusEventsBlocked,
+  logBonusEventsInitiateAuth,
+} from '@/lib/server/bonusEventsAudit';
 import { initiateBonusPlayInSql } from '@/lib/sql/authorityBonus';
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
@@ -36,16 +41,54 @@ function normalizeGameName(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
 }
 
+const ROUTE = '/api/bonus-events/initiate-play';
+
 export async function POST(request: Request) {
   try {
     const auth = await requireApiUser(request, ['player']);
-    if ('response' in auth) return auth.response;
+    if ('response' in auth) {
+      const headerFlags = bonusEventsRequestHeaderFlags(request);
+      logBonusEventsBlocked({
+        route: ROUTE,
+        reason: 'auth_failed',
+        requiredAuth: 'player',
+        receivedAuth: auth.timing?.auth_path || null,
+        hasAppSessionId: headerFlags.has_app_session_header,
+        hasPlayerSessionId: headerFlags.has_player_session_header,
+      });
+      return auth.response;
+    }
     await rejectIfPlayerMaintenanceBreak(auth.user.uid, 'bonus_event');
     const body = (await request.json()) as Body;
     const bonusEventId = String(body.bonusEventId || '').trim();
     if (!bonusEventId) return apiError('bonusEventId is required.', 400);
 
     const playerUid = auth.user.uid;
+    const coadminUid =
+      String(auth.user.coadminUid || auth.user.createdBy || '').trim() || null;
+
+    logBonusEventsInitiateAuth(request, {
+      route: ROUTE,
+      playerUid,
+      coadminUid,
+      auth_path: auth.authPath,
+      session_source: auth.timing?.session_source || 'none',
+      reason: 'player_bonus_claim',
+    });
+
+    if (!bonusEventsRequestHeaderFlags(request).has_player_session_header) {
+      logBonusEventsBlocked({
+        route: ROUTE,
+        role: auth.user.role,
+        uid: playerUid,
+        reason: 'player_session_required',
+        requiredAuth: 'player_session',
+        receivedAuth: auth.authPath,
+        hasAppSessionId: bonusEventsRequestHeaderFlags(request).has_app_session_header,
+        hasPlayerSessionId: false,
+      });
+    }
+
     const idempotencyKey =
       String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
 

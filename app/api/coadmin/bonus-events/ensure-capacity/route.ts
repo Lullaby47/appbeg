@@ -7,8 +7,15 @@ import {
   isAuthoritySqlWriteEnabled,
   logAuthoritySqlWrite,
 } from '@/lib/server/authoritySqlWrite';
+import {
+  bonusEventsRequestHeaderFlags,
+  logBonusEventsBlocked,
+  logBonusEventsEnsureAuth,
+  logBonusEventsEnsureSql,
+} from '@/lib/server/bonusEventsAudit';
 import { ensureBonusCapacityInSql } from '@/lib/sql/authorityBonus';
 
+const ROUTE = '/api/coadmin/bonus-events/ensure-capacity';
 const MAX_ACTIVE_BONUS_EVENTS = 20;
 const COADMIN_MIN_PERCENT = 5;
 const COADMIN_MAX_PERCENT = 10;
@@ -345,18 +352,54 @@ export async function POST(request: Request) {
     const authStartedAt = Date.now();
     const auth = await requireApiUser(request, ['coadmin']);
     if ('response' in auth) {
+      const headerFlags = bonusEventsRequestHeaderFlags(request);
+      logBonusEventsBlocked({
+        route: ROUTE,
+        reason: 'auth_failed',
+        requiredAuth: 'coadmin',
+        receivedAuth: auth.timing?.auth_path || null,
+        hasAppSessionId: headerFlags.has_app_session_header,
+        hasPlayerSessionId: headerFlags.has_player_session_header,
+      });
       return auth.response;
     }
     const callerUid = auth.user.uid;
 
+    logBonusEventsEnsureAuth(request, {
+      route: ROUTE,
+      uid: callerUid,
+      role: auth.user.role,
+      coadminUid: callerUid,
+      auth_path: auth.authPath,
+      source: isAuthoritySqlWriteEnabled() ? 'sql' : 'firestore',
+    });
+
     if (isAuthoritySqlWriteEnabled()) {
+      const beforeCount =
+        activeCountHint != null && Number.isFinite(activeCountHint)
+          ? Math.max(0, Math.round(Number(activeCountHint)))
+          : 0;
       const result = await ensureBonusCapacityInSql({
         coadminUid: callerUid,
         callerUid,
         callerUsername: auth.user.username || 'Coadmin',
         activeCountHint,
       });
-      logAuthoritySqlWrite('/api/coadmin/bonus-events/ensure-capacity', {
+      const afterCount =
+        typeof result.totalActive === 'number' ? result.totalActive : beforeCount + result.autoCreatedCount;
+      logBonusEventsEnsureSql({
+        route: ROUTE,
+        coadminUid: callerUid,
+        beforeCount,
+        createdCount: result.autoCreatedCount,
+        afterCount,
+        minPercent: null,
+        maxPercent: null,
+        authority_sql_write: true,
+        firestore_fallback: false,
+        reason: result.skipped ? `skipped_${result.skipped}` : 'bonus_events_cache_insert',
+      });
+      logAuthoritySqlWrite(ROUTE, {
         coadminUid: callerUid,
         autoCreatedCount: result.autoCreatedCount,
         totalActive: result.totalActive,

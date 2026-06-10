@@ -8,6 +8,12 @@ import {
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
 import {
+  bonusEventsRequestHeaderFlags,
+  logBonusEventsBlocked,
+  logBonusEventsListAuth,
+  logBonusEventsListSql,
+} from '@/lib/server/bonusEventsAudit';
+import {
   readActiveBonusEventsByCoadmin,
   type CachedBonusEvent,
 } from '@/lib/sql/bonusEventsCache';
@@ -231,14 +237,17 @@ export async function GET(request: Request) {
     const requestedCoadminUid = String(url.searchParams.get('coadminUid') || '').trim();
     const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer', 'player']);
     if ('response' in auth) {
+      const headerFlags = bonusEventsRequestHeaderFlags(request);
+      logBonusEventsBlocked({
+        route: ROUTE,
+        reason: 'auth_failed',
+        requiredAuth: 'admin|coadmin|staff|carer|player',
+        receivedAuth: auth.timing?.auth_path || null,
+        hasAppSessionId: headerFlags.has_app_session_header,
+        hasPlayerSessionId: headerFlags.has_player_session_header,
+      });
       return auth.response;
     }
-    console.info('[BONUS_EVENTS_LIST_AUTH]', {
-      auth_path: auth.authPath,
-      uid: auth.user.uid,
-      role: auth.user.role,
-      app_session_used: auth.authPath.startsWith('app_session'),
-    });
 
     const derivedCoadminUid =
       auth.user.role === 'coadmin'
@@ -249,16 +258,47 @@ export async function GET(request: Request) {
       requestedCoadminUid,
       derivedCoadminUid,
     });
+
+    logBonusEventsListAuth(request, {
+      route: ROUTE,
+      uid: auth.user.uid,
+      role: auth.user.role,
+      coadminUid: coadminUid || '',
+      auth_path: auth.authPath,
+      source: 'postgres',
+    });
+
     if (!coadminUid) {
-      return NextResponse.json({ events: [] });
+      logBonusEventsListSql({
+        route: ROUTE,
+        coadminUid: '',
+        count: 0,
+        activeCount: 0,
+        sql_ms: Date.now() - startedAt,
+        firestore_fallback: false,
+        reason: 'missing_coadmin_scope',
+      });
+      return NextResponse.json({ events: [], source: 'postgres', firestore_fallback: false });
     }
 
     const sqlReadMode = isCacheSqlAuthoritative();
+    const sqlStartedAt = Date.now();
     const [gameNames, rawEvents] = await Promise.all([
       loadGameNames(coadminUid, sqlReadMode),
       loadBonusEvents(coadminUid, sqlReadMode),
     ]);
     const events = decorateLegacyBonusEvents(rawEvents, gameNames);
+    const sql_ms = Date.now() - sqlStartedAt;
+
+    logBonusEventsListSql({
+      route: ROUTE,
+      coadminUid,
+      count: rawEvents.length,
+      activeCount: events.length,
+      sql_ms,
+      firestore_fallback: false,
+      reason: sqlReadMode ? 'bonus_events_cache_read' : 'legacy_firestore_branch',
+    });
 
     if (sqlReadMode) {
       logCacheSqlRead(ROUTE, {

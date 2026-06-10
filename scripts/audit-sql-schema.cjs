@@ -138,6 +138,20 @@ async function checkTables(pool, tableNames) {
   };
 }
 
+async function checkTablePrivileges(pool, tableName) {
+  const { rows } = await pool.query(
+    `
+      SELECT privilege_type
+      FROM information_schema.role_table_grants
+      WHERE table_schema = 'public'
+        AND table_name = $1
+        AND grantee = current_user
+    `,
+    [tableName]
+  );
+  return rows.map((row) => String(row.privilege_type));
+}
+
 async function main() {
   const required = [...REQUIRED_CACHE_TABLES];
   const related = [...RELATED_CACHE_TABLES];
@@ -164,6 +178,19 @@ async function main() {
     }
   }
 
+  let bonus_events_cache_privileges = [];
+  const poolForPrivileges = createPgPool();
+  if (poolForPrivileges) {
+    try {
+      bonus_events_cache_privileges = await checkTablePrivileges(
+        poolForPrivileges,
+        'bonus_events_cache'
+      );
+    } finally {
+      await poolForPrivileges.end();
+    }
+  }
+
   const audit = {
     script: 'audit-sql-schema',
     database_checked,
@@ -171,6 +198,10 @@ async function main() {
     present_tables,
     missing_tables,
     all_required_tables_present: missing_tables.length === 0,
+    bonus_events_cache_privileges,
+    bonus_events_cache_privileges_ok: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'].every((priv) =>
+      bonus_events_cache_privileges.includes(priv)
+    ),
     related_cache_tables: related,
     related_present_tables,
     related_missing_tables,
