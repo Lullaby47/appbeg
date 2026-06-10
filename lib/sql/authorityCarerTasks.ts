@@ -1265,6 +1265,16 @@ async function resolveTaskRowForDelete(client: PoolClient, rawTaskId: string) {
   return null;
 }
 
+function logCarerDeleteSql(input: {
+  taskId: string;
+  matchedRows: number;
+  deletedAt: string | null;
+  deletedByCarerUid: string | null;
+  success: boolean;
+}) {
+  console.info('[CARER_DELETE_SQL]', input);
+}
+
 async function tombstoneCarerTaskInTxn(
   client: PoolClient,
   taskId: string,
@@ -1282,7 +1292,9 @@ async function tombstoneCarerTaskInTxn(
   }
 ) {
   const nowIso = input.deletedFromPendingAt;
-  await client.query(
+  const deletedByCarerUid = cleanText(input.deletedFromPendingByCarerUid);
+  const deletedByCarerUsername = cleanText(input.deletedFromPendingByCarerUsername) || 'Carer';
+  const tombstoneResult = await client.query(
     `
       UPDATE public.carer_tasks_cache
       SET
@@ -1301,30 +1313,37 @@ async function tombstoneCarerTaskInTxn(
         automation_error = NULL,
         failure_reason = COALESCE(NULLIF($2, ''), failure_reason),
         deleted_from_pending_at = $3::timestamptz,
-        deleted_from_pending_by_carer_uid = NULLIF($4, ''),
-        deleted_from_pending_by_carer_username = NULLIF($5, ''),
         updated_at = $3::timestamptz,
         mirrored_at = now(),
         deleted_at = now(),
-        source = $6,
-        raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || $7::jsonb
+        source = $4,
+        raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || $5::jsonb
       WHERE firebase_id = $1
+        AND deleted_at IS NULL
     `,
     [
       taskId,
       cleanText(input.failureReason) || 'deleted_by_carer',
       nowIso,
-      cleanText(input.deletedFromPendingByCarerUid),
-      cleanText(input.deletedFromPendingByCarerUsername) || 'Carer',
       input.source,
       JSON.stringify({
         status: 'deleted',
         deletedAt: nowIso,
         deletedFromPendingAt: nowIso,
+        deletedFromPendingByCarerUid: deletedByCarerUid,
+        deletedFromPendingByCarerUsername: deletedByCarerUsername,
         failureReason: cleanText(input.failureReason) || 'deleted_by_carer',
       }),
     ]
   );
+  const matchedRows = tombstoneResult.rowCount || 0;
+  logCarerDeleteSql({
+    taskId,
+    matchedRows,
+    deletedAt: nowIso,
+    deletedByCarerUid: deletedByCarerUid || null,
+    success: matchedRows > 0,
+  });
 
   await writeTaskOutboxInTxn(client, {
     coadminUid: input.coadminUid,
@@ -1341,6 +1360,7 @@ async function tombstoneCarerTaskInTxn(
     updatedAt: nowIso,
     eventType: 'task.tombstoned',
   });
+  return matchedRows;
 }
 
 export async function deletePendingTaskInSql(input: {
@@ -1511,7 +1531,7 @@ export async function deletePendingTaskInSql(input: {
       });
     }
 
-    await tombstoneCarerTaskInTxn(client, resolvedTaskId, {
+    const matchedRows = await tombstoneCarerTaskInTxn(client, resolvedTaskId, {
       coadminUid: taskScope,
       carerUid,
       type: cleanText(task.type),
@@ -1523,6 +1543,9 @@ export async function deletePendingTaskInSql(input: {
       deletedFromPendingByCarerUid: input.actorUid,
       deletedFromPendingByCarerUsername: input.actorUsername || 'Carer',
     });
+    if (matchedRows < 1) {
+      throw new Error('Task delete did not update any rows.');
+    }
 
     await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
       operationKey,
@@ -1534,7 +1557,7 @@ export async function deletePendingTaskInSql(input: {
     await client.query('COMMIT');
     console.info('[CARER_DELETE_TASK_SQL_WRITE]', {
       taskId: resolvedTaskId,
-      matchedRows: 1,
+      matchedRows,
       beforeStatus,
       afterStatus: 'deleted',
       deletedAtSet: true,
