@@ -459,15 +459,32 @@ export function attachCarerTaskSqlReadListener(
         CARER_TASK_UPSERT_EVENTS.has(parsed.event) ||
         GAME_REQUEST_CREATE_EVENTS.has(parsed.event);
       const removeLike = CARER_TASK_REMOVE_EVENTS.has(parsed.event);
+      const accepted = visibleToCarer && (upsertLike || removeLike);
+      const taskType = cleanText(enrichedPayload.type) || null;
 
       console.info('[CARER_TASK_SSE_EVENT]', {
         channel: null,
         taskId,
-        taskType: cleanText(enrichedPayload.type) || null,
+        taskType,
         status: cleanText(enrichedPayload.status) || null,
-        accepted: visibleToCarer && (upsertLike || removeLike),
+        accepted,
         mergeReason: parsed.event,
       });
+
+      if (taskType === 'recharge' || taskType === 'redeem') {
+        const auditChannel = GAME_REQUEST_CREATE_EVENTS.has(parsed.event)
+          ? coadminTaskLiveChannel(cleanCoadminUid)
+          : carerTaskLiveChannel(cleanCarerUid);
+        console.info('[CARER_TASK_SSE_AUDIT]', {
+          channel: auditChannel,
+          eventType: parsed.event,
+          taskId,
+          taskType,
+          status: cleanText(enrichedPayload.status) || null,
+          accepted,
+          reason: accepted ? parsed.event : visibleToCarer ? 'event_not_handled' : 'not_visible_to_carer',
+        });
+      }
 
       if (!visibleToCarer) {
         continue;

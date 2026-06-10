@@ -281,6 +281,35 @@ function readApiError(messageFallback: string, payload: unknown) {
   return messageFallback;
 }
 
+function logPostApiSqlSkip(requestId: string, type: PlayerGameRequestType) {
+  console.info('[PLAYER_GAME_REQUEST_POST_API_SQL_SKIP]', {
+    requestId,
+    type,
+    reason: 'server_sql_authority_creates_carer_task',
+    firestoreAttempted: false,
+  });
+}
+
+async function finalizePlayerGameRequestAfterApi(
+  requestId: string,
+  type: PlayerGameRequestType
+) {
+  console.info('[PLAYER_GAME_REQUEST] server-created linked task expected', {
+    requestId,
+    type,
+  });
+  if (isClientSqlReadMode()) {
+    logPostApiSqlSkip(requestId, type);
+    return;
+  }
+  const snap = await getDoc(doc(db, 'playerGameRequests', requestId));
+  if (snap.exists()) {
+    await upsertLinkedCarerTaskForRequest(
+      mapRequestDoc(snap.id, snap.data() as Omit<PlayerGameRequest, 'id'>)
+    );
+  }
+}
+
 async function fetchRolling24hRedeemUsageForPlayerGame(
   playerUid: string,
   gameName: string
@@ -548,19 +577,7 @@ export async function createPlayerGameRequest(values: {
     if (!createdRequestId) {
       throw new Error('Recharge request was created but request ID was missing.');
     }
-    console.info('[PLAYER_GAME_REQUEST] server-created linked task expected', {
-      requestId: createdRequestId,
-      type: 'recharge',
-    });
-    const createdSnap = await getDoc(doc(db, 'playerGameRequests', createdRequestId));
-    if (createdSnap.exists()) {
-      await upsertLinkedCarerTaskForRequest(
-        mapRequestDoc(
-          createdSnap.id,
-          createdSnap.data() as Omit<PlayerGameRequest, 'id'>
-        )
-      );
-    }
+    await finalizePlayerGameRequestAfterApi(createdRequestId, 'recharge');
     return;
   }
 
@@ -576,25 +593,37 @@ export async function createPlayerGameRequest(values: {
     );
   }
 
-  const rollingRedeemUsed = await fetchRolling24hRedeemUsageForPlayerGame(
-    playerUid,
-    cleanGameName
-  );
-  const redeemRemaining = Math.max(
-    0,
-    PLAYER_GAME_REDEEM_MAX_PER_24H - rollingRedeemUsed
-  );
-
-  if (redeemRemaining <= 0) {
-    throw new Error(
-      `Redeem limit for ${cleanGameName} is ${PLAYER_GAME_REDEEM_MAX_PER_24H} per rolling 24 hours. Wait until older redeems expire from this game window before redeeming again.`
+  const sqlMode = isClientSqlReadMode();
+  if (!sqlMode) {
+    const rollingRedeemUsed = await fetchRolling24hRedeemUsageForPlayerGame(
+      playerUid,
+      cleanGameName
     );
-  }
-
-  if (requestAmount > redeemRemaining) {
-    throw new Error(
-      `Only ${redeemRemaining} redeem is left for ${cleanGameName} in this rolling 24-hour window.`
+    const redeemRemaining = Math.max(
+      0,
+      PLAYER_GAME_REDEEM_MAX_PER_24H - rollingRedeemUsed
     );
+
+    if (redeemRemaining <= 0) {
+      throw new Error(
+        `Redeem limit for ${cleanGameName} is ${PLAYER_GAME_REDEEM_MAX_PER_24H} per rolling 24 hours. Wait until older redeems expire from this game window before redeeming again.`
+      );
+    }
+
+    if (requestAmount > redeemRemaining) {
+      throw new Error(
+        `Only ${redeemRemaining} redeem is left for ${cleanGameName} in this rolling 24-hour window.`
+      );
+    }
+  } else {
+    console.info('[PLAYER_REDEEM_CLIENT_SQL_PATH]', {
+      playerUid,
+      gameName: cleanGameName,
+      amount: requestAmount,
+      sqlMode: true,
+      skippedClientFirestoreLimitCheck: true,
+      willCallApi: true,
+    });
   }
 
   const response = await fetch('/api/player/game-requests/redeem', {
@@ -617,16 +646,7 @@ export async function createPlayerGameRequest(values: {
   if (!createdRequestId) {
     throw new Error('Redeem request was created but request ID was missing.');
   }
-  console.info('[PLAYER_GAME_REQUEST] server-created linked task expected', {
-    requestId: createdRequestId,
-    type: 'redeem',
-  });
-  const redeemSnap = await getDoc(doc(db, 'playerGameRequests', createdRequestId));
-  if (redeemSnap.exists()) {
-    await upsertLinkedCarerTaskForRequest(
-      mapRequestDoc(redeemSnap.id, redeemSnap.data() as Omit<PlayerGameRequest, 'id'>)
-    );
-  }
+  await finalizePlayerGameRequestAfterApi(createdRequestId, 'redeem');
 }
 
 export async function getPendingPlayerGameRequests(

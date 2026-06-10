@@ -80,6 +80,52 @@ function isVisibleCarerTaskForCarer(task: SnapshotTask, carerUid: string) {
   return assignedCarerUid === carerUid;
 }
 
+function snapshotRowHiddenReason(task: SnapshotTask, carerUid: string): string | null {
+  if (isVisibleCarerTaskForCarer(task, carerUid)) {
+    return null;
+  }
+  const status = cleanText(task.status).toLowerCase();
+  const assignedCarerUid = cleanText(task.assignedCarerUid);
+  if (status === 'failed') {
+    return 'status_failed';
+  }
+  if (status === 'urgent' && assignedCarerUid !== carerUid) {
+    return 'urgent_assigned_to_other_carer';
+  }
+  if (status === 'pending' && assignedCarerUid && assignedCarerUid !== carerUid) {
+    return 'pending_assigned_to_other_carer';
+  }
+  if (assignedCarerUid && assignedCarerUid !== carerUid) {
+    return 'assigned_to_other_carer';
+  }
+  return 'not_visible_to_carer';
+}
+
+function logCarerSnapshotRowAudit(input: {
+  task: SnapshotTask;
+  carerUid: string;
+  includedInRawRows: boolean;
+  includedInVisibleRows: boolean;
+  hiddenReason: string | null;
+}) {
+  const taskType = cleanText(input.task.type).toLowerCase();
+  if (taskType !== 'recharge' && taskType !== 'redeem') {
+    return;
+  }
+  console.info('[CARER_SNAPSHOT_ROW_AUDIT]', {
+    taskId: input.task.id,
+    taskType,
+    status: input.task.status,
+    playerUid: input.task.playerUid,
+    coadminUid: input.task.coadminUid,
+    assignedCarerUid: input.task.assignedCarerUid,
+    deletedAt: null,
+    includedInRawRows: input.includedInRawRows,
+    includedInVisibleRows: input.includedInVisibleRows,
+    hiddenReason: input.hiddenReason,
+  });
+}
+
 function sortByNewest(rows: SnapshotTask[]) {
   return [...rows].sort((left, right) => {
     const leftMs = left.updatedAt ? new Date(left.updatedAt).getTime() : 0;
@@ -299,7 +345,17 @@ export async function GET(
 
     const mergeStartedAt = Date.now();
     const mapped = snapshotPack.rows.map(mapSnapshotRow).filter((row) => row.id);
-    const visible = mapped.filter((task) => isVisibleCarerTaskForCarer(task, carerUid));
+    const visible = mapped.filter((task) => {
+      const included = isVisibleCarerTaskForCarer(task, carerUid);
+      logCarerSnapshotRowAudit({
+        task,
+        carerUid,
+        includedInRawRows: true,
+        includedInVisibleRows: included,
+        hiddenReason: included ? null : snapshotRowHiddenReason(task, carerUid),
+      });
+      return included;
+    });
     const tasks = sortByNewest(visible);
     const mergeMs = Date.now() - mergeStartedAt;
 

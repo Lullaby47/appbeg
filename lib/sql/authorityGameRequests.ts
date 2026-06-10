@@ -420,6 +420,7 @@ async function writeCarerTaskOutboxInTxn(
     console.info('[PLAYER_REQUEST_TASK_OUTBOX]', {
       requestId: input.requestId,
       taskId: input.taskId,
+      type: type || null,
       coadminUid: input.coadminUid,
       playerUid: playerUid || null,
       taskStatus: input.status,
@@ -457,6 +458,37 @@ function logPlayerRequestCarerTaskLink(input: {
     taskStatus: 'pending',
     insertedCarerTask: input.insertedCarerTask,
     outboxChannels: input.outboxChannels,
+    reason: input.reason,
+  });
+}
+
+function logPlayerGameRequestFlowAudit(input: {
+  auditKey: '[PLAYER_RECHARGE_FLOW_AUDIT]' | '[PLAYER_REDEEM_FLOW_AUDIT]';
+  requestId: string;
+  taskId: string;
+  playerUid: string;
+  coadminUid: string;
+  gameName: string;
+  amount: number;
+  taskType: 'recharge' | 'redeem';
+  insertedCarerTask: boolean;
+  outboxChannels: string[];
+  reason: string;
+}) {
+  console.info(input.auditKey, {
+    requestId: input.requestId,
+    taskId: input.taskId,
+    playerUid: input.playerUid,
+    coadminUid: input.coadminUid,
+    gameName: input.gameName,
+    amount: input.amount,
+    requestStatus: 'pending',
+    taskType: input.taskType,
+    taskStatus: 'pending',
+    insertedPlayerRequest: true,
+    insertedCarerTask: input.insertedCarerTask,
+    outboxChannels: input.outboxChannels,
+    firestoreAttempted: false,
     reason: input.reason,
   });
 }
@@ -705,6 +737,19 @@ export async function createRechargeRequestInSql(
       outboxChannels: rechargeOutboxChannels,
       reason: 'player_recharge_create',
     });
+    logPlayerGameRequestFlowAudit({
+      auditKey: '[PLAYER_RECHARGE_FLOW_AUDIT]',
+      requestId,
+      taskId: linkedRechargeTask.taskId,
+      playerUid,
+      coadminUid,
+      gameName,
+      amount: boostedAmount,
+      taskType: 'recharge',
+      insertedCarerTask: linkedRechargeTask.inserted,
+      outboxChannels: rechargeOutboxChannels,
+      reason: 'player_recharge_create',
+    });
 
     await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
       operationKey,
@@ -897,6 +942,19 @@ export async function createRedeemRequestInSql(
     });
     logPlayerRequestCarerTaskLink({
       logKey: '[PLAYER_REDEEM_TO_CARER_TASK]',
+      requestId,
+      taskId: linkedRedeemTask.taskId,
+      playerUid,
+      coadminUid,
+      gameName,
+      amount,
+      taskType: 'redeem',
+      insertedCarerTask: linkedRedeemTask.inserted,
+      outboxChannels: redeemOutboxChannels,
+      reason: 'player_redeem_create',
+    });
+    logPlayerGameRequestFlowAudit({
+      auditKey: '[PLAYER_REDEEM_FLOW_AUDIT]',
       requestId,
       taskId: linkedRedeemTask.taskId,
       playerUid,
