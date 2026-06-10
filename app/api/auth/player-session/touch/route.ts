@@ -1,9 +1,7 @@
 import { NextResponse } from 'next/server';
 
-import {
-  authSqlReadEnvLogFields,
-  isPlayerSessionSqlReadEnabled,
-} from '@/lib/server/authSqlRead';
+import { isPlayerSessionSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { logSqlLoginNoFirestoreMirror } from '@/lib/server/sqlSessionNoFirestoreMirror';
 import { requirePlayerSessionActor } from '@/lib/server/playerSessionRouteAuth';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { touchPlayerSessionInSql } from '@/lib/sql/playerSessionWrite';
@@ -66,12 +64,13 @@ export async function POST(request: Request) {
           });
         });
     } else if (touchResult.ok && sqlReadMode) {
-      console.info('[PLAYER_SESSION_SQL]', {
-        action: 'touch_mirror_skipped',
+      const appSessionIdHeader = cleanText(request.headers.get('X-App-Session-Id'));
+      logSqlLoginNoFirestoreMirror({
+        route: '/api/auth/player-session/touch',
         uid,
-        sessionId,
-        reason: 'player_session_sql_read',
-        ...authSqlReadEnvLogFields(),
+        role: 'player',
+        playerSessionIdPrefix: sessionId.slice(0, 8),
+        appSessionIdPrefix: appSessionIdHeader ? appSessionIdHeader.slice(0, 8) : null,
       });
     }
 

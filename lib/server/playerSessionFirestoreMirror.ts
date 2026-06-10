@@ -3,6 +3,7 @@ import 'server-only';
 import { FieldValue } from 'firebase-admin/firestore';
 
 import { adminDb } from '@/lib/firebase/admin';
+import { isPlayerSessionSqlReadEnabled } from '@/lib/server/authSqlRead';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 
@@ -14,6 +15,10 @@ export async function mirrorPlayerSessionStartToFirestore(input: {
   platform?: string | null;
   previousSessionIds: string[];
 }) {
+  if (isPlayerSessionSqlReadEnabled()) {
+    return false;
+  }
+
   const playerUid = cleanText(input.playerUid);
   const sessionId = cleanText(input.sessionId);
   const deviceId = cleanText(input.deviceId);
@@ -86,6 +91,10 @@ export async function mirrorPlayerSessionTouchToFirestore(input: {
   sessionId: string;
   deviceId?: string | null;
 }) {
+  if (isPlayerSessionSqlReadEnabled()) {
+    return false;
+  }
+
   const playerUid = cleanText(input.playerUid);
   const sessionId = cleanText(input.sessionId);
   if (!playerUid || !sessionId) {
@@ -129,6 +138,10 @@ export async function mirrorPlayerSessionEndToFirestore(input: {
   sessionId: string;
   reason: string;
 }) {
+  if (isPlayerSessionSqlReadEnabled()) {
+    return false;
+  }
+
   const playerUid = cleanText(input.playerUid);
   const sessionId = cleanText(input.sessionId);
   if (!playerUid || !sessionId) {

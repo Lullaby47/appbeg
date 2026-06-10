@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
-import { authSqlReadEnvLogFields, isAuthSqlReadEnabled, isPlayerSessionSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { isAuthSqlReadEnabled, isPlayerSessionSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { logSqlLoginNoFirestoreMirror } from '@/lib/server/sqlSessionNoFirestoreMirror';
 import { requireFirebasePlayerUser } from '@/lib/server/playerSessionRouteAuth';
 import { invalidatePlayerSessionStatusCache } from '@/lib/server/playerSessionStatus';
 import { logRouteSessionValidation } from '@/lib/server/sessionAuthLog';
@@ -100,12 +101,13 @@ export async function POST(request: Request) {
         });
       }
     } else {
-      console.info('[PLAYER_SESSION_SQL]', {
-        action: 'start_mirror_skipped',
+      const appSessionIdHeader = cleanText(request.headers.get('X-App-Session-Id'));
+      logSqlLoginNoFirestoreMirror({
+        route: '/api/auth/player-session/start',
         uid,
-        sessionId,
-        reason: 'player_session_sql_read',
-        ...authSqlReadEnvLogFields(),
+        role: 'player',
+        playerSessionIdPrefix: sessionId.slice(0, 8),
+        appSessionIdPrefix: appSessionIdHeader ? appSessionIdHeader.slice(0, 8) : null,
       });
     }
 

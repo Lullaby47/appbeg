@@ -1,9 +1,7 @@
 import { NextResponse } from 'next/server';
 
-import {
-  authSqlReadEnvLogFields,
-  isPlayerSessionSqlReadEnabled,
-} from '@/lib/server/authSqlRead';
+import { isPlayerSessionSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { logSqlLoginNoFirestoreMirror } from '@/lib/server/sqlSessionNoFirestoreMirror';
 import { requirePlayerSessionActor } from '@/lib/server/playerSessionRouteAuth';
 import { invalidatePlayerSessionStatusCache } from '@/lib/server/playerSessionStatus';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
@@ -87,12 +85,12 @@ export async function POST(request: Request) {
         });
       }
     } else if (endResult.ok && sqlReadMode) {
-      console.info('[PLAYER_SESSION_SQL]', {
-        action: 'end_mirror_skipped',
+      logSqlLoginNoFirestoreMirror({
+        route: '/api/auth/player-session/end',
         uid,
-        sessionId,
-        reason: 'player_session_sql_read',
-        ...authSqlReadEnvLogFields(),
+        role: 'player',
+        playerSessionIdPrefix: sessionId.slice(0, 8),
+        appSessionIdPrefix: appSessionIdHeader ? appSessionIdHeader.slice(0, 8) : null,
       });
     }
 

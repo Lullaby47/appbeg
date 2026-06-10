@@ -2,7 +2,9 @@ import { NextResponse } from 'next/server';
 
 import { apiError } from '@/lib/firebase/apiAuth';
 import { verifyLiveCarerApiToken } from '@/lib/firebase/liveAuthTokenCache';
+import { isPlayerSessionSqlReadEnabled } from '@/lib/server/authSqlRead';
 import { createPlayerLoginSessionsInSql } from '@/lib/server/sqlPlayerLoginSessions';
+import { logSqlLoginNoFirestoreMirror } from '@/lib/server/sqlSessionNoFirestoreMirror';
 import { logRouteSessionValidation, sessionIdsFromRequest } from '@/lib/server/sessionAuthLog';
 import { createAppSessionForUser } from '@/lib/sql/appSessions';
 import { lookupApiUserProfileFromSqlCache } from '@/lib/sql/playersCache';
@@ -145,6 +147,16 @@ export async function POST(request: Request) {
       const session = loginSessions.appSession;
       const playerSessionId = loginSessions.playerSessionId;
       const sessionCreateMs = Date.now() - sessionCreateStartedAt;
+
+      if (isPlayerSessionSqlReadEnabled()) {
+        logSqlLoginNoFirestoreMirror({
+          route: '/api/auth/session/bootstrap',
+          uid: profile.uid,
+          role: profile.role,
+          playerSessionIdPrefix: playerSessionId.slice(0, 8),
+          appSessionIdPrefix: session.sessionId.slice(0, 8),
+        });
+      }
 
       logRouteSessionValidation('/api/auth/session/bootstrap', {
         ok: true,
