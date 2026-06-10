@@ -280,6 +280,15 @@ export default function LoginPage() {
         });
 
         if (sqlLoginResult.ok) {
+          if (sqlLoginResult.bootstrapExpected) {
+            console.info('[SQL_AUTH_LOGIN] client_bootstrap_firebase', {
+              uid: sqlLoginResult.uid,
+              role: sqlLoginResult.role,
+            });
+            await performFirebaseLogin(cleanUsername);
+            return;
+          }
+
           if (!isValidRole(sqlLoginResult.role)) {
             throw new Error('Invalid role.');
           }

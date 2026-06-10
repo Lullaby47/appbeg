@@ -5,7 +5,10 @@ import { isPlayerSessionSqlReadEnabled } from '@/lib/server/authSqlRead';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import { mirrorPlayerSessionStartToFirestore } from '@/lib/server/playerSessionFirestoreMirror';
 import { createPlayerLoginSessionsInSql } from '@/lib/server/sqlPlayerLoginSessions';
-import { isSqlPlayerLoginEnabled } from '@/lib/server/sqlPlayerLogin';
+import {
+  evaluatePlayerSessionLoginDecision,
+  logLoginSqlDecision,
+} from '@/lib/server/playerSessionLoginDecision';
 import { createAppSessionForUser } from '@/lib/sql/appSessions';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { lookupApiUserProfileByUsernameFromSqlCache, mirrorPlayerById } from '@/lib/sql/playersCache';
@@ -186,25 +189,46 @@ export async function POST(request: Request) {
     return failureResponse('invalid_credentials', { fallbackToFirebase: false });
   }
 
-  if (profile.role === 'player' && !isSqlPlayerLoginEnabled()) {
-    console.info(
-      '[SQL_AUTH_LOGIN] ok=false uid=%s role=player reason=player_session_not_sql_ready rate_limit=not_implemented lookup_ms=%s verify_ms=%s session_create_ms=0 total_ms=%s',
-      profile.uid,
-      lookupMs,
-      verifyMs,
-      Date.now() - totalStartedAt
-    );
-    return NextResponse.json(
-      {
-        ok: false,
-        reason: 'player_session_not_sql_ready',
-        fallbackToFirebase: true,
-      },
-      { status: 401 }
-    );
-  }
-
   if (profile.role === 'player') {
+    const sessionDecision = await evaluatePlayerSessionLoginDecision({
+      uid: profile.uid,
+      role: profile.role,
+      deviceId,
+      appSessionExists: false,
+    });
+
+    if (sessionDecision.decision === 'bootstrap_expected') {
+      logLoginSqlDecision({
+        uid: profile.uid,
+        role: profile.role,
+        authenticated: true,
+        playerSessionRequired: true,
+        playerSessionExists: sessionDecision.playerSessionExists,
+        bootstrapExpected: true,
+        decision: 'bootstrap_expected',
+        reason: sessionDecision.reason,
+      });
+
+      console.info(
+        '[SQL_AUTH_LOGIN] ok=true uid=%s role=player reason=bootstrap_expected rate_limit=not_implemented lookup_ms=%s verify_ms=%s session_create_ms=0 total_ms=%s',
+        profile.uid,
+        lookupMs,
+        verifyMs,
+        Date.now() - totalStartedAt
+      );
+
+      return NextResponse.json({
+        ok: true,
+        authenticated: true,
+        bootstrapExpected: true,
+        uid: profile.uid,
+        role: 'player',
+        coadminUid: profile.coadminUid,
+        username: profile.username,
+        status: profile.status,
+      });
+    }
+
     if (!deviceId) {
       console.info(
         '[SQL_AUTH_LOGIN] ok=false uid=%s role=player reason=server_unavailable rate_limit=not_implemented lookup_ms=%s verify_ms=%s session_create_ms=0 total_ms=%s',
@@ -233,6 +257,17 @@ export async function POST(request: Request) {
     }
 
     try {
+      logLoginSqlDecision({
+        uid: profile.uid,
+        role: profile.role,
+        authenticated: true,
+        playerSessionRequired: true,
+        playerSessionExists: sessionDecision.playerSessionExists,
+        bootstrapExpected: false,
+        decision: 'inline_sql_sessions',
+        reason: sessionDecision.reason,
+      });
+
       const loginSessions = await createPlayerLoginSessionsInSql({
         playerUid: profile.uid,
         deviceId,

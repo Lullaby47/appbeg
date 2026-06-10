@@ -14,12 +14,13 @@ export { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
 
 export type SqlLoginSuccess = {
   ok: true;
-  sessionId: string;
+  sessionId?: string;
   uid: string;
   role: string;
   coadminUid: string | null;
   username: string;
-  expiresAt: string;
+  expiresAt?: string;
+  bootstrapExpected?: boolean;
   playerSessionId?: string;
   playerSessionSource?: 'sql';
   firestoreMirrorOk?: boolean;
@@ -70,6 +71,8 @@ export async function attemptSqlLogin(input: {
 
     const payload = (await response.json().catch(() => ({}))) as {
       ok?: boolean;
+      authenticated?: boolean;
+      bootstrapExpected?: boolean;
       reason?: SqlLoginFailureReason;
       fallbackToFirebase?: boolean;
       sessionId?: string;
@@ -84,7 +87,43 @@ export async function attemptSqlLogin(input: {
       firestoreMirrorOk?: boolean;
     };
 
-    if (payload.ok && payload.sessionId && payload.uid && payload.role) {
+    if (payload.ok && payload.uid && payload.role) {
+      if (payload.bootstrapExpected) {
+        console.info('[SQL_AUTH_LOGIN] client_bootstrap_expected', {
+          uid: payload.uid,
+          role: payload.role,
+          sqlPlayerLoginEnabled: isSqlPlayerLoginEnabled(),
+        });
+        console.info('[LOGIN_SQL_DECISION]', {
+          uid: payload.uid,
+          role: payload.role,
+          authenticated: true,
+          playerSessionRequired: true,
+          playerSessionExists: false,
+          bootstrapExpected: true,
+          decision: 'bootstrap_expected',
+          reason: 'client_awaiting_firebase_bootstrap',
+        });
+        return {
+          ok: true,
+          uid: payload.uid,
+          role: payload.role,
+          coadminUid: payload.coadminUid ?? null,
+          username: String(payload.username || username),
+          bootstrapExpected: true,
+        };
+      }
+
+      if (!payload.sessionId) {
+        const reason =
+          response.status >= 500 ? 'server_unavailable' : 'invalid_credentials';
+        return {
+          ok: false,
+          reason,
+          fallbackToFirebase: payload.fallbackToFirebase === true,
+        };
+      }
+
       if (payload.role === 'player' && payload.playerSessionId) {
         getOrCreatePlayerDeviceId();
         storePlayerLoginSessionPair({

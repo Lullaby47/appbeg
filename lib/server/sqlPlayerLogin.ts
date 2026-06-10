@@ -1,8 +1,10 @@
 import 'server-only';
 
+import { resolveServerSqlFlag } from '@/lib/server/sqlRuntime';
+
 export function isSqlPlayerLoginEnabled() {
   return (
-    process.env.NEXT_PUBLIC_SQL_PLAYER_LOGIN === '1' ||
-    process.env.SQL_PLAYER_LOGIN === '1'
+    resolveServerSqlFlag('NEXT_PUBLIC_SQL_PLAYER_LOGIN') ||
+    resolveServerSqlFlag('SQL_PLAYER_LOGIN')
   );
 }
