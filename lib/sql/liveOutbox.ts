@@ -83,6 +83,22 @@ export function coadminJobLiveChannel(coadminUid: string) {
   return `coadmin:${cleanText(coadminUid)}:jobs`;
 }
 
+export function userChatLiveChannel(uid: string) {
+  return `user:${cleanText(uid)}:chat`;
+}
+
+export type ChatMessageOutboxPayload = {
+  entityId: string;
+  conversationId: string;
+  senderUid: string;
+  receiverUid: string;
+  type: string;
+  text: string | null;
+  imageUrl: string | null;
+  updatedAt: string | null;
+  source: string;
+};
+
 export type CarerTaskOutboxPayload = {
   entityId: string;
   taskId: string;
@@ -294,6 +310,50 @@ export function buildCarerTaskOutboxPayload(input: {
     mirroredAt: toIsoString(input.mirroredAt) || new Date().toISOString(),
     source: cleanText(input.source) || 'mirror',
   };
+}
+
+export async function emitChatMessageOutboxEvent(
+  client: PoolClient,
+  input: {
+    entityId: string;
+    conversationId: string;
+    senderUid: string;
+    receiverUid: string;
+    type: string;
+    text?: string | null;
+    imageUrl?: string | null;
+    updatedAt?: string | null;
+    source?: string;
+    participantUids: string[];
+  }
+) {
+  const payload: ChatMessageOutboxPayload = {
+    entityId: cleanText(input.entityId),
+    conversationId: cleanText(input.conversationId),
+    senderUid: cleanText(input.senderUid),
+    receiverUid: cleanText(input.receiverUid),
+    type: cleanText(input.type) || 'text',
+    text: cleanText(input.text) || null,
+    imageUrl: cleanText(input.imageUrl) || null,
+    updatedAt: input.updatedAt || new Date().toISOString(),
+    source: cleanText(input.source) || 'authority_chat',
+  };
+
+  for (const uid of input.participantUids) {
+    const cleanUid = cleanText(uid);
+    if (!cleanUid) {
+      continue;
+    }
+    await insertLiveOutboxEventWithClient(client, {
+      channel: userChatLiveChannel(cleanUid),
+      eventType: 'chat.message.upserted',
+      entityType: 'chat_message',
+      entityId: payload.entityId,
+      payload: payload as unknown as Record<string, unknown>,
+      source: payload.source,
+      mirroredAt: payload.updatedAt,
+    });
+  }
 }
 
 function resolveCarerTaskOutboxChannels(input: {

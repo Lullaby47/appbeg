@@ -14,6 +14,11 @@ import {
 
 import { auth, db } from '@/lib/firebase/client';
 import { clientOnSnapshot } from '@/lib/client/clientFirestoreQuery';
+import {
+  logClientFirebaseRuntimeRemoved,
+  logSqlClientMigration,
+} from '@/lib/client/sqlClientMigration';
+import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 
@@ -31,12 +36,53 @@ export type ShiftSession = {
   isActive: boolean;
 };
 
+async function postShiftSessionAction(body: Record<string, unknown>) {
+  const response = await fetch('/api/shift-sessions', {
+    method: 'POST',
+    headers: await getSqlApiReadHeaders(true),
+    body: JSON.stringify(body),
+    cache: 'no-store',
+  });
+  const payload = (await response.json().catch(() => ({}))) as {
+    sessionId?: string;
+    error?: string;
+  };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Shift session request failed.');
+  }
+  return payload;
+}
+
 export async function startShiftSession(values: {
   coadminUid: string;
   userUid: string;
   userRole: ShiftRole;
   userUsername: string;
 }) {
+  if (isClientSqlReadMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'shift_session_start',
+      file: 'features/shifts/userShifts.ts',
+      operation: 'addDoc',
+      replacement: 'POST /api/shift-sessions',
+    });
+    const payload = await postShiftSessionAction({
+      action: 'start',
+      coadminUid: values.coadminUid,
+      userUid: values.userUid,
+      userRole: values.userRole,
+      userUsername: values.userUsername,
+    });
+    logSqlClientMigration({
+      feature: 'shift_session_start',
+      oldFirebaseOperation: 'addDoc',
+      newSqlRoute: '/api/shift-sessions',
+      result: 'ok',
+      fallbackUsed: false,
+    });
+    return String(payload.sessionId || '');
+  }
+
   const currentUser = auth.currentUser;
   if (!currentUser || currentUser.uid !== values.userUid) {
     throw new Error('Not authenticated.');
@@ -76,6 +122,14 @@ export async function heartbeatShiftSession(sessionId: string) {
   if (!sessionId) {
     return;
   }
+  if (isClientSqlReadMode()) {
+    await postShiftSessionAction({
+      action: 'heartbeat',
+      sessionId,
+      userUid: auth.currentUser?.uid || '',
+    });
+    return;
+  }
   await updateDoc(doc(db, 'shiftSessions', sessionId), {
     lastSeenAt: serverTimestamp(),
     isActive: true,
@@ -86,11 +140,27 @@ export async function endShiftSession(sessionId: string) {
   if (!sessionId) {
     return;
   }
+  if (isClientSqlReadMode()) {
+    await postShiftSessionAction({
+      action: 'end',
+      sessionId,
+      userUid: auth.currentUser?.uid || '',
+    });
+    return;
+  }
   await updateDoc(doc(db, 'shiftSessions', sessionId), {
     isActive: false,
     logoutAt: serverTimestamp(),
     lastSeenAt: serverTimestamp(),
   });
+}
+
+function isoToTimestamp(iso: string | null | undefined): Timestamp | null {
+  if (!iso) {
+    return null;
+  }
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? Timestamp.fromMillis(ms) : null;
 }
 
 export function listenShiftSessionsByCoadmin(
@@ -100,8 +170,71 @@ export function listenShiftSessionsByCoadmin(
 ) {
   if (isClientSqlReadMode()) {
     logClientFirestoreSkipped('shift_sessions_listener', { coadminUid });
-    onChange([]);
-    return () => {};
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      if (cancelled) {
+        return;
+      }
+      try {
+        const response = await fetch(
+          `/api/shift-sessions?coadminUid=${encodeURIComponent(coadminUid)}`,
+          {
+            method: 'GET',
+            headers: await getSqlApiReadHeaders(false),
+            cache: 'no-store',
+          }
+        );
+        const payload = (await response.json().catch(() => ({}))) as {
+          sessions?: Array<{
+            id: string;
+            coadminUid: string;
+            userUid: string;
+            userRole: ShiftRole;
+            userUsername: string;
+            loginAt: string | null;
+            logoutAt: string | null;
+            lastSeenAt: string | null;
+            isActive: boolean;
+          }>;
+        };
+        if (!cancelled) {
+          onChange(
+            (payload.sessions || []).map((session) => ({
+              id: session.id,
+              coadminUid: session.coadminUid,
+              userUid: session.userUid,
+              userRole: session.userRole,
+              userUsername: session.userUsername,
+              loginAt: isoToTimestamp(session.loginAt),
+              logoutAt: isoToTimestamp(session.logoutAt),
+              lastSeenAt: isoToTimestamp(session.lastSeenAt),
+              isActive: session.isActive,
+            }))
+          );
+        }
+      } catch (error) {
+        if (!cancelled) {
+          onError?.(error instanceof Error ? error : new Error(String(error)));
+        }
+      } finally {
+        if (!cancelled) {
+          timer = setTimeout(() => {
+            void tick();
+          }, 12_000);
+        }
+      }
+    };
+
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer != null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
   }
 
   const sessionsQuery = query(

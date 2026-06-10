@@ -223,6 +223,38 @@ export async function readPendingCarerCashoutsByCoadmin(
   }
 }
 
+export async function readCarerCashoutsByCarerUid(carerUid: string, limit = 100) {
+  const db = getPlayerMirrorPool();
+  const cleanCarerUid = cleanText(carerUid);
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 200));
+  if (!db || !cleanCarerUid) {
+    return null;
+  }
+
+  try {
+    const result = await db.query(
+      `
+        SELECT *
+        FROM public.carer_cashouts_cache
+        WHERE carer_uid = $1
+          AND deleted_at IS NULL
+        ORDER BY COALESCE(completed_at, created_at) DESC NULLS LAST
+        LIMIT $2
+      `,
+      [cleanCarerUid, safeLimit]
+    );
+    return result.rows
+      .map((row) => mapCachedCarerCashoutRow(row as Record<string, unknown>))
+      .filter((row): row is CachedCarerCashout => Boolean(row));
+  } catch (error) {
+    console.warn('[CARER_CASHOUTS_CACHE] carer history read failed', {
+      carerUid: cleanCarerUid,
+      error,
+    });
+    return null;
+  }
+}
+
 export async function getCarerCashoutCacheById(firebaseId: string) {
   const db = getPlayerMirrorPool();
   const cleanId = cleanText(firebaseId);

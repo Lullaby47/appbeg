@@ -15,15 +15,17 @@ import {
 } from 'firebase/firestore';
 
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+import {
+  logClientFirebaseRuntimeRemoved,
+  logSqlClientMigration,
+} from '@/lib/client/sqlClientMigration';
+import { getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { auth, db } from '@/lib/firebase/client';
 import { uploadImageToCloudinary } from '@/lib/cloudinary/uploadImage';
 
 /**
- * Firestore: collection `coinLoadSessions` (fields: playerUid, coadminUid,
- * paymentPhotoUrl, createdAt, expiresAt). Rules should allow: create if playerUid ==
- * auth.uid; read/delete if resource.data.playerUid == auth.uid.
- * Storage path: `coadmin-payment-details/{coadminUid}/...` — allow write if auth.uid == coadminUid.
- * Users doc field: `paymentDetailPhotoUrls` (string[]).
+ * Firestore: collection `coinLoadSessions` (legacy). SQL: `coin_load_sessions_cache`.
  */
 const SESSIONS = 'coinLoadSessions';
 export const COIN_LOAD_SESSION_MS = 10 * 60 * 1000;
@@ -45,6 +47,29 @@ export type PaymentDetailPhoto = {
 
 function randomItem<T>(items: T[]): T {
   return items[Math.floor(Math.random() * items.length)]!;
+}
+
+function isoToTimestamp(iso: string) {
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? Timestamp.fromMillis(ms) : Timestamp.fromMillis(Date.now());
+}
+
+function mapSqlSession(row: {
+  id: string;
+  playerUid: string;
+  coadminUid: string;
+  paymentPhotoUrl: string;
+  createdAt: string;
+  expiresAt: string;
+}): CoinLoadSession {
+  return {
+    id: row.id,
+    playerUid: row.playerUid,
+    coadminUid: row.coadminUid,
+    paymentPhotoUrl: row.paymentPhotoUrl,
+    createdAt: isoToTimestamp(row.createdAt),
+    expiresAt: isoToTimestamp(row.expiresAt),
+  };
 }
 
 export async function uploadCoadminPaymentDetailPhoto(
@@ -73,6 +98,9 @@ export async function setCoadminPaymentDetailPhotos(
   coadminUid: string,
   photos: PaymentDetailPhoto[]
 ): Promise<void> {
+  if (isClientSqlReadMode()) {
+    throw new Error('Payment detail photos must be updated through the co-admin panel API.');
+  }
   const current = auth.currentUser;
   if (!current || current.uid !== coadminUid) {
     throw new Error('Not authorized.');
@@ -89,6 +117,9 @@ export async function setCoadminPaymentDetailPhotos(
 export async function getCoadminPaymentDetailPhotos(
   coadminUid: string
 ): Promise<PaymentDetailPhoto[]> {
+  if (isClientSqlReadMode()) {
+    return [];
+  }
   const snap = await getDoc(doc(db, 'users', coadminUid));
   if (!snap.exists()) {
     return [];
@@ -124,11 +155,44 @@ async function clearPlayerCoinLoadDocs(playerUid: string): Promise<void> {
   await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)));
 }
 
-/**
- * Create a 10-minute coin load session with a random coadmin payment photo.
- * Removes any previous sessions for this player.
- */
 export async function createCoinLoadSession(coadminUid: string): Promise<CoinLoadSession> {
+  if (isClientSqlReadMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'coin_load_create',
+      file: 'features/coinLoad/coinLoadSession.ts',
+      operation: 'addDoc',
+      replacement: 'POST /api/player/coin-load-sessions',
+    });
+    const response = await fetch('/api/player/coin-load-sessions', {
+      method: 'POST',
+      headers: await getPlayerApiHeaders(true, { route: '/api/player/coin-load-sessions' }),
+      body: JSON.stringify({ coadminUid }),
+      cache: 'no-store',
+    });
+    const payload = (await response.json().catch(() => ({}))) as {
+      session?: {
+        id: string;
+        playerUid: string;
+        coadminUid: string;
+        paymentPhotoUrl: string;
+        createdAt: string;
+        expiresAt: string;
+      };
+      error?: string;
+    };
+    if (!response.ok || !payload.session) {
+      throw new Error(payload.error || 'Failed to create coin load session.');
+    }
+    logSqlClientMigration({
+      feature: 'coin_load_create',
+      oldFirebaseOperation: 'addDoc',
+      newSqlRoute: '/api/player/coin-load-sessions',
+      result: 'ok',
+      fallbackUsed: false,
+    });
+    return mapSqlSession(payload.session);
+  }
+
   const current = auth.currentUser;
   if (!current) {
     throw new Error('Not authenticated.');
@@ -168,6 +232,16 @@ export async function createCoinLoadSession(coadminUid: string): Promise<CoinLoa
 }
 
 export async function deleteCoinLoadSession(sessionId: string): Promise<void> {
+  if (isClientSqlReadMode()) {
+    await fetch('/api/player/coin-load-sessions', {
+      method: 'DELETE',
+      headers: await getPlayerApiHeaders(true, { route: '/api/player/coin-load-sessions' }),
+      body: JSON.stringify({ sessionId }),
+      cache: 'no-store',
+    });
+    return;
+  }
+
   const current = auth.currentUser;
   if (!current) {
     return;
@@ -189,6 +263,60 @@ export function listenCoinLoadSession(
   onNext: (session: CoinLoadSession | null) => void,
   onError?: (e: Error) => void
 ) {
+  if (isClientSqlReadMode()) {
+    logClientFirestoreSkipped('coin_load_session_listener', { sessionId });
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      if (cancelled) {
+        return;
+      }
+      try {
+        const response = await fetch(
+          `/api/player/coin-load-sessions?sessionId=${encodeURIComponent(sessionId)}`,
+          {
+            method: 'GET',
+            headers: await getPlayerApiHeaders(false, { route: '/api/player/coin-load-sessions' }),
+            cache: 'no-store',
+          }
+        );
+        const payload = (await response.json().catch(() => ({}))) as {
+          session?: {
+            id: string;
+            playerUid: string;
+            coadminUid: string;
+            paymentPhotoUrl: string;
+            createdAt: string;
+            expiresAt: string;
+          } | null;
+        };
+        if (!cancelled) {
+          onNext(payload.session ? mapSqlSession(payload.session) : null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          onError?.(error instanceof Error ? error : new Error(String(error)));
+        }
+      } finally {
+        if (!cancelled) {
+          timer = setTimeout(() => {
+            void tick();
+          }, 4_000);
+        }
+      }
+    };
+
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer != null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+  }
+
   if (assertClientFirestoreDisabled('coin_load_session_listener', 'onSnapshot', { sessionId })) {
     onNext(null);
     return () => {};

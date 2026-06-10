@@ -32,6 +32,12 @@ import {
   assertClientFirestoreDisabled,
   noopFirestoreUnsubscribe,
 } from '@/lib/client/clientFirestoreGuard';
+import {
+  isSqlClientMigrationMode,
+  logClientFirebaseRuntimeRemoved,
+  logSqlClientMigration,
+} from '@/lib/client/sqlClientMigration';
+import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 export type FirestoreChatMessage = {
@@ -60,19 +66,54 @@ export const CHAT_RECENT_MESSAGE_WINDOW = 50;
 /** How many older messages to fetch per "Load previous" action. */
 export const CHAT_OLDER_MESSAGE_PAGE_SIZE = 50;
 
+async function sendChatMessageViaSql(receiverUid: string, text: string) {
+  const response = await fetch('/api/chat/messages', {
+    method: 'POST',
+    headers: await getSqlApiReadHeaders(true),
+    body: JSON.stringify({
+      peerUid: receiverUid,
+      type: 'text',
+      text,
+    }),
+    cache: 'no-store',
+  });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to send chat message.');
+  }
+  logSqlClientMigration({
+    feature: 'chat_send_text',
+    oldFirebaseOperation: 'setDoc+addDoc',
+    newSqlRoute: '/api/chat/messages',
+    result: 'ok',
+    fallbackUsed: false,
+  });
+}
+
 export async function sendChatMessage(receiverUid: string, text: string) {
+  const messageText = text.trim();
+  if (!messageText) {
+    return;
+  }
+
+  if (isChatSqlReadEnabled() || isSqlClientMigrationMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'chat_send_text',
+      file: 'features/messages/chatMessages.ts',
+      operation: 'setDoc+addDoc',
+      replacement: 'POST /api/chat/messages',
+    });
+    await sendChatMessageViaSql(receiverUid, messageText);
+    return;
+  }
+
   const currentUser = auth.currentUser;
 
   if (!currentUser) {
     throw new Error('Not authenticated.');
   }
 
-  const cleanText = text.trim();
-
-  if (!cleanText) {
-    return;
-  }
-
+  const cleanText = messageText;
   const conversationId = getConversationId(currentUser.uid, receiverUid);
   const conversationRef = doc(db, 'conversations', conversationId);
 
@@ -120,6 +161,16 @@ export async function sendChatMessage(receiverUid: string, text: string) {
 }
 
 export async function sendImageMessage(receiverUid: string, file: File) {
+  if (isChatSqlReadEnabled() || isSqlClientMigrationMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'chat_send_image',
+      file: 'features/messages/chatMessages.ts',
+      operation: 'setDoc+addDoc',
+      replacement: 'POST /api/chat/messages',
+    });
+    throw new Error('Image chat not ready.');
+  }
+
   const currentUser = auth.currentUser;
 
   if (!currentUser) {

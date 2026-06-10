@@ -20,6 +20,11 @@ import {
 } from '@/features/auth/appSession';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+import {
+  logClientFirebaseRuntimeRemoved,
+  logSqlClientMigration,
+} from '@/lib/client/sqlClientMigration';
+import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { resolvePlayerRoleForFetch } from '@/lib/client/playerFetchGuard';
 import { auth, db } from '@/lib/firebase/client';
 import { belongsToCoadmin, getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
@@ -197,6 +202,22 @@ async function getGameLoginsByField(
   }));
 }
 
+async function upsertGameLoginViaSql(gameLogin: GameLogin) {
+  const response = await fetchWithGameLoginsCacheTimeout('/api/game-logins/cache', {
+    method: 'POST',
+    headers: await getGameLoginsCacheReadHeaders(),
+    body: JSON.stringify({
+      action: 'upsert',
+      gameLogin,
+    }),
+    cache: 'no-store',
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(payload.error || 'Failed to save game login.');
+  }
+}
+
 export async function createGameLogin(
   gameName: string,
   username: string,
@@ -204,12 +225,6 @@ export async function createGameLogin(
   backendUrl = '',
   frontendUrl = ''
 ) {
-  const currentUser = auth.currentUser;
-
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-
   const cleanGameName = gameName.trim();
   const cleanUsername = username.trim();
   const cleanBackendUrl = normalizeSiteUrl(backendUrl);
@@ -228,6 +243,45 @@ export async function createGameLogin(
   }
 
   const coadminUid = await getCurrentUserCoadminUid();
+
+  if (isClientSqlReadMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'game_login_create',
+      file: 'features/games/gameLogins.ts',
+      operation: 'addDoc',
+      replacement: 'POST /api/game-logins/cache',
+    });
+    const id =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const gameLogin: GameLogin = {
+      id,
+      gameName: cleanGameName,
+      username: cleanUsername,
+      password,
+      backendUrl: cleanBackendUrl,
+      frontendUrl: cleanFrontendUrl,
+      siteUrl: cleanBackendUrl,
+      createdBy: coadminUid,
+      coadminUid,
+      createdAt: new Date().toISOString(),
+    };
+    await upsertGameLoginViaSql(gameLogin);
+    logSqlClientMigration({
+      feature: 'game_login_create',
+      oldFirebaseOperation: 'addDoc',
+      newSqlRoute: '/api/game-logins/cache',
+      result: 'ok',
+      fallbackUsed: false,
+    });
+    return;
+  }
+
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
 
   const gameLoginRef = await addDoc(collection(db, 'gameLogins'), {
     gameName: cleanGameName,
@@ -297,6 +351,35 @@ export async function updateGameLogin(
 
   if (!values.password.trim()) {
     throw new Error('Password is required.');
+  }
+
+  if (isClientSqlReadMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'game_login_update',
+      file: 'features/games/gameLogins.ts',
+      operation: 'updateDoc',
+      replacement: 'POST /api/game-logins/cache',
+    });
+    const coadminUid = await getCurrentUserCoadminUid();
+    await upsertGameLoginViaSql({
+      id: gameLoginId,
+      gameName: cleanGameName,
+      username: cleanUsername,
+      password: values.password,
+      backendUrl: cleanBackendUrl,
+      frontendUrl: cleanFrontendUrl,
+      siteUrl: cleanBackendUrl,
+      createdBy: coadminUid,
+      coadminUid,
+    });
+    logSqlClientMigration({
+      feature: 'game_login_update',
+      oldFirebaseOperation: 'updateDoc',
+      newSqlRoute: '/api/game-logins/cache',
+      result: 'ok',
+      fallbackUsed: false,
+    });
+    return;
   }
 
   const gameLoginRef = doc(db, 'gameLogins', gameLoginId);

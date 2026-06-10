@@ -19,6 +19,10 @@ import { auth, db } from '@/lib/firebase/client';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+import {
+  logClientFirebaseRuntimeRemoved,
+  logSqlClientMigration,
+} from '@/lib/client/sqlClientMigration';
 import { logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 export type PlayerGameLogin = {
@@ -181,6 +185,46 @@ async function getPlayerGameLoginsByField(
   }));
 }
 
+async function upsertPlayerGameLoginViaSql(login: {
+  id: string;
+  playerUid: string;
+  playerUsername: string;
+  gameName: string;
+  gameUsername: string;
+  gamePassword: string;
+  frontendUrl?: string;
+  siteUrl?: string;
+  coadminUid: string;
+  createdBy: string;
+  createdAt?: string | null;
+}) {
+  const response = await fetch('/api/player-game-logins/cache', {
+    method: 'POST',
+    headers: await getSqlApiReadHeaders(true),
+    body: JSON.stringify({
+      action: 'upsert',
+      playerGameLogin: {
+        id: login.id,
+        playerUid: login.playerUid,
+        playerUsername: login.playerUsername,
+        gameName: login.gameName,
+        gameUsername: login.gameUsername,
+        gamePassword: login.gamePassword,
+        frontendUrl: login.frontendUrl || '',
+        siteUrl: login.siteUrl || '',
+        coadminUid: login.coadminUid,
+        createdBy: login.createdBy,
+        createdAt: login.createdAt || new Date().toISOString(),
+      },
+    }),
+    cache: 'no-store',
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(payload.error || 'Failed to save player game login.');
+  }
+}
+
 export async function createPlayerGameLogin(values: {
   playerUid: string;
   playerUsername: string;
@@ -191,16 +235,42 @@ export async function createPlayerGameLogin(values: {
   siteUrl?: string;
   coadminUid: string;
 }) {
-  const currentUser = auth.currentUser;
-
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-
   if (!values.playerUid) throw new Error('Player is required.');
   if (!values.gameName.trim()) throw new Error('Game name is required.');
   if (!values.gameUsername.trim()) throw new Error('Game username is required.');
   if (!values.gamePassword.trim()) throw new Error('Game password is required.');
+
+  if (isPlayerGameLoginsSqlReadEnabled()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'player_game_login_create',
+      file: 'features/games/playerGameLogins.ts',
+      operation: 'addDoc',
+      replacement: 'POST /api/player-game-logins/cache',
+    });
+    const id =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await upsertPlayerGameLoginViaSql({
+      id,
+      ...values,
+      createdBy: values.coadminUid,
+      createdAt: new Date().toISOString(),
+    });
+    logSqlClientMigration({
+      feature: 'player_game_login_create',
+      oldFirebaseOperation: 'addDoc',
+      newSqlRoute: '/api/player-game-logins/cache',
+      result: 'ok',
+      fallbackUsed: false,
+    });
+    return;
+  }
+
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
 
   const loginRef = await addDoc(collection(db, 'playerGameLogins'), {
     playerUid: values.playerUid,
@@ -230,6 +300,35 @@ export async function updatePlayerGameLogin(
   if (!values.gameName.trim()) throw new Error('Game name is required.');
   if (!values.gameUsername.trim()) throw new Error('Game username is required.');
   if (!values.gamePassword.trim()) throw new Error('Game password is required.');
+
+  if (isPlayerGameLoginsSqlReadEnabled()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'player_game_login_update',
+      file: 'features/games/playerGameLogins.ts',
+      operation: 'updateDoc',
+      replacement: 'POST /api/player-game-logins/cache',
+    });
+    await upsertPlayerGameLoginViaSql({
+      id: loginId,
+      playerUid: '',
+      playerUsername: '',
+      gameName: values.gameName.trim(),
+      gameUsername: values.gameUsername.trim(),
+      gamePassword: values.gamePassword,
+      frontendUrl: values.frontendUrl,
+      siteUrl: values.siteUrl,
+      coadminUid: '',
+      createdBy: '',
+    });
+    logSqlClientMigration({
+      feature: 'player_game_login_update',
+      oldFirebaseOperation: 'updateDoc',
+      newSqlRoute: '/api/player-game-logins/cache',
+      result: 'ok',
+      fallbackUsed: false,
+    });
+    return;
+  }
 
   await updateDoc(doc(db, 'playerGameLogins', loginId), {
     gameName: values.gameName.trim(),

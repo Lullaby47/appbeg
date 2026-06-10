@@ -26,6 +26,11 @@ import { getAppSessionRequestHeaders, getLocalAppSessionId } from '@/features/au
 import { attachCarerRechargeRedeemTotalsSqlPoll } from '@/features/live/coadminCarerTotalsSqlRead';
 import { clientOnSnapshot } from '@/lib/client/clientFirestoreQuery';
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+import {
+  logClientFirebaseRuntimeRemoved,
+  logSqlClientMigration,
+} from '@/lib/client/sqlClientMigration';
+import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import { assertActivePlayerSession } from '@/features/auth/playerSession';
@@ -2607,9 +2612,51 @@ export async function createPlayerCredentialTask(values: {
   void mirrorCarerTaskCacheBestEffort(taskId);
 }
 
+async function postEscalationAlertViaSql(body: Record<string, unknown>) {
+  const response = await fetch('/api/carer/escalation-alerts', {
+    method: 'POST',
+    headers: await getSqlApiReadHeaders(true),
+    body: JSON.stringify(body),
+    cache: 'no-store',
+  });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to send escalation alert.');
+  }
+}
+
 export async function sendCarerEscalationAlert(task: CarerTask) {
   const { uid: carerUid, username: carerUsername } =
     await getCurrentCarerIdentity();
+
+  if (isClientSqlReadMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'carer_escalation_alert',
+      file: 'features/games/carerTasks.ts',
+      operation: 'addDoc',
+      replacement: 'POST /api/carer/escalation-alerts',
+    });
+    await postEscalationAlertViaSql({
+      coadminUid: task.coadminUid,
+      contextType: 'task_help',
+      escalationFrom: 'carer',
+      taskId: task.id,
+      playerUid: task.playerUid,
+      playerUsername: task.playerUsername || 'Player',
+      gameName: task.gameName || 'Unknown Game',
+      message: 'This player is being an idiot.',
+      createdByCarerUid: carerUid,
+      createdByCarerUsername: carerUsername,
+    });
+    logSqlClientMigration({
+      feature: 'carer_escalation_alert',
+      oldFirebaseOperation: 'addDoc',
+      newSqlRoute: '/api/carer/escalation-alerts',
+      result: 'ok',
+      fallbackUsed: false,
+    });
+    return;
+  }
 
   await addDoc(collection(db, 'carerEscalationAlerts'), {
     coadminUid: task.coadminUid,
@@ -2657,6 +2704,35 @@ export async function sendCarerCashboxInquiryAlert(values: {
         ? 'player'
         : 'carer';
 
+  if (isClientSqlReadMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'carer_cashbox_inquiry_alert',
+      file: 'features/games/carerTasks.ts',
+      operation: 'addDoc',
+      replacement: 'POST /api/carer/escalation-alerts',
+    });
+    await postEscalationAlertViaSql({
+      coadminUid: values.coadminUid,
+      contextType: 'cashbox_inquiry',
+      escalationFrom,
+      taskId: null,
+      playerUid,
+      playerUsername,
+      gameName: null,
+      message: cleanMessage,
+      createdByCarerUid: sender.uid,
+      createdByCarerUsername: sender.username,
+    });
+    logSqlClientMigration({
+      feature: 'carer_cashbox_inquiry_alert',
+      oldFirebaseOperation: 'addDoc',
+      newSqlRoute: '/api/carer/escalation-alerts',
+      result: 'ok',
+      fallbackUsed: false,
+    });
+    return;
+  }
+
   await addDoc(collection(db, 'carerEscalationAlerts'), {
     coadminUid: values.coadminUid,
     contextType: 'cashbox_inquiry',
@@ -2674,6 +2750,14 @@ export async function sendCarerCashboxInquiryAlert(values: {
 
 const CARER_ESCALATION_ALERT_LIVE_LIMIT = 24;
 
+function isoToEscalationTimestamp(iso: string | null | undefined): Timestamp | null {
+  if (!iso) {
+    return null;
+  }
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? Timestamp.fromMillis(ms) : null;
+}
+
 export function listenToCarerEscalationAlertsByCoadmin(
   coadminUid: string,
   onChange: (alerts: CarerEscalationAlert[]) => void,
@@ -2681,8 +2765,85 @@ export function listenToCarerEscalationAlertsByCoadmin(
 ) {
   if (isClientSqlReadMode()) {
     logClientFirestoreSkipped('carer_escalation_alerts_listener', { coadminUid });
-    onChange([]);
-    return () => {};
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      if (cancelled) {
+        return;
+      }
+      try {
+        const response = await fetch(
+          `/api/carer/escalation-alerts?coadminUid=${encodeURIComponent(coadminUid)}&limit=${CARER_ESCALATION_ALERT_LIVE_LIMIT}`,
+          {
+            method: 'GET',
+            headers: await getSqlApiReadHeaders(false),
+            cache: 'no-store',
+          }
+        );
+        const payload = (await response.json().catch(() => ({}))) as {
+          alerts?: Array<{
+            id: string;
+            coadminUid: string;
+            contextType?: string | null;
+            escalationFrom?: string | null;
+            taskId?: string | null;
+            playerUid?: string | null;
+            playerUsername?: string | null;
+            gameName?: string | null;
+            message?: string | null;
+            createdByCarerUid?: string | null;
+            createdByCarerUsername?: string | null;
+            createdAt?: string | null;
+          }>;
+        };
+        if (!cancelled) {
+          const currentUid = auth.currentUser?.uid || '';
+          const alerts = (payload.alerts || [])
+            .map((alert) =>
+              mapCarerEscalationAlert(alert.id, {
+                coadminUid: alert.coadminUid,
+                contextType: alert.contextType as CarerEscalationAlert['contextType'],
+                escalationFrom: alert.escalationFrom,
+                taskId: alert.taskId,
+                playerUid: alert.playerUid,
+                playerUsername: alert.playerUsername,
+                gameName: alert.gameName,
+                message: String(alert.message || ''),
+                createdByCarerUid: String(alert.createdByCarerUid || ''),
+                createdByCarerUsername: String(alert.createdByCarerUsername || ''),
+                createdAt: isoToEscalationTimestamp(alert.createdAt),
+              })
+            )
+            .filter(
+              (alert) =>
+                !currentUid || !Array.isArray(alert.dismissedByUids)
+                  ? true
+                  : !alert.dismissedByUids.includes(currentUid)
+            );
+          onChange(alerts);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          onError?.(error instanceof Error ? error : new Error(String(error)));
+        }
+      } finally {
+        if (!cancelled) {
+          timer = setTimeout(() => {
+            void tick();
+          }, 12_000);
+        }
+      }
+    };
+
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer != null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
   }
 
   const alertsQuery = query(

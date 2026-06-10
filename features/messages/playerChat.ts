@@ -35,6 +35,11 @@ import {
   noopFirestoreUnsubscribe,
   shouldSkipClientFirestore,
 } from '@/lib/client/clientFirestoreGuard';
+import {
+  logClientFirebaseRuntimeRemoved,
+  logSqlClientMigration,
+} from '@/lib/client/sqlClientMigration';
+import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 
 const DIRECT_CONVERSATIONS = 'playerConversations';
@@ -154,6 +159,36 @@ async function withRateLimit(conversationId: string, senderUid: string) {
   });
 }
 
+async function sendDirectTextMessageViaSql(
+  senderUid: string,
+  receiverUid: string,
+  text: string,
+  conversationId: string
+) {
+  const response = await fetch('/api/chat/messages', {
+    method: 'POST',
+    headers: await getSqlApiReadHeaders(true),
+    body: JSON.stringify({
+      peerUid: receiverUid,
+      conversationId,
+      type: 'text',
+      text,
+    }),
+    cache: 'no-store',
+  });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to send chat message.');
+  }
+  logSqlClientMigration({
+    feature: 'player_chat_send_text',
+    oldFirebaseOperation: 'setDoc+addDoc',
+    newSqlRoute: '/api/chat/messages',
+    result: 'ok',
+    fallbackUsed: false,
+  });
+}
+
 export async function sendDirectTextMessage(
   receiverUid: string,
   text: string,
@@ -164,6 +199,17 @@ export async function sendDirectTextMessage(
   if (!body) return;
 
   const conversationId = getDirectConversationId(senderUid, receiverUid);
+
+  if (isClientSqlReadMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'player_chat_send_text',
+      file: 'features/messages/playerChat.ts',
+      operation: 'setDoc+addDoc',
+      replacement: 'POST /api/chat/messages',
+    });
+    await sendDirectTextMessageViaSql(senderUid, receiverUid, body, conversationId);
+    return;
+  }
   await withRateLimit(conversationId, senderUid);
   const conversationRef = doc(db, DIRECT_CONVERSATIONS, conversationId);
 
@@ -213,6 +259,16 @@ export async function sendDirectImageMessage(
   const maxSizeBytes = 5 * 1024 * 1024;
   if (file.size > maxSizeBytes) {
     throw new Error('Image must be smaller than 5MB.');
+  }
+
+  if (isClientSqlReadMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'player_chat_send_image',
+      file: 'features/messages/playerChat.ts',
+      operation: 'setDoc+addDoc',
+      replacement: 'POST /api/chat/messages',
+    });
+    throw new Error('Image chat not ready');
   }
 
   const conversationId = getDirectConversationId(senderUid, receiverUid);

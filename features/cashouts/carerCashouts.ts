@@ -15,7 +15,11 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
-import { attachPendingCarerCashoutsSqlPoll } from '@/features/live/coadminCarerCashoutsSqlRead';
+import {
+  attachCarerCashoutsByCarerSqlPoll,
+  attachPendingCarerCashoutsSqlPoll,
+} from '@/features/live/coadminCarerCashoutsSqlRead';
+import { logClientFirebaseRuntimeRemoved } from '@/lib/client/sqlClientMigration';
 import { clientOnSnapshot } from '@/lib/client/clientFirestoreQuery';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 
@@ -177,6 +181,20 @@ export function listenCarerCashoutsByCarerUid(
   onChange: (items: CarerCashoutRequest[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (isClientSqlReadMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'carer_cashouts_by_carer',
+      file: 'features/cashouts/carerCashouts.ts',
+      operation: 'onSnapshot',
+      replacement: '/api/carer-cashouts/cache?scope=carer',
+    });
+    return attachCarerCashoutsByCarerSqlPoll({
+      carerUid,
+      onChange,
+      onError,
+    });
+  }
+
   const cashoutsQuery = query(
     collection(db, 'carerCashouts'),
     where('carerUid', '==', carerUid),

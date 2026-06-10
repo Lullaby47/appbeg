@@ -8,6 +8,7 @@ import {
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
 import {
+  readCarerCashoutsByCarerUid,
   readPendingCarerCashoutsByCoadmin,
   type CachedCarerCashout,
 } from '@/lib/sql/carerCashoutsCache';
@@ -64,18 +65,52 @@ export async function GET(request: Request) {
   }
 
   const scope = resolveScope(request);
-  if (scope !== 'pending') {
-    return apiError('scope query parameter must be pending.', 400);
+  if (scope !== 'pending' && scope !== 'carer') {
+    return apiError('scope query parameter must be pending or carer.', 400);
   }
 
   const url = new URL(request.url);
   const requestedCoadminUid = cleanText(url.searchParams.get('coadminUid'));
+  const requestedCarerUid = cleanText(url.searchParams.get('carerUid'));
   const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') || 100)));
   const scopedCoadmin = scopedCoadminUid(auth.user);
   const coadminUid =
     auth.user.role === 'coadmin'
       ? auth.user.uid
       : requestedCoadminUid || scopedCoadmin || '';
+
+  if (scope === 'carer') {
+    const carerUid =
+      requestedCarerUid ||
+      (auth.user.role === 'carer' || auth.user.role === 'staff' ? auth.user.uid : '');
+    if (!carerUid) {
+      return NextResponse.json({ cashouts: [], source: 'postgres' });
+    }
+    if (
+      auth.user.role !== 'admin' &&
+      auth.user.role !== 'coadmin' &&
+      auth.user.uid !== carerUid
+    ) {
+      return apiError('Forbidden.', 403);
+    }
+
+    const sqlReadMode = isCacheSqlAuthoritative();
+    const cashouts = await readCarerCashoutsByCarerUid(carerUid, limit);
+    if (cashouts !== null) {
+      logCacheSqlRead(ROUTE, {
+        scope,
+        carerUid,
+        count: cashouts.length,
+        durationMs: Date.now() - startedAt,
+      });
+      return NextResponse.json({ cashouts, source: 'postgres' });
+    }
+    if (sqlReadMode) {
+      logCacheFirestoreFallbackBlocked(ROUTE, 'carerCashouts', { scope, carerUid });
+      return NextResponse.json({ cashouts: [], source: 'postgres' });
+    }
+    return NextResponse.json({ cashouts: [], source: 'postgres' });
+  }
 
   if (!coadminUid) {
     return NextResponse.json({ cashouts: [], source: 'postgres' });

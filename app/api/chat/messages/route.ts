@@ -6,7 +6,9 @@ import {
   logCacheFirestoreFallbackBlocked,
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
+import { sendChatMessageInSql } from '@/lib/sql/authorityChat';
 import { readChatMessagesCacheByConversation } from '@/lib/sql/chatMessagesCache';
+import { isDatabaseUrlConfigured } from '@/lib/server/sqlRuntime';
 
 const ROUTE = '/api/chat/messages';
 
@@ -59,6 +61,71 @@ export async function GET(request: Request) {
       createdAt: message.createdAt,
     })),
     conversationId,
+    source: 'postgres',
+    firestore_fallback: false,
+  });
+}
+
+export async function POST(request: Request) {
+  const auth = await requireApiUser(request, [
+    'admin',
+    'coadmin',
+    'staff',
+    'carer',
+    'player',
+  ]);
+  if ('response' in auth) {
+    return auth.response;
+  }
+
+  if (!isDatabaseUrlConfigured()) {
+    return apiError('Chat is unavailable in SQL mode right now.', 503);
+  }
+
+  const body = (await request.json().catch(() => ({}))) as {
+    peerUid?: string;
+    conversationId?: string;
+    type?: string;
+    text?: string;
+    imageUrl?: string;
+    imagePublicId?: string;
+  };
+
+  const receiverUid = String(body.peerUid || '').trim();
+  if (!receiverUid) {
+    return apiError('peerUid is required.', 400);
+  }
+
+  const type = String(body.type || 'text').trim().toLowerCase() === 'image' ? 'image' : 'text';
+  if (type === 'image') {
+    return apiError('Image chat not ready.', 501);
+  }
+
+  const text = String(body.text || '').trim();
+  if (!text) {
+    return apiError('Message text is required.', 400);
+  }
+
+  const conversationId =
+    String(body.conversationId || '').trim() || getConversationId(auth.user.uid, receiverUid);
+
+  const result = await sendChatMessageInSql({
+    senderUid: auth.user.uid,
+    receiverUid,
+    conversationId,
+    type: 'text',
+    text,
+  });
+
+  if (!result.ok) {
+    return apiError('Failed to send chat message.', 500);
+  }
+
+  return NextResponse.json({
+    success: true,
+    messageId: result.messageId,
+    conversationId: result.conversationId,
+    createdAt: result.createdAt,
     source: 'postgres',
     firestore_fallback: false,
   });

@@ -292,6 +292,16 @@ function mapCachedPlayerGameLoginRow(
   };
 }
 
+export async function readPlayerGameLoginCacheByFirebaseId(
+  firebaseId: string
+): Promise<CachedPlayerGameLogin | null> {
+  const row = await getPlayerGameLoginCacheById(firebaseId);
+  if (!row) {
+    return null;
+  }
+  return mapCachedPlayerGameLoginRow(row, '');
+}
+
 const PLAYER_GAME_LOGINS_BY_PLAYER_SQL = `
   SELECT DISTINCT ON (firebase_id)
     firebase_id,

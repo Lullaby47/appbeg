@@ -56,6 +56,74 @@ async function fetchPendingCashouts(coadminUid: string, limit: number) {
   return (payload.cashouts || []).map(mapCachedCashout);
 }
 
+async function fetchCarerCashoutsByCarerUid(carerUid: string, limit: number) {
+  const response = await fetch(
+    `/api/carer-cashouts/cache?scope=carer&carerUid=${encodeURIComponent(carerUid)}&limit=${limit}`,
+    {
+      method: 'GET',
+      headers: await getSqlApiReadHeaders(false),
+      cache: 'no-store',
+    }
+  );
+  const payload = (await response.json().catch(() => ({}))) as {
+    cashouts?: Array<Record<string, unknown>>;
+    error?: string;
+  };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to load carer cashout history.');
+  }
+  return (payload.cashouts || []).map(mapCachedCashout);
+}
+
+export function attachCarerCashoutsByCarerSqlPoll(input: {
+  carerUid: string;
+  limit?: number;
+  onChange: (items: CarerCashoutRequest[]) => void;
+  onError?: (error: Error) => void;
+}) {
+  void assertClientFirestoreDisabled('carer_cashouts_by_carer_sql_poll', 'onSnapshot', {
+    carerUid: input.carerUid,
+  });
+  logClientFirestoreSkipped('carer_cashouts_by_carer_listener', {
+    carerUid: input.carerUid,
+  });
+
+  let cancelled = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const tick = async () => {
+    if (cancelled) {
+      return;
+    }
+    try {
+      const cashouts = await fetchCarerCashoutsByCarerUid(input.carerUid, input.limit || 100);
+      if (!cancelled) {
+        input.onChange(cashouts);
+      }
+    } catch (error) {
+      if (!cancelled) {
+        input.onError?.(error instanceof Error ? error : new Error(String(error)));
+      }
+    } finally {
+      if (!cancelled) {
+        timer = setTimeout(() => {
+          void tick();
+        }, POLL_MS);
+      }
+    }
+  };
+
+  void tick();
+
+  return () => {
+    cancelled = true;
+    if (timer != null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+}
+
 export function attachPendingCarerCashoutsSqlPoll(input: {
   coadminUid: string;
   limit?: number;

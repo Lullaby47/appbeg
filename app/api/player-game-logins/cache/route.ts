@@ -14,8 +14,10 @@ import {
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
 import {
+  readPlayerGameLoginCacheByFirebaseId,
   readPlayerGameLoginsCacheByCoadmin,
   readPlayerGameLoginsCacheFullByPlayer,
+  upsertPlayerGameLoginCache,
   type CachedPlayerGameLogin,
 } from '@/lib/sql/playerGameLoginsCache';
 
@@ -177,4 +179,74 @@ export async function GET(request: Request) {
     `[PLAYER_GAME_LOGINS_CACHE_READ] source=firestore_fallback coadminUid=${coadminUid} count=${playerGameLogins.length} durationMs=${durationMs}`
   );
   return NextResponse.json({ playerGameLogins, source: 'firestore' });
+}
+
+export async function POST(request: Request) {
+  const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer']);
+  if ('response' in auth) {
+    return auth.response;
+  }
+
+  const body = (await request.json().catch(() => ({}))) as {
+    action?: unknown;
+    playerGameLogin?: CachedPlayerGameLogin;
+    id?: unknown;
+  };
+  const action = cleanText(body.action);
+  const scoped = scopedCoadminUid(auth.user);
+
+  if (action === 'upsert') {
+    let login = body.playerGameLogin;
+    if (!login?.id) {
+      return apiError('Player game login id is required.', 400);
+    }
+    if (!cleanText(login.playerUid) || !cleanText(login.coadminUid)) {
+      const existing = await readPlayerGameLoginCacheByFirebaseId(login.id);
+      if (existing) {
+        login = {
+          ...existing,
+          ...login,
+          id: login.id,
+          playerUid: cleanText(login.playerUid) || existing.playerUid,
+          playerUsername: cleanText(login.playerUsername) || existing.playerUsername,
+          gameName: cleanText(login.gameName) || existing.gameName,
+          gameUsername: cleanText(login.gameUsername) || existing.gameUsername,
+          gamePassword: String(login.gamePassword || existing.gamePassword || ''),
+          frontendUrl: cleanText(login.frontendUrl) || existing.frontendUrl,
+          siteUrl: cleanText(login.siteUrl) || existing.siteUrl,
+          coadminUid: cleanText(login.coadminUid) || existing.coadminUid,
+          createdBy: cleanText(login.createdBy) || existing.createdBy,
+          createdAt: login.createdAt || existing.createdAt,
+        };
+      }
+    }
+    const loginScope = cleanText(login.coadminUid || login.createdBy);
+    if (
+      auth.user.role !== 'admin' &&
+      scoped &&
+      loginScope !== scoped &&
+      !canAccessCoadmin(auth.user, loginScope, scoped)
+    ) {
+      return apiError('Forbidden.', 403);
+    }
+
+    const mirrored = await upsertPlayerGameLoginCache({
+      firebaseId: login.id,
+      playerUid: login.playerUid,
+      playerUsername: login.playerUsername,
+      gameName: login.gameName,
+      gameUsername: login.gameUsername,
+      gamePassword: login.gamePassword,
+      frontendUrl: login.frontendUrl,
+      siteUrl: login.siteUrl,
+      coadminUid: login.coadminUid,
+      createdBy: login.createdBy,
+      createdAt: login.createdAt,
+      source: 'authority_api',
+      rawFirestoreData: login as unknown as Record<string, unknown>,
+    });
+    return NextResponse.json({ success: true, mirrored });
+  }
+
+  return apiError('Invalid player game login cache action.', 400);
 }
