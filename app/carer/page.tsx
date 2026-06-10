@@ -25,8 +25,13 @@ import { logCarerPageStartup, logCarerPageTaskSync, resetCarerPageStartupTiming,
 import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 import ImageUploadField from '@/components/common/ImageUploadField';
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+import {
+  logCarerAction,
+  logCarerFirebaseLeftoverAudit,
+} from '@/lib/client/carerActionAudit';
 import { logCarerFirestoreBlockedSuppressed } from '@/lib/client/carerPageRequestAudit';
 import {
+  reportCarerActionError,
   reportCarerUiError,
   shouldSuppressCarerFirestoreBlockedUiError,
 } from '@/lib/client/carerPageError';
@@ -2204,6 +2209,18 @@ export default function CarerPage() {
       return;
     }
 
+    logCarerAction({
+      action: 'refresh_page_data',
+      file: 'app/carer/page.tsx',
+      function: 'refreshPageData',
+      route: '/api/carer/base-data',
+      method: 'GET',
+      carerUid: carerIdentity?.uid ?? null,
+      coadminUid: nextCoadminUid,
+      role: 'carer',
+      authHeaderMode: 'sql_api_read',
+    });
+
     if (showLoader) {
       setRefreshing(true);
     }
@@ -2268,8 +2285,19 @@ export default function CarerPage() {
         durationMs: Date.now() - bootstrapStartedAt,
         reason: error instanceof Error ? error.message : 'base_data_failed',
       });
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to refresh carer data.'
+      reportCarerActionError(
+        'refresh_page_data',
+        error,
+        setErrorMessage,
+        'Failed to refresh carer data.',
+        {
+          route: '/api/carer/base-data',
+          method: 'GET',
+          carerUid: carerIdentity?.uid ?? null,
+          coadminUid: nextCoadminUid,
+          allowedRoles: ['admin', 'coadmin', 'staff', 'carer'],
+          authPath: 'app_session_sql',
+        }
       );
 
       if (showLoader) {
@@ -2601,6 +2629,17 @@ export default function CarerPage() {
   }
 
   async function handleStartTask(task: CarerTask) {
+    logCarerAction({
+      action: 'start_task',
+      file: 'app/carer/page.tsx',
+      function: 'handleStartTask',
+      route: isClientSqlReadMode() ? '/api/carer/tasks/claim' : null,
+      method: isClientSqlReadMode() ? 'POST' : null,
+      carerUid: carerIdentity?.uid ?? null,
+      coadminUid,
+      role: 'carer',
+      authHeaderMode: isClientSqlReadMode() ? 'sql_api_write' : 'firestore_transaction',
+    });
     const clickStartedAt = Date.now();
     console.info('[START_TIMING] clickStart at=%s taskId=%s', new Date(clickStartedAt).toISOString(), task.id);
     const isTaskLoading = automationLoadingTaskId === task.id;
@@ -3196,6 +3235,17 @@ export default function CarerPage() {
   }
 
   async function handleCashoutRequest() {
+    logCarerAction({
+      action: 'request_cashout',
+      file: 'app/carer/page.tsx',
+      function: 'handleCashoutRequest',
+      route: '/api/carer/cashouts',
+      method: 'POST',
+      carerUid: carerIdentity?.uid ?? null,
+      coadminUid,
+      role: 'carer',
+      authHeaderMode: 'firebase_bearer',
+    });
     if (!carerIdentity || !coadminUid) {
       setErrorMessage('Cashout is not ready. Please wait.');
       return;
@@ -3230,13 +3280,48 @@ export default function CarerPage() {
         `Cashout request of ${formatNpr(cashBoxNpr)} sent to coadmin successfully.`
       );
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to request cashout.');
+      reportCarerActionError(
+        'request_cashout',
+        error,
+        setErrorMessage,
+        'Failed to request cashout.',
+        {
+          route: '/api/carer/cashouts',
+          method: 'POST',
+          carerUid: carerIdentity?.uid ?? null,
+          coadminUid,
+          allowedRoles: ['carer', 'staff', 'coadmin', 'admin'],
+        }
+      );
     } finally {
       setCashoutLoading(false);
     }
   }
 
   async function handleSavePaymentDetails() {
+    logCarerAction({
+      action: 'save_payment_details',
+      file: 'app/carer/page.tsx',
+      function: 'handleSavePaymentDetails',
+      route: null,
+      method: null,
+      carerUid: carerIdentity?.uid ?? null,
+      coadminUid,
+      role: 'carer',
+      authHeaderMode: 'firestore_client_only',
+    });
+    if (isClientSqlReadMode()) {
+      logCarerFirebaseLeftoverAudit({
+        action: 'save_payment_details',
+        file: 'features/cashouts/carerCashouts.ts',
+        function: 'saveCarerPaymentDetails',
+        operation: 'updateDoc(users)',
+        sqlMode: true,
+        firestoreAttempted: true,
+        blocked: true,
+        userVisible: true,
+      });
+    }
     setSavingPaymentDetails(true);
     setErrorMessage('');
     setNoticeMessage('');
@@ -3260,8 +3345,11 @@ export default function CarerPage() {
       setNoticeMessage('Payment details saved successfully.');
       setShowPaymentDetailsPanel(false);
     } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to save payment details.'
+      reportCarerActionError(
+        'save_payment_details',
+        error,
+        setErrorMessage,
+        'Failed to save payment details.'
       );
     } finally {
       setSavingPaymentDetails(false);
@@ -3281,6 +3369,17 @@ export default function CarerPage() {
       return;
     }
 
+    logCarerAction({
+      action: 'send_cashbox_inquiry',
+      file: 'app/carer/page.tsx',
+      function: 'handleSendInquiry',
+      route: '/api/carer/escalation-alerts',
+      method: 'POST',
+      carerUid: carerIdentity?.uid ?? null,
+      coadminUid,
+      role: 'carer',
+      authHeaderMode: 'sql_api_write',
+    });
     setSendingInquiry(true);
     setErrorMessage('');
     setNoticeMessage('');
@@ -3294,7 +3393,19 @@ export default function CarerPage() {
       setShowInquiryPanel(false);
       setInquiryMessage('');
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to send inquiry.');
+      reportCarerActionError(
+        'send_cashbox_inquiry',
+        error,
+        setErrorMessage,
+        'Failed to send inquiry.',
+        {
+          route: '/api/carer/escalation-alerts',
+          method: 'POST',
+          carerUid: carerIdentity?.uid ?? null,
+          coadminUid,
+          allowedRoles: ['admin', 'coadmin', 'staff', 'carer', 'player'],
+        }
+      );
     } finally {
       setSendingInquiry(false);
     }
@@ -3359,6 +3470,17 @@ export default function CarerPage() {
   }
 
   async function handleTogglePlayerStatus(player: PlayerUser) {
+    logCarerAction({
+      action: player.status === 'disabled' ? 'unblock_player' : 'block_player',
+      file: 'app/carer/page.tsx',
+      function: 'handleTogglePlayerStatus',
+      route: '/api/admin/set-user-status',
+      method: 'POST',
+      carerUid: carerIdentity?.uid ?? null,
+      coadminUid,
+      role: 'carer',
+      authHeaderMode: 'admin_action_headers',
+    });
     setBlockingPlayerUid(player.uid);
     setErrorMessage('');
     setNoticeMessage('');
@@ -3375,8 +3497,21 @@ export default function CarerPage() {
         `Player ${player.status === 'disabled' ? 'unblocked' : 'blocked'} successfully.`
       );
     } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to update player status.'
+      reportCarerActionError(
+        player.status === 'disabled' ? 'unblock_player' : 'block_player',
+        error,
+        setErrorMessage,
+        'Failed to update player status.',
+        {
+          route: '/api/admin/set-user-status',
+          method: 'POST',
+          status: 403,
+          carerUid: carerIdentity?.uid ?? null,
+          coadminUid,
+          allowedRoles: ['admin', 'coadmin'],
+          authPath: 'admin_action_headers',
+          reason: 'role_not_allowed_for_carer',
+        }
       );
     } finally {
       setBlockingPlayerUid(null);
@@ -3384,6 +3519,29 @@ export default function CarerPage() {
   }
 
   async function handleOpenRiskPanel(playerUid: string) {
+    logCarerAction({
+      action: 'open_risk_panel',
+      file: 'app/carer/page.tsx',
+      function: 'handleOpenRiskPanel',
+      route: null,
+      method: null,
+      carerUid: carerIdentity?.uid ?? null,
+      coadminUid,
+      role: 'carer',
+      authHeaderMode: 'firestore_client_only',
+    });
+    if (isClientSqlReadMode()) {
+      logCarerFirebaseLeftoverAudit({
+        action: 'open_risk_panel',
+        file: 'features/risk/playerRisk.ts',
+        function: 'getPlayerRiskSnapshot',
+        operation: 'getDoc(playerRiskSnapshots)',
+        sqlMode: true,
+        firestoreAttempted: true,
+        blocked: true,
+        userVisible: true,
+      });
+    }
     setRiskActionLoading(`open-${playerUid}`);
     setErrorMessage('');
     try {
@@ -3395,7 +3553,12 @@ export default function CarerPage() {
       setSelectedRiskSnapshot(snapshot);
       setShowRiskPanel(true);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to load risk profile.');
+      reportCarerActionError(
+        'open_risk_panel',
+        error,
+        setErrorMessage,
+        'Failed to load risk profile.'
+      );
     } finally {
       setRiskActionLoading(null);
     }
@@ -3406,6 +3569,29 @@ export default function CarerPage() {
       return;
     }
 
+    logCarerAction({
+      action: 'flag_risk_player',
+      file: 'app/carer/page.tsx',
+      function: 'handleFlagRiskPlayer',
+      route: null,
+      method: null,
+      carerUid: carerIdentity?.uid ?? null,
+      coadminUid,
+      role: 'carer',
+      authHeaderMode: 'firestore_client_only',
+    });
+    if (isClientSqlReadMode()) {
+      logCarerFirebaseLeftoverAudit({
+        action: 'flag_risk_player',
+        file: 'features/risk/playerRisk.ts',
+        function: 'flagPlayerRisk',
+        operation: 'addDoc(riskActions)',
+        sqlMode: true,
+        firestoreAttempted: true,
+        blocked: true,
+        userVisible: true,
+      });
+    }
     setRiskActionLoading(`flag-${selectedRiskSnapshot.playerUid}`);
     setErrorMessage('');
     try {
@@ -3416,7 +3602,12 @@ export default function CarerPage() {
       });
       setNoticeMessage('Player flagged for staff review.');
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to flag player.');
+      reportCarerActionError(
+        'flag_risk_player',
+        error,
+        setErrorMessage,
+        'Failed to flag player.'
+      );
     } finally {
       setRiskActionLoading(null);
     }
@@ -3427,6 +3618,29 @@ export default function CarerPage() {
       return;
     }
 
+    logCarerAction({
+      action: 'send_risk_alert',
+      file: 'app/carer/page.tsx',
+      function: 'handleSendRiskAlertToStaff',
+      route: null,
+      method: null,
+      carerUid: carerIdentity?.uid ?? null,
+      coadminUid,
+      role: 'carer',
+      authHeaderMode: 'firestore_client_only',
+    });
+    if (isClientSqlReadMode()) {
+      logCarerFirebaseLeftoverAudit({
+        action: 'send_risk_alert',
+        file: 'features/risk/playerRisk.ts',
+        function: 'sendRiskAlertToStaff',
+        operation: 'addDoc(carerEscalationAlerts)',
+        sqlMode: true,
+        firestoreAttempted: true,
+        blocked: true,
+        userVisible: true,
+      });
+    }
     setRiskActionLoading(`alert-${selectedRiskSnapshot.playerUid}`);
     setErrorMessage('');
     try {
@@ -3438,7 +3652,12 @@ export default function CarerPage() {
       });
       setNoticeMessage('Risk alert sent to staff.');
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to send risk alert.');
+      reportCarerActionError(
+        'send_risk_alert',
+        error,
+        setErrorMessage,
+        'Failed to send risk alert.'
+      );
     } finally {
       setRiskActionLoading(null);
     }
