@@ -1,5 +1,10 @@
 'use client';
 
+import {
+  isPlayerSessionStale,
+  isStalePlayerSessionError,
+  logPlayerStaleResponseIgnored,
+} from '@/lib/client/playerStaleSession';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 
 export const INTERNAL_SQL_FIRESTORE_BLOCKED_MESSAGE = 'client_firestore_disabled_sql_mode';
@@ -45,6 +50,17 @@ export function reportPlayerUiError(
     logClientFirestoreBlockedSuppressed({
       feature,
       message: readErrorMessage(error),
+    });
+    return;
+  }
+
+  if (isPlayerSessionStale() || isStalePlayerSessionError(error)) {
+    logPlayerStaleResponseIgnored({
+      route: typeof window !== 'undefined' ? window.location.pathname || '' : '',
+      requestSessionIdPrefix: null,
+      currentSessionIdPrefix: null,
+      status: 'ui_error',
+      reason: `${feature}:${readErrorMessage(error) || fallback}`,
     });
     return;
   }

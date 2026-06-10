@@ -24,8 +24,8 @@ import {
   clearPlayerSessionBeforeLogin,
   getLocalPlayerSessionId,
   isPlayerSessionReady,
-  PLAYER_REPLACED_LOGIN_MESSAGE,
 } from '@/features/auth/playerSession';
+import { PLAYER_SESSION_REPLACED_USER_MESSAGE } from '@/lib/client/playerStaleSession';
 import { attemptSqlLogin, isSqlLoginFirstEnabled } from '@/features/auth/sqlLogin';
 import { getSessionUserOnce } from '@/features/auth/sessionUser';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
@@ -53,7 +53,7 @@ export default function LoginPage() {
     const message = params.get('message');
     const reason = params.get('reason');
     return message === 'another-device' || reason === 'session_replaced'
-      ? PLAYER_REPLACED_LOGIN_MESSAGE
+      ? PLAYER_SESSION_REPLACED_USER_MESSAGE
       : '';
   });
   const [loading, setLoading] = useState(false);

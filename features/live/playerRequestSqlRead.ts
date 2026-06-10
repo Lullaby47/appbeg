@@ -8,6 +8,11 @@ import {
 } from '@/features/games/playerGameRequests';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 import { checkPlayerPollRole } from '@/lib/client/playerPollGuard';
+import {
+  handleStalePlayerFetchError,
+  isPlayerSessionStale,
+  registerPlayerRuntimeStopper,
+} from '@/lib/client/playerStaleSession';
 import { LIVE_STREAM_DISABLED } from '@/features/live/liveStreamFlags';
 import { isPublicPlayerRequestsSqlReadEnabled } from '@/lib/client/sqlPublicFlags';
 
@@ -294,6 +299,18 @@ export function attachPlayerRequestSqlReadListener(
     if (fellBack || disposed) {
       return;
     }
+    if (
+      isPlayerSessionStale() ||
+      /sse_http_401|live_auth_denied|session_inactive|session_validation_failed|player_session/i.test(
+        reason
+      )
+    ) {
+      disposed = true;
+      abortController?.abort();
+      abortController = null;
+      console.info('[PLAYER_REQUESTS_SQL_READ] stale_session_stop reason=%s', reason);
+      return;
+    }
     fellBack = true;
     abortController?.abort();
     abortController = null;
@@ -363,11 +380,26 @@ export function attachPlayerRequestSqlReadListener(
       }
     } catch (error) {
       if (!disposed) {
+        if (handleStalePlayerFetchError('player_requests_sql_read', error)) {
+          disposed = true;
+          abortController?.abort();
+          abortController = null;
+          return;
+        }
         const reason = error instanceof Error ? error.message : 'bootstrap_or_sse_failed';
         triggerFallback(reason);
       }
     }
   };
+
+  const disposeRuntime = () => {
+    disposed = true;
+    abortController?.abort();
+    abortController = null;
+    requestsById.clear();
+  };
+
+  const unregisterStopper = registerPlayerRuntimeStopper(disposeRuntime);
 
   void (async () => {
     const sessionUser = await checkPlayerPollRole('player_requests_sql_read');
@@ -380,10 +412,8 @@ export function attachPlayerRequestSqlReadListener(
 
   return {
     dispose() {
-      disposed = true;
-      abortController?.abort();
-      abortController = null;
-      requestsById.clear();
+      unregisterStopper();
+      disposeRuntime();
     },
     hasFallenBack() {
       return fellBack;

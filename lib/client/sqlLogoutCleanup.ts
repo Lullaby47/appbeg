@@ -14,6 +14,7 @@ import {
 } from '@/features/auth/playerSession';
 import { clearCachedSessionUser, getCachedSessionUser } from '@/features/auth/sessionUser';
 import { failLoginUiProgress } from '@/lib/client/loginUiProgress';
+import { resetPlayerStaleSessionState } from '@/lib/client/playerStaleSession';
 
 function sessionIdPrefix(value: string | null | undefined) {
   const clean = String(value || '').trim();
@@ -66,6 +67,7 @@ export function clearSqlClientAuthState(reason: string) {
   }
 
   clearCachedSessionUser(reason);
+  resetPlayerStaleSessionState(reason);
   failLoginUiProgress(`logout:${reason}`);
 
   console.info('[SQL_LOGOUT_CLIENT_CLEANUP]', {

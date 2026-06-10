@@ -29,7 +29,11 @@ import {
   logPlayerSessionReadyState,
   PLAYER_SESSION_LOADING_MESSAGE,
 } from '@/features/auth/playerSession';
-import { checkPlayerPollRole } from '@/lib/client/playerPollGuard';
+import { checkPlayerPollRole, createPlayerScopedPoll } from '@/lib/client/playerPollGuard';
+import {
+  handleStalePlayerFetchError,
+  isPlayerSessionStale,
+} from '@/lib/client/playerStaleSession';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { getStaffAppSessionApiHeaders, staffApiHeaderFlags } from '@/lib/client/staffApiHeaders';
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
@@ -1102,106 +1106,103 @@ export function listenBonusEventsByCoadmin(
 
   if (isClientSqlReadMode()) {
     logClientFirestoreSkipped('bonus_events_by_coadmin', { coadminUid });
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
     let recordedFirstSnapshot = false;
 
-    const tick = async () => {
-      if (cancelled) {
+    const handleTickError = (error: Error) => {
+      if (options?.isPlayerView) {
+        if (handleStalePlayerFetchError('player_bonus_events', error)) {
+          return;
+        }
+        logPlayerBonusRequestHeaders({
+          action: 'list_bonus_events',
+          url: `/api/bonus-events/list?coadminUid=${encodeURIComponent(coadminUid)}`,
+          method: 'GET',
+          role: getCachedSessionUser()?.role ?? null,
+          uid: getCachedSessionUser()?.uid ?? auth.currentUser?.uid ?? null,
+          hasAppSessionId: Boolean(getLocalAppSessionId()),
+          hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+          appSessionIdPrefix: sessionIdPrefix(getLocalAppSessionId()),
+          playerSessionIdPrefix: sessionIdPrefix(getLocalPlayerSessionId()),
+          headersSent: [],
+          blocked: true,
+          reason: error.message,
+        });
+        if (isPlayerBonusSessionError(error.message) || isPlayerSessionStale()) {
+          options?.onSessionLoading?.(true);
+          return;
+        }
+      } else {
+        logBonusEventsUiGuard({
+          page: 'coadmin_bonus_events_listener',
+          reason: error.message,
+          message: error.message,
+          blocked: true,
+          coadminUid,
+          isCoadminView: true,
+          isPlayerView: false,
+        });
+      }
+      onError?.(error);
+    };
+
+    const runTick = async () => {
+      const events = await fetchBonusEventsFromApi(coadminUid, options);
+      if (events === null) {
         return;
       }
-      if (options?.isPlayerView) {
-        const sessionUser = await checkPlayerPollRole('player_bonus_events');
-        if (!sessionUser) {
-          cancelled = true;
-          if (timer != null) {
-            clearTimeout(timer);
-            timer = null;
-          }
-          return;
-        }
+      if (!recordedFirstSnapshot) {
+        recordedFirstSnapshot = true;
+        recordBonusEventsListenerFirstSnapshot(events.length);
       }
-      try {
-        const events = await fetchBonusEventsFromApi(coadminUid, options);
-        if (cancelled) {
-          return;
-        }
-        if (events === null) {
-          return;
-        }
-        if (!recordedFirstSnapshot) {
-          recordedFirstSnapshot = true;
-          recordBonusEventsListenerFirstSnapshot(events.length);
-        }
-        const firstDocData = events[0] ? (events[0] as unknown as Record<string, unknown>) : null;
-        options?.onSnapshotDebug?.({
+      const firstDocData = events[0] ? (events[0] as unknown as Record<string, unknown>) : null;
+      options?.onSnapshotDebug?.({
+        snapshotSize: events.length,
+        firstDocData,
+      });
+      if (BONUS_EVENTS_DEBUG) {
+        console.info('[bonusEvents] sql-poll:snapshot', {
+          coadminUid,
           snapshotSize: events.length,
-          firstDocData,
+          skipTimeWindowFilter: Boolean(options?.skipTimeWindowFilter),
         });
-        if (BONUS_EVENTS_DEBUG) {
-          console.info('[bonusEvents] sql-poll:snapshot', {
-            coadminUid,
-            snapshotSize: events.length,
-            skipTimeWindowFilter: Boolean(options?.skipTimeWindowFilter),
-          });
-        }
-        onChange(events);
-      } catch (error) {
-        if (!cancelled) {
-          const err = error instanceof Error ? error : new Error(String(error));
-          if (options?.isPlayerView) {
-            logPlayerBonusRequestHeaders({
-              action: 'list_bonus_events',
-              url: `/api/bonus-events/list?coadminUid=${encodeURIComponent(coadminUid)}`,
-              method: 'GET',
-              role: getCachedSessionUser()?.role ?? null,
-              uid: getCachedSessionUser()?.uid ?? auth.currentUser?.uid ?? null,
-              hasAppSessionId: Boolean(getLocalAppSessionId()),
-              hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
-              appSessionIdPrefix: sessionIdPrefix(getLocalAppSessionId()),
-              playerSessionIdPrefix: sessionIdPrefix(getLocalPlayerSessionId()),
-              headersSent: [],
-              blocked: true,
-              reason: err.message,
-            });
-            if (isPlayerBonusSessionError(err.message)) {
-              options?.onSessionLoading?.(true);
-              return;
-            }
-          } else {
-            logBonusEventsUiGuard({
-              page: 'coadmin_bonus_events_listener',
-              reason: err.message,
-              message: err.message,
-              blocked: true,
-              coadminUid,
-              isCoadminView: true,
-              isPlayerView: false,
-            });
-          }
-          onError?.(err);
-        }
-      } finally {
-        if (!cancelled) {
-          timer = setTimeout(() => {
-            void tick();
-          }, BONUS_EVENTS_SQL_POLL_MS);
-        }
       }
+      onChange(events);
     };
 
     if (BONUS_EVENTS_DEBUG) {
       console.info('[bonusEvents] sql-poll:start', { coadminUid });
     }
-    void (async () => {
-      if (options?.isPlayerView) {
-        const sessionUser = await checkPlayerPollRole('player_bonus_events');
-        if (!sessionUser || cancelled) {
-          return;
+
+    if (options?.isPlayerView) {
+      return createPlayerScopedPoll({
+        pollName: 'player_bonus_events',
+        intervalMs: BONUS_EVENTS_SQL_POLL_MS,
+        onTick: runTick,
+        onError: handleTickError,
+      });
+    }
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      if (cancelled) {
+        return;
+      }
+      try {
+        await runTick();
+      } catch (error) {
+        if (!cancelled) {
+          handleTickError(error instanceof Error ? error : new Error(String(error)));
+        }
+      } finally {
+        if (!cancelled) {
+          timer = setTimeout(() => void tick(), BONUS_EVENTS_SQL_POLL_MS);
         }
       }
-      await tick();
-    })();
+    };
+
+    void tick();
     return () => {
       cancelled = true;
       if (timer != null) {

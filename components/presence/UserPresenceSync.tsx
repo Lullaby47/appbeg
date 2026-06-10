@@ -7,6 +7,10 @@ import { useEffect } from 'react';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
+import {
+  isPlayerSessionStale,
+  registerPlayerRuntimeStopper,
+} from '@/lib/client/playerStaleSession';
 import { auth, db } from '@/lib/firebase/client';
 
 const HEARTBEAT_MS = 90_000;
@@ -75,7 +79,7 @@ export default function UserPresenceSync() {
       };
 
       const pulse = () => {
-        if (!isLeader) {
+        if (!isLeader || isPlayerSessionStale()) {
           return;
         }
         if (sqlReadMode) {
@@ -130,6 +134,13 @@ export default function UserPresenceSync() {
 
       ensureLeadership();
       heartbeatId = window.setInterval(() => {
+        if (isPlayerSessionStale()) {
+          if (heartbeatId !== null) {
+            window.clearInterval(heartbeatId);
+            heartbeatId = null;
+          }
+          return;
+        }
         renewLeadership();
         pulse();
       }, HEARTBEAT_MS);
@@ -157,20 +168,25 @@ export default function UserPresenceSync() {
       window.addEventListener('pageshow', onPageShow);
       window.addEventListener('beforeunload', onBeforeUnload);
 
-      cleanups.push(() => {
+      const stopHeartbeat = () => {
         isLeader = false;
         clearLeader();
         if (heartbeatId !== null) {
           window.clearInterval(heartbeatId);
+          heartbeatId = null;
         }
         if (leadershipCheckId !== null) {
           window.clearInterval(leadershipCheckId);
+          leadershipCheckId = null;
         }
         document.removeEventListener('visibilitychange', onVis);
         window.removeEventListener('storage', onStorage);
         window.removeEventListener('pageshow', onPageShow);
         window.removeEventListener('beforeunload', onBeforeUnload);
-      });
+      };
+
+      cleanups.push(stopHeartbeat);
+      cleanups.push(registerPlayerRuntimeStopper(stopHeartbeat));
     };
 
     let cancelled = false;

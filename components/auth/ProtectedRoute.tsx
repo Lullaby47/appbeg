@@ -21,13 +21,17 @@ import {
   logChatLogoutTrigger,
   shouldProtectPlayerChatSession,
 } from '@/lib/client/chatLogoutDiagnostics';
-import { shouldLogoutAfterInvalidPlayerSessionStatus } from '@/lib/client/playerSessionInvalidGuard';
+import {
+  installPlayerSessionStorageWatch,
+  isPlayerSessionStale,
+} from '@/lib/client/playerStaleSession';
 import { markPlayerClientRouteNavigation } from '@/lib/client/playerSessionNavigationGuard';
 import { isSqlPlayerRuntimeMode } from '@/lib/client/sqlPlayerRuntimeAuth';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import {
   endLocalPlayerSessionOnBrowserLeave,
   forcePlayerSessionLogout,
+  handleDefinitivePlayerSessionFailure,
   getLocalPlayerSessionId,
   isPlayerForcedLogout,
   isPlayerSessionReady,
@@ -217,22 +221,12 @@ export default function ProtectedRoute({
           sessionStatus.reason === 'session_replaced' ||
           sessionStatus.reason === 'session_inactive'
         ) {
-          if (!shouldLogoutAfterInvalidPlayerSessionStatus(sessionStatus.reason)) {
-            setCurrentRole('player');
-            recordDevActiveSession('player', sessionUser.uid);
-            setChecking(false);
-            return 'allowed';
-          }
           setCurrentRole(null);
           setForcedLogout(true);
           setChecking(false);
-          void forcePlayerSessionLogout({
+          void handleDefinitivePlayerSessionFailure(sessionStatus.reason, {
+            pollName: 'protected_route_app_session_guard',
             redirect: (url) => router.replace(url),
-            markSessionInactive: true,
-            trigger: 'tryPlayerAppSessionGuard',
-            sourceFile: 'components/auth/ProtectedRoute.tsx',
-            sourceFunction: 'tryPlayerAppSessionGuard',
-            reason: sessionStatus.reason,
           });
           return 'denied';
         }
@@ -474,27 +468,12 @@ export default function ProtectedRoute({
               sessionStatus.reason === 'session_replaced' ||
               sessionStatus.reason === 'session_inactive'
             ) {
-              if (!shouldLogoutAfterInvalidPlayerSessionStatus(sessionStatus.reason)) {
-                console.info('[SESSION_GUARD] sql_player_transient_verify_failure', {
-                  uid: firebaseUser.uid,
-                  reason: sessionStatus.reason,
-                  consecutiveGuard: true,
-                });
-                setCurrentRole('player');
-                recordDevActiveSession('player', firebaseUser.uid);
-                setChecking(false);
-                return;
-              }
               setCurrentRole(null);
               setForcedLogout(true);
               setChecking(false);
-              void forcePlayerSessionLogout({
+              void handleDefinitivePlayerSessionFailure(sessionStatus.reason, {
+                pollName: 'protected_route_firebase_guard',
                 redirect: (url) => router.replace(url),
-                markSessionInactive: true,
-                trigger: 'startFirebaseGuard',
-                sourceFile: 'components/auth/ProtectedRoute.tsx',
-                sourceFunction: 'startFirebaseGuard',
-                reason: sessionStatus.reason,
               });
               return;
             }
@@ -640,6 +619,8 @@ export default function ProtectedRoute({
       return;
     }
 
+    installPlayerSessionStorageWatch();
+
     const sqlRuntime = isSqlPlayerRuntimeMode();
     if (!sqlRuntime && !isPlayerSessionReady()) {
       return;
@@ -674,18 +655,19 @@ export default function ProtectedRoute({
         setCurrentRole(null);
         stopSessionListener();
         stopPolling();
-        void forcePlayerSessionLogout({
+        void handleDefinitivePlayerSessionFailure('session_replaced', {
+          pollName: 'listenForPlayerSessionReplacement',
           redirect: (url) => router.replace(url),
-          trigger: 'listenForPlayerSessionReplacement',
-          sourceFile: 'components/auth/ProtectedRoute.tsx',
-          sourceFunction: 'playerSessionReplacementListener',
-          reason: 'session_replaced',
         });
       });
     }
 
     void touchPlayerSession(currentUser);
     const heartbeat = window.setInterval(() => {
+      if (isPlayerSessionStale()) {
+        window.clearInterval(heartbeat);
+        return;
+      }
       void touchPlayerSession(sqlRuntime ? null : auth.currentUser);
     }, 45_000);
     const mountedAt = Date.now();

@@ -1,6 +1,16 @@
 'use client';
 
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
+import {
+  getLocalPlayerSessionId,
+  getPlayerSessionGeneration,
+} from '@/features/auth/playerSession';
+import {
+  handleStalePlayerFetchError,
+  isPlayerSessionStale,
+  markPlayerSessionStale,
+  registerPlayerRuntimeStopper,
+} from '@/lib/client/playerStaleSession';
 
 export function logPlayerPollBlockedRole(values: {
   pollName: string;
@@ -18,6 +28,10 @@ export function logPlayerPollBlockedRole(values: {
 }
 
 export async function checkPlayerPollRole(pollName: string) {
+  if (isPlayerSessionStale()) {
+    return null;
+  }
+
   const cached = getCachedSessionUser();
   if (cached?.role === 'player') {
     return cached;
@@ -36,6 +50,32 @@ export async function checkPlayerPollRole(pollName: string) {
   return null;
 }
 
+function shouldStopPollForSessionGuard(
+  pollName: string,
+  generationAtStart: number,
+  sessionIdAtStart: string
+) {
+  if (isPlayerSessionStale()) {
+    return true;
+  }
+
+  const currentSessionId = getLocalPlayerSessionId();
+  const currentGeneration = getPlayerSessionGeneration();
+
+  if (
+    currentGeneration !== generationAtStart ||
+    !currentSessionId ||
+    currentSessionId !== sessionIdAtStart
+  ) {
+    markPlayerSessionStale('player_session_generation_stale', pollName, {
+      skipRedirect: true,
+    });
+    return true;
+  }
+
+  return false;
+}
+
 export function createPlayerScopedPoll(input: {
   pollName: string;
   intervalMs: number;
@@ -44,6 +84,8 @@ export function createPlayerScopedPoll(input: {
 }) {
   let cancelled = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  const generationAtStart = getPlayerSessionGeneration();
+  const sessionIdAtStart = getLocalPlayerSessionId();
 
   const stop = () => {
     cancelled = true;
@@ -53,8 +95,11 @@ export function createPlayerScopedPoll(input: {
     }
   };
 
+  const unregister = registerPlayerRuntimeStopper(stop);
+
   const tick = async () => {
-    if (cancelled) {
+    if (cancelled || shouldStopPollForSessionGuard(input.pollName, generationAtStart, sessionIdAtStart)) {
+      stop();
       return;
     }
 
@@ -68,10 +113,19 @@ export function createPlayerScopedPoll(input: {
       await input.onTick();
     } catch (error) {
       if (!cancelled) {
+        if (
+          handleStalePlayerFetchError(input.pollName, error, sessionIdAtStart)
+        ) {
+          stop();
+          return;
+        }
         input.onError?.(error instanceof Error ? error : new Error(String(error)));
       }
     } finally {
-      if (!cancelled) {
+      if (
+        !cancelled &&
+        !shouldStopPollForSessionGuard(input.pollName, generationAtStart, sessionIdAtStart)
+      ) {
         timer = setTimeout(() => {
           void tick();
         }, input.intervalMs);
@@ -80,6 +134,10 @@ export function createPlayerScopedPoll(input: {
   };
 
   void (async () => {
+    if (shouldStopPollForSessionGuard(input.pollName, generationAtStart, sessionIdAtStart)) {
+      stop();
+      return;
+    }
     const sessionUser = await checkPlayerPollRole(input.pollName);
     if (!sessionUser || cancelled) {
       return;
@@ -87,7 +145,10 @@ export function createPlayerScopedPoll(input: {
     await tick();
   })();
 
-  return stop;
+  return () => {
+    unregister();
+    stop();
+  };
 }
 
 export function startPlayerRoleGuardedInterval(input: {
@@ -97,6 +158,8 @@ export function startPlayerRoleGuardedInterval(input: {
 }) {
   let cancelled = false;
   let intervalId: ReturnType<typeof setInterval> | null = null;
+  const generationAtStart = getPlayerSessionGeneration();
+  const sessionIdAtStart = getLocalPlayerSessionId();
 
   const stop = () => {
     cancelled = true;
@@ -106,7 +169,14 @@ export function startPlayerRoleGuardedInterval(input: {
     }
   };
 
+  const unregister = registerPlayerRuntimeStopper(stop);
+
   void (async () => {
+    if (shouldStopPollForSessionGuard(input.pollName, generationAtStart, sessionIdAtStart)) {
+      stop();
+      return;
+    }
+
     const sessionUser = await checkPlayerPollRole(input.pollName);
     if (!sessionUser || cancelled) {
       return;
@@ -114,7 +184,11 @@ export function startPlayerRoleGuardedInterval(input: {
 
     intervalId = setInterval(() => {
       void (async () => {
-        if (cancelled) {
+        if (
+          cancelled ||
+          shouldStopPollForSessionGuard(input.pollName, generationAtStart, sessionIdAtStart)
+        ) {
+          stop();
           return;
         }
         const current = await checkPlayerPollRole(input.pollName);
@@ -127,5 +201,8 @@ export function startPlayerRoleGuardedInterval(input: {
     }, input.intervalMs);
   })();
 
-  return stop;
+  return () => {
+    unregister();
+    stop();
+  };
 }

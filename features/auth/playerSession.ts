@@ -23,10 +23,14 @@ import {
   isPlayerChatRoute,
   logChatLogoutTrigger,
 } from '@/lib/client/chatLogoutDiagnostics';
+import { resetConsecutiveInvalidSessionStatus } from '@/lib/client/playerSessionInvalidGuard';
 import {
-  resetConsecutiveInvalidSessionStatus,
-  shouldLogoutAfterInvalidPlayerSessionStatus,
-} from '@/lib/client/playerSessionInvalidGuard';
+  isPlayerSessionStale,
+  markPlayerSessionStale,
+  registerPlayerSessionStatusPollStop,
+  resetPlayerStaleSessionState,
+  stopAllPlayerRuntimePolls,
+} from '@/lib/client/playerStaleSession';
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { logClientFirestoreSkipped, isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import {
@@ -220,6 +224,9 @@ export function logPlayerSessionClientState(values: {
 }
 
 export function clearPlayerSessionBeforeLogin(reason = 'login_start') {
+  stopAllPlayerRuntimePolls('login_clear', reason);
+  resetPlayerStaleSessionState(reason);
+
   const oldPlayerSessionId = getLocalPlayerSessionId() || null;
   playerSessionReady = false;
   expectedPlayerSessionId = '';
@@ -250,6 +257,9 @@ export function storePlayerLoginSessionPair(values: {
   phase: string;
   reason: string;
 }) {
+  stopAllPlayerRuntimePolls('session_pair_store', values.reason);
+  resetPlayerStaleSessionState(values.reason);
+
   const oldPlayerSessionId = getLocalPlayerSessionId() || null;
   const oldAppSessionId = getLocalAppSessionId() || null;
   const nextAppSessionId = String(values.appSessionId || '').trim();
@@ -678,22 +688,7 @@ export async function ensurePlayerSessionGateReady(options?: {
     }
 
     if (status.reason === 'session_replaced' || status.reason === 'session_inactive') {
-      if (shouldLogoutAfterInvalidPlayerSessionStatus(status.reason)) {
-        logSqlPlayerRuntimeAuth({
-          source: 'session_me',
-          uid: sessionUser.uid,
-          role: sessionUser.role,
-          coadminUid: sessionUser.coadminUid ?? null,
-          appSessionIdPrefix: sessionIdPrefix(appSessionId),
-          playerSessionIdPrefix: sessionIdPrefix(playerSessionId),
-          sessionSource: sessionUser.sessionSource ?? 'sql',
-          firebaseIgnored: isSqlPlayerRuntimeMode(),
-          ready: false,
-          blocked: true,
-          reason: status.reason,
-        });
-        return { state: 'failed', reason: status.reason };
-      }
+      markPlayerSessionStale(status.reason, 'ensurePlayerSessionGateReady');
       logSqlPlayerRuntimeAuth({
         source: 'session_me',
         uid: sessionUser.uid,
@@ -704,10 +699,10 @@ export async function ensurePlayerSessionGateReady(options?: {
         sessionSource: sessionUser.sessionSource ?? 'sql',
         firebaseIgnored: isSqlPlayerRuntimeMode(),
         ready: false,
-        blocked: false,
+        blocked: true,
         reason: status.reason,
       });
-      return { state: 'loading', reason: status.reason };
+      return { state: 'failed', reason: status.reason };
     }
 
     logSqlPlayerRuntimeAuth({
@@ -1071,7 +1066,8 @@ export function startPlayerSessionStatusPolling(
   };
 
   const tick = async () => {
-    if (stopped) {
+    if (stopped || isPlayerSessionStale()) {
+      stop();
       return;
     }
 
@@ -1103,45 +1099,21 @@ export function startPlayerSessionStatusPolling(
         return;
       }
 
-      if (status.reason === 'session_replaced') {
+      if (status.reason === 'session_replaced' || status.reason === 'session_inactive') {
         console.info('[PLAYER_SESSION_POLL]', {
-          status: 'session_replaced',
+          status: status.reason,
           sessionId: pollSessionId,
           activeSessionId: status.activeSessionId || null,
         });
-        if (!shouldLogoutAfterInvalidPlayerSessionStatus(status.reason)) {
-          scheduleNext(intervalMs);
-          return;
-        }
         stop();
-        options.onReplaced?.();
-        await forcePlayerSessionLogout({
-          redirect: options.redirect,
-          markSessionInactive: true,
-          trigger: 'player_session_poll',
-          sourceFile: 'features/auth/playerSession.ts',
-          sourceFunction: 'startPlayerSessionStatusPolling',
-        });
-        return;
-      }
-
-      if (status.reason === 'session_inactive') {
-        console.info('[PLAYER_SESSION_POLL]', {
-          status: 'session_inactive',
-          sessionId: pollSessionId,
-        });
-        if (!shouldLogoutAfterInvalidPlayerSessionStatus(status.reason)) {
-          scheduleNext(intervalMs);
-          return;
+        if (status.reason === 'session_replaced') {
+          options.onReplaced?.();
+        } else {
+          options.onInactive?.();
         }
-        stop();
-        options.onInactive?.();
-        await forcePlayerSessionLogout({
+        await handleDefinitivePlayerSessionFailure(status.reason, {
+          pollName: 'player_session_poll',
           redirect: options.redirect,
-          markSessionInactive: true,
-          trigger: 'player_session_poll',
-          sourceFile: 'features/auth/playerSession.ts',
-          sourceFunction: 'startPlayerSessionStatusPolling',
         });
         return;
       }
@@ -1165,9 +1137,36 @@ export function startPlayerSessionStatusPolling(
   };
 
   activePlayerSessionPollStop = stop;
+  registerPlayerSessionStatusPollStop(stop);
   scheduleNext(intervalMs);
 
   return stop;
+}
+
+export async function handleDefinitivePlayerSessionFailure(
+  reason: 'session_replaced' | 'session_inactive',
+  options: {
+    pollName: string;
+    redirect?: (url: string) => void;
+  }
+) {
+  stopPlayerSessionStatusPolling();
+
+  if (isSqlPlayerRuntimeMode() || isSqlPlayerAppSessionMode() || getLocalAppSessionId()) {
+    markPlayerSessionStale(reason, options.pollName, {
+      redirect: options.redirect,
+    });
+    return;
+  }
+
+  await forcePlayerSessionLogout({
+    redirect: options.redirect,
+    markSessionInactive: false,
+    trigger: options.pollName,
+    sourceFile: 'features/auth/playerSession.ts',
+    sourceFunction: 'handleDefinitivePlayerSessionFailure',
+    reason,
+  });
 }
 
 export async function forcePlayerSessionLogout(options?: {
@@ -1450,11 +1449,15 @@ export async function assertActivePlayerSession() {
     }
 
     if (
-      shouldLogoutAfterInvalidPlayerSessionStatus(result.reason)
+      result.reason === 'session_replaced' ||
+      result.reason === 'session_inactive'
     ) {
+      if (isSqlPlayerRuntimeMode() || isSqlPlayerAppSessionMode() || getLocalAppSessionId()) {
+        markPlayerSessionStale(result.reason, 'assertActivePlayerSession', { skipRedirect: true });
+        throw new PlayerSessionStaleError(result.reason);
+      }
       await forcePlayerSessionLogout({
-        markSessionInactive:
-          result.reason === 'session_replaced' || result.reason === 'session_inactive',
+        markSessionInactive: true,
         trigger: 'assertActivePlayerSession',
         sourceFile: 'features/auth/playerSession.ts',
         sourceFunction: 'assertActivePlayerSession',
@@ -1533,17 +1536,10 @@ export async function getPlayerApiHeaders(
       assertPlayerSessionRequestCurrent(generationAtStart, localSessionId);
       if (
         !result.ok &&
-        (result.reason === 'session_replaced' || result.reason === 'session_inactive') &&
-        shouldLogoutAfterInvalidPlayerSessionStatus(result.reason)
+        (result.reason === 'session_replaced' || result.reason === 'session_inactive')
       ) {
-        await forcePlayerSessionLogout({
-          markSessionInactive: true,
-          trigger: 'getPlayerApiHeaders',
-          sourceFile: 'features/auth/playerSession.ts',
-          sourceFunction: 'getPlayerApiHeaders',
-          reason: result.reason,
-        });
-        throw new Error(PLAYER_REPLACED_LOGIN_MESSAGE);
+        markPlayerSessionStale(result.reason, 'getPlayerApiHeaders', { skipRedirect: true });
+        throw new PlayerSessionStaleError(result.reason);
       }
     } else {
       await assertActivePlayerSession();

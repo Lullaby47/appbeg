@@ -8,7 +8,7 @@ import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
 import { getCachedSessionUser } from '@/features/auth/sessionUser';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
-import { checkPlayerPollRole } from '@/lib/client/playerPollGuard';
+import { createPlayerScopedPoll } from '@/lib/client/playerPollGuard';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 const POLL_MS = 8_000;
@@ -114,23 +114,25 @@ export function attachSqlUnreadCountsPoll(
   options?: { requirePlayerRole?: boolean }
 ) {
   logClientFirestoreSkipped('chat_unread_counts_listener');
+
+  if (options?.requirePlayerRole) {
+    return createPlayerScopedPoll({
+      pollName: 'player_chat_unread_counts',
+      intervalMs: POLL_MS,
+      onTick: async () => {
+        const counts = await fetchSqlUnreadCounts();
+        onChange(counts);
+      },
+      onError,
+    });
+  }
+
   let cancelled = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const tick = async () => {
     if (cancelled) {
       return;
-    }
-    if (options?.requirePlayerRole) {
-      const sessionUser = await checkPlayerPollRole('player_chat_unread_counts');
-      if (!sessionUser) {
-        cancelled = true;
-        if (timer != null) {
-          clearTimeout(timer);
-          timer = null;
-        }
-        return;
-      }
     }
     try {
       const counts = await fetchSqlUnreadCounts();
@@ -165,23 +167,25 @@ export function attachSqlChatMessagesPoll(
   onError?: (error: Error) => void
 ) {
   logClientFirestoreSkipped('chat_messages_listener', { peerUid });
+
+  if (options?.requirePlayerRole) {
+    return createPlayerScopedPoll({
+      pollName: 'player_chat_messages',
+      intervalMs: POLL_MS,
+      onTick: async () => {
+        const messages = await fetchSqlChatMessages(peerUid, options?.limit || 50);
+        onChange(messages);
+      },
+      onError,
+    });
+  }
+
   let cancelled = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const tick = async () => {
     if (cancelled) {
       return;
-    }
-    if (options?.requirePlayerRole) {
-      const sessionUser = await checkPlayerPollRole('player_chat_messages');
-      if (!sessionUser) {
-        cancelled = true;
-        if (timer != null) {
-          clearTimeout(timer);
-          timer = null;
-        }
-        return;
-      }
     }
     try {
       const messages = await fetchSqlChatMessages(peerUid, options?.limit || 50);
