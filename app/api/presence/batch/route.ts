@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server';
 
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
-import { isCacheSqlAuthoritative, logCacheSqlRead } from '@/lib/server/cacheSqlRead';
+import {
+  isCacheSqlAuthoritative,
+  logCacheFirestoreFallbackBlocked,
+  logCacheSqlRead,
+} from '@/lib/server/cacheSqlRead';
 import { readUserPresenceCacheByUids } from '@/lib/sql/userPresenceCache';
 
 const ROUTE = '/api/presence/batch';
@@ -35,6 +39,12 @@ export async function GET(request: Request) {
       count: presence?.length || 0,
       durationMs: Date.now() - startedAt,
     });
+    if (presence === null) {
+      logCacheFirestoreFallbackBlocked(ROUTE, 'user_presence_cache', {
+        count: uids.length,
+        reason: 'postgres_unavailable',
+      });
+    }
   }
 
   return NextResponse.json({

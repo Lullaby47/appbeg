@@ -41,6 +41,12 @@ const ROUTE_CLASSIFICATION = [
   { route: '/api/player/reward-coins', classification: 'migrate_now_sql_authority', status: 'sql_gated' },
   { route: '/api/risk/transfer-requests/approve', classification: 'migrate_now_sql_authority', status: 'sql_gated' },
   { route: '/api/coadmin/workers/cut-reward', classification: 'migrate_now_sql_authority', status: 'sql_gated' },
+  { route: '/api/bonus-events/list', classification: 'remove_legacy_firestore_branch', status: 'read_fallback_sql_blocked' },
+  { route: '/api/coadmin/bonus-events/cache', classification: 'remove_legacy_firestore_branch', status: 'read_fallback_sql_blocked' },
+  { route: '/api/bonus-events/cache/mirror', classification: 'legacy_flag_off_only', status: 'mirror_firestore_read_when_flag_off' },
+  { route: '/api/conversations/cache/mirror', classification: 'legacy_flag_off_only', status: 'mirror_firestore_read_when_flag_off' },
+  { route: '/api/chat/messages/cache/mirror', classification: 'legacy_flag_off_only', status: 'mirror_firestore_read_when_flag_off' },
+  { route: '/api/user-presence/cache/mirror', classification: 'legacy_flag_off_only', status: 'mirror_firestore_read_when_flag_off' },
 ];
 
 function walk(dir, files = []) {

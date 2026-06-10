@@ -152,14 +152,14 @@ function decorateLegacyBonusEvents(events: CachedBonusEvent[], gameNames: string
 }
 
 async function loadGameNames(coadminUid: string, sqlReadMode: boolean) {
+  const cached = await readGameLoginsCacheByCoadmin(coadminUid);
+  if (cached) {
+    return Array.from(
+      new Set(cached.map((entry) => String(entry.gameName || '').trim()).filter(Boolean))
+    );
+  }
   if (sqlReadMode) {
-    const cached = await readGameLoginsCacheByCoadmin(coadminUid);
-    if (cached) {
-      return Array.from(
-        new Set(cached.map((entry) => String(entry.gameName || '').trim()).filter(Boolean))
-      );
-    }
-    logCacheFirestoreFallbackBlocked(ROUTE, 'game_logins_cache', {
+    logCacheFirestoreFallbackBlocked(ROUTE, 'gameLogins', {
       coadminUid,
       reason: 'game_logins_cache_miss',
     });
@@ -180,27 +180,19 @@ async function loadGameNames(coadminUid: string, sqlReadMode: boolean) {
 }
 
 async function loadBonusEvents(coadminUid: string, sqlReadMode: boolean) {
-  if (sqlReadMode) {
-    const cached = await readActiveBonusEventsByCoadmin(coadminUid, {
-      includeInactive: true,
-      maxResults: 100,
-    });
-    if (cached === null) {
-      logCacheFirestoreFallbackBlocked(ROUTE, 'bonus_events_cache', {
-        coadminUid,
-        reason: 'postgres_unavailable',
-      });
-      return [];
-    }
-    return cached;
-  }
-
   const cached = await readActiveBonusEventsByCoadmin(coadminUid, {
     includeInactive: true,
     maxResults: 100,
   });
-  if (cached !== null && cached.length > 0) {
+  if (cached !== null) {
     return cached;
+  }
+  if (sqlReadMode) {
+    logCacheFirestoreFallbackBlocked(ROUTE, 'bonus_events_cache', {
+      coadminUid,
+      reason: 'postgres_unavailable',
+    });
+    return [];
   }
 
   const snap = await adminDb
@@ -278,7 +270,8 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       events,
-      source: sqlReadMode ? 'postgres' : rawEvents.length > 0 ? 'postgres' : 'firestore',
+      source: 'postgres',
+      firestore_fallback: false,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to load bonus events.';

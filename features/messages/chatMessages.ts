@@ -20,6 +20,11 @@ import {
   attachSqlUnreadCountsPoll,
   isChatSqlReadEnabled,
 } from '@/features/live/chatSqlRead';
+import {
+  markConversationReadCacheBestEffort,
+  mirrorChatMessageCacheBestEffort,
+  mirrorConversationCacheBestEffort,
+} from '@/features/messages/chatCacheMirror';
 import { auth, db } from '@/lib/firebase/client';
 import { uploadImageToCloudinary } from '@/lib/cloudinary/uploadImage';
 import { chatMessageTtl } from '@/lib/firestore/ttl';
@@ -67,6 +72,11 @@ export async function sendChatMessage(receiverUid: string, text: string) {
   const conversationId = getConversationId(currentUser.uid, receiverUid);
   const conversationRef = doc(db, 'conversations', conversationId);
 
+  const unreadCounts = {
+    [receiverUid]: increment(1),
+    [currentUser.uid]: 0,
+  };
+
   await setDoc(
     conversationRef,
     {
@@ -74,21 +84,34 @@ export async function sendChatMessage(receiverUid: string, text: string) {
       lastMessage: cleanText,
       lastMessageSenderUid: currentUser.uid,
       updatedAt: serverTimestamp(),
-      unreadCounts: {
-        [receiverUid]: increment(1),
-        [currentUser.uid]: 0,
-      },
+      unreadCounts,
     },
     { merge: true }
   );
 
-  await addDoc(collection(db, 'conversations', conversationId, 'messages'), {
+  const messageRef = await addDoc(collection(db, 'conversations', conversationId, 'messages'), {
     type: 'text',
     text: cleanText,
     senderUid: currentUser.uid,
     receiverUid,
     createdAt: serverTimestamp(),
     ttlExpiresAt: chatMessageTtl(),
+  });
+
+  void mirrorConversationCacheBestEffort({
+    conversationId,
+    participants: [currentUser.uid, receiverUid],
+    lastMessage: cleanText,
+    lastMessageSenderUid: currentUser.uid,
+    unreadCounts: { [receiverUid]: 1, [currentUser.uid]: 0 },
+  });
+  void mirrorChatMessageCacheBestEffort({
+    conversationId,
+    messageId: messageRef.id,
+    type: 'text',
+    text: cleanText,
+    senderUid: currentUser.uid,
+    receiverUid,
   });
 }
 
@@ -130,7 +153,7 @@ export async function sendImageMessage(receiverUid: string, file: File) {
     { merge: true }
   );
 
-  await addDoc(collection(db, 'conversations', conversationId, 'messages'), {
+  const messageRef = await addDoc(collection(db, 'conversations', conversationId, 'messages'), {
     type: 'image',
     imageUrl: uploaded.url,
     imagePublicId: uploaded.publicId,
@@ -138,6 +161,23 @@ export async function sendImageMessage(receiverUid: string, file: File) {
     receiverUid,
     createdAt: serverTimestamp(),
     ttlExpiresAt: chatMessageTtl(),
+  });
+
+  void mirrorConversationCacheBestEffort({
+    conversationId,
+    participants: [currentUser.uid, receiverUid],
+    lastMessage: '📷 Photo',
+    lastMessageSenderUid: currentUser.uid,
+    unreadCounts: { [receiverUid]: 1, [currentUser.uid]: 0 },
+  });
+  void mirrorChatMessageCacheBestEffort({
+    conversationId,
+    messageId: messageRef.id,
+    type: 'image',
+    imageUrl: uploaded.url,
+    imagePublicId: uploaded.publicId,
+    senderUid: currentUser.uid,
+    receiverUid,
   });
 }
 
@@ -290,6 +330,8 @@ export async function markConversationAsRead(receiverUid: string) {
     },
     { merge: true }
   );
+
+  void markConversationReadCacheBestEffort(conversationId, currentUser.uid);
 }
 
 export function listenToUnreadCounts(

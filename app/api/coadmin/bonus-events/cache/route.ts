@@ -138,37 +138,31 @@ export async function GET(request: Request) {
   let events: CachedBonusEvent[] = [];
   let source: 'postgres' | 'firestore' = 'postgres';
 
-  if (sqlReadMode) {
-    const cached = await readActiveBonusEventsByCoadmin(coadminUid, {
-      includeInactive,
-      maxResults: 50,
+  const cached = await readActiveBonusEventsByCoadmin(coadminUid, {
+    includeInactive,
+    maxResults: 50,
+  });
+  if (cached !== null) {
+    events = cached;
+    source = 'postgres';
+  } else if (sqlReadMode) {
+    logCacheFirestoreFallbackBlocked(ROUTE, 'bonus_events_cache', {
+      coadminUid,
+      reason: 'postgres_unavailable',
     });
-    if (cached === null) {
-      logCacheFirestoreFallbackBlocked(ROUTE, 'bonus_events_cache', {
-        coadminUid,
-        reason: 'postgres_unavailable',
-      });
-      events = [];
-    } else {
-      events = cached;
-    }
+    events = [];
+    source = 'postgres';
+  } else {
+    events = await readFirestoreBonusEvents(coadminUid);
+    source = 'firestore';
+  }
+
+  if (sqlReadMode) {
     logCacheSqlRead(ROUTE, {
       coadminUid,
       count: events.length,
       durationMs: Date.now() - startedAt,
     });
-  } else {
-    const cached = await readActiveBonusEventsByCoadmin(coadminUid, {
-      includeInactive,
-      maxResults: 50,
-    });
-    if (cached !== null && cached.length > 0) {
-      events = cached;
-      source = 'postgres';
-    } else {
-      events = await readFirestoreBonusEvents(coadminUid);
-      source = 'firestore';
-    }
   }
 
   const autoRangeRaw = await readCoadminAutoBonusPercentRangeFromSql(coadminUid);
@@ -178,6 +172,7 @@ export async function GET(request: Request) {
     events,
     autoBonusPercentRange,
     source,
+    firestore_fallback: source === 'firestore',
     snapshotAt: new Date().toISOString(),
   });
 }

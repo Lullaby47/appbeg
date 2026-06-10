@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { requireApiUser } from '@/lib/firebase/apiAuth';
-import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { isCacheSqlAuthoritative, logCacheSqlRead } from '@/lib/server/cacheSqlRead';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import { upsertUserPresenceCache } from '@/lib/sql/userPresenceCache';
 
@@ -19,9 +19,15 @@ export async function POST(request: Request) {
     return auth.response;
   }
 
-  const sqlReadMode = isAuthSqlReadEnabled();
+  const startedAt = Date.now();
+  const sqlReadMode = isCacheSqlAuthoritative();
   const ok = await upsertUserPresenceCache(auth.user.uid);
   if (sqlReadMode) {
+    logCacheSqlRead(ROUTE, {
+      uid: auth.user.uid,
+      ok,
+      durationMs: Date.now() - startedAt,
+    });
     logFirestoreTouch({
       firestore_touch_type: 'legacy_read_remove_now',
       route: ROUTE,

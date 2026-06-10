@@ -34,7 +34,7 @@ export default function UserPresenceSync() {
         return;
       }
 
-      const ref = doc(db, 'userPresence', user.uid);
+      const sqlReadMode = isClientSqlReadMode();
       let heartbeatId: number | null = null;
       let leadershipCheckId: number | null = null;
       let isLeader = false;
@@ -77,7 +77,7 @@ export default function UserPresenceSync() {
         if (!isLeader) {
           return;
         }
-        if (isClientSqlReadMode()) {
+        if (sqlReadMode) {
           logClientFirestoreSkipped('user_presence_heartbeat', { uid: user.uid });
           void (async () => {
             try {
@@ -91,6 +91,7 @@ export default function UserPresenceSync() {
           })();
           return;
         }
+        const ref = doc(db, 'userPresence', user.uid);
         setDoc(ref, { lastSeenAt: serverTimestamp() }, { merge: true }).catch(
           () => undefined
         );

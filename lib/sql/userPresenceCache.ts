@@ -1,5 +1,7 @@
 import 'server-only';
 
+import type { DocumentSnapshot } from 'firebase-admin/firestore';
+
 import {
   cleanText,
   getPlayerMirrorPool,
@@ -39,6 +41,18 @@ export async function upsertUserPresenceCache(uid: string, lastSeenAt: Date = ne
     console.warn('[USER_PRESENCE_CACHE] upsert failed', { uid: cleanUid, error });
     return false;
   }
+}
+
+export async function mirrorUserPresenceSnapshot(snap: DocumentSnapshot) {
+  if (!snap.exists) {
+    return false;
+  }
+  const data = snap.data() as { lastSeenAt?: unknown };
+  const lastSeenAt = toIsoString(data.lastSeenAt);
+  if (!lastSeenAt) {
+    return false;
+  }
+  return upsertUserPresenceCache(snap.id, new Date(lastSeenAt));
 }
 
 export async function readUserPresenceCacheByUids(
