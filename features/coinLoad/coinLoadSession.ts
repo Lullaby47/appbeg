@@ -20,9 +20,11 @@ import {
   logSqlClientMigration,
 } from '@/lib/client/sqlClientMigration';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { auth, db } from '@/lib/firebase/client';
 import { uploadImageToCloudinary } from '@/lib/cloudinary/uploadImage';
+import { logPaymentReferencePhotoAudit } from '@/lib/paymentReferencePhotoAudit';
 
 /**
  * Firestore: collection `coinLoadSessions` (legacy). SQL: `coin_load_sessions_cache`.
@@ -41,9 +43,118 @@ export type CoinLoadSession = {
 };
 
 export type PaymentDetailPhoto = {
+  id?: string;
   imageUrl: string;
   imagePublicId: string;
+  label?: string | null;
 };
+
+type PaymentReferencePhotoApiRow = {
+  id: string;
+  imageUrl: string;
+  imagePublicId?: string;
+  label?: string | null;
+};
+
+function mapPaymentReferencePhotoRow(row: PaymentReferencePhotoApiRow): PaymentDetailPhoto {
+  return {
+    id: row.id,
+    imageUrl: String(row.imageUrl || '').trim(),
+    imagePublicId: String(row.imagePublicId || '').trim(),
+    label: row.label ?? null,
+  };
+}
+
+async function fetchPaymentReferencePhotosFromSqlApi(
+  coadminUid: string
+): Promise<PaymentDetailPhoto[]> {
+  const response = await fetch(
+    `/api/coadmin/payment-reference-photos?coadminUid=${encodeURIComponent(coadminUid)}`,
+    {
+      method: 'GET',
+      headers: await getSqlApiReadHeaders(false),
+      cache: 'no-store',
+    }
+  );
+  const payload = (await response.json().catch(() => ({}))) as {
+    photos?: PaymentReferencePhotoApiRow[];
+    error?: string;
+  };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to load payment reference photos.');
+  }
+  return (payload.photos || [])
+    .map((row) => mapPaymentReferencePhotoRow(row))
+    .filter((photo) => photo.imageUrl);
+}
+
+async function postPaymentReferencePhotoToSqlApi(
+  coadminUid: string,
+  photo: PaymentDetailPhoto
+): Promise<PaymentDetailPhoto> {
+  const response = await fetch('/api/coadmin/payment-reference-photos', {
+    method: 'POST',
+    headers: await getSqlApiReadHeaders(true),
+    body: JSON.stringify({
+      coadminUid,
+      imageUrl: photo.imageUrl,
+      cloudinaryPublicId: photo.imagePublicId || undefined,
+      label: photo.label || undefined,
+    }),
+    cache: 'no-store',
+  });
+  const payload = (await response.json().catch(() => ({}))) as {
+    photo?: PaymentReferencePhotoApiRow;
+    error?: string;
+  };
+  if (!response.ok || !payload.photo) {
+    throw new Error(payload.error || 'Failed to save payment reference photo.');
+  }
+  return mapPaymentReferencePhotoRow(payload.photo);
+}
+
+async function deletePaymentReferencePhotoFromSqlApi(
+  coadminUid: string,
+  photoId: string
+): Promise<void> {
+  const response = await fetch('/api/coadmin/payment-reference-photos', {
+    method: 'DELETE',
+    headers: await getSqlApiReadHeaders(true),
+    body: JSON.stringify({ coadminUid, photoId }),
+    cache: 'no-store',
+  });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to delete payment reference photo.');
+  }
+}
+
+async function syncCoadminPaymentDetailPhotosSql(
+  coadminUid: string,
+  desired: PaymentDetailPhoto[]
+): Promise<PaymentDetailPhoto[]> {
+  const current = await fetchPaymentReferencePhotosFromSqlApi(coadminUid);
+  const desiredUrlSet = new Set(desired.map((photo) => photo.imageUrl));
+  const currentByUrl = new Map(current.map((photo) => [photo.imageUrl, photo]));
+
+  for (const existing of current) {
+    if (!desiredUrlSet.has(existing.imageUrl) && existing.id) {
+      await deletePaymentReferencePhotoFromSqlApi(coadminUid, existing.id);
+    }
+  }
+
+  const next: PaymentDetailPhoto[] = [];
+  for (const photo of desired) {
+    const existing = currentByUrl.get(photo.imageUrl);
+    if (existing) {
+      next.push(existing);
+      continue;
+    }
+    const saved = await postPaymentReferencePhotoToSqlApi(coadminUid, photo);
+    next.push(saved);
+  }
+  return next;
+}
 
 function randomItem<T>(items: T[]): T {
   return items[Math.floor(Math.random() * items.length)]!;
@@ -88,6 +199,18 @@ export async function uploadCoadminPaymentDetailPhoto(
     throw new Error(`Image must be smaller than ${maxSizeMb}MB.`);
   }
   const uploaded = await uploadImageToCloudinary(file);
+  logPaymentReferencePhotoAudit({
+    routeOrPage: 'features/coinLoad/coinLoadSession.uploadCoadminPaymentDetailPhoto',
+    role: 'coadmin',
+    coadminUid,
+    source: 'cloudinary_direct_upload',
+    cloudinaryUsed: true,
+    tableOrCollection: 'users (pending metadata save)',
+    photoCount: 1,
+    samplePhotoIds: [uploaded.publicId].filter(Boolean),
+    sampleUrlsPresent: Boolean(uploaded.url),
+    reason: 'cloudinary_upload_complete_metadata_not_saved_yet',
+  });
   return {
     imageUrl: uploaded.url,
     imagePublicId: uploaded.publicId,
@@ -99,7 +222,24 @@ export async function setCoadminPaymentDetailPhotos(
   photos: PaymentDetailPhoto[]
 ): Promise<void> {
   if (isClientSqlReadMode()) {
-    throw new Error('Payment detail photos must be updated through the co-admin panel API.');
+    const current = auth.currentUser;
+    if (!current || current.uid !== coadminUid) {
+      throw new Error('Not authorized.');
+    }
+    const synced = await syncCoadminPaymentDetailPhotosSql(coadminUid, photos);
+    logPaymentReferencePhotoAudit({
+      routeOrPage: 'features/coinLoad/coinLoadSession.setCoadminPaymentDetailPhotos',
+      role: 'coadmin',
+      coadminUid,
+      source: 'payment_reference_photos_cache',
+      cloudinaryUsed: synced.some((photo) => Boolean(photo.imagePublicId || photo.imageUrl)),
+      tableOrCollection: 'payment_reference_photos_cache',
+      photoCount: synced.length,
+      samplePhotoIds: synced.map((photo) => photo.imagePublicId || photo.id || '').filter(Boolean).slice(0, 3),
+      sampleUrlsPresent: synced.some((photo) => Boolean(photo.imageUrl)),
+      reason: 'sql_sync_ok',
+    });
+    return;
   }
   const current = auth.currentUser;
   if (!current || current.uid !== coadminUid) {
@@ -112,13 +252,38 @@ export async function setCoadminPaymentDetailPhotos(
     paymentDetailsUpdatedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
+  logPaymentReferencePhotoAudit({
+    routeOrPage: 'features/coinLoad/coinLoadSession.setCoadminPaymentDetailPhotos',
+    role: 'coadmin',
+    coadminUid,
+    source: 'firestore_users_doc',
+    cloudinaryUsed: true,
+    tableOrCollection: 'users',
+    photoCount: photos.length,
+    samplePhotoIds: photos.map((photo) => photo.imagePublicId).filter(Boolean).slice(0, 3),
+    sampleUrlsPresent: photos.some((photo) => Boolean(photo.imageUrl)),
+    reason: 'metadata_saved_firestore_only',
+  });
 }
 
 export async function getCoadminPaymentDetailPhotos(
   coadminUid: string
 ): Promise<PaymentDetailPhoto[]> {
   if (isClientSqlReadMode()) {
-    return [];
+    const photos = await fetchPaymentReferencePhotosFromSqlApi(coadminUid);
+    logPaymentReferencePhotoAudit({
+      routeOrPage: 'app/coadmin/page payment-details',
+      role: 'coadmin',
+      coadminUid,
+      source: 'payment_reference_photos_cache',
+      cloudinaryUsed: photos.some((photo) => Boolean(photo.imagePublicId || photo.imageUrl)),
+      tableOrCollection: 'payment_reference_photos_cache',
+      photoCount: photos.length,
+      samplePhotoIds: photos.map((photo) => photo.imagePublicId || photo.id || '').filter(Boolean).slice(0, 3),
+      sampleUrlsPresent: photos.some((photo) => Boolean(photo.imageUrl)),
+      reason: photos.length > 0 ? 'sql_list_ok' : 'sql_list_empty',
+    });
+    return photos;
   }
   const snap = await getDoc(doc(db, 'users', coadminUid));
   if (!snap.exists()) {
@@ -136,14 +301,42 @@ export async function getCoadminPaymentDetailPhotos(
       }))
       .filter((p) => p.imageUrl);
     if (photos.length > 0) {
+      logPaymentReferencePhotoAudit({
+        routeOrPage: 'app/coadmin/page payment-details',
+        role: 'coadmin',
+        coadminUid,
+        source: 'firestore_users_doc',
+        cloudinaryUsed: true,
+        tableOrCollection: 'users',
+        photoCount: photos.length,
+        samplePhotoIds: photos.map((photo) => photo.imagePublicId).filter(Boolean).slice(0, 3),
+        sampleUrlsPresent: true,
+        reason: 'listed_from_paymentDetailPhotos',
+      });
       return photos;
     }
   }
-  return Array.isArray(data.paymentDetailPhotoUrls)
+  const legacyUrls = Array.isArray(data.paymentDetailPhotoUrls)
     ? data.paymentDetailPhotoUrls
         .filter((u) => typeof u === 'string' && u.length > 0)
         .map((u) => ({ imageUrl: u, imagePublicId: '' }))
     : [];
+  logPaymentReferencePhotoAudit({
+    routeOrPage: 'app/coadmin/page payment-details',
+    role: 'coadmin',
+    coadminUid,
+    source: 'firestore_users_doc',
+    cloudinaryUsed: legacyUrls.length > 0,
+    tableOrCollection: 'users',
+    photoCount: legacyUrls.length,
+    samplePhotoIds: [],
+    sampleUrlsPresent: legacyUrls.length > 0,
+    reason:
+      legacyUrls.length > 0
+        ? 'listed_from_paymentDetailPhotoUrls_legacy'
+        : 'no_photos_in_firestore_users_doc',
+  });
+  return legacyUrls;
 }
 
 async function clearPlayerCoinLoadDocs(playerUid: string): Promise<void> {

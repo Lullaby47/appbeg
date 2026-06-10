@@ -8,43 +8,77 @@ import {
   readCoinLoadSessionById,
   tombstoneCoinLoadSessionsForPlayer,
 } from '@/lib/sql/coinLoadSessionsCache';
-import { cleanText, getPlayerMirrorPool } from '@/lib/sql/playerMirrorCommon';
+import {
+  logPaymentReferencePhotoAudit,
+  logPaymentReferencePhotoRandomPick,
+} from '@/lib/paymentReferencePhotoAudit';
+import {
+  getRandomPaymentReferencePhotoUrl,
+  readLegacyPaymentPhotoUrlsFromPlayersCache,
+} from '@/lib/sql/paymentReferencePhotos';
+import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { isDatabaseUrlConfigured } from '@/lib/server/sqlRuntime';
 
 const ROUTE = '/api/player/coin-load-sessions';
 const COIN_LOAD_DURATION_MS = 10 * 60 * 1000;
 
-async function readPaymentPhotoUrls(coadminUid: string) {
-  const db = getPlayerMirrorPool();
+async function resolvePaymentPhotoForCoinLoad(coadminUid: string) {
   const cleanCoadminUid = cleanText(coadminUid);
-  if (!db || !cleanCoadminUid) {
-    return [] as string[];
+  if (!cleanCoadminUid) {
+    return { url: null as string | null, source: 'missing_coadmin_uid' };
   }
-  const result = await db.query(
-    `
-      SELECT raw_firestore_data
-      FROM public.players_cache
-      WHERE uid = $1 AND deleted_at IS NULL
-      LIMIT 1
-    `,
-    [cleanCoadminUid]
-  );
-  const raw = (result.rows[0]?.raw_firestore_data || {}) as Record<string, unknown>;
-  const urls = Array.isArray(raw.paymentDetailPhotoUrls)
-    ? raw.paymentDetailPhotoUrls.map((entry) => String(entry || '').trim()).filter(Boolean)
-    : [];
-  if (urls.length > 0) {
-    return urls;
+
+  const picked = await getRandomPaymentReferencePhotoUrl(cleanCoadminUid);
+  if (picked.url) {
+    logPaymentReferencePhotoRandomPick({
+      coadminUid: cleanCoadminUid,
+      source: 'payment_reference_photos_cache',
+      photoCount: picked.photoCount,
+      selectedPhotoId: picked.photoId,
+      selectedUrlPresent: true,
+    });
+    logPaymentReferencePhotoAudit({
+      routeOrPage: '/api/player/coin-load-sessions',
+      role: 'player',
+      coadminUid: cleanCoadminUid,
+      source: 'payment_reference_photos_cache',
+      cloudinaryUsed: true,
+      tableOrCollection: 'payment_reference_photos_cache',
+      photoCount: picked.photoCount,
+      samplePhotoIds: picked.photoId ? [picked.photoId] : [],
+      sampleUrlsPresent: true,
+      reason: 'sql_random_pick',
+    });
+    return { url: picked.url, source: 'payment_reference_photos_cache' };
   }
-  const photos = Array.isArray(raw.paymentDetailPhotos) ? raw.paymentDetailPhotos : [];
-  return photos
-    .map((entry) => {
-      if (!entry || typeof entry !== 'object') {
-        return '';
-      }
-      return String((entry as { imageUrl?: string }).imageUrl || '').trim();
-    })
-    .filter(Boolean);
+
+  const legacyUrls = await readLegacyPaymentPhotoUrlsFromPlayersCache(cleanCoadminUid);
+  const legacyUrl =
+    legacyUrls.length > 0
+      ? legacyUrls[Math.floor(Math.random() * legacyUrls.length)]!
+      : null;
+  logPaymentReferencePhotoAudit({
+    routeOrPage: '/api/player/coin-load-sessions',
+    role: 'player',
+    coadminUid: cleanCoadminUid,
+    source: 'players_cache.raw_firestore_data',
+    cloudinaryUsed: Boolean(legacyUrl),
+    tableOrCollection: 'players_cache',
+    photoCount: legacyUrls.length,
+    samplePhotoIds: [],
+    sampleUrlsPresent: Boolean(legacyUrl),
+    reason: legacyUrl ? 'legacy_mirror_fallback_before_backfill' : 'no_photos_available',
+  });
+  if (legacyUrl) {
+    logPaymentReferencePhotoRandomPick({
+      coadminUid: cleanCoadminUid,
+      source: 'players_cache.raw_firestore_data',
+      photoCount: legacyUrls.length,
+      selectedPhotoId: null,
+      selectedUrlPresent: true,
+    });
+  }
+  return { url: legacyUrl, source: legacyUrl ? 'players_cache_mirror' : 'none' };
 }
 
 export async function GET(request: Request) {
@@ -89,15 +123,15 @@ export async function POST(request: Request) {
     return apiError('coadminUid is required.', 400);
   }
 
-  const photoUrls = await readPaymentPhotoUrls(coadminUid);
-  if (!photoUrls.length) {
+  const paymentPick = await resolvePaymentPhotoForCoinLoad(coadminUid);
+  if (!paymentPick.url) {
     return apiError(
       'No payment reference images yet. Your co-admin needs to upload photos in their panel (Payment details).',
       400
     );
   }
 
-  const paymentPhotoUrl = photoUrls[Math.floor(Math.random() * photoUrls.length)]!;
+  const paymentPhotoUrl = paymentPick.url;
   const session = await createCoinLoadSessionInSql({
     playerUid: auth.user.uid,
     coadminUid,

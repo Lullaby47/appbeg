@@ -3156,7 +3156,8 @@ export default function CoadminPage() {
         next.push(uploaded);
       }
       await setCoadminPaymentDetailPhotos(uid, next);
-      setPaymentDetailPhotos(next);
+      const refreshed = await getCoadminPaymentDetailPhotos(uid);
+      setPaymentDetailPhotos(refreshed);
       setMessage('Payment photos saved. Players can use them in Load coin.');
     } catch (err: any) {
       setMessage(err?.message || 'Failed to upload photos.');
@@ -3175,7 +3176,8 @@ export default function CoadminPage() {
     setMessage('');
     try {
       await setCoadminPaymentDetailPhotos(uid, next);
-      setPaymentDetailPhotos(next);
+      const refreshed = await getCoadminPaymentDetailPhotos(uid);
+      setPaymentDetailPhotos(refreshed);
     } catch (err: any) {
       setMessage(err?.message || 'Failed to remove photo.');
     } finally {
@@ -4972,8 +4974,9 @@ export default function CoadminPage() {
                         },
                       ];
                       void setCoadminPaymentDetailPhotos(uid, next)
-                        .then(() => {
-                          setPaymentDetailPhotos(next);
+                        .then(async () => {
+                          const refreshed = await getCoadminPaymentDetailPhotos(uid);
+                          setPaymentDetailPhotos(refreshed);
                           setMessage('Image uploaded successfully.');
                         })
                         .catch((err) =>
@@ -5001,7 +5004,7 @@ export default function CoadminPage() {
                   <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                     {paymentDetailPhotos.map((photo, index) => (
                       <li
-                        key={`${photo.imagePublicId || 'photo'}-${index}`}
+                        key={photo.id || `${photo.imagePublicId || 'photo'}-${index}`}
                         className="overflow-hidden rounded-2xl border border-white/10 bg-black/40"
                       >
                         <div className="relative aspect-[4/3] w-full">
