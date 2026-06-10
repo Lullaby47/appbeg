@@ -2710,15 +2710,27 @@ export default function PlayerPage() {
         playerUsername: gameLogin.playerUsername || 'Player',
         gameName: gameLogin.gameName,
         coadminUid: credentialCoadminUid,
+        gameLoginId: gameLogin.id,
       });
 
       setMessage(
         taskType === 'reset_password'
-          ? 'Reset password task created successfully.'
+          ? 'Reset password request sent.'
           : 'Recreate username task created successfully.'
       );
     } catch (error) {
-      reportPlayerUiError('player_credential_task', error, setMessage, 'Failed to create task.');
+      const rawMessage = error instanceof Error ? error.message : 'Failed to create task.';
+      const friendlyMessage = /not authenticated|app session required|player role required/i.test(
+        rawMessage
+      )
+        ? 'Session changed. Please refresh.'
+        : rawMessage;
+      reportPlayerUiError(
+        'player_credential_task',
+        friendlyMessage === rawMessage ? error : new Error(friendlyMessage),
+        setMessage,
+        'Failed to create task.'
+      );
     } finally {
       setCredentialTaskLoadingKey(null);
     }

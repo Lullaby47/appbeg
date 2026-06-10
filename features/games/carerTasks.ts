@@ -23,6 +23,7 @@ import {
 import { jobCompleteGuard } from '@/lib/automation/jobCompleteGuard';
 
 import { getAppSessionRequestHeaders, getLocalAppSessionId } from '@/features/auth/appSession';
+import { assertActivePlayerSession, getLocalPlayerSessionId, getPlayerApiHeaders } from '@/features/auth/playerSession';
 import { logCarerPageRequestAudit } from '@/lib/client/carerPageRequestAudit';
 import { attachCarerRechargeRedeemTotalsSqlPoll } from '@/features/live/coadminCarerTotalsSqlRead';
 import { clientOnSnapshot } from '@/lib/client/clientFirestoreQuery';
@@ -36,7 +37,6 @@ import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { getStaffAppSessionApiHeaders } from '@/lib/client/staffApiHeaders';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
-import { assertActivePlayerSession } from '@/features/auth/playerSession';
 import { auth, db } from '@/lib/firebase/client';
 import {
   getCurrentUserCoadminUid as getScopedCurrentUserCoadminUid,
@@ -2786,17 +2786,115 @@ export async function completeUsernameTaskForPlayerGame(
   } satisfies CarerRewardSummary;
 }
 
+function mapPlayerVaultAuthErrorMessage(message: string) {
+  if (/not authenticated|app session required|player role required/i.test(message)) {
+    return 'Session changed. Please refresh.';
+  }
+  return message;
+}
+
+async function postPlayerCredentialTaskViaSql(values: {
+  taskType: 'reset_password' | 'recreate_username';
+  playerUid: string;
+  playerUsername: string;
+  gameName: string;
+  coadminUid: string;
+  gameLoginId?: string | null;
+}) {
+  const headers = await getPlayerApiHeaders(true, {
+    route: '/api/player/credential-tasks',
+  });
+  const hasAppSessionId = Boolean(headers['X-App-Session-Id']);
+  const hasPlayerSessionId = Boolean(headers['X-Player-Session-Id']);
+  console.info('[PLAYER_VAULT_RESET_PASSWORD_AUTH_AUDIT]', {
+    file: 'features/games/carerTasks.ts',
+    function: 'postPlayerCredentialTaskViaSql',
+    authSource: 'app_session_sql',
+    hasAppSessionId,
+    hasPlayerSessionId,
+    firebaseCurrentUserUid: auth.currentUser?.uid || null,
+    firebaseAttempted: false,
+    reason: values.taskType,
+  });
+  const response = await fetch('/api/player/credential-tasks', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      taskType: values.taskType,
+      gameName: values.gameName,
+      gameLoginId: values.gameLoginId || null,
+      playerUsername: values.playerUsername,
+      coadminUid: values.coadminUid,
+    }),
+    cache: 'no-store',
+  });
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    taskId?: string;
+  };
+  console.info('[PLAYER_VAULT_RESET_PASSWORD_REQUEST]', {
+    route: '/api/player/credential-tasks',
+    method: 'POST',
+    status: response.status,
+    responseBody: payload,
+    authSource: 'app_session_sql',
+    firebaseAttempted: false,
+  });
+  if (!response.ok) {
+    throw new Error(
+      mapPlayerVaultAuthErrorMessage(payload.error || 'Failed to create credential task.')
+    );
+  }
+  return String(payload.taskId || '').trim();
+}
+
 export async function createPlayerCredentialTask(values: {
   taskType: 'reset_password' | 'recreate_username';
   playerUid: string;
   playerUsername: string;
   gameName: string;
   coadminUid: string;
+  gameLoginId?: string | null;
 }) {
+  if (isClientSqlReadMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'player_credential_task',
+      file: 'features/games/carerTasks.ts',
+      operation: 'setDoc',
+      replacement: 'POST /api/player/credential-tasks',
+    });
+    const sqlMode = true;
+    console.info('[PLAYER_VAULT_RESET_PASSWORD_CLICK]', {
+      playerUid: values.playerUid,
+      gameLoginId: values.gameLoginId || null,
+      gameName: values.gameName,
+      username: values.playerUsername,
+      coadminUid: values.coadminUid,
+      sqlMode,
+      hasAppSessionId: Boolean(getLocalAppSessionId()),
+      hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+    });
+    const taskId = await postPlayerCredentialTaskViaSql(values);
+    logSqlClientMigration({
+      feature: 'player_credential_task',
+      oldFirebaseOperation: 'setDoc',
+      newSqlRoute: '/api/player/credential-tasks',
+      result: 'ok',
+      fallbackUsed: false,
+    });
+    console.info('[PLAYER_CREDENTIAL_TASK_SQL_SKIP_REFRESH]', {
+      taskId,
+      type: values.taskType,
+      reason: 'sql_listener_authority',
+      firestoreAttempted: false,
+    });
+    return;
+  }
+
   const currentUser = auth.currentUser;
 
   if (!currentUser) {
-    throw new Error('Not authenticated.');
+    throw new Error('Session changed. Please refresh.');
   }
 
   if (currentUser.uid !== values.playerUid) {
