@@ -1229,20 +1229,40 @@ export async function returnTaskToPendingInSql(input: {
   }
 }
 
-async function loadTaskRowForUpdate(client: PoolClient, taskId: string) {
-  const result = await client.query(
-    `
-      SELECT *
-      FROM public.carer_tasks_cache
-      WHERE firebase_id = $1
-      FOR UPDATE
-    `,
-    [taskId]
-  );
-  if (!result.rows.length) {
-    return null;
+function resolveCarerTaskCacheId(taskId: string) {
+  const clean = cleanText(taskId);
+  if (!clean) return '';
+  if (clean.startsWith('request__')) {
+    return clean;
   }
-  return result.rows[0] as Record<string, unknown>;
+  if (!clean.includes('__')) {
+    return `request__${clean}`;
+  }
+  return clean;
+}
+
+async function resolveTaskRowForDelete(client: PoolClient, rawTaskId: string) {
+  const candidates = Array.from(
+    new Set([cleanText(rawTaskId), resolveCarerTaskCacheId(rawTaskId)].filter(Boolean))
+  );
+  for (const candidate of candidates) {
+    const result = await client.query(
+      `
+        SELECT *
+        FROM public.carer_tasks_cache
+        WHERE firebase_id = $1
+        FOR UPDATE
+      `,
+      [candidate]
+    );
+    if (result.rows.length) {
+      return {
+        taskId: candidate,
+        row: result.rows[0] as Record<string, unknown>,
+      };
+    }
+  }
+  return null;
 }
 
 async function tombstoneCarerTaskInTxn(
@@ -1335,7 +1355,8 @@ export async function deletePendingTaskInSql(input: {
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL pool unavailable.');
 
-  const taskId = cleanText(input.taskId);
+  const requestedTaskId = cleanText(input.taskId);
+  const taskId = resolveCarerTaskCacheId(requestedTaskId) || requestedTaskId;
   const idempotencyKey = cleanText(input.idempotencyKey) || taskId;
   const operationKey = `task_delete:${taskId}:${idempotencyKey}`;
 
@@ -1416,10 +1437,12 @@ export async function deletePendingTaskInSql(input: {
       throw new Error('Duplicate delete in progress.');
     }
 
-    const row = await loadTaskRowForUpdate(client, taskId);
-    if (!row) {
+    const resolved = await resolveTaskRowForDelete(client, requestedTaskId);
+    if (!resolved) {
       throw new Error('Task not found.');
     }
+    const resolvedTaskId = resolved.taskId;
+    const row = resolved.row;
     const beforeStatus = sanitizeStatus(row.status);
     const beforeDeletedAt = row.deleted_at ? toIsoString(row.deleted_at) : null;
     if (beforeDeletedAt) {
@@ -1432,25 +1455,18 @@ export async function deletePendingTaskInSql(input: {
       ]);
       await client.query('COMMIT');
       console.info('[CARER_DELETE_TASK_SQL_WRITE]', {
-        taskId,
+        taskId: resolvedTaskId,
         matchedRows: 1,
         beforeStatus,
         afterStatus: 'deleted',
-        beforeDeletedAt,
-        afterDeletedAt: beforeDeletedAt,
         deletedAtSet: true,
-        linkedRequestId: cleanText(row.request_id) || null,
-        linkedRequestUpdated: false,
-        automationJobCancelled: false,
-        outboxInserted: false,
         ok: true,
-        reason: 'already_deleted',
       });
       return {
         success: true as const,
         duplicate: true,
         alreadyDeleted: true,
-        taskId,
+        taskId: resolvedTaskId,
       };
     }
 
@@ -1463,16 +1479,39 @@ export async function deletePendingTaskInSql(input: {
     if (sanitizeStatus(task.status) !== 'pending') {
       throw new Error('Only pending tasks can be deleted.');
     }
-    if (isRequestTask(taskId, task)) {
-      throw new Error('Request tasks must be dismissed through their linked request.');
-    }
 
     const linkedRequestId = cleanText(task.request_id) || null;
     const nowIso = new Date().toISOString();
     const carerUid =
       cleanText(task.assigned_carer_uid) || cleanText(task.claimed_by_uid) || input.actorUid;
 
-    await tombstoneCarerTaskInTxn(client, taskId, {
+    const legacyJobId = automationJobDocId(carerUid, resolvedTaskId);
+    const jobs = await loadJobsForTask(client, resolvedTaskId, [
+      legacyJobId,
+      cleanText(task.automation_job_id),
+    ]);
+    let cancelledJobs = 0;
+    for (const job of jobs) {
+      if (cleanText(job.task_id) && cleanText(job.task_id) !== resolvedTaskId) continue;
+      const jobScope = cleanText(job.coadmin_uid);
+      if (jobScope && jobScope !== taskScope) {
+        throw new Error('Forbidden: linked automation job is outside your scope.');
+      }
+      if (!ACTIVE_JOB_STATUSES.has(normalizeAutomationStatus(job.status))) continue;
+      await cancelAutomationJobInTxn(client, job, 'deleted_from_pending', nowIso);
+      cancelledJobs += 1;
+      await writeJobOutboxInTxn(client, {
+        coadminUid: taskScope,
+        carerUid: cleanText(job.carer_uid) || carerUid,
+        jobId: job.job_id,
+        taskId: resolvedTaskId,
+        status: 'cancelled',
+        updatedAt: nowIso,
+        eventType: 'job.cancelled',
+      });
+    }
+
+    await tombstoneCarerTaskInTxn(client, resolvedTaskId, {
       coadminUid: taskScope,
       carerUid,
       type: cleanText(task.type),
@@ -1494,25 +1533,19 @@ export async function deletePendingTaskInSql(input: {
     ]);
     await client.query('COMMIT');
     console.info('[CARER_DELETE_TASK_SQL_WRITE]', {
-      taskId,
+      taskId: resolvedTaskId,
       matchedRows: 1,
       beforeStatus,
       afterStatus: 'deleted',
-      beforeDeletedAt,
-      afterDeletedAt: nowIso,
       deletedAtSet: true,
-      linkedRequestId,
-      linkedRequestUpdated: false,
-      automationJobCancelled: false,
-      outboxInserted: true,
       ok: true,
-      reason: null,
     });
     return {
       success: true as const,
       duplicate: false,
       alreadyDeleted: false,
-      taskId,
+      taskId: resolvedTaskId,
+      automationJobCancelled: cancelledJobs > 0,
     };
   } catch (error) {
     await client.query('ROLLBACK');

@@ -3234,31 +3234,12 @@ export default function CarerPage() {
       hasAppSessionId: Boolean(getLocalAppSessionId()),
     });
 
-    const requestId = task.requestId?.trim() || null;
-    console.info('[CARER_DELETE_TASK] requestId=%s', requestId);
     setDeletingPendingTaskId(task.id);
     setErrorMessage('');
     setNoticeMessage('');
 
     try {
-      if (task.type === 'redeem' && requestId) {
-        setDismissRedeemRequestId(requestId);
-        await dismissPendingRedeemAsCarer(requestId);
-      } else if (task.type === 'recharge' && requestId) {
-        setDismissRechargeRequestId(requestId);
-        await dismissPendingRechargeAsCarer(requestId, {
-          taskId: task.id,
-          taskStatus: task.status,
-          amount: typeof task.amount === 'number' ? task.amount : null,
-          playerUid: task.playerUid,
-        });
-        setDismissedRechargeRequestIds((previous) => ({
-          ...previous,
-          [requestId]: true,
-        }));
-      } else {
-        await deletePendingCarerTask(task.id);
-      }
+      await deletePendingCarerTask(task.id);
 
       console.info('[CARER_DELETE_TASK] optimisticRemoveTaskId=%s', task.id);
       setTasks((previous) => previous.filter((current) => current.id !== task.id));
@@ -3305,10 +3286,6 @@ export default function CarerPage() {
       );
     } finally {
       setDeletingPendingTaskId(null);
-      if (requestId) {
-        setDismissRedeemRequestId((current) => (current === requestId ? null : current));
-        setDismissRechargeRequestId((current) => (current === requestId ? null : current));
-      }
     }
   }
 

@@ -126,10 +126,6 @@ export async function POST(request: Request) {
         throw new Error('Only pending tasks can be deleted.');
       }
 
-      if (isRequestTask(taskId, task)) {
-        throw new Error('Request tasks must be dismissed through their linked request.');
-      }
-
       transaction.update(taskRef, {
         status: 'failed',
         assignedCarerUid: null,

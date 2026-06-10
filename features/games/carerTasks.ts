@@ -2540,6 +2540,14 @@ export async function deletePendingCarerTask(taskId: string) {
   const route = '/api/carer/tasks/delete-pending';
   const headers = await getAuthHeaders('delete_pending');
   const authSource = isClientSqlReadMode() ? 'app_session_sql' : 'firebase_token';
+  if (isClientSqlReadMode()) {
+    console.info('[CARER_DELETE_TASK_FETCH_START]', {
+      taskId,
+      route,
+      authSource: 'app_session_sql',
+      firestoreAttempted: false,
+    });
+  }
   const response = await fetch(route, {
     method: 'POST',
     headers,
