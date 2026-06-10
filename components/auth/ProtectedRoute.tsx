@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useRef, useState } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 
@@ -17,8 +17,9 @@ import {
   currentClientPath,
   logProtectedRouteDecision,
 } from '@/lib/client/protectedRouteLog';
+import { markPlayerClientRouteNavigation } from '@/lib/client/playerSessionNavigationGuard';
 import {
-  endLocalPlayerSession,
+  endLocalPlayerSessionOnBrowserLeave,
   forcePlayerSessionLogout,
   getLocalPlayerSessionId,
   isPlayerForcedLogout,
@@ -72,6 +73,8 @@ export default function ProtectedRoute({
   children,
 }: ProtectedRouteProps) {
   const router = useRouter();
+  const pathname = usePathname();
+  const pathnameRef = useRef(pathname);
   const [checking, setChecking] = useState(true);
   const [currentRole, setCurrentRole] = useState<UserRole | null>(null);
   const [forcedLogout, setForcedLogout] = useState(false);
@@ -461,6 +464,11 @@ export default function ProtectedRoute({
   }, [allowedRoles, forcedLogout]);
 
   useEffect(() => {
+    markPlayerClientRouteNavigation(pathname);
+    pathnameRef.current = pathname;
+  }, [pathname]);
+
+  useEffect(() => {
     if (currentRole !== 'player') {
       return;
     }
@@ -509,24 +517,21 @@ export default function ProtectedRoute({
       void touchPlayerSession(auth.currentUser);
     }, 45_000);
     const mountedAt = Date.now();
-    const markInactive = () => {
-      if (Date.now() - mountedAt < 30_000) {
-        console.info('[PLAYER_SESSION_LOCAL] skip_end_during_boot_window');
-        return;
-      }
-      void endLocalPlayerSession('browser_closed');
+    const markInactive = (event: Event) => {
+      void endLocalPlayerSessionOnBrowserLeave(event, {
+        mountedAt,
+        route: pathnameRef.current || currentClientPath(),
+      });
     };
     window.addEventListener('pagehide', markInactive);
-    window.addEventListener('beforeunload', markInactive);
 
     return () => {
       stopSessionListener();
       stopPolling();
       window.clearInterval(heartbeat);
       window.removeEventListener('pagehide', markInactive);
-      window.removeEventListener('beforeunload', markInactive);
     };
-  }, [currentRole, router]);
+  }, [currentRole]);
 
   if (forcedLogout || isPlayerForcedLogout()) {
     console.info('[SESSION_GUARD] protected render blocked');

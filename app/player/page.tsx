@@ -3007,7 +3007,10 @@ export default function PlayerPage() {
     setLogoutLoading(true);
     setMessage('');
     try {
-      await endLocalPlayerSession('logout');
+      await endLocalPlayerSession('logout', {
+        trigger: 'user_logout',
+        route: '/player',
+      });
       await signOut(auth);
       setShowLogoutConfirmSplash(false);
       router.replace('/login');

@@ -15,6 +15,10 @@ import { getAppSessionRequestHeaders, getLocalAppSessionId, APP_SESSION_EXPIRES_
 import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
 import { clearCachedSessionUser, getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { logPlayerFetchBlockedRole } from '@/lib/client/playerFetchGuard';
+import {
+  isPlayerRouteNavigationActive,
+  isRealAppUnloadEvent,
+} from '@/lib/client/playerSessionNavigationGuard';
 import { logClientFirestoreSkipped, isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { auth, db } from '@/lib/firebase/client';
 
@@ -30,6 +34,59 @@ export function isSqlPlayerAppSessionMode() {
 }
 
 let forcedPlayerLogout = false;
+
+const PLAYER_SESSION_END_DEDUP_MS = 2_000;
+let lastPlayerSessionEndSent: {
+  sessionId: string;
+  reason: string;
+  at: number;
+} | null = null;
+
+export type PlayerSessionEndClientContext = {
+  reason: string;
+  trigger: string;
+  route?: string;
+  currentPath?: string;
+  nextPath?: string | null;
+  visibilityState?: string | null;
+  generation?: number;
+  appSessionIdPrefix?: string | null;
+  playerSessionIdPrefix?: string | null;
+  isCurrentGeneration?: boolean;
+  isLogoutInProgress?: boolean;
+  isRouteNavigation?: boolean;
+  willSendEnd?: boolean;
+};
+
+function sessionIdPrefix(value: string | null | undefined) {
+  const clean = String(value || '').trim();
+  return clean ? clean.slice(0, 8) : null;
+}
+
+function currentClientPath() {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+  return window.location.pathname || '';
+}
+
+function logPlayerSessionEndClient(values: PlayerSessionEndClientContext) {
+  console.info('[PLAYER_SESSION_END_CLIENT]', values);
+}
+
+function shouldDedupPlayerSessionEnd(sessionId: string, reason: string) {
+  const now = Date.now();
+  if (
+    lastPlayerSessionEndSent &&
+    lastPlayerSessionEndSent.sessionId === sessionId &&
+    lastPlayerSessionEndSent.reason === reason &&
+    now - lastPlayerSessionEndSent.at < PLAYER_SESSION_END_DEDUP_MS
+  ) {
+    return true;
+  }
+  lastPlayerSessionEndSent = { sessionId, reason, at: now };
+  return false;
+}
 
 const DEFAULT_PLAYER_SESSION_POLL_INTERVAL_MS = 12_000;
 const PLAYER_SESSION_VERIFY_CACHE_TTL_MS = 8_000;
@@ -54,11 +111,6 @@ export class PlayerSessionStaleError extends Error {
     super(reason);
     this.name = 'PlayerSessionStaleError';
   }
-}
-
-function sessionIdPrefix(value: string | null | undefined) {
-  const clean = String(value || '').trim();
-  return clean ? clean.slice(0, 8) : null;
 }
 
 function notifyPlayerSessionReadyWaiters() {
@@ -1119,9 +1171,58 @@ async function endLocalPlayerSessionViaFirestore(sessionId: string, reason: stri
   );
 }
 
-export async function endLocalPlayerSession(reason = 'logout') {
+export async function endLocalPlayerSession(
+  reason = 'logout',
+  context?: Partial<Omit<PlayerSessionEndClientContext, 'reason'>>
+) {
   const sessionId = getLocalPlayerSessionId();
+  const appSessionId = getLocalAppSessionId();
+  const generation = getPlayerSessionGeneration();
+  const isCurrentGeneration =
+    Boolean(sessionId) &&
+    sessionId === expectedPlayerSessionId &&
+    sessionId === getLocalPlayerSessionId();
+
+  const logValues: PlayerSessionEndClientContext = {
+    reason,
+    trigger: context?.trigger || 'direct_call',
+    route: context?.route || currentClientPath(),
+    currentPath: context?.currentPath ?? currentClientPath(),
+    nextPath: context?.nextPath ?? null,
+    visibilityState:
+      context?.visibilityState ??
+      (typeof document !== 'undefined' ? document.visibilityState : null),
+    generation,
+    appSessionIdPrefix: sessionIdPrefix(appSessionId),
+    playerSessionIdPrefix: sessionIdPrefix(sessionId),
+    isCurrentGeneration,
+    isLogoutInProgress: forcedPlayerLogout || isPlayerForcedLogout(),
+    isRouteNavigation: context?.isRouteNavigation ?? false,
+    willSendEnd: false,
+  };
+
   if (!sessionId) {
+    logPlayerSessionEndClient({
+      ...logValues,
+      willSendEnd: false,
+      trigger: context?.trigger || 'missing_session_id',
+    });
+    return;
+  }
+
+  if (shouldDedupPlayerSessionEnd(sessionId, reason)) {
+    logPlayerSessionEndClient({
+      ...logValues,
+      willSendEnd: false,
+      trigger: context?.trigger || 'deduped',
+    });
+    return;
+  }
+
+  logValues.willSendEnd = context?.willSendEnd !== false;
+  logPlayerSessionEndClient(logValues);
+
+  if (context?.willSendEnd === false) {
     return;
   }
 
@@ -1134,6 +1235,30 @@ export async function endLocalPlayerSession(reason = 'logout') {
   } catch {
     // Best effort; realtime activeSessionId still protects the account.
   }
+}
+
+export async function endLocalPlayerSessionOnBrowserLeave(
+  event: Event,
+  context?: {
+    mountedAt?: number;
+    bootWindowMs?: number;
+    route?: string;
+  }
+) {
+  const bootWindowMs = context?.bootWindowMs ?? 30_000;
+  const mountedAt = context?.mountedAt ?? 0;
+  const isRouteNavigation = isPlayerRouteNavigationActive();
+  const isRealUnload = isRealAppUnloadEvent(event);
+  const withinBootWindow = mountedAt > 0 && Date.now() - mountedAt < bootWindowMs;
+  const willSendEnd = !isRouteNavigation && isRealUnload && !withinBootWindow;
+
+  await endLocalPlayerSession('browser_closed', {
+    trigger: event.type,
+    route: context?.route || currentClientPath(),
+    currentPath: currentClientPath(),
+    isRouteNavigation,
+    willSendEnd,
+  });
 }
 
 export function listenForPlayerSessionReplacement(

@@ -114,6 +114,16 @@ async function fetchSessionUserFromApi(): Promise<SessionUser | null> {
     };
 
     if (!response.ok || !payload.ok) {
+      const meReason = payload.reason || `http_${response.status}`;
+      console.info('[APP_SESSION_ME_CLIENT_STATE]', {
+        route: typeof window !== 'undefined' ? window.location.pathname || '' : '',
+        hasAppSessionId: Boolean(sessionId),
+        appSessionIdPrefix: sessionId ? sessionId.slice(0, 8) : null,
+        role: payload.role ?? cachedUser?.role ?? null,
+        visibilityState:
+          typeof document !== 'undefined' ? document.visibilityState : null,
+        reason: meReason,
+      });
       if (
         payload.reason === 'invalid_or_expired' ||
         payload.reason === 'account_not_active' ||
