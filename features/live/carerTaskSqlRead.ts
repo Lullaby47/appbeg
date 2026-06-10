@@ -248,8 +248,31 @@ export function attachCarerTaskSqlReadListener(
   };
 
   const applyVisibleTask = (task: CarerTask) => {
+    const normalizedStatus = cleanText(task.status).toLowerCase();
+    if (normalizedStatus === 'deleted') {
+      console.info('[CARER_TASK_READ_FILTER_AUDIT]', {
+        route: '/api/live/stream',
+        queryName: 'carer_task_sse_merge',
+        taskId: task.id,
+        status: task.status,
+        deletedAt: null,
+        included: false,
+        reason: 'status_deleted',
+      });
+      tasksById.delete(task.id);
+      return;
+    }
     const visible = getVisibleTaskForCarer(task, cleanCarerUid);
     if (!visible) {
+      console.info('[CARER_TASK_READ_FILTER_AUDIT]', {
+        route: '/api/live/stream',
+        queryName: 'carer_task_sse_merge',
+        taskId: task.id,
+        status: task.status,
+        deletedAt: null,
+        included: false,
+        reason: 'not_visible_to_carer',
+      });
       tasksById.delete(task.id);
       return;
     }
@@ -276,7 +299,10 @@ export function attachCarerTaskSqlReadListener(
 
       lastEventId = Math.max(lastEventId, parsed.id);
 
-      if (parsed.event === 'task.tombstoned') {
+      if (
+        parsed.event === 'task.tombstoned' ||
+        parsed.event === 'task.deleted_from_pending'
+      ) {
         tasksById.delete(parsed.entityId);
         console.info(
           '[CARER_TASKS_SQL_READ] sse_event type=%s taskId=%s',

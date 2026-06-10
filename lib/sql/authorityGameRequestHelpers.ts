@@ -277,6 +277,33 @@ export async function upsertLinkedCarerTaskInTxn(
   nowIso: string
 ) {
   const taskId = requestLinkedCarerTaskId(input.requestId);
+  const existing = await client.query(
+    `
+      SELECT status, deleted_at
+      FROM public.carer_tasks_cache
+      WHERE firebase_id = $1
+      LIMIT 1
+    `,
+    [taskId]
+  );
+  if (existing.rows.length) {
+    const row = existing.rows[0] as { status?: string | null; deleted_at?: string | null };
+    if (row.deleted_at) {
+      console.info('[CARER_TASK_RESURRECTION_AUDIT]', {
+        taskId,
+        source: 'authority_linked_request',
+        oldStatus: cleanText(row.status) || null,
+        newStatus: 'pending',
+        oldDeletedAt: toIsoString(row.deleted_at),
+        newDeletedAt: null,
+        action: 'upsert_linked_request',
+        blocked: true,
+        reason: 'tombstoned_row_preserved',
+      });
+      return taskId;
+    }
+  }
+
   const raw = buildCarerTaskSqlPayload(input, nowIso);
   await client.query(
     `
@@ -326,6 +353,7 @@ export async function upsertLinkedCarerTaskInTxn(
         mirrored_at = now(),
         deleted_at = NULL,
         raw_firestore_data = EXCLUDED.raw_firestore_data
+      WHERE public.carer_tasks_cache.deleted_at IS NULL
     `,
     [
       taskId,

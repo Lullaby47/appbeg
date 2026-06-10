@@ -61,6 +61,33 @@ async function upsertCarerTaskCacheDirect(input: CarerTaskCacheInput) {
   });
 
   try {
+    const existing = await db.query(
+      `
+        SELECT status, deleted_at
+        FROM public.carer_tasks_cache
+        WHERE firebase_id = $1
+        LIMIT 1
+      `,
+      [firebaseId]
+    );
+    if (existing.rows.length) {
+      const row = existing.rows[0] as { status?: string | null; deleted_at?: string | null };
+      if (row.deleted_at) {
+        console.info('[CARER_TASK_RESURRECTION_AUDIT]', {
+          taskId: firebaseId,
+          source: cleanText(input.source) || 'unknown',
+          oldStatus: cleanText(row.status) || null,
+          newStatus: cleanText(input.status) || null,
+          oldDeletedAt: toIsoString(row.deleted_at),
+          newDeletedAt: null,
+          action: 'upsert',
+          blocked: true,
+          reason: 'tombstoned_row_preserved',
+        });
+        return false;
+      }
+    }
+
     await db.query(
       `
         INSERT INTO public.carer_tasks_cache (

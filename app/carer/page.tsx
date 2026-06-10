@@ -645,6 +645,7 @@ export default function CarerPage() {
   const [dismissedRechargeRequestIds, setDismissedRechargeRequestIds] = useState<
     Record<string, true>
   >({});
+  const [deletedCarerTaskIds, setDeletedCarerTaskIds] = useState<Record<string, true>>({});
   const [deletingPendingTaskId, setDeletingPendingTaskId] = useState<string | null>(null);
   const [showRevTotals, setShowRevTotals] = useState(false);
   const [carerRechargeRedeemTotals, setCarerRechargeRedeemTotals] = useState<
@@ -3209,6 +3210,11 @@ export default function CarerPage() {
       return;
     }
 
+    if (deletedCarerTaskIds[task.id]) {
+      setTasks((previous) => previous.filter((current) => current.id !== task.id));
+      return;
+    }
+
     const ok = window.confirm(
       'Delete this pending task? It will be removed from the pending queue.'
     );
@@ -3216,6 +3222,17 @@ export default function CarerPage() {
     if (!ok) {
       return;
     }
+
+    console.info('[CARER_DELETE_TASK_CLICK]', {
+      taskId: task.id,
+      taskFirebaseId: task.id,
+      statusBefore: task.status,
+      assignedCarerUid: task.assignedCarerUid ?? null,
+      carerUid: carerIdentity?.uid ?? null,
+      coadminUid,
+      sqlMode: isClientSqlReadMode(),
+      hasAppSessionId: Boolean(getLocalAppSessionId()),
+    });
 
     const requestId = task.requestId?.trim() || null;
     console.info('[CARER_DELETE_TASK] requestId=%s', requestId);
@@ -3264,8 +3281,14 @@ export default function CarerPage() {
         return next;
       });
       setPendingTaskPayloadPreview((current) => (current?.id === task.id ? null : current));
-      console.info('[CARER_DELETE_TASK] refreshAfterDelete=true');
-      await refreshPageData(false);
+      setDeletedCarerTaskIds((previous) => ({
+        ...previous,
+        [task.id]: true,
+      }));
+      console.info('[CARER_DELETE_TASK] refreshAfterDelete=false sqlMode=%s', isClientSqlReadMode());
+      if (!isClientSqlReadMode()) {
+        await refreshPageData(false);
+      }
       setNoticeMessage('Pending task deleted.');
     } catch (error) {
       reportCarerActionError(

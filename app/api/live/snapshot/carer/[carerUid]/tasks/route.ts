@@ -142,6 +142,7 @@ async function fetchSnapshotRowsWithClient(
       FROM public.carer_tasks_cache
       WHERE coadmin_uid = $1
         AND deleted_at IS NULL
+        AND COALESCE(LOWER(status), '') <> 'deleted'
       ORDER BY created_at DESC NULLS LAST
       LIMIT $2
     `,
@@ -154,6 +155,7 @@ async function fetchSnapshotRowsWithClient(
       FROM public.carer_tasks_cache
       WHERE coadmin_uid = $1
         AND deleted_at IS NULL
+        AND COALESCE(LOWER(status), '') <> 'deleted'
         AND status = ANY($2::text[])
       ORDER BY created_at DESC NULLS LAST
     `,

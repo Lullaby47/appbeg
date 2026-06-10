@@ -2537,20 +2537,52 @@ export async function startCarerTask(taskId: string) {
 }
 
 export async function deletePendingCarerTask(taskId: string) {
-  const taskRef = doc(db, 'carerTasks', taskId);
-
-  const response = await fetch('/api/carer/tasks/delete-pending', {
+  const route = '/api/carer/tasks/delete-pending';
+  const headers = await getAuthHeaders('delete_pending');
+  const authSource = isClientSqlReadMode() ? 'app_session_sql' : 'firebase_token';
+  const response = await fetch(route, {
     method: 'POST',
-    headers: await getAuthHeaders('delete_pending'),
+    headers,
     body: JSON.stringify({ taskId }),
   });
-  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    duplicate?: boolean;
+    alreadyDeleted?: boolean;
+  };
+  console.info('[CARER_DELETE_TASK_REQUEST]', {
+    route,
+    taskId,
+    status: response.status,
+    responseBody: payload,
+    authSource,
+  });
   if (!response.ok) {
-    throw new Error(readApiError('Failed to delete pending task.', payload));
+    const message = readApiError('Failed to delete pending task.', payload);
+    const normalized = message.toLowerCase();
+    if (
+      payload.alreadyDeleted ||
+      normalized.includes('already deleted') ||
+      (normalized.includes('not found') && payload.duplicate)
+    ) {
+      return payload;
+    }
+    throw new Error(message);
   }
 
-  await forceRefreshTaskFromServer(taskId, taskRef);
+  if (isClientSqlReadMode()) {
+    console.info('[CARER_POST_TASK_REFRESH_SKIPPED]', {
+      taskId,
+      action: 'delete_pending',
+      sqlMode: true,
+      reason: 'sql_listener_authoritative',
+    });
+    return payload;
+  }
+
+  await forceRefreshTaskFromServer(taskId, doc(db, 'carerTasks', taskId));
   void mirrorCarerTaskCacheBestEffort(taskId);
+  return payload;
 }
 
 export async function completeCarerTask(taskId: string) {

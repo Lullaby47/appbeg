@@ -14,6 +14,7 @@ import {
 import {
   claimAuthorityOperation,
   insertAuthorityLedgerEvent,
+  readAuthorityOperationExists,
   readAuthorityOperationPayload,
 } from '@/lib/sql/authorityLedger';
 import {
@@ -1228,6 +1229,100 @@ export async function returnTaskToPendingInSql(input: {
   }
 }
 
+async function loadTaskRowForUpdate(client: PoolClient, taskId: string) {
+  const result = await client.query(
+    `
+      SELECT *
+      FROM public.carer_tasks_cache
+      WHERE firebase_id = $1
+      FOR UPDATE
+    `,
+    [taskId]
+  );
+  if (!result.rows.length) {
+    return null;
+  }
+  return result.rows[0] as Record<string, unknown>;
+}
+
+async function tombstoneCarerTaskInTxn(
+  client: PoolClient,
+  taskId: string,
+  input: {
+    coadminUid: string;
+    carerUid?: string | null;
+    type?: string;
+    gameName?: string;
+    requestId?: string | null;
+    source: string;
+    failureReason?: string;
+    deletedFromPendingAt: string;
+    deletedFromPendingByCarerUid: string;
+    deletedFromPendingByCarerUsername?: string | null;
+  }
+) {
+  const nowIso = input.deletedFromPendingAt;
+  await client.query(
+    `
+      UPDATE public.carer_tasks_cache
+      SET
+        status = 'deleted',
+        assigned_carer_uid = NULL,
+        assigned_carer_username = NULL,
+        assigned_carer = NULL,
+        claimed_status = NULL,
+        claimed_by_uid = NULL,
+        claimed_by_username = NULL,
+        automation_status = NULL,
+        automation_job_id = NULL,
+        linked_job_id = NULL,
+        current_job_id = NULL,
+        active_job_id = NULL,
+        automation_error = NULL,
+        failure_reason = COALESCE(NULLIF($2, ''), failure_reason),
+        deleted_from_pending_at = $3::timestamptz,
+        deleted_from_pending_by_carer_uid = NULLIF($4, ''),
+        deleted_from_pending_by_carer_username = NULLIF($5, ''),
+        updated_at = $3::timestamptz,
+        mirrored_at = now(),
+        deleted_at = now(),
+        source = $6,
+        raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || $7::jsonb
+      WHERE firebase_id = $1
+    `,
+    [
+      taskId,
+      cleanText(input.failureReason) || 'deleted_by_carer',
+      nowIso,
+      cleanText(input.deletedFromPendingByCarerUid),
+      cleanText(input.deletedFromPendingByCarerUsername) || 'Carer',
+      input.source,
+      JSON.stringify({
+        status: 'deleted',
+        deletedAt: nowIso,
+        deletedFromPendingAt: nowIso,
+        failureReason: cleanText(input.failureReason) || 'deleted_by_carer',
+      }),
+    ]
+  );
+
+  await writeTaskOutboxInTxn(client, {
+    coadminUid: input.coadminUid,
+    carerUid: input.carerUid,
+    taskId,
+    status: 'tombstoned',
+    type: cleanText(input.type),
+    gameName: cleanText(input.gameName),
+    requestId: input.requestId,
+    assignedCarerUid: null,
+    claimedByUid: null,
+    automationStatus: null,
+    automationJobId: null,
+    updatedAt: nowIso,
+    eventType: 'task.tombstoned',
+  });
+}
+
 export async function deletePendingTaskInSql(input: {
   taskId: string;
   actorUid: string;
@@ -1243,6 +1338,32 @@ export async function deletePendingTaskInSql(input: {
   const taskId = cleanText(input.taskId);
   const idempotencyKey = cleanText(input.idempotencyKey) || taskId;
   const operationKey = `task_delete:${taskId}:${idempotencyKey}`;
+
+  const existingPayload = await readAuthorityOperationPayload(operationKey);
+  if (existingPayload?.deleted === true) {
+    console.info('[CARER_DELETE_TASK_SQL_WRITE]', {
+      taskId,
+      matchedRows: 0,
+      beforeStatus: 'deleted',
+      afterStatus: 'deleted',
+      beforeDeletedAt: 'existing',
+      afterDeletedAt: 'existing',
+      deletedAtSet: true,
+      linkedRequestId: cleanText(existingPayload.linkedRequestId) || null,
+      linkedRequestUpdated: false,
+      automationJobCancelled: false,
+      outboxInserted: false,
+      ok: true,
+      reason: 'authority_operation_duplicate',
+    });
+    return {
+      success: true as const,
+      duplicate: true,
+      alreadyDeleted: true,
+      taskId,
+    };
+  }
+
   const client = await db.connect();
   try {
     await client.query('BEGIN');
@@ -1256,12 +1377,84 @@ export async function deletePendingTaskInSql(input: {
       payload: {},
     });
     if (!op.claimed && op.duplicate) {
-      await client.query('COMMIT');
-      return { success: true as const, duplicate: true };
+      await client.query('ROLLBACK');
+      const payload = await readAuthorityOperationPayload(operationKey);
+      const tombstoneCheck = await db.query(
+        `
+          SELECT status, deleted_at, request_id
+          FROM public.carer_tasks_cache
+          WHERE firebase_id = $1
+          LIMIT 1
+        `,
+        [taskId]
+      );
+      const tombstoneRow = tombstoneCheck.rows[0] as Record<string, unknown> | undefined;
+      const alreadyTombstoned = Boolean(tombstoneRow?.deleted_at);
+      if (payload?.deleted === true || alreadyTombstoned) {
+        console.info('[CARER_DELETE_TASK_SQL_WRITE]', {
+          taskId,
+          matchedRows: alreadyTombstoned ? 1 : 0,
+          beforeStatus: cleanText(tombstoneRow?.status) || 'unknown',
+          afterStatus: 'deleted',
+          beforeDeletedAt: tombstoneRow?.deleted_at ? toIsoString(tombstoneRow.deleted_at) : null,
+          afterDeletedAt: tombstoneRow?.deleted_at ? toIsoString(tombstoneRow.deleted_at) : 'existing',
+          deletedAtSet: true,
+          linkedRequestId: cleanText(payload?.linkedRequestId || tombstoneRow?.request_id) || null,
+          linkedRequestUpdated: false,
+          automationJobCancelled: false,
+          outboxInserted: false,
+          ok: true,
+          reason: 'duplicate_operation',
+        });
+        return {
+          success: true as const,
+          duplicate: true,
+          alreadyDeleted: true,
+          taskId,
+        };
+      }
+      throw new Error('Duplicate delete in progress.');
     }
 
-    const task = await loadTaskForUpdate(client, taskId);
-    if (!task) throw new Error('Task not found.');
+    const row = await loadTaskRowForUpdate(client, taskId);
+    if (!row) {
+      throw new Error('Task not found.');
+    }
+    const beforeStatus = sanitizeStatus(row.status);
+    const beforeDeletedAt = row.deleted_at ? toIsoString(row.deleted_at) : null;
+    if (beforeDeletedAt) {
+      await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
+        operationKey,
+        JSON.stringify({
+          deleted: true,
+          linkedRequestId: cleanText(row.request_id) || null,
+        }),
+      ]);
+      await client.query('COMMIT');
+      console.info('[CARER_DELETE_TASK_SQL_WRITE]', {
+        taskId,
+        matchedRows: 1,
+        beforeStatus,
+        afterStatus: 'deleted',
+        beforeDeletedAt,
+        afterDeletedAt: beforeDeletedAt,
+        deletedAtSet: true,
+        linkedRequestId: cleanText(row.request_id) || null,
+        linkedRequestUpdated: false,
+        automationJobCancelled: false,
+        outboxInserted: false,
+        ok: true,
+        reason: 'already_deleted',
+      });
+      return {
+        success: true as const,
+        duplicate: true,
+        alreadyDeleted: true,
+        taskId,
+      };
+    }
+
+    const task = taskFromRow(row);
     const taskScope = cleanText(task.coadmin_uid);
     if (!taskScope) throw new Error('Task missing scope.');
     if (!input.isAdmin && (!input.scopeUid || input.scopeUid !== taskScope)) {
@@ -1274,55 +1467,71 @@ export async function deletePendingTaskInSql(input: {
       throw new Error('Request tasks must be dismissed through their linked request.');
     }
 
+    const linkedRequestId = cleanText(task.request_id) || null;
     const nowIso = new Date().toISOString();
-    await patchCarerTaskInTxn(client, taskId, {
-      status: 'failed',
-      assignedCarerUid: '',
-      assignedCarerUsername: '',
-      claimedStatus: '',
-      claimedByUid: '',
-      claimedByUsername: '',
-      automationStatus: '',
-      automationJobId: '',
-      linkedJobId: '',
-      automationError: '',
-      failureReason: 'deleted_by_carer',
-      deletedFromPendingAt: nowIso,
-      completedAt: nowIso,
-      ttlExpiresAt: ttlAfterDaysIso(30),
-      deletedFromPendingByCarerUid: input.actorUid,
-      deletedFromPendingByCarerUsername: input.actorUsername || 'Carer',
-      __setAssignedCarer: true,
-      __setClaimedStatus: true,
-      __setClaimedBy: true,
-      __setAutomationStatus: true,
-      __setAutomationJobId: true,
-      __setJobIds: true,
-      __clearAutomationError: true,
-      __setCompletedAt: true,
-      __setTtlExpiresAt: true,
-      __setDeletedFromPendingAt: true,
-      __setFailureReason: true,
-    }, 'authority_task_delete');
+    const carerUid =
+      cleanText(task.assigned_carer_uid) || cleanText(task.claimed_by_uid) || input.actorUid;
 
-    await writeTaskOutboxInTxn(client, {
+    await tombstoneCarerTaskInTxn(client, taskId, {
       coadminUid: taskScope,
-      taskId,
-      status: 'failed',
+      carerUid,
       type: cleanText(task.type),
       gameName: cleanText(task.game_name),
-      updatedAt: nowIso,
-      eventType: 'task.deleted_from_pending',
+      requestId: linkedRequestId,
+      source: 'authority_task_delete',
+      failureReason: 'deleted_by_carer',
+      deletedFromPendingAt: nowIso,
+      deletedFromPendingByCarerUid: input.actorUid,
+      deletedFromPendingByCarerUsername: input.actorUsername || 'Carer',
     });
 
     await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
       operationKey,
-      JSON.stringify({ deleted: true }),
+      JSON.stringify({
+        deleted: true,
+        linkedRequestId,
+      }),
     ]);
     await client.query('COMMIT');
-    return { success: true as const, duplicate: false };
+    console.info('[CARER_DELETE_TASK_SQL_WRITE]', {
+      taskId,
+      matchedRows: 1,
+      beforeStatus,
+      afterStatus: 'deleted',
+      beforeDeletedAt,
+      afterDeletedAt: nowIso,
+      deletedAtSet: true,
+      linkedRequestId,
+      linkedRequestUpdated: false,
+      automationJobCancelled: false,
+      outboxInserted: true,
+      ok: true,
+      reason: null,
+    });
+    return {
+      success: true as const,
+      duplicate: false,
+      alreadyDeleted: false,
+      taskId,
+    };
   } catch (error) {
     await client.query('ROLLBACK');
+    const reason = error instanceof Error ? error.message : 'delete_failed';
+    console.warn('[CARER_DELETE_TASK_SQL_WRITE]', {
+      taskId,
+      matchedRows: 0,
+      beforeStatus: 'unknown',
+      afterStatus: 'unknown',
+      beforeDeletedAt: null,
+      afterDeletedAt: null,
+      deletedAtSet: false,
+      linkedRequestId: null,
+      linkedRequestUpdated: false,
+      automationJobCancelled: false,
+      outboxInserted: false,
+      ok: false,
+      reason,
+    });
     throw error;
   } finally {
     client.release();

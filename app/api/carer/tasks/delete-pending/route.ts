@@ -65,6 +65,13 @@ export async function POST(request: Request) {
       callerUid: auth.user.uid,
       callerRole: auth.user.role,
     });
+    console.info('[CARER_DELETE_TASK_REQUEST]', {
+      route: '/api/carer/tasks/delete-pending',
+      taskId,
+      status: 'pending',
+      responseBody: null,
+      authSource: 'app_session_sql',
+    });
 
     if (!taskId) {
       return apiError('taskId is required.', 400);
@@ -90,7 +97,11 @@ export async function POST(request: Request) {
         taskId,
         duplicate: outcome.duplicate,
       });
-      return NextResponse.json({ authority: 'sql', ...outcome });
+      return NextResponse.json({
+        ok: true,
+        authority: 'sql',
+        ...outcome,
+      });
     }
 
     const taskRef = adminDb.collection('carerTasks').doc(taskId);
