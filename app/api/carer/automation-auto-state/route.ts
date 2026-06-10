@@ -1,6 +1,9 @@
+import { FieldValue } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
+import { AUTOMATION_AUTO_STATE_COLLECTION } from '@/features/automation/automationAutoState';
 import { apiError, requireCarerApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import { adminDb } from '@/lib/firebase/admin';
 import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import {
@@ -22,6 +25,19 @@ function mapSqlStateToClient(state: {
   };
 }
 
+function mapFirestoreStateToClient(data: Record<string, unknown>) {
+  return {
+    enabled: data.enabled === true,
+    tickLeaseHolderId:
+      typeof data.tickLeaseHolderId === 'string' ? data.tickLeaseHolderId : null,
+    tickLeaseExpiresAt: data.tickLeaseExpiresAt ?? null,
+    startedAt: data.startedAt ?? null,
+    startedBy: typeof data.startedBy === 'string' ? data.startedBy : null,
+    stoppedAt: data.stoppedAt ?? null,
+    updatedAt: data.updatedAt ?? null,
+  };
+}
+
 export async function GET(request: Request) {
   const startedAt = Date.now();
   const auth = await requireCarerApiUser(request);
@@ -29,47 +45,74 @@ export async function GET(request: Request) {
     return auth.response;
   }
 
-  const sqlReadMode = isAuthSqlReadEnabled();
-  const lookup = await lookupAutomationAutoStateFromSqlCache(auth.user.uid);
+  const coadminUid = scopedCoadminUid(auth.user);
 
-  if (sqlReadMode) {
-    logFirestoreTouch({
-      firestore_touch_type: 'legacy_read_remove_now',
-      route: ROUTE,
-      operation: 'read',
-      collection: 'automation_auto_state',
-      skipped: true,
-      sql_read_mode: true,
-      details: { uid: auth.user.uid, reason: 'sql_read_mode' },
+  if (isAuthSqlReadEnabled()) {
+    const lookup = await lookupAutomationAutoStateFromSqlCache(auth.user.uid);
+    const durationMs = Date.now() - startedAt;
+
+    console.info('[AUTOMATION_AUTO_STATE_SQL_READ]', {
+      carerUid: auth.user.uid,
+      coadminUid,
+      source: 'sql',
+      firestoreAttempted: false,
+      durationMs,
     });
-  }
 
-  if (!lookup.state) {
-    if (sqlReadMode) {
+    if (!lookup.state) {
       return NextResponse.json({
         state: null,
         source: 'sql',
         firestore_fallback: false,
-        durationMs: Date.now() - startedAt,
+        durationMs,
       });
     }
+
+    return NextResponse.json({
+      state: mapSqlStateToClient(lookup.state),
+      source: 'sql',
+      firestore_fallback: false,
+      durationMs,
+    });
+  }
+
+  const snap = await adminDb
+    .collection(AUTOMATION_AUTO_STATE_COLLECTION)
+    .doc(auth.user.uid)
+    .get();
+
+  logFirestoreTouch({
+    firestore_touch_type: 'legacy_read_remove_now',
+    route: ROUTE,
+    operation: 'read',
+    collection: AUTOMATION_AUTO_STATE_COLLECTION,
+    document_id: auth.user.uid,
+    sql_read_mode: false,
+    skipped: false,
+    details: { uid: auth.user.uid },
+  });
+
+  const durationMs = Date.now() - startedAt;
+
+  if (!snap.exists) {
     return NextResponse.json({
       state: null,
-      source: 'sql_miss',
-      firestore_fallback: false,
-      durationMs: Date.now() - startedAt,
+      source: 'firestore',
+      firestore_fallback: true,
+      durationMs,
     });
   }
 
   return NextResponse.json({
-    state: mapSqlStateToClient(lookup.state),
-    source: 'sql',
-    firestore_fallback: false,
-    durationMs: Date.now() - startedAt,
+    state: mapFirestoreStateToClient((snap.data() || {}) as Record<string, unknown>),
+    source: 'firestore',
+    firestore_fallback: true,
+    durationMs,
   });
 }
 
 export async function POST(request: Request) {
+  const startedAt = Date.now();
   const auth = await requireCarerApiUser(request);
   if ('response' in auth) {
     return auth.response;
@@ -82,41 +125,87 @@ export async function POST(request: Request) {
     return apiError('Coadmin scope is required.', 400);
   }
 
-  const now = new Date().toISOString();
-  const ok = await upsertAutomationAutoStateCache(
-    auth.user.uid,
+  if (isAuthSqlReadEnabled()) {
+    const now = new Date().toISOString();
+    const ok = await upsertAutomationAutoStateCache(
+      auth.user.uid,
+      {
+        enabled,
+        updatedAt: now,
+        ...(enabled
+          ? {
+              startedAt: now,
+              startedBy: auth.user.uid,
+              stoppedAt: null,
+            }
+          : {
+              stoppedAt: now,
+            }),
+      },
+      'carer_sql_write',
+      coadminUid
+    );
+
+    const durationMs = Date.now() - startedAt;
+
+    if (!ok) {
+      return apiError('Failed to save automation auto state.', 500);
+    }
+
+    console.info('[AUTOMATION_AUTO_STATE_SQL_WRITE]', {
+      carerUid: auth.user.uid,
+      coadminUid,
+      enabled,
+      source: 'sql',
+      firestoreAttempted: false,
+      durationMs,
+    });
+
+    return NextResponse.json({
+      ok: true,
+      enabled,
+      source: 'sql',
+      firestoreAttempted: false,
+      durationMs,
+    });
+  }
+
+  const ref = adminDb.collection(AUTOMATION_AUTO_STATE_COLLECTION).doc(auth.user.uid);
+  await ref.set(
     {
       enabled,
-      updatedAt: now,
+      updatedAt: FieldValue.serverTimestamp(),
       ...(enabled
         ? {
-            startedAt: now,
+            startedAt: FieldValue.serverTimestamp(),
             startedBy: auth.user.uid,
             stoppedAt: null,
           }
         : {
-            stoppedAt: now,
+            stoppedAt: FieldValue.serverTimestamp(),
           }),
     },
-    'carer_sql_write',
-    coadminUid
+    { merge: true }
   );
 
-  if (!ok) {
-    return apiError('Failed to save automation auto state.', 500);
-  }
-
-  console.info('[CARER_AUTOMATION_STATE_SQL_WRITE]', {
-    carerUid: auth.user.uid,
-    enabled,
-    source: 'sql',
-    firestoreAttempted: false,
+  logFirestoreTouch({
+    firestore_touch_type: 'authority_write_keep_for_now',
+    route: ROUTE,
+    operation: 'write',
+    collection: AUTOMATION_AUTO_STATE_COLLECTION,
+    document_id: auth.user.uid,
+    sql_read_mode: false,
+    skipped: false,
+    details: { uid: auth.user.uid, enabled },
   });
+
+  const durationMs = Date.now() - startedAt;
 
   return NextResponse.json({
     ok: true,
     enabled,
-    source: 'sql',
-    firestoreAttempted: false,
+    source: 'firestore',
+    firestoreAttempted: true,
+    durationMs,
   });
 }
