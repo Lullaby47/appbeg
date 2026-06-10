@@ -98,6 +98,40 @@ export function logBonusEventsListSql(values: {
   });
 }
 
+export type BonusEventsListSqlFilterSampleRow = {
+  firebase_id: string;
+  coadmin_uid: string;
+  status: string;
+  start_date: string | null;
+  end_date: string | null;
+  amount_npr: number | null;
+  bonus_percentage: number | null;
+};
+
+export function logBonusEventsListSqlFilter(values: {
+  route: string;
+  coadminUid: string;
+  totalRowsForCoadmin: number;
+  activeRowsForCoadmin: number;
+  returnedCount: number;
+  statusesSeen: string[];
+  now: string;
+  sampleRows: BonusEventsListSqlFilterSampleRow[];
+  reason: string;
+}) {
+  console.info('[BONUS_EVENTS_LIST_SQL_FILTER]', {
+    route: values.route,
+    coadminUid: values.coadminUid,
+    totalRowsForCoadmin: values.totalRowsForCoadmin,
+    activeRowsForCoadmin: values.activeRowsForCoadmin,
+    returnedCount: values.returnedCount,
+    statusesSeen: values.statusesSeen,
+    now: values.now,
+    sampleRows: values.sampleRows,
+    reason: values.reason,
+  });
+}
+
 export function logBonusEventsEnsureAuth(
   request: Request,
   values: {

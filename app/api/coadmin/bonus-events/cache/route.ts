@@ -141,6 +141,7 @@ export async function GET(request: Request) {
   const cached = await readActiveBonusEventsByCoadmin(coadminUid, {
     includeInactive,
     maxResults: 50,
+    route: ROUTE,
   });
   if (cached !== null) {
     events = cached;

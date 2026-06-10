@@ -187,8 +187,9 @@ async function loadGameNames(coadminUid: string, sqlReadMode: boolean) {
 
 async function loadBonusEvents(coadminUid: string, sqlReadMode: boolean) {
   const cached = await readActiveBonusEventsByCoadmin(coadminUid, {
-    includeInactive: true,
+    includeInactive: false,
     maxResults: 100,
+    route: ROUTE,
   });
   if (cached !== null) {
     return cached;

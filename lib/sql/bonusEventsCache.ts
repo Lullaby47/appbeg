@@ -2,6 +2,7 @@ import 'server-only';
 
 import type { DocumentSnapshot } from 'firebase-admin/firestore';
 
+import { logBonusEventsListSqlFilter } from '@/lib/server/bonusEventsAudit';
 import {
   cleanText,
   getPlayerMirrorPool,
@@ -10,6 +11,7 @@ import {
   normalizeJson,
   numberOrNull,
   runMirrorPoolQuery,
+  toDate,
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
 
@@ -41,6 +43,25 @@ export type CachedBonusEvent = {
   event_id?: string;
 };
 
+const BONUS_EVENTS_SELECT_COLUMNS = `
+  firebase_id,
+  coadmin_uid,
+  bonus_name,
+  game_name,
+  amount_npr,
+  bonus_percentage,
+  description,
+  created_by_uid,
+  created_by_username,
+  created_by_role,
+  status,
+  start_date,
+  end_date,
+  created_at,
+  updated_at,
+  raw_firestore_data
+`;
+
 function fieldFromRaw(raw: unknown, field: string) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return null;
@@ -50,6 +71,8 @@ function fieldFromRaw(raw: unknown, field: string) {
 
 function timestampMsFromRaw(value: unknown): number {
   if (!value) return 0;
+  const date = toDate(value);
+  if (date) return date.getTime();
   if (typeof value === 'string') {
     const parsed = Date.parse(value);
     return Number.isNaN(parsed) ? 0 : parsed;
@@ -73,25 +96,48 @@ export function isBonusEventActive(event: CachedBonusEvent, nowMs: number = Date
   return true;
 }
 
-function mapBonusEventRow(row: Record<string, unknown>): CachedBonusEvent {
+function parseNumericColumn(value: unknown, ...fallbacks: unknown[]) {
+  for (const candidate of [value, ...fallbacks]) {
+    const parsed = Number(candidate);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return 0;
+}
+
+export function mapBonusEventRow(row: Record<string, unknown>): CachedBonusEvent {
   const raw = row.raw_firestore_data;
   const id = cleanText(row.firebase_id);
-  const bonusPercentage = Number(
-    row.bonus_percentage ??
-      fieldFromRaw(raw, 'bonusPercentage') ??
-      fieldFromRaw(raw, 'bonus_percentage') ??
-      0
+  const bonusPercentage = parseNumericColumn(
+    row.bonus_percentage,
+    fieldFromRaw(raw, 'bonusPercentage'),
+    fieldFromRaw(raw, 'bonus_percentage')
   );
-  const amountNpr = Number(
-    row.amount_npr ?? fieldFromRaw(raw, 'amountNpr') ?? fieldFromRaw(raw, 'amount') ?? 0
+  const amountNpr = parseNumericColumn(
+    row.amount_npr,
+    fieldFromRaw(raw, 'amountNpr'),
+    fieldFromRaw(raw, 'amount')
   );
   const createdAt = toIsoString(row.created_at) || toIsoString(fieldFromRaw(raw, 'createdAt'));
-  const startDate = toIsoString(row.start_date) || toIsoString(fieldFromRaw(raw, 'startDate'));
-  const endDate = toIsoString(row.end_date) || toIsoString(fieldFromRaw(raw, 'endDate'));
+  const startDate =
+    toIsoString(row.start_date) ||
+    toIsoString(fieldFromRaw(raw, 'startDate')) ||
+    toIsoString(fieldFromRaw(raw, 'start_date'));
+  const endDate =
+    toIsoString(row.end_date) ||
+    toIsoString(fieldFromRaw(raw, 'endDate')) ||
+    toIsoString(fieldFromRaw(raw, 'end_date'));
   const createdByUid =
-    cleanText(row.created_by_uid) || cleanText(fieldFromRaw(raw, 'createdByUid')) || '';
+    cleanText(row.created_by_uid) ||
+    cleanText(fieldFromRaw(raw, 'createdByUid')) ||
+    cleanText(fieldFromRaw(raw, 'created_by')) ||
+    '';
   const createdByRole =
-    cleanText(row.created_by_role) || cleanText(fieldFromRaw(raw, 'createdByRole')) || '';
+    cleanText(row.created_by_role) ||
+    cleanText(fieldFromRaw(raw, 'createdByRole')) ||
+    cleanText(fieldFromRaw(raw, 'creator_role')) ||
+    '';
   const createdByUsername =
     cleanText(row.created_by_username) ||
     cleanText(fieldFromRaw(raw, 'createdByUsername')) ||
@@ -101,12 +147,17 @@ function mapBonusEventRow(row: Record<string, unknown>): CachedBonusEvent {
     id,
     eventId: id,
     event_id: id,
-    coadminUid: cleanText(row.coadmin_uid) || cleanText(fieldFromRaw(raw, 'coadminUid')),
-    bonusName: cleanText(row.bonus_name) || cleanText(fieldFromRaw(raw, 'bonusName')),
-    gameName: cleanText(row.game_name) || cleanText(fieldFromRaw(raw, 'gameName')),
+    coadminUid:
+      cleanText(row.coadmin_uid) ||
+      cleanText(fieldFromRaw(raw, 'coadminUid')) ||
+      '',
+    bonusName:
+      cleanText(row.bonus_name) || cleanText(fieldFromRaw(raw, 'bonusName')) || '',
+    gameName: cleanText(row.game_name) || cleanText(fieldFromRaw(raw, 'gameName')) || '',
     amountNpr,
     amount: amountNpr,
-    description: cleanText(row.description) || cleanText(fieldFromRaw(raw, 'description')),
+    description:
+      cleanText(row.description) || cleanText(fieldFromRaw(raw, 'description')) || '',
     bonusPercentage,
     bonus_percentage: bonusPercentage,
     createdByUid,
@@ -126,9 +177,37 @@ function mapBonusEventRow(row: Record<string, unknown>): CachedBonusEvent {
   };
 }
 
+function sampleBonusEventRow(row: Record<string, unknown>) {
+  return {
+    firebase_id: cleanText(row.firebase_id),
+    coadmin_uid: cleanText(row.coadmin_uid),
+    status: cleanText(row.status) || 'active',
+    start_date: toIsoString(row.start_date),
+    end_date: toIsoString(row.end_date),
+    amount_npr: numberOrNull(row.amount_npr),
+    bonus_percentage: numberOrNull(row.bonus_percentage),
+  };
+}
+
+function rowMatchesActiveWindow(row: Record<string, unknown>, nowMs: number) {
+  const status = cleanText(row.status).toLowerCase() || 'active';
+  if (status !== 'active') return false;
+  const startMs = timestampMsFromRaw(row.start_date);
+  const endMs = timestampMsFromRaw(row.end_date);
+  if (startMs > 0 && nowMs < startMs) return false;
+  if (endMs > 0 && nowMs > endMs) return false;
+  return true;
+}
+
+export type ReadBonusEventsByCoadminOptions = {
+  includeInactive?: boolean;
+  maxResults?: number;
+  route?: string;
+};
+
 export async function readActiveBonusEventsByCoadmin(
   coadminUid: string,
-  options?: { includeInactive?: boolean; maxResults?: number }
+  options?: ReadBonusEventsByCoadminOptions
 ): Promise<CachedBonusEvent[] | null> {
   const cleanCoadminUid = cleanText(coadminUid);
   const db = getPlayerMirrorPool();
@@ -137,48 +216,83 @@ export async function readActiveBonusEventsByCoadmin(
   }
 
   const maxResults = Math.max(1, Math.min(100, Number(options?.maxResults || 50)));
+  const route = cleanText(options?.route) || '/api/bonus-events/list';
+  const includeInactive = Boolean(options?.includeInactive);
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
 
   try {
     const startedAt = Date.now();
-    const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(
+
+    const totalResult = await runMirrorPoolQuery<Record<string, unknown>>(
       db,
       `
-        SELECT
-          firebase_id,
-          coadmin_uid,
-          bonus_name,
-          game_name,
-          amount_npr,
-          bonus_percentage,
-          description,
-          created_by_uid,
-          created_by_username,
-          created_by_role,
-          status,
-          start_date,
-          end_date,
-          created_at,
-          updated_at,
-          raw_firestore_data
+        SELECT ${BONUS_EVENTS_SELECT_COLUMNS}
         FROM public.bonus_events_cache
-        WHERE coadmin_uid = $1
+        WHERE trim(coalesce(coadmin_uid, '')) = $1
           AND deleted_at IS NULL
-          AND ($2::boolean OR lower(coalesce(status, 'active')) = 'active')
+        ORDER BY created_at DESC NULLS LAST
+        LIMIT 100
+      `,
+      [cleanCoadminUid]
+    );
+
+    const totalRows = totalResult.rows;
+    const statusesSeen = Array.from(
+      new Set(totalRows.map((row) => cleanText(row.status).toLowerCase() || 'active'))
+    );
+    const activeRows = totalRows.filter((row) => rowMatchesActiveWindow(row, nowMs));
+
+    const { rows: filteredRows } = await runMirrorPoolQuery<Record<string, unknown>>(
+      db,
+      `
+        SELECT ${BONUS_EVENTS_SELECT_COLUMNS}
+        FROM public.bonus_events_cache
+        WHERE trim(coalesce(coadmin_uid, '')) = $1
+          AND deleted_at IS NULL
+          AND (
+            $2::boolean
+            OR (
+              lower(trim(coalesce(status, 'active'))) = 'active'
+              AND (start_date IS NULL OR start_date <= now())
+              AND (end_date IS NULL OR end_date >= now())
+            )
+          )
         ORDER BY created_at DESC NULLS LAST
         LIMIT $3
       `,
-      [cleanCoadminUid, Boolean(options?.includeInactive), maxResults]
+      [cleanCoadminUid, includeInactive, maxResults]
     );
 
-    const events = rows
-      .map(mapBonusEventRow)
-      .filter((event) => options?.includeInactive || isBonusEventActive(event));
+    const events = filteredRows.map(mapBonusEventRow);
+
+    logBonusEventsListSqlFilter({
+      route,
+      coadminUid: cleanCoadminUid,
+      totalRowsForCoadmin: totalRows.length,
+      activeRowsForCoadmin: activeRows.length,
+      returnedCount: events.length,
+      statusesSeen,
+      now: nowIso,
+      sampleRows: totalRows.slice(0, 5).map(sampleBonusEventRow),
+      reason: includeInactive
+        ? 'bonus_events_cache_read_include_inactive'
+        : events.length > 0
+          ? 'bonus_events_cache_read_active'
+          : totalRows.length > 0
+            ? 'bonus_events_cache_active_filter_empty'
+            : 'bonus_events_cache_no_rows_for_coadmin',
+    });
 
     console.info('[BONUS_EVENTS_CACHE] read ok', {
       coadminUid: cleanCoadminUid,
-      count: events.length,
+      totalRows: totalRows.length,
+      activeRows: activeRows.length,
+      returnedCount: events.length,
+      includeInactive,
       durationMs: Date.now() - startedAt,
     });
+
     return events;
   } catch (error) {
     if (isSqlMissingRelationError(error, 'bonus_events_cache')) {

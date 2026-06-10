@@ -346,17 +346,17 @@ async function readActiveBonusEventsInTxn(client: PoolClient, coadminUid: string
     `
       SELECT *
       FROM public.bonus_events_cache
-      WHERE coadmin_uid = $1
+      WHERE trim(coalesce(coadmin_uid, '')) = $1
         AND deleted_at IS NULL
-        AND lower(coalesce(status, 'active')) = 'active'
+        AND lower(trim(coalesce(status, 'active'))) = 'active'
+        AND (start_date IS NULL OR start_date <= now())
+        AND (end_date IS NULL OR end_date >= now())
       ORDER BY created_at DESC NULLS LAST
       LIMIT $2
     `,
     [coadminUid, MAX_ACTIVE_BONUS_EVENTS]
   );
-  return rows
-    .map((row) => mapBonusRow(row as Record<string, unknown>))
-    .filter((event) => isBonusEventActive(event));
+  return rows.map((row) => mapBonusRow(row as Record<string, unknown>));
 }
 
 async function readCoadminGameNamesInTxn(client: PoolClient, coadminUid: string) {
