@@ -186,6 +186,30 @@ export function createPlayerMirrorSqlTiming(
   };
 }
 
+export function isSqlMissingRelationError(error: unknown, tableName?: string): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const pg = error as { code?: string; message?: string };
+  if (pg.code !== '42P01') {
+    return false;
+  }
+  if (!tableName) {
+    return true;
+  }
+  return String(pg.message || '').includes(tableName);
+}
+
+export function logSqlMissingRelation(tableName: string, context: string) {
+  console.warn('[SQL_SCHEMA_AUDIT]', {
+    missing_tables: [tableName],
+    all_required_tables_present: false,
+    context,
+    reason: 'relation_does_not_exist',
+    migration: 'migrations/038_runtime_missing_cache_tables.sql',
+  });
+}
+
 export async function runMirrorClientQuery<T extends Record<string, unknown>>(
   client: PoolClient,
   sql: string,

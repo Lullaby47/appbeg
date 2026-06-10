@@ -5,6 +5,8 @@ import type { DocumentSnapshot } from 'firebase-admin/firestore';
 import {
   cleanText,
   getPlayerMirrorPool,
+  isSqlMissingRelationError,
+  logSqlMissingRelation,
   normalizeJson,
   numberOrNull,
   runMirrorPoolQuery,
@@ -179,6 +181,10 @@ export async function readActiveBonusEventsByCoadmin(
     });
     return events;
   } catch (error) {
+    if (isSqlMissingRelationError(error, 'bonus_events_cache')) {
+      logSqlMissingRelation('bonus_events_cache', 'bonus_events_cache_read');
+      return [];
+    }
     console.warn('[BONUS_EVENTS_CACHE] read failed', {
       coadminUid: cleanCoadminUid,
       error,

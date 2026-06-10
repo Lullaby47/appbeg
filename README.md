@@ -70,7 +70,7 @@ Legacy Firestore code paths exist only when `AUTHORITY_SQL_WRITE=0` (development
 
 Set all SQL flags and `DATABASE_URL` in the Vercel project environment. Set `NEXT_PUBLIC_*` flags for **Production** and redeploy so client bundles pick them up.
 
-Production startup runs `assertSqlRuntimeReady()` — missing `DATABASE_URL` or disabled SQL authority throws a clear error instead of falling back to Firestore.
+Production startup runs `assertSqlRuntimeReady()` and `assertRequiredSqlTables()`. Missing cache tables are logged via `[SQL_SCHEMA_AUDIT]`; apply `migrations/038_runtime_missing_cache_tables.sql` — routes return empty SQL results (no Firestore fallback) until tables exist.
 
 See `.env.example` for the full variable list.
 

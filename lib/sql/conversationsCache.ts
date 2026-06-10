@@ -5,6 +5,8 @@ import type { DocumentSnapshot } from 'firebase-admin/firestore';
 import {
   cleanText,
   getPlayerMirrorPool,
+  isSqlMissingRelationError,
+  logSqlMissingRelation,
   normalizeJson,
   runMirrorPoolQuery,
   toIsoString,
@@ -230,6 +232,10 @@ export async function readConversationsCacheForUser(
     );
     return rows.map(mapConversationRow).filter((row): row is CachedConversation => Boolean(row));
   } catch (error) {
+    if (isSqlMissingRelationError(error, 'conversations_cache')) {
+      logSqlMissingRelation('conversations_cache', 'conversations_cache_read');
+      return [];
+    }
     console.warn('[CONVERSATIONS_CACHE] read failed', { uid: cleanUid, error });
     return null;
   }

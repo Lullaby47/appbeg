@@ -5,6 +5,8 @@ import type { DocumentSnapshot } from 'firebase-admin/firestore';
 import {
   cleanText,
   getPlayerMirrorPool,
+  isSqlMissingRelationError,
+  logSqlMissingRelation,
   runMirrorPoolQuery,
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
@@ -38,6 +40,10 @@ export async function upsertUserPresenceCache(uid: string, lastSeenAt: Date = ne
     );
     return true;
   } catch (error) {
+    if (isSqlMissingRelationError(error, 'user_presence_cache')) {
+      logSqlMissingRelation('user_presence_cache', 'user_presence_cache_upsert');
+      return false;
+    }
     console.warn('[USER_PRESENCE_CACHE] upsert failed', { uid: cleanUid, error });
     return false;
   }
@@ -87,6 +93,10 @@ export async function readUserPresenceCacheByUids(
       })
       .filter((row): row is CachedUserPresence => Boolean(row));
   } catch (error) {
+    if (isSqlMissingRelationError(error, 'user_presence_cache')) {
+      logSqlMissingRelation('user_presence_cache', 'user_presence_cache_read');
+      return [];
+    }
     console.warn('[USER_PRESENCE_CACHE] read failed', { count: cleanUids.length, error });
     return null;
   }

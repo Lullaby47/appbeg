@@ -6,11 +6,15 @@ export async function register() {
   const { assertSqlRuntimeReady, SqlRuntimeMisconfiguredError } = await import(
     '@/lib/server/sqlRuntime'
   );
+  const { assertRequiredSqlTables, SqlSchemaMissingError } = await import(
+    '@/lib/server/sqlSchemaAudit'
+  );
 
   try {
     assertSqlRuntimeReady('instrumentation');
+    await assertRequiredSqlTables('instrumentation');
   } catch (error) {
-    if (error instanceof SqlRuntimeMisconfiguredError) {
+    if (error instanceof SqlRuntimeMisconfiguredError || error instanceof SqlSchemaMissingError) {
       console.error('[SQL_RUNTIME] startup blocked:', error.message);
       throw error;
     }

@@ -1,6 +1,6 @@
 import 'server-only';
 
-function isProductionNodeEnv() {
+export function isProductionNodeEnv() {
   return process.env.NODE_ENV === 'production';
 }
 
