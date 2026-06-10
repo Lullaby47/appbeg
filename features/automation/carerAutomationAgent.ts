@@ -1,6 +1,9 @@
 import { doc, getDoc } from 'firebase/firestore';
 
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+import { requireSqlSessionUid } from '@/lib/client/carerSessionIdentity';
+import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 
 import { auth, db } from '@/lib/firebase/client';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
@@ -34,17 +37,26 @@ export function validateAutomationAgentId(agentId: string): {
   return { valid: true, normalized: trimmed };
 }
 
-async function postAutomationAgentUpdate(body: Record<string, unknown>) {
-  const current = auth.currentUser;
-  if (!current) {
-    throw new Error('Not authenticated.');
-  }
+async function postAutomationAgentUpdate(
+  body: Record<string, unknown>,
+  action: 'link' | 'disconnect'
+) {
+  const headers = isClientSqlReadMode()
+    ? await getSqlApiReadHeaders(true)
+    : await getFirebaseApiHeaders(true);
   const response = await fetch('/api/carer/automation-agent', {
     method: 'POST',
-    headers: await getFirebaseApiHeaders(),
+    headers,
     body: JSON.stringify(body),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  console.info('[CARER_AGENT_SQL_ACTION]', {
+    action,
+    carerUid: String(body.carerUid || ''),
+    authSource: isClientSqlReadMode() ? 'app_session_sql' : 'firebase_bearer',
+    firestoreAttempted: false,
+    status: response.status,
+  });
   if (!response.ok) {
     throw new Error(payload.error || 'Failed to update automation agent.');
   }
@@ -53,6 +65,14 @@ async function postAutomationAgentUpdate(body: Record<string, unknown>) {
 export async function getCarerAutomationAgent(
   carerUid: string
 ): Promise<CarerAutomationAgentSettings> {
+  if (isClientSqlReadMode()) {
+    return {
+      automationAgentId: null,
+      automationAgentLinkedAt: null,
+      automationAgentUpdatedAt: null,
+    };
+  }
+
   if (assertClientFirestoreDisabled('carer_automation_agent_get', 'getDoc', { carerUid })) {
     return {
       automationAgentId: null,
@@ -95,32 +115,43 @@ export function automationJobDocId(carerUid: string, taskId: string): string {
   return `${uid}--${tid}`;
 }
 
-export async function setCarerAutomationAgent(
-  carerUid: string,
-  agentId: string
-): Promise<void> {
+async function assertOwnCarerUid(carerUid: string) {
+  if (isClientSqlReadMode()) {
+    await requireSqlSessionUid(carerUid);
+    return;
+  }
   const current = auth.currentUser;
   if (!current || current.uid !== carerUid) {
     throw new Error('You can only update your own automation agent.');
   }
+}
+
+export async function setCarerAutomationAgent(
+  carerUid: string,
+  agentId: string
+): Promise<void> {
+  await assertOwnCarerUid(carerUid);
   const v = validateAutomationAgentId(agentId);
   if (!v.valid || !v.normalized) {
     throw new Error(v.error || 'Invalid agent ID.');
   }
-  await postAutomationAgentUpdate({
-    action: 'link',
-    carerUid,
-    agentId: v.normalized,
-  });
+  await postAutomationAgentUpdate(
+    {
+      action: 'link',
+      carerUid,
+      agentId: v.normalized,
+    },
+    'link'
+  );
 }
 
 export async function disconnectCarerAutomationAgent(carerUid: string): Promise<void> {
-  const current = auth.currentUser;
-  if (!current || current.uid !== carerUid) {
-    throw new Error('You can only disconnect your own automation agent.');
-  }
-  await postAutomationAgentUpdate({
-    action: 'disconnect',
-    carerUid,
-  });
+  await assertOwnCarerUid(carerUid);
+  await postAutomationAgentUpdate(
+    {
+      action: 'disconnect',
+      carerUid,
+    },
+    'disconnect'
+  );
 }

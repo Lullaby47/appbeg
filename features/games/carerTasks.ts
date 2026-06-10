@@ -31,6 +31,7 @@ import {
   logClientFirebaseRuntimeRemoved,
   logSqlClientMigration,
 } from '@/lib/client/sqlClientMigration';
+import { resolveSqlSessionUser } from '@/lib/client/carerSessionIdentity';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
@@ -232,7 +233,20 @@ function logTaskResetPending(details: {
   console.info('[TASK_RESET_PENDING] status=pending updatedAt=serverTimestamp');
 }
 
-async function forceRefreshTaskFromServer(taskId: string, taskRef = doc(db, 'carerTasks', taskId)) {
+async function forceRefreshTaskFromServer(
+  taskId: string,
+  taskRef = doc(db, 'carerTasks', taskId),
+  action = 'force_refresh'
+) {
+  if (isClientSqlReadMode()) {
+    console.info('[CARER_POST_TASK_REFRESH_SKIPPED]', {
+      taskId,
+      action,
+      sqlMode: true,
+      reason: 'sql_listener_authoritative',
+    });
+    return null;
+  }
   const snapshot = await getDocFromServer(taskRef);
   console.info('[FIRESTORE] forced server refresh taskId=%s', taskId);
   return snapshot;
@@ -592,28 +606,71 @@ function mapCarerEscalationAlert(
 }
 
 async function getCurrentCarerIdentity() {
-  const currentUser = auth.currentUser;
+  if (isClientSqlReadMode()) {
+    const session = await resolveSqlSessionUser();
+    if (!session?.uid) {
+      throw new Error('Session changed. Please refresh.');
+    }
+    console.info('[CARER_ESCALATION_SQL_IDENTITY]', {
+      action: 'carer_identity',
+      carerUid: session.uid,
+      coadminUid: session.coadminUid ?? null,
+      role: session.role ?? 'carer',
+      identitySource: 'app_session_sql',
+      firestoreAttempted: false,
+    });
+    return {
+      uid: session.uid,
+      username: session.username?.trim() || 'Carer',
+    };
+  }
 
+  const currentUser = auth.currentUser;
   if (!currentUser) {
     throw new Error('Not authenticated.');
   }
 
   const userSnap = await getDoc(doc(db, 'users', currentUser.uid));
-
   if (!userSnap.exists()) {
     throw new Error('Current carer profile not found.');
   }
 
   const userData = userSnap.data() as { username?: string };
-
   return {
     uid: currentUser.uid,
     username: userData.username?.trim() || 'Carer',
   };
 }
 
-async function getAuthHeaders() {
+async function getAuthHeaders(action?: string) {
+  if (isClientSqlReadMode()) {
+    if (action) {
+      console.info('[CARER_TASK_ACTION_SQL_HEADERS]', {
+        action,
+        route: 'carer_task_action',
+        hasAppSessionId: true,
+        authSource: 'app_session_sql',
+        firebaseAttempted: false,
+      });
+    }
+    return getSqlApiReadHeaders(true);
+  }
   return getFirebaseApiHeaders(true);
+}
+
+async function getMirrorAuthHeaders() {
+  if (isClientSqlReadMode()) {
+    return getSqlApiReadHeaders(true);
+  }
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) {
+    return null;
+  }
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+    ...getAppSessionRequestHeaders(),
+  };
 }
 
 async function mirrorAutomationJobCacheBestEffort(jobId: string) {
@@ -622,7 +679,7 @@ async function mirrorAutomationJobCacheBestEffort(jobId: string) {
   try {
     const response = await fetch('/api/automation-jobs/cache/mirror', {
       method: 'POST',
-      headers: await getAuthHeaders(),
+      headers: await getAuthHeaders('mirror_automation_job'),
       body: JSON.stringify({ jobId: cleanJobId }),
     });
     if (!response.ok) {
@@ -643,15 +700,11 @@ async function mirrorCarerTaskCacheBestEffort(
   const cleanTaskId = String(taskId || '').trim();
   if (!cleanTaskId) return;
   try {
-    const token = await auth.currentUser?.getIdToken();
-    if (!token) return;
+    const headers = await getMirrorAuthHeaders();
+    if (!headers) return;
     const response = await fetch('/api/carer-tasks/cache/mirror', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-        ...getAppSessionRequestHeaders(),
-      },
+      headers,
       body: JSON.stringify({ taskId: cleanTaskId, action }),
     });
     if (!response.ok) {
@@ -738,15 +791,11 @@ async function mirrorCarerTasksCacheBestEffort(
   if (!cleanTaskIds.length) return;
   const batchMeta = carerMirrorBatchMeta(cleanTaskIds);
   try {
-    const token = await auth.currentUser?.getIdToken();
-    if (!token) return;
+    const headers = await getMirrorAuthHeaders();
+    if (!headers) return;
     const response = await fetch('/api/carer-tasks/cache/mirror', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-        ...getAppSessionRequestHeaders(),
-      },
+      headers,
       body: JSON.stringify({ taskIds: cleanTaskIds, action }),
     });
     if (!response.ok) {
@@ -774,15 +823,11 @@ async function mirrorPlayerGameRequestCacheBestEffort(
   const cleanRequestId = String(requestId || '').trim();
   if (!cleanRequestId) return;
   try {
-    const token = await auth.currentUser?.getIdToken();
-    if (!token) return;
+    const headers = await getMirrorAuthHeaders();
+    if (!headers) return;
     const response = await fetch('/api/player-game-requests/cache/mirror', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-        ...getAppSessionRequestHeaders(),
-      },
+      headers,
       body: JSON.stringify({ requestId: cleanRequestId, action }),
     });
     if (!response.ok) {
@@ -814,14 +859,33 @@ function readApiError(messageFallback: string, payload: unknown) {
 }
 
 async function getCurrentUserIdentityForEscalation() {
-  const currentUser = auth.currentUser;
+  if (isClientSqlReadMode()) {
+    const session = await resolveSqlSessionUser();
+    if (!session?.uid) {
+      throw new Error('Session changed. Please refresh.');
+    }
+    console.info('[CARER_ESCALATION_SQL_IDENTITY]', {
+      action: 'escalation_identity',
+      carerUid: session.uid,
+      coadminUid: session.coadminUid ?? null,
+      role: session.role ?? 'carer',
+      identitySource: 'app_session_sql',
+      firestoreAttempted: false,
+    });
+    return {
+      uid: session.uid,
+      username: session.username?.trim() || 'User',
+      role: String(session.role || 'carer').trim().toLowerCase(),
+      coadminUid: session.coadminUid ?? null,
+    };
+  }
 
+  const currentUser = auth.currentUser;
   if (!currentUser) {
     throw new Error('Not authenticated.');
   }
 
   const userSnap = await getDoc(doc(db, 'users', currentUser.uid));
-
   if (!userSnap.exists()) {
     throw new Error('Current user profile not found.');
   }
@@ -2476,7 +2540,7 @@ export async function deletePendingCarerTask(taskId: string) {
 
   const response = await fetch('/api/carer/tasks/delete-pending', {
     method: 'POST',
-    headers: await getAuthHeaders(),
+    headers: await getAuthHeaders('delete_pending'),
     body: JSON.stringify({ taskId }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
@@ -2524,7 +2588,7 @@ export async function completeUsernameTaskForPlayerGame(
   playerUid: string,
   gameName: string
 ) {
-  const headers = await getAuthHeaders();
+  const headers = await getAuthHeaders('complete_username');
   const response = await fetch('/api/carer/tasks/complete-username', {
     method: 'POST',
     headers,
@@ -2989,7 +3053,7 @@ export async function completeRechargeRedeemTask(task: CarerTask) {
   }
   const response = await fetch('/api/carer/tasks/complete-recharge-redeem', {
     method: 'POST',
-    headers: await getAuthHeaders(),
+    headers: await getAuthHeaders('complete_recharge_redeem'),
     body: JSON.stringify({ taskId: task.id }),
   });
   const payload = (await response.json().catch(() => ({}))) as {

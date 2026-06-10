@@ -834,9 +834,23 @@ export async function dismissPlayerRedeemRequest(requestId: string) {
  * Marks the request dismissed and removes the linked carer task.
  */
 export async function dismissPendingRedeemAsCarer(requestId: string) {
+  const { isClientSqlReadMode } = await import('@/lib/client/sqlReadMode');
+  const { getSqlApiReadHeaders } = await import('@/lib/client/sqlApiHeaders');
+  const headers = isClientSqlReadMode()
+    ? await getSqlApiReadHeaders(true)
+    : await getFirebaseApiHeaders();
+  if (isClientSqlReadMode()) {
+    console.info('[CARER_TASK_ACTION_SQL_HEADERS]', {
+      action: 'dismiss_redeem',
+      route: '/api/carer/game-requests/dismiss-redeem',
+      hasAppSessionId: true,
+      authSource: 'app_session_sql',
+      firebaseAttempted: false,
+    });
+  }
   const response = await fetch('/api/carer/game-requests/dismiss-redeem', {
     method: 'POST',
-    headers: await getFirebaseApiHeaders(),
+    headers,
     body: JSON.stringify({ requestId }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
@@ -850,9 +864,23 @@ export async function dismissPendingRedeemAsCarer(requestId: string) {
  * Marks the request dismissed and removes the linked carer task.
  */
 export async function dismissPendingRechargeAsCarer(requestId: string) {
+  const { isClientSqlReadMode } = await import('@/lib/client/sqlReadMode');
+  const { getSqlApiReadHeaders } = await import('@/lib/client/sqlApiHeaders');
+  const headers = isClientSqlReadMode()
+    ? await getSqlApiReadHeaders(true)
+    : await getFirebaseApiHeaders();
+  if (isClientSqlReadMode()) {
+    console.info('[CARER_TASK_ACTION_SQL_HEADERS]', {
+      action: 'dismiss_recharge',
+      route: '/api/carer/game-requests/dismiss-recharge',
+      hasAppSessionId: true,
+      authSource: 'app_session_sql',
+      firebaseAttempted: false,
+    });
+  }
   const response = await fetch('/api/carer/game-requests/dismiss-recharge', {
     method: 'POST',
-    headers: await getFirebaseApiHeaders(),
+    headers,
     body: JSON.stringify({ requestId }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };

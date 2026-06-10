@@ -131,13 +131,38 @@ function normalizeClaimedStatus(value: unknown) {
   return normalized;
 }
 
-async function forceRefreshTaskFromServer(taskId: string, taskRef = doc(db, 'carerTasks', taskId)) {
+async function forceRefreshTaskFromServer(
+  taskId: string,
+  taskRef = doc(db, 'carerTasks', taskId),
+  action = 'force_refresh'
+) {
+  if (isClientSqlReadMode()) {
+    console.info('[CARER_POST_TASK_REFRESH_SKIPPED]', {
+      taskId,
+      action,
+      sqlMode: true,
+      reason: 'sql_listener_authoritative',
+    });
+    return null;
+  }
   const snapshot = await getDocFromServer(taskRef);
   console.info('[FIRESTORE] forced server refresh taskId=%s', taskId);
   return snapshot;
 }
 
-async function getAuthHeaders() {
+async function getAuthHeaders(action?: string) {
+  if (isClientSqlReadMode()) {
+    if (action) {
+      console.info('[CARER_TASK_ACTION_SQL_HEADERS]', {
+        action,
+        route: 'carer_task_action',
+        hasAppSessionId: true,
+        authSource: 'app_session_sql',
+        firebaseAttempted: false,
+      });
+    }
+    return getSqlApiReadHeaders(true);
+  }
   const { getAppSessionRequestHeaders } = await import('@/features/auth/appSession');
   const currentUser = auth.currentUser;
   if (!currentUser) {
@@ -975,16 +1000,18 @@ export async function claimTaskAndCreateJob(input: {
         });
         // refetch fresh server doc for next attempt
         const refreshed = await forceRefreshTaskFromServer(input.taskId, taskRef);
-        const refreshedUpdateTime = (refreshed as any)?.updateTime?.toDate?.().toISOString?.() || null;
-        console.info('[START_TASK] refetch after failed-precondition status=%s', refreshed.exists() ? String((refreshed.data() as any)?.status || '') : 'missing');
-        console.info('[START_TASK] retrying with fresh updateTime=%s', refreshedUpdateTime);
+        if (refreshed) {
+          const refreshedUpdateTime = (refreshed as any)?.updateTime?.toDate?.().toISOString?.() || null;
+          console.info('[START_TASK] refetch after failed-precondition status=%s', refreshed.exists() ? String((refreshed.data() as any)?.status || '') : 'missing');
+          console.info('[START_TASK] retrying with fresh updateTime=%s', refreshedUpdateTime);
+        }
         await new Promise((resolve) => setTimeout(resolve, 200));
     }
   }
 
   if (!result && isRetryableConcurrencyError(lastError)) {
     const latestTaskSnap = await forceRefreshTaskFromServer(input.taskId, taskRef);
-    if (latestTaskSnap.exists()) {
+    if (latestTaskSnap?.exists()) {
       const latestTask = latestTaskSnap.data() as Record<string, unknown>;
       const latestStatus = sanitizeStatus(latestTask.status);
       const latestAssignedCarerUid = String(
@@ -1049,7 +1076,7 @@ export async function claimTaskAndCreateJob(input: {
   );
 
   const afterTaskSnap = await forceRefreshTaskFromServer(input.taskId, taskRef);
-  const afterTask = afterTaskSnap.exists() ? (afterTaskSnap.data() as Record<string, unknown>) : null;
+  const afterTask = afterTaskSnap?.exists() ? (afterTaskSnap.data() as Record<string, unknown>) : null;
   console.info('[AUTO_CLAIM_UI] after task status fields', {
     taskId: input.taskId,
     jobId: result.jobId,
@@ -1366,15 +1393,17 @@ function mapJobStatusToUiStatus(
 }
 
 export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
+  if (!isClientSqlReadMode()) {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      throw new Error('Not authenticated.');
+    }
   }
 
   const taskRef = doc(db, 'carerTasks', taskId);
   const response = await fetch('/api/carer/tasks/return-to-pending', {
     method: 'POST',
-    headers: await getAuthHeaders(),
+    headers: await getAuthHeaders('return_to_pending'),
     body: JSON.stringify({ taskId }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };

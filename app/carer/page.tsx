@@ -25,10 +25,7 @@ import { logCarerPageStartup, logCarerPageTaskSync, resetCarerPageStartupTiming,
 import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 import ImageUploadField from '@/components/common/ImageUploadField';
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
-import {
-  logCarerAction,
-  logCarerFirebaseLeftoverAudit,
-} from '@/lib/client/carerActionAudit';
+import { logCarerAction } from '@/lib/client/carerActionAudit';
 import { logCarerFirestoreBlockedSuppressed } from '@/lib/client/carerPageRequestAudit';
 import {
   reportCarerActionError,
@@ -36,6 +33,7 @@ import {
   shouldSuppressCarerFirestoreBlockedUiError,
 } from '@/lib/client/carerPageError';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
+import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { auth, db, getClientDb } from '@/lib/firebase/client';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import {
@@ -944,7 +942,12 @@ export default function CarerPage() {
       autoTickBrowserTokenRef.current = null;
       return null;
     }
-    if (!getLocalAppSessionId() && !auth.currentUser) {
+    if (isClientSqlReadMode()) {
+      if (!getLocalAppSessionId()) {
+        autoTickBrowserTokenRef.current = null;
+        return null;
+      }
+    } else if (!getLocalAppSessionId() && !auth.currentUser) {
       autoTickBrowserTokenRef.current = null;
       return null;
     }
@@ -961,7 +964,16 @@ export default function CarerPage() {
     });
     try {
       console.info('[START_TIMING] auto tick token request start at=%s', new Date(tokenRequestStartedAt).toISOString());
-      const headers = await getFirebaseApiHeaders(false);
+      const headers = isClientSqlReadMode()
+        ? await getSqlApiReadHeaders(false)
+        : await getFirebaseApiHeaders(false);
+      if (isClientSqlReadMode()) {
+        console.info('[CARER_AUTOTICK_SQL_HEADERS]', {
+          route: '/api/carer/automation-auto-tick-token',
+          authSource: 'app_session_sql',
+          firebaseAttempted: false,
+        });
+      }
       const response = await fetch('/api/carer/automation-auto-tick-token', {
         method: 'POST',
         headers: {
@@ -1077,7 +1089,16 @@ export default function CarerPage() {
     let response: Response;
     try {
       const browserTickToken = await refreshAutoTickBrowserToken(linkedAgentId);
-      const apiHeaders = await getFirebaseApiHeaders(false);
+      const apiHeaders = isClientSqlReadMode()
+        ? await getSqlApiReadHeaders(false)
+        : await getFirebaseApiHeaders(false);
+      if (isClientSqlReadMode()) {
+        console.info('[CARER_AUTOTICK_SQL_HEADERS]', {
+          route: '/api/carer/automation-auto-tick',
+          authSource: 'app_session_sql',
+          firebaseAttempted: false,
+        });
+      }
       const autoTickStartedAt = Date.now();
       console.info('[START_TIMING] auto tick request start at=%s', new Date(autoTickStartedAt).toISOString());
       response = await fetch('/api/carer/automation-auto-tick', {
@@ -1301,7 +1322,10 @@ export default function CarerPage() {
         },
         (error) => {
           if (!CARER_TASKS_SQL_READ_ENABLED) {
-            setErrorMessage(error.message || 'Failed to listen for tasks.');
+            reportCarerUiError('task_listener', error, setErrorMessage, 'Failed to listen for tasks.', {
+              file: 'app/carer/page.tsx',
+              operation: 'listenToAvailableCarerTasks',
+            });
           }
         }
       );
@@ -1386,7 +1410,13 @@ export default function CarerPage() {
         },
         (error) => {
           if (!AUTOMATION_JOBS_SQL_READ_ENABLED || !coadminUid) {
-            setErrorMessage(error.message || 'Failed to listen to automation jobs.');
+            reportCarerUiError(
+              'automation_job_listener',
+              error,
+              setErrorMessage,
+              'Failed to listen to automation jobs.',
+              { file: 'app/carer/page.tsx', operation: 'listenAutomationUiStatusByTask' }
+            );
           }
         }
       );
@@ -1550,7 +1580,13 @@ export default function CarerPage() {
         }, AUTO_LISTENER_DEBOUNCE_MS);
       },
       (error) => {
-        setErrorMessage(error.message || 'Failed to listen for pending automation tasks.');
+        reportCarerUiError(
+          'pending_automation_listener',
+          error,
+          setErrorMessage,
+          'Failed to listen for pending automation tasks.',
+          { file: 'app/carer/page.tsx', operation: 'pendingTasksQuery' }
+        );
         try {
           const normalized = String(error?.message || '').toLowerCase();
           if (normalized.includes('bloom')) {
@@ -1607,8 +1643,16 @@ export default function CarerPage() {
   }, [carerIdentity?.uid, carerIdentity?.automationAgentId, agentInputDraft]);
 
   useEffect(() => {
-    if (!coadminUid) {
+    if (!coadminUid || isClientSqlReadMode()) {
       setRiskSnapshots([]);
+      if (isClientSqlReadMode() && coadminUid) {
+        console.info('[CARER_RISK_ACTION_SQL_MODE]', {
+          action: 'listen_risk_snapshots',
+          enabled: false,
+          reason: 'sql_risk_api_not_ready',
+          firestoreAttempted: false,
+        });
+      }
       return;
     }
 
@@ -2016,9 +2060,10 @@ export default function CarerPage() {
         reason: error instanceof Error ? error.message : 'initialize_failed',
         firestore_code: firestoreErrorCode(error),
       });
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to load the carer page.'
-      );
+      reportCarerUiError('page_init', error, setErrorMessage, 'Failed to load the carer page.', {
+        file: 'app/carer/page.tsx',
+        operation: 'initializeCarerPage',
+      });
     } finally {
       pageInitInFlightUidRef.current = null;
       logCarerPageStartup({
@@ -2184,9 +2229,10 @@ export default function CarerPage() {
         reason: error instanceof Error ? error.message : 'initialize_failed',
         firestore_code: firestoreErrorCode(error),
       });
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to load the carer page.'
-      );
+      reportCarerUiError('page_init', error, setErrorMessage, 'Failed to load the carer page.', {
+        file: 'app/carer/page.tsx',
+        operation: 'initializeCarerPage',
+      });
     } finally {
       pageInitInFlightUidRef.current = null;
       logCarerPageStartup({
@@ -2410,9 +2456,21 @@ export default function CarerPage() {
       setAgentInputDraft(fresh.automationAgentId || '');
       setAgentPanelNotice('Saved successfully');
     } catch (error) {
-      setAgentPanelError(
-        error instanceof Error ? error.message : 'Failed to save agent connection.'
-      );
+      const rawMessage = error instanceof Error ? error.message : 'Failed to save agent connection.';
+      if (shouldSuppressCarerFirestoreBlockedUiError(error)) {
+        logCarerFirestoreBlockedSuppressed({
+          feature: 'link_automation_agent',
+          file: 'features/automation/carerAutomationAgent.ts',
+          operation: 'setCarerAutomationAgent',
+        });
+      } else if (
+        rawMessage.toLowerCase().includes('not authenticated') ||
+        rawMessage.toLowerCase().includes('not signed in')
+      ) {
+        setAgentPanelError('Session changed. Please refresh.');
+      } else {
+        setAgentPanelError(rawMessage);
+      }
     } finally {
       setAgentSaving(false);
     }
@@ -2437,9 +2495,21 @@ export default function CarerPage() {
       setAgentInputDraft('');
       setAgentPanelNotice('Agent disconnected.');
     } catch (error) {
-      setAgentPanelError(
-        error instanceof Error ? error.message : 'Failed to disconnect agent.'
-      );
+      const rawMessage = error instanceof Error ? error.message : 'Failed to disconnect agent.';
+      if (shouldSuppressCarerFirestoreBlockedUiError(error)) {
+        logCarerFirestoreBlockedSuppressed({
+          feature: 'disconnect_automation_agent',
+          file: 'features/automation/carerAutomationAgent.ts',
+          operation: 'disconnectCarerAutomationAgent',
+        });
+      } else if (
+        rawMessage.toLowerCase().includes('not authenticated') ||
+        rawMessage.toLowerCase().includes('not signed in')
+      ) {
+        setAgentPanelError('Session changed. Please refresh.');
+      } else {
+        setAgentPanelError(rawMessage);
+      }
     } finally {
       setAgentSaving(false);
     }
@@ -2688,8 +2758,11 @@ export default function CarerPage() {
       await refreshPageData(false, coadminUid);
       resetUsernameForm();
     } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to save the username.'
+      reportCarerActionError(
+        'save_username',
+        error,
+        setErrorMessage,
+        'Failed to save the username.'
       );
     } finally {
       setSavingUsername(false);
@@ -3004,8 +3077,17 @@ export default function CarerPage() {
       console.info('[CARER_DELETE_TASK] refreshAfterDelete=true');
       await refreshPageData(false);
     } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to dismiss redeem request.'
+      reportCarerActionError(
+        'dismiss_redeem',
+        error,
+        setErrorMessage,
+        'Failed to dismiss redeem request.',
+        {
+          route: '/api/carer/game-requests/dismiss-redeem',
+          method: 'POST',
+          carerUid: carerIdentity?.uid ?? null,
+          coadminUid,
+        }
       );
     } finally {
       setDismissRedeemRequestId(null);
@@ -3045,8 +3127,17 @@ export default function CarerPage() {
       console.info('[CARER_DELETE_TASK] refreshAfterDelete=true');
       await refreshPageData(false);
     } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to dismiss pending recharge request.'
+      reportCarerActionError(
+        'dismiss_recharge',
+        error,
+        setErrorMessage,
+        'Failed to dismiss pending recharge request.',
+        {
+          route: '/api/carer/game-requests/dismiss-recharge',
+          method: 'POST',
+          carerUid: carerIdentity?.uid ?? null,
+          coadminUid,
+        }
       );
     } finally {
       setDismissRechargeRequestId(null);
@@ -3109,8 +3200,17 @@ export default function CarerPage() {
       await refreshPageData(false);
       setNoticeMessage('Pending task deleted.');
     } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to delete pending task.'
+      reportCarerActionError(
+        'delete_pending_task',
+        error,
+        setErrorMessage,
+        'Failed to delete pending task.',
+        {
+          route: '/api/carer/tasks/delete-pending',
+          method: 'POST',
+          carerUid: carerIdentity?.uid ?? null,
+          coadminUid,
+        }
       );
     } finally {
       setDeletingPendingTaskId(null);
@@ -3136,8 +3236,17 @@ export default function CarerPage() {
       );
       await refreshPageData(false);
     } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to complete the task.'
+      reportCarerActionError(
+        'complete_recharge_redeem',
+        error,
+        setErrorMessage,
+        'Failed to complete the task.',
+        {
+          route: '/api/carer/tasks/complete-recharge-redeem',
+          method: 'POST',
+          carerUid: carerIdentity?.uid ?? null,
+          coadminUid,
+        }
       );
     } finally {
       setTaskLoadingId(null);
@@ -3207,13 +3316,22 @@ export default function CarerPage() {
         taskId: task.id,
         message: rawMessage,
       });
-      setErrorMessage(
-        isConcurrencyIssue
-          ? 'Task was already changed. Please refresh and try again.'
-          : error instanceof Error
-            ? error.message
-            : 'Failed to move task back to pending.'
-      );
+      if (isConcurrencyIssue) {
+        setErrorMessage('Task was already changed. Please refresh and try again.');
+      } else {
+        reportCarerActionError(
+          'return_to_pending',
+          error,
+          setErrorMessage,
+          'Failed to move task back to pending.',
+          {
+            route: '/api/carer/tasks/return-to-pending',
+            method: 'POST',
+            carerUid: carerIdentity?.uid ?? null,
+            coadminUid,
+          }
+        );
+      }
     } finally {
       setTaskLoadingId(null);
     }
@@ -3294,8 +3412,17 @@ export default function CarerPage() {
           : 'Automation job queued. Waiting for local agent.'
       );
     } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to start automation.'
+      reportCarerActionError(
+        'start_automation_task',
+        error,
+        setErrorMessage,
+        'Failed to start automation.',
+        {
+          route: isClientSqlReadMode() ? '/api/carer/tasks/claim' : null,
+          method: 'POST',
+          carerUid: carerIdentity?.uid ?? null,
+          coadminUid,
+        }
       );
     } finally {
       setAutomationLoadingTaskId(null);
@@ -3378,18 +3505,6 @@ export default function CarerPage() {
       role: 'carer',
       authHeaderMode: 'firestore_client_only',
     });
-    if (isClientSqlReadMode()) {
-      logCarerFirebaseLeftoverAudit({
-        action: 'save_payment_details',
-        file: 'features/cashouts/carerCashouts.ts',
-        function: 'saveCarerPaymentDetails',
-        operation: 'updateDoc(users)',
-        sqlMode: true,
-        firestoreAttempted: true,
-        blocked: true,
-        userVisible: true,
-      });
-    }
     setSavingPaymentDetails(true);
     setErrorMessage('');
     setNoticeMessage('');
@@ -3488,8 +3603,17 @@ export default function CarerPage() {
       await sendCarerEscalationAlert(task);
       setNoticeMessage('Help alert sent to coadmin and staff.');
     } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Failed to send help alert.'
+      reportCarerActionError(
+        'send_escalation',
+        error,
+        setErrorMessage,
+        'Failed to send help alert.',
+        {
+          route: '/api/carer/escalation-alerts',
+          method: 'POST',
+          carerUid: carerIdentity?.uid ?? null,
+          coadminUid,
+        }
       );
     } finally {
       setTaskLoadingId(null);
@@ -3538,6 +3662,15 @@ export default function CarerPage() {
   }
 
   async function handleTogglePlayerStatus(player: PlayerUser) {
+    if (isClientSqlReadMode()) {
+      console.info('[CARER_BLOCK_PLAYER_DISABLED]', {
+        carerUid: carerIdentity?.uid ?? null,
+        playerUid: player.uid,
+        reason: 'coadmin_only_action_hidden',
+      });
+      setNoticeMessage('This action is not available for carers.');
+      return;
+    }
     logCarerAction({
       action: player.status === 'disabled' ? 'unblock_player' : 'block_player',
       file: 'app/carer/page.tsx',
@@ -3587,6 +3720,16 @@ export default function CarerPage() {
   }
 
   async function handleOpenRiskPanel(playerUid: string) {
+    if (isClientSqlReadMode()) {
+      console.info('[CARER_RISK_ACTION_SQL_MODE]', {
+        action: 'open_risk_panel',
+        enabled: false,
+        reason: 'sql_risk_api_not_ready',
+        firestoreAttempted: false,
+      });
+      setNoticeMessage('Risk tools are temporarily unavailable.');
+      return;
+    }
     logCarerAction({
       action: 'open_risk_panel',
       file: 'app/carer/page.tsx',
@@ -3598,18 +3741,6 @@ export default function CarerPage() {
       role: 'carer',
       authHeaderMode: 'firestore_client_only',
     });
-    if (isClientSqlReadMode()) {
-      logCarerFirebaseLeftoverAudit({
-        action: 'open_risk_panel',
-        file: 'features/risk/playerRisk.ts',
-        function: 'getPlayerRiskSnapshot',
-        operation: 'getDoc(playerRiskSnapshots)',
-        sqlMode: true,
-        firestoreAttempted: true,
-        blocked: true,
-        userVisible: true,
-      });
-    }
     setRiskActionLoading(`open-${playerUid}`);
     setErrorMessage('');
     try {
@@ -3636,6 +3767,16 @@ export default function CarerPage() {
     if (!selectedRiskSnapshot) {
       return;
     }
+    if (isClientSqlReadMode()) {
+      console.info('[CARER_RISK_ACTION_SQL_MODE]', {
+        action: 'flag_risk_player',
+        enabled: false,
+        reason: 'sql_risk_api_not_ready',
+        firestoreAttempted: false,
+      });
+      setNoticeMessage('Risk tools are temporarily unavailable.');
+      return;
+    }
 
     logCarerAction({
       action: 'flag_risk_player',
@@ -3648,18 +3789,6 @@ export default function CarerPage() {
       role: 'carer',
       authHeaderMode: 'firestore_client_only',
     });
-    if (isClientSqlReadMode()) {
-      logCarerFirebaseLeftoverAudit({
-        action: 'flag_risk_player',
-        file: 'features/risk/playerRisk.ts',
-        function: 'flagPlayerRisk',
-        operation: 'addDoc(riskActions)',
-        sqlMode: true,
-        firestoreAttempted: true,
-        blocked: true,
-        userVisible: true,
-      });
-    }
     setRiskActionLoading(`flag-${selectedRiskSnapshot.playerUid}`);
     setErrorMessage('');
     try {
@@ -3685,6 +3814,16 @@ export default function CarerPage() {
     if (!selectedRiskSnapshot || !coadminUid) {
       return;
     }
+    if (isClientSqlReadMode()) {
+      console.info('[CARER_RISK_ACTION_SQL_MODE]', {
+        action: 'send_risk_alert',
+        enabled: false,
+        reason: 'sql_risk_api_not_ready',
+        firestoreAttempted: false,
+      });
+      setNoticeMessage('Risk tools are temporarily unavailable.');
+      return;
+    }
 
     logCarerAction({
       action: 'send_risk_alert',
@@ -3697,18 +3836,6 @@ export default function CarerPage() {
       role: 'carer',
       authHeaderMode: 'firestore_client_only',
     });
-    if (isClientSqlReadMode()) {
-      logCarerFirebaseLeftoverAudit({
-        action: 'send_risk_alert',
-        file: 'features/risk/playerRisk.ts',
-        function: 'sendRiskAlertToStaff',
-        operation: 'addDoc(carerEscalationAlerts)',
-        sqlMode: true,
-        firestoreAttempted: true,
-        blocked: true,
-        userVisible: true,
-      });
-    }
     setRiskActionLoading(`alert-${selectedRiskSnapshot.playerUid}`);
     setErrorMessage('');
     try {
@@ -3974,7 +4101,13 @@ export default function CarerPage() {
           ) : null}
         </div>
 
-        {riskyPlayers.length > 0 && (
+        {isClientSqlReadMode() && (
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-neutral-300">
+            Risk tools are temporarily unavailable.
+          </div>
+        )}
+
+        {!isClientSqlReadMode() && riskyPlayers.length > 0 && (
           <div className="rounded-2xl border border-orange-500/35 bg-orange-500/10 p-6">
             <h3 className="text-lg font-bold text-rose-200">Risky Players</h3>
             <div className="mt-3 space-y-2">
@@ -4058,19 +4191,21 @@ export default function CarerPage() {
             Start Automation
           </button>
 
-          <button
-            onClick={() => {
-              const firstRiskPlayer = riskyPlayers[0]?.playerUid || players[0]?.uid || '';
-              if (!firstRiskPlayer) {
-                setErrorMessage('No player available to inspect.');
-                return;
-              }
-              void handleOpenRiskPanel(firstRiskPlayer);
-            }}
-            className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold text-white hover:bg-white/20"
-          >
-            View Player Risk Data
-          </button>
+          {!isClientSqlReadMode() && (
+            <button
+              onClick={() => {
+                const firstRiskPlayer = riskyPlayers[0]?.playerUid || players[0]?.uid || '';
+                if (!firstRiskPlayer) {
+                  setErrorMessage('No player available to inspect.');
+                  return;
+                }
+                void handleOpenRiskPanel(firstRiskPlayer);
+              }}
+              className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold text-white hover:bg-white/20"
+            >
+              View Player Risk Data
+            </button>
+          )}
         </div>
       </div>
     );
@@ -4742,28 +4877,32 @@ export default function CarerPage() {
                   </div>
 
                   <div className="flex flex-col gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void handleTogglePlayerStatus(player)}
-                      disabled={blockingPlayerUid === player.uid}
-                      className="rounded-xl bg-yellow-500/20 px-4 py-2 text-sm font-semibold text-yellow-300 hover:bg-yellow-500/30 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {blockingPlayerUid === player.uid
-                        ? 'Updating...'
-                        : player.status === 'disabled'
-                          ? 'Unblock'
-                          : 'Block'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleOpenRiskPanel(player.uid)}
-                      disabled={riskActionLoading === `open-${player.uid}`}
-                      className="rounded-xl bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/20 disabled:opacity-60"
-                    >
-                      {riskActionLoading === `open-${player.uid}`
-                        ? 'Loading...'
-                        : 'View Player Risk Data'}
-                    </button>
+                    {!isClientSqlReadMode() && (
+                      <button
+                        type="button"
+                        onClick={() => void handleTogglePlayerStatus(player)}
+                        disabled={blockingPlayerUid === player.uid}
+                        className="rounded-xl bg-yellow-500/20 px-4 py-2 text-sm font-semibold text-yellow-300 hover:bg-yellow-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {blockingPlayerUid === player.uid
+                          ? 'Updating...'
+                          : player.status === 'disabled'
+                            ? 'Unblock'
+                            : 'Block'}
+                      </button>
+                    )}
+                    {!isClientSqlReadMode() && (
+                      <button
+                        type="button"
+                        onClick={() => void handleOpenRiskPanel(player.uid)}
+                        disabled={riskActionLoading === `open-${player.uid}`}
+                        className="rounded-xl bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/20 disabled:opacity-60"
+                      >
+                        {riskActionLoading === `open-${player.uid}`
+                          ? 'Loading...'
+                          : 'View Player Risk Data'}
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>

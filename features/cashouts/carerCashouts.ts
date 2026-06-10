@@ -14,6 +14,9 @@ import {
   where,
 } from 'firebase/firestore';
 
+import { getCachedSessionUser } from '@/features/auth/sessionUser';
+import { requireSqlSessionUid } from '@/lib/client/carerSessionIdentity';
+import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { auth, db } from '@/lib/firebase/client';
 import {
   attachCarerCashoutsByCarerSqlPoll,
@@ -27,6 +30,9 @@ const CARER_CASHOUT_PENDING_LISTENER_LIMIT = 100;
 const CARER_CASHOUT_HISTORY_LISTENER_LIMIT = 50;
 
 async function getAuthHeaders() {
+  if (isClientSqlReadMode()) {
+    return getSqlApiReadHeaders(true);
+  }
   const currentUser = auth.currentUser;
   if (!currentUser) {
     throw new Error('Not authenticated.');
@@ -71,8 +77,32 @@ export async function saveCarerPaymentDetails(values: {
   paymentQrPublicId?: string;
   paymentDetails: string;
 }) {
-  const currentUser = auth.currentUser;
+  if (isClientSqlReadMode()) {
+    const carerUid = await requireSqlSessionUid();
+    const response = await fetch('/api/carer/payment-details', {
+      method: 'POST',
+      headers: await getSqlApiReadHeaders(true),
+      body: JSON.stringify({
+        paymentQrUrl: values.paymentQrUrl.trim(),
+        paymentQrPublicId: values.paymentQrPublicId?.trim() || null,
+        paymentDetails: values.paymentDetails.trim(),
+      }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    console.info('[CARER_PAYMENT_DETAILS_SQL_WRITE]', {
+      carerUid,
+      hasQrUrl: Boolean(values.paymentQrUrl.trim()),
+      source: 'sql',
+      firestoreAttempted: false,
+      ok: response.ok,
+    });
+    if (!response.ok) {
+      throw new Error(readApiError('Failed to save payment details.', payload));
+    }
+    return;
+  }
 
+  const currentUser = auth.currentUser;
   if (!currentUser) {
     throw new Error('Not authenticated.');
   }
@@ -99,14 +129,16 @@ export async function createCarerCashoutRequest(values: {
     throw new Error('Cash box amount must be greater than zero.');
   }
 
-  const currentUser = auth.currentUser;
-  const actorUid = currentUser?.uid || String(values.carerUid || '').trim();
+  const expectedCarerUid = String(values.carerUid || '').trim();
+  const actorUid = isClientSqlReadMode()
+    ? await requireSqlSessionUid(expectedCarerUid)
+    : auth.currentUser?.uid || expectedCarerUid;
 
   if (!actorUid) {
-    throw new Error('Not authenticated.');
+    throw new Error('Session changed. Please refresh.');
   }
 
-  if (actorUid !== values.carerUid) {
+  if (actorUid !== expectedCarerUid) {
     throw new Error('Only the current carer can create a cashout request.');
   }
 
@@ -122,6 +154,14 @@ export async function createCarerCashoutRequest(values: {
     }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  console.info('[CARER_CASHOUT_SQL_ACTION]', {
+    action: 'create_carer_cashout',
+    carerUid: actorUid,
+    role: getCachedSessionUser()?.role || 'carer',
+    authSource: isClientSqlReadMode() ? 'app_session_sql' : 'firebase_bearer',
+    firestoreAttempted: false,
+    status: response.status,
+  });
   if (!response.ok) {
     throw new Error(readApiError('Failed to create claim pay request.', payload));
   }
