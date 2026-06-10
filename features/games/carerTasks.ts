@@ -235,7 +235,7 @@ function logTaskResetPending(details: {
 
 async function forceRefreshTaskFromServer(
   taskId: string,
-  taskRef = doc(db, 'carerTasks', taskId),
+  taskRef?: ReturnType<typeof doc>,
   action = 'force_refresh'
 ) {
   if (isClientSqlReadMode()) {
@@ -247,7 +247,8 @@ async function forceRefreshTaskFromServer(
     });
     return null;
   }
-  const snapshot = await getDocFromServer(taskRef);
+  const ref = taskRef ?? doc(db, 'carerTasks', taskId);
+  const snapshot = await getDocFromServer(ref);
   console.info('[FIRESTORE] forced server refresh taskId=%s', taskId);
   return snapshot;
 }

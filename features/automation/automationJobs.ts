@@ -133,7 +133,7 @@ function normalizeClaimedStatus(value: unknown) {
 
 async function forceRefreshTaskFromServer(
   taskId: string,
-  taskRef = doc(db, 'carerTasks', taskId),
+  taskRef?: ReturnType<typeof doc>,
   action = 'force_refresh'
 ) {
   if (isClientSqlReadMode()) {
@@ -145,7 +145,8 @@ async function forceRefreshTaskFromServer(
     });
     return null;
   }
-  const snapshot = await getDocFromServer(taskRef);
+  const ref = taskRef ?? doc(db, 'carerTasks', taskId);
+  const snapshot = await getDocFromServer(ref);
   console.info('[FIRESTORE] forced server refresh taskId=%s', taskId);
   return snapshot;
 }
@@ -1393,38 +1394,92 @@ function mapJobStatusToUiStatus(
 }
 
 export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
-  if (!isClientSqlReadMode()) {
-    const currentUser = auth.currentUser;
-    if (!currentUser) {
-      throw new Error('Not authenticated.');
+  const route = '/api/carer/tasks/return-to-pending';
+
+  if (isClientSqlReadMode()) {
+    const headers = await getSqlApiReadHeaders(true);
+    const hasAppSessionId = Boolean(
+      (headers as Record<string, string>)['X-App-Session-Id'] ||
+        (headers as Record<string, string>)['x-app-session-id']
+    );
+    console.info('[CARER_TASK_ACTION_SQL_HEADERS]', {
+      action: 'return_to_pending',
+      route,
+      hasAppSessionId,
+      authSource: 'app_session_sql',
+      firebaseAttempted: false,
+    });
+    console.info('[CARER_BACK_TO_PENDING_FETCH_START]', {
+      taskId,
+      route,
+      sqlMode: true,
+      firestoreAttempted: false,
+      hasAppSessionId,
+    });
+    const response = await fetch(route, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ taskId }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    console.info('[CARER_RETURN_TO_PENDING_REQUEST]', {
+      route,
+      method: 'POST',
+      taskId,
+      status: response.status,
+      responseBody: payload,
+      authSource: 'app_session_sql',
+      hasAppSessionId,
+    });
+    if (!response.ok) {
+      throw new Error(readApiError('Failed to move task back to pending.', payload));
     }
+    console.info('[CARER_POST_TASK_REFRESH_SKIPPED]', {
+      taskId,
+      action: 'return_to_pending',
+      sqlMode: true,
+      reason: 'sql_listener_authoritative',
+    });
+    return;
   }
 
-  const taskRef = doc(db, 'carerTasks', taskId);
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Not authenticated.');
+  }
+
   const headers = await getAuthHeaders('return_to_pending');
-  const response = await fetch('/api/carer/tasks/return-to-pending', {
+  const hasAppSessionId = Boolean(
+    (headers as Record<string, string>)['X-App-Session-Id'] ||
+      (headers as Record<string, string>)['x-app-session-id']
+  );
+  console.info('[CARER_BACK_TO_PENDING_FETCH_START]', {
+    taskId,
+    route,
+    sqlMode: false,
+    firestoreAttempted: false,
+    hasAppSessionId,
+  });
+  const response = await fetch(route, {
     method: 'POST',
     headers,
     body: JSON.stringify({ taskId }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
   console.info('[CARER_RETURN_TO_PENDING_REQUEST]', {
-    route: '/api/carer/tasks/return-to-pending',
+    route,
     method: 'POST',
     taskId,
     status: response.status,
     responseBody: payload,
-    authSource: isClientSqlReadMode() ? 'app_session_sql' : 'firebase_token',
-    hasAppSessionId: Boolean(
-      (headers as Record<string, string>)['X-App-Session-Id'] ||
-        (headers as Record<string, string>)['x-app-session-id']
-    ),
+    authSource: 'firebase_token',
+    hasAppSessionId,
   });
   if (!response.ok) {
     throw new Error(readApiError('Failed to move task back to pending.', payload));
   }
 
-  await forceRefreshTaskFromServer(taskId, taskRef);
+  await forceRefreshTaskFromServer(taskId, doc(db, 'carerTasks', taskId));
 }
 
 export function listenAutomationUiStatusByTask(
