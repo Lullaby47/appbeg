@@ -352,18 +352,49 @@ async function writeCarerTaskOutboxInTxn(
     status: string;
     eventType: string;
     updatedAt: string;
+    type?: string;
+    playerUid?: string;
+    gameName?: string;
+    amount?: number | null;
+    assignedCarerUid?: string | null;
+    claimedByUid?: string | null;
+    outboxLogReason?: string;
   }
 ) {
-  const payload = {
+  const payload: Record<string, unknown> = {
     entityId: input.taskId,
     taskId: input.taskId,
     requestId: input.requestId,
+    coadminUid: input.coadminUid,
     status: input.status,
     updatedAt: input.updatedAt,
     source: 'authority',
   };
+  const type = cleanText(input.type);
+  if (type) {
+    payload.type = type;
+  }
+  const playerUid = cleanText(input.playerUid);
+  if (playerUid) {
+    payload.playerUid = playerUid;
+  }
+  const gameName = cleanText(input.gameName);
+  if (gameName) {
+    payload.gameName = gameName;
+  }
+  if (input.amount !== undefined && input.amount !== null) {
+    payload.amount = input.amount;
+  }
+  if (input.assignedCarerUid !== undefined) {
+    payload.assignedCarerUid = input.assignedCarerUid;
+  }
+  if (input.claimedByUid !== undefined) {
+    payload.claimedByUid = input.claimedByUid;
+  }
+
+  const outboxChannels = [coadminTaskLiveChannel(input.coadminUid)];
   await insertLiveOutboxEventWithClient(client, {
-    channel: coadminTaskLiveChannel(input.coadminUid),
+    channel: outboxChannels[0],
     eventType: input.eventType,
     entityType: 'carer_task',
     entityId: input.taskId,
@@ -373,6 +404,7 @@ async function writeCarerTaskOutboxInTxn(
   });
   const carerUid = cleanText(input.carerUid);
   if (carerUid) {
+    outboxChannels.push(carerTaskLiveChannel(carerUid));
     await insertLiveOutboxEventWithClient(client, {
       channel: carerTaskLiveChannel(carerUid),
       eventType: input.eventType,
@@ -381,6 +413,20 @@ async function writeCarerTaskOutboxInTxn(
       source: 'authority_game_request',
       mirroredAt: input.updatedAt,
       payload,
+    });
+  }
+
+  if (input.outboxLogReason) {
+    console.info('[PLAYER_REQUEST_TASK_OUTBOX]', {
+      requestId: input.requestId,
+      taskId: input.taskId,
+      coadminUid: input.coadminUid,
+      playerUid: playerUid || null,
+      taskStatus: input.status,
+      assignedCarerUid: input.assignedCarerUid ?? null,
+      outboxChannels,
+      insertedTask: true,
+      reason: input.outboxLogReason,
     });
   }
 }
@@ -607,8 +653,14 @@ export async function createRechargeRequestInSql(
       taskId: `request__${requestId}`,
       requestId,
       status: 'pending',
-      eventType: 'recharge_task_create',
+      type: 'recharge',
+      playerUid,
+      gameName,
+      amount: boostedAmount,
+      assignedCarerUid: null,
+      eventType: 'task.upserted',
       updatedAt: nowIso,
+      outboxLogReason: 'player_recharge_create',
     });
 
     await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
@@ -791,8 +843,14 @@ export async function createRedeemRequestInSql(
       taskId: `request__${requestId}`,
       requestId,
       status: 'pending',
-      eventType: 'redeem_task_create',
+      type: 'redeem',
+      playerUid,
+      gameName,
+      amount,
+      assignedCarerUid: null,
+      eventType: 'task.upserted',
       updatedAt: nowIso,
+      outboxLogReason: 'player_redeem_create',
     });
 
     await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
@@ -1168,7 +1226,12 @@ export async function completeRechargeRedeemTaskInSql(
       taskId,
       requestId,
       status: 'completed',
-      eventType: 'game_request_task_complete',
+      type: requestType,
+      playerUid,
+      gameName: cleanText(request.game_name),
+      amount,
+      assignedCarerUid: assignedCarerUid || actorUid,
+      eventType: 'task.upserted',
       updatedAt: nowIso,
     });
     await insertLiveOutboxEventWithClient(client, {
@@ -1809,7 +1872,11 @@ export async function dismissRedeemRequestInSql(
         taskId: linkedTaskId,
         requestId,
         status: 'deleted',
-        eventType: 'redeem_task_dismiss',
+        type: 'redeem',
+        playerUid,
+        gameName: cleanText(request.game_name),
+        amount: Math.max(0, Number(request.amount || 0)),
+        eventType: 'task.tombstoned',
         updatedAt: nowIso,
       });
     }

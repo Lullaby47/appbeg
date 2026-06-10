@@ -538,6 +538,15 @@ async function writeTaskOutboxInTxn(
     payload.automationJobId = input.automationJobId;
   }
   const eventType = cleanText(input.eventType) || 'task.upserted';
+  const carerUid = cleanText(input.carerUid);
+  if (eventType === 'task.claimed' && carerUid) {
+    if (input.assignedCarerUid === undefined) {
+      payload.assignedCarerUid = carerUid;
+    }
+    if (input.claimedByUid === undefined) {
+      payload.claimedByUid = carerUid;
+    }
+  }
   await insertLiveOutboxEventWithClient(client, {
     channel: coadminTaskLiveChannel(input.coadminUid),
     eventType,
@@ -547,7 +556,6 @@ async function writeTaskOutboxInTxn(
     mirroredAt: input.updatedAt,
     payload,
   });
-  const carerUid = cleanText(input.carerUid);
   if (carerUid) {
     await insertLiveOutboxEventWithClient(client, {
       channel: carerTaskLiveChannel(carerUid),

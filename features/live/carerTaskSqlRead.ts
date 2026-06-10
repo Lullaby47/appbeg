@@ -3,6 +3,7 @@ import { Timestamp } from 'firebase/firestore';
 import {
   type CarerTask,
   type CarerTaskStatus,
+  getEffectiveCarerTaskStatus,
   getVisibleTaskForCarer,
 } from '@/features/games/carerTasks';
 import { logCarerPageStartup, markCarerPageStartupStreamConnected } from '@/features/carer/carerStartupLogs';
@@ -61,6 +62,44 @@ function carerTaskLiveChannel(carerUid: string) {
 
 function coadminTaskLiveChannel(coadminUid: string) {
   return `coadmin:${cleanText(coadminUid)}:tasks`;
+}
+
+const CARER_TASK_UPSERT_EVENTS = new Set([
+  'task.upserted',
+  'task.returned_to_pending',
+  'task.claimed',
+  'recharge_task_create',
+  'redeem_task_create',
+  'game_request_task_complete',
+]);
+
+const CARER_TASK_REMOVE_EVENTS = new Set([
+  'task.tombstoned',
+  'task.deleted_from_pending',
+  'recharge_task_dismiss',
+  'redeem_task_dismiss',
+]);
+
+function enrichPayloadForSseEvent(
+  event: string,
+  payload: SqlTaskPayload,
+  fallbackCoadminUid: string
+): SqlTaskPayload {
+  const enriched: SqlTaskPayload = { ...payload };
+  if (!cleanText(enriched.coadminUid)) {
+    enriched.coadminUid = fallbackCoadminUid;
+  }
+  if (!cleanText(enriched.type)) {
+    if (event === 'recharge_task_create') {
+      enriched.type = 'recharge';
+    } else if (event === 'redeem_task_create') {
+      enriched.type = 'redeem';
+    }
+  }
+  if (event === 'game_request_task_complete') {
+    enriched.status = 'completed';
+  }
+  return enriched;
 }
 
 function isoToTimestamp(iso: string | null | undefined): Timestamp | null {
@@ -247,36 +286,59 @@ export function attachCarerTaskSqlReadListener(
     onTasksChange(sortTasksByNewest(Array.from(tasksById.values())));
   };
 
-  const applyVisibleTask = (task: CarerTask) => {
+  const applyVisibleTask = (task: CarerTask, mergeReason: string) => {
     const normalizedStatus = cleanText(task.status).toLowerCase();
+    const hadTask = tasksById.has(task.id);
+    const previousStatus = hadTask
+      ? getEffectiveCarerTaskStatus(tasksById.get(task.id)!)
+      : null;
+
     if (normalizedStatus === 'deleted') {
-      console.info('[CARER_TASK_READ_FILTER_AUDIT]', {
-        route: '/api/live/stream',
-        queryName: 'carer_task_sse_merge',
+      tasksById.delete(task.id);
+      console.info('[CARER_TASK_LIVE_MERGE]', {
         taskId: task.id,
         status: task.status,
-        deletedAt: null,
-        included: false,
-        reason: 'status_deleted',
+        assignedCarerUid: task.assignedCarerUid || null,
+        addedToPending: false,
+        addedToInProgress: false,
+        removed: true,
+        reason: mergeReason || 'status_deleted',
       });
-      tasksById.delete(task.id);
       return;
     }
+
     const visible = getVisibleTaskForCarer(task, cleanCarerUid);
     if (!visible) {
-      console.info('[CARER_TASK_READ_FILTER_AUDIT]', {
-        route: '/api/live/stream',
-        queryName: 'carer_task_sse_merge',
+      tasksById.delete(task.id);
+      console.info('[CARER_TASK_LIVE_MERGE]', {
         taskId: task.id,
         status: task.status,
-        deletedAt: null,
-        included: false,
-        reason: 'not_visible_to_carer',
+        assignedCarerUid: task.assignedCarerUid || null,
+        addedToPending: false,
+        addedToInProgress: false,
+        removed: hadTask,
+        reason: mergeReason || 'not_visible_to_carer',
       });
-      tasksById.delete(task.id);
       return;
     }
+
+    const effectiveStatus = getEffectiveCarerTaskStatus(visible);
+    const addedToPending =
+      effectiveStatus === 'pending' && (!hadTask || previousStatus !== 'pending');
+    const addedToInProgress =
+      effectiveStatus === 'in_progress' &&
+      (!hadTask || previousStatus !== 'in_progress');
+
     tasksById.set(task.id, visible);
+    console.info('[CARER_TASK_LIVE_MERGE]', {
+      taskId: task.id,
+      status: visible.status,
+      assignedCarerUid: visible.assignedCarerUid || null,
+      addedToPending,
+      addedToInProgress,
+      removed: false,
+      reason: mergeReason,
+    });
   };
 
   const consumeSseChunk = (chunk: string, bufferRef: { value: string }) => {
@@ -293,50 +355,74 @@ export function attachCarerTaskSqlReadListener(
         continue;
       }
 
-      if (!isSqlEventVisibleToCarer(parsed.payload, cleanCarerUid, cleanCoadminUid)) {
+      const enrichedPayload = enrichPayloadForSseEvent(
+        parsed.event,
+        parsed.payload,
+        cleanCoadminUid
+      );
+      const visibleToCarer = isSqlEventVisibleToCarer(
+        enrichedPayload,
+        cleanCarerUid,
+        cleanCoadminUid
+      );
+
+      console.info('[CARER_TASK_SSE_EVENT]', {
+        carerUid: cleanCarerUid,
+        coadminUid: cleanCoadminUid,
+        channel: null,
+        taskId: parsed.entityId,
+        status: cleanText(enrichedPayload.status) || null,
+        assignedCarerUid: cleanText(enrichedPayload.assignedCarerUid) || null,
+        accepted: visibleToCarer,
+        mergeReason: parsed.event,
+      });
+
+      if (!visibleToCarer) {
         continue;
       }
 
       lastEventId = Math.max(lastEventId, parsed.id);
 
-      if (
-        parsed.event === 'task.tombstoned' ||
-        parsed.event === 'task.deleted_from_pending'
-      ) {
+      if (CARER_TASK_REMOVE_EVENTS.has(parsed.event)) {
         tasksById.delete(parsed.entityId);
-        console.info(
-          '[CARER_TASKS_SQL_READ] sse_event type=%s taskId=%s',
-          parsed.event,
-          parsed.entityId
-        );
+        console.info('[CARER_TASK_LIVE_MERGE]', {
+          taskId: parsed.entityId,
+          status: cleanText(enrichedPayload.status) || parsed.event,
+          assignedCarerUid: cleanText(enrichedPayload.assignedCarerUid) || null,
+          addedToPending: false,
+          addedToInProgress: false,
+          removed: true,
+          reason: parsed.event,
+        });
         emitTasks();
         continue;
       }
 
-      if (parsed.event === 'task.upserted' || parsed.event === 'task.returned_to_pending') {
+      if (CARER_TASK_UPSERT_EVENTS.has(parsed.event)) {
         const merged = mergePayloadIntoCarerTask(
-          parsed.payload,
+          enrichedPayload,
           tasksById.get(parsed.entityId),
           cleanCoadminUid
         );
-        applyVisibleTask(merged);
-        console.info(
-          '[CARER_TASKS_SQL_READ] sse_event type=%s taskId=%s',
-          parsed.event,
-          parsed.entityId
-        );
+        applyVisibleTask(merged, parsed.event);
         emitTasks();
       }
     }
   };
 
   const connectStream = async (headers: Record<string, string>) => {
-    const channelList = [
+    const streamChannels = [
       carerTaskLiveChannel(cleanCarerUid),
       coadminTaskLiveChannel(cleanCoadminUid),
-    ]
-      .map(encodeURIComponent)
-      .join(',');
+    ];
+    console.info('[CARER_TASK_STREAM_SUBSCRIPTIONS]', {
+      carerUid: cleanCarerUid,
+      coadminUid: cleanCoadminUid,
+      channels: streamChannels,
+      includesCoadminPool: true,
+      includesCarerAssigned: true,
+    });
+    const channelList = streamChannels.map(encodeURIComponent).join(',');
     const url = `/api/live/stream?channels=${channelList}&lastEventId=${lastEventId}`;
     const response = await fetch(url, {
       headers,
@@ -418,7 +504,7 @@ export function attachCarerTaskSqlReadListener(
         if (!mapped.id) {
           continue;
         }
-        applyVisibleTask(mapped);
+        applyVisibleTask(mapped, 'snapshot_bootstrap');
       }
 
       logCarerPageStartup({
