@@ -11,13 +11,16 @@ import { AnimatePresence, motion } from 'motion/react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, onSnapshot, updateDoc } from 'firebase/firestore';
 
-import ProtectedRoute from '../../components/auth/ProtectedRoute';
+
 import ImageUploadField from '@/components/common/ImageUploadField';
 
 import { auth, db } from '@/lib/firebase/client';
 import { resolveCoadminUid } from '@/lib/coadmin/scope';
 import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
+import { useIsPlayerSessionRole } from '@/features/player/useIsPlayerSessionRole';
+import { resolvePlayerRoleForFetch } from '@/lib/client/playerFetchGuard';
+import { startPlayerRoleGuardedInterval } from '@/lib/client/playerPollGuard';
 import { getGameLoginsByCoadmin } from '@/features/games/gameLogins';
 import {
   listenToPlayerGameLoginsByPlayer,
@@ -215,6 +218,7 @@ function FloatingCasinoBackdrop() {
 
 export default function PlayerPage() {
   const router = useRouter();
+  const isPlayerRole = useIsPlayerSessionRole();
   const [activeView, setActiveView] = useState<PlayerView>('dashboard');
   const [playerUid, setPlayerUid] = useState('');
 
@@ -323,6 +327,7 @@ export default function PlayerPage() {
   const previousUnreadRef = useRef(0);
   const pagedAgentChat = usePaginatedChatMessages(selectedAgent?.uid ?? null, {
     scrollContainerRef: agentsScrollRef,
+    requirePlayerRole: true,
     onWindowMessages: () => {
       if (selectedAgent) {
         markConversationAsRead(selectedAgent.uid);
@@ -1028,14 +1033,18 @@ export default function PlayerPage() {
 
   useEffect(() => {
     const len = playerBonusEvents.length;
-    if (len <= 1 || bonusStripPaused) {
+    if (!isPlayerRole || len <= 1 || bonusStripPaused) {
       return;
     }
-    const intervalId = window.setInterval(() => {
-      setBonusCarouselIndex((i) => (i + 1) % len);
-    }, BONUS_ROTATE_MS);
-    return () => window.clearInterval(intervalId);
-  }, [playerBonusEvents.length, bonusStripPaused]);
+    const stop = startPlayerRoleGuardedInterval({
+      pollName: 'player_bonus_carousel',
+      intervalMs: BONUS_ROTATE_MS,
+      onTick: () => {
+        setBonusCarouselIndex((i) => (i + 1) % len);
+      },
+    });
+    return () => stop();
+  }, [playerBonusEvents.length, bonusStripPaused, isPlayerRole]);
 
   useEffect(() => {
     const nextIds = playerBonusEvents.map((e) => e.id);
@@ -1640,11 +1649,41 @@ export default function PlayerPage() {
     void syncPlayerUidFromSession();
 
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      let sessionUid = user?.uid || getCachedSessionUser()?.uid || '';
+      const cachedSession = getCachedSessionUser();
+      const sessionUser =
+        cachedSession && cachedSession.role === 'player'
+          ? cachedSession
+          : cachedSession?.role
+            ? cachedSession
+            : getLocalAppSessionId()
+              ? await getSessionUserOnce().catch(() => null)
+              : null;
+
+      if (sessionUser && sessionUser.role !== 'player') {
+        console.info('[PLAYER_FETCH_BLOCKED_ROLE]', {
+          route: '/player',
+          uid: sessionUser.uid,
+          role: sessionUser.role,
+          expectedRole: 'player',
+          reason: 'non_player_role_auth_sync',
+        });
+        setPlayerUid('');
+        setPlayerCoadminUid('');
+        return;
+      }
+
+      let sessionUid = user?.uid || (sessionUser?.role === 'player' ? sessionUser.uid : '') || '';
       if (!sessionUid && getLocalAppSessionId()) {
-        sessionUid = (await getSessionUserOnce())?.uid || '';
+        const resolved = await getSessionUserOnce().catch(() => null);
+        if (resolved?.role === 'player') {
+          sessionUid = resolved.uid;
+        }
       }
       const nextPlayerUid = user?.uid || sessionUid;
+      if (nextPlayerUid && sessionUser?.role && sessionUser.role !== 'player') {
+        setPlayerUid('');
+        return;
+      }
       setPlayerUid(nextPlayerUid);
 
       if (!nextPlayerUid) {
@@ -1760,9 +1799,12 @@ export default function PlayerPage() {
   }, [playerCoadminUid]);
 
   useEffect(() => {
-    const unsubscribe = listenToUnreadCounts(setUnreadCounts);
+    if (!isPlayerRole) {
+      return;
+    }
+    const unsubscribe = listenToUnreadCounts(setUnreadCounts, { requirePlayerRole: true });
     return () => unsubscribe();
-  }, []);
+  }, [isPlayerRole]);
 
   useEffect(() => {
     if (totalUnread > previousUnreadRef.current) {
@@ -1773,7 +1815,7 @@ export default function PlayerPage() {
   }, [playNotificationSound, totalUnread]);
 
   useEffect(() => {
-    if (!playerUid) return;
+    if (!isPlayerRole || !playerUid) return;
 
     setLoadingList(true);
     setMessage('');
@@ -1831,10 +1873,10 @@ export default function PlayerPage() {
       sqlReadDispose?.();
       liveShadowCompare.dispose();
     };
-  }, [playerUid, syncCredentialSidecarsForPlayer]);
+  }, [isPlayerRole, playerUid, syncCredentialSidecarsForPlayer]);
 
   useEffect(() => {
-    if (!playerUid) {
+    if (!isPlayerRole || !playerUid) {
       return;
     }
 
@@ -1902,7 +1944,7 @@ export default function PlayerPage() {
     );
 
     return () => unsubscribe();
-  }, [playerUid]);
+  }, [isPlayerRole, playerUid]);
 
   useEffect(() => {
     if (!referredByPlayerUid || referredByPlayerName || isClientSqlReadMode()) {
@@ -1928,7 +1970,7 @@ export default function PlayerPage() {
   }, [referredByPlayerUid, referredByPlayerName]);
 
   useEffect(() => {
-    if (!playerCoadminUid || !shouldListenToBonusEvents) {
+    if (!isPlayerRole || !playerCoadminUid || !shouldListenToBonusEvents) {
       setBonusEvents([]);
       setBonusEventsSessionLoading(false);
       return;
@@ -1958,7 +2000,12 @@ export default function PlayerPage() {
       },
       (error) => {
         console.error('[player bonusEvents] error', error);
-        setMessage(error.message || 'Failed to load bonus events.');
+        const message = error.message || 'Failed to load bonus events.';
+        if (/X-Player-Session-Id|Player session required|Loading session/i.test(message)) {
+          setBonusEventsSessionLoading(true);
+          return;
+        }
+        setMessage(message);
       },
       {
         skipTimeWindowFilter: true,
@@ -1982,10 +2029,10 @@ export default function PlayerPage() {
       }
       unsubscribe();
     };
-  }, [activeView, playerCoadminUid, shouldListenToBonusEvents]);
+  }, [activeView, isPlayerRole, playerCoadminUid, shouldListenToBonusEvents]);
 
   useEffect(() => {
-    if (!playerUid) {
+    if (!isPlayerRole || !playerUid) {
       return;
     }
 
@@ -2073,7 +2120,7 @@ export default function PlayerPage() {
     );
 
     return () => unsubscribe();
-  }, [playerUid]);
+  }, [isPlayerRole, playerUid]);
 
   const loadReferralRewards = useCallback(async (options: { force?: boolean } = {}) => {
     if (shouldSkipIndividualLoader('referral', options.force)) {
@@ -2137,7 +2184,7 @@ export default function PlayerPage() {
   }, [playerUid, shouldSkipIndividualLoader]);
 
   useEffect(() => {
-    if (!playerUid || !playerCoadminUid) {
+    if (!isPlayerRole || !playerUid || !playerCoadminUid) {
       baseDataLoadedRef.current = false;
       baseDataLoadingRef.current = false;
       setBaseDataLoaded(false);
@@ -2148,6 +2195,11 @@ export default function PlayerPage() {
     let isCancelled = false;
 
     async function loadInitialPlayerBaseData() {
+      const sessionUser = await resolvePlayerRoleForFetch('/api/player/base-data');
+      if (!sessionUser || isCancelled) {
+        return;
+      }
+
       baseDataLoadingRef.current = true;
       setBaseDataLoading(true);
       baseDataLoadedRef.current = false;
@@ -2229,6 +2281,7 @@ export default function PlayerPage() {
     loadReferralRewards,
     playerCoadminUid,
     playerUid,
+    isPlayerRole,
   ]);
 
   async function handleClaimFreeplayGift() {
@@ -3001,7 +3054,7 @@ export default function PlayerPage() {
   }
 
   useEffect(() => {
-    if (!activeCoinLoad) {
+    if (!isPlayerRole || !activeCoinLoad) {
       setLoadCoinTimeLeftSec(0);
       return;
     }
@@ -3025,13 +3078,17 @@ export default function PlayerPage() {
     if (tick()) {
       return;
     }
-    const id = setInterval(() => {
-      if (tick()) {
-        clearInterval(id);
-      }
-    }, 1000);
-    return () => clearInterval(id);
-  }, [activeCoinLoad]);
+    const stop = startPlayerRoleGuardedInterval({
+      pollName: 'player_coin_load_countdown',
+      intervalMs: 1000,
+      onTick: () => {
+        if (tick()) {
+          stop();
+        }
+      },
+    });
+    return () => stop();
+  }, [activeCoinLoad, isPlayerRole]);
 
   async function handleCreateCoinLoadSession() {
     if (maintenanceBreak.enabled) {
@@ -3225,8 +3282,8 @@ export default function PlayerPage() {
   }
 
   return (
-    <ProtectedRoute allowedRoles={['player']}>
-      <main
+    <>
+    <main
         ref={pageScrollRef}
         className="player-fire-page relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white md:flex-row md:items-start lg:pb-0"
       >
@@ -4911,6 +4968,6 @@ export default function PlayerPage() {
           </motion.div>
         )}
       </AnimatePresence>
-    </ProtectedRoute>
+    </>
   );
 }

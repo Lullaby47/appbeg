@@ -18,6 +18,7 @@ import {
 import { auth, db } from '@/lib/firebase/client';
 import { DASHBOARD_BY_ROLE, isValidRole } from '@/lib/auth/roles';
 import { bootstrapAppSessionAfterFirebaseLogin, getLocalAppSessionId } from '@/features/auth/appSession';
+import { dashboardPathForRole, logLoginRoleRedirect } from '@/lib/client/loginRoleRedirect';
 import { migrateCredentialsAfterFirebaseLogin } from '@/features/auth/credentialsMigrate';
 import {
   clearPlayerSessionBeforeLogin,
@@ -75,6 +76,37 @@ export default function LoginPage() {
   // If the user is already signed in, send them to their app — so the browser
   // "back" key does not look like a confusing pseudo-logout on /login.
   useEffect(() => {
+    void (async () => {
+      if (loginInProgressRef.current) {
+        return;
+      }
+
+      if (getLocalAppSessionId()) {
+        try {
+          const cached = getCachedSessionUser();
+          const sessionUser =
+            cached && isValidRole(cached.role) ? cached : await getSessionUserOnce();
+          if (sessionUser && isValidRole(sessionUser.role)) {
+            if (sessionUser.role === 'player' && !isPlayerSessionReady()) {
+              return;
+            }
+            const to = dashboardPathForRole(sessionUser.role);
+            logLoginRoleRedirect({
+              uid: sessionUser.uid,
+              role: sessionUser.role,
+              from: '/login',
+              to,
+              reason: 'existing_app_session',
+            });
+            router.replace(to);
+            return;
+          }
+        } catch {
+          // ignore; user can still use the form
+        }
+      }
+    })();
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (loginInProgressRef.current) {
         return;
@@ -91,6 +123,13 @@ export default function LoginPage() {
             const sessionUser =
               cached?.role === 'player' ? cached : await getSessionUserOnce();
             if (sessionUser?.role === 'player') {
+              logLoginRoleRedirect({
+                uid: sessionUser.uid,
+                role: 'player',
+                from: '/login',
+                to: DASHBOARD_BY_ROLE.player,
+                reason: 'sql_app_session',
+              });
               console.info('[PLAYER_LOGIN_SESSION] login-page redirect allowed', {
                 uid: sessionUser.uid,
                 role: 'player',
@@ -121,12 +160,20 @@ export default function LoginPage() {
             await signOut(auth);
             return;
           }
+          const to = dashboardPathForRole(role);
+          logLoginRoleRedirect({
+            uid: user.uid,
+            role,
+            from: '/login',
+            to,
+            reason: 'existing_authenticated_user',
+          });
           console.info('[PLAYER_LOGIN_SESSION] login-page redirect allowed', {
             uid: user.uid,
             role,
             reason: 'existing_authenticated_user',
           });
-          router.replace(DASHBOARD_BY_ROLE[role]);
+          router.replace(to);
         }
       } catch {
         // ignore; user can still use the form
@@ -199,7 +246,15 @@ export default function LoginPage() {
       });
     }
 
-    router.push(DASHBOARD_BY_ROLE[role]);
+    const to = dashboardPathForRole(role);
+    logLoginRoleRedirect({
+      uid: credential.user.uid,
+      role,
+      from: '/login',
+      to,
+      reason: 'firebase_login_success',
+    });
+    router.replace(to);
   }
 
   async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
@@ -231,7 +286,15 @@ export default function LoginPage() {
           if (sqlLoginResult.role === 'player') {
             rememberPlayerLoginCredentials(cleanUsername, password);
           }
-          router.push(DASHBOARD_BY_ROLE[sqlLoginResult.role]);
+          const to = dashboardPathForRole(sqlLoginResult.role);
+          logLoginRoleRedirect({
+            uid: sqlLoginResult.uid,
+            role: sqlLoginResult.role,
+            from: '/login',
+            to,
+            reason: 'sql_login_success',
+          });
+          router.replace(to);
           return;
         }
 

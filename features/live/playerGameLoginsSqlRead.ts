@@ -2,6 +2,7 @@
 
 import type { PlayerGameLogin } from '@/features/games/playerGameLogins';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import { createPlayerScopedPoll } from '@/lib/client/playerPollGuard';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 const POLL_MS = 10_000;
@@ -53,6 +54,20 @@ export function attachPlayerGameLoginsSqlPoll(input: {
     uid: input.uid,
   });
 
+  const runPoll = async () => {
+    const logins = await fetchPlayerGameLogins(input.scope, input.uid);
+    input.onChange(logins);
+  };
+
+  if (input.scope === 'player') {
+    return createPlayerScopedPoll({
+      pollName: 'player_game_logins',
+      intervalMs: POLL_MS,
+      onTick: runPoll,
+      onError: input.onError,
+    });
+  }
+
   let cancelled = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -61,10 +76,7 @@ export function attachPlayerGameLoginsSqlPoll(input: {
       return;
     }
     try {
-      const logins = await fetchPlayerGameLogins(input.scope, input.uid);
-      if (!cancelled) {
-        input.onChange(logins);
-      }
+      await runPoll();
     } catch (error) {
       if (!cancelled) {
         input.onError?.(error instanceof Error ? error : new Error(String(error)));

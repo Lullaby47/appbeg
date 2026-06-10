@@ -1,6 +1,7 @@
 'use client';
 
 import { getAppSessionRequestHeaders } from '@/features/auth/appSession';
+import { createPlayerScopedPoll } from '@/lib/client/playerPollGuard';
 import { logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 export type PlayerProfileSqlSnapshot = {
@@ -83,40 +84,18 @@ export function attachPlayerProfileSqlPoll(
   options?: { intervalMs?: number }
 ) {
   logClientFirestoreSkipped('player_profile_poll', { route: '/api/auth/session/me' });
-
-  let cancelled = false;
-  let timer: ReturnType<typeof setTimeout> | null = null;
   const intervalMs = Math.max(4_000, Number(options?.intervalMs || DEFAULT_POLL_INTERVAL_MS));
 
-  const tick = async () => {
-    if (cancelled) {
-      return;
-    }
-    try {
+  return createPlayerScopedPoll({
+    pollName: 'player_profile',
+    intervalMs,
+    onTick: async () => {
       const profile = await fetchPlayerProfileSnapshot();
-      if (!cancelled && profile) {
+      if (profile) {
         onChange(profile);
       }
-    } catch {
-      // Best-effort profile poll.
-    } finally {
-      if (!cancelled) {
-        timer = setTimeout(() => {
-          void tick();
-        }, intervalMs);
-      }
-    }
-  };
-
-  void tick();
-
-  return () => {
-    cancelled = true;
-    if (timer != null) {
-      clearTimeout(timer);
-      timer = null;
-    }
-  };
+    },
+  });
 }
 
 export async function loadPlayerProfileSnapshotOnce(): Promise<PlayerProfileSqlSnapshot | null> {

@@ -18,7 +18,8 @@ import {
   getAppSessionRequestHeaders,
   getLocalAppSessionId,
 } from '@/features/auth/appSession';
-import { getLocalPlayerSessionId, getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { resolvePlayerRoleForFetch } from '@/lib/client/playerFetchGuard';
 import { auth, db } from '@/lib/firebase/client';
 import { belongsToCoadmin, getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
@@ -50,8 +51,9 @@ function normalizeSiteUrl(value: string) {
 }
 
 async function getGameLoginsCacheReadHeaders() {
-  if (getLocalPlayerSessionId()) {
-    return getPlayerApiHeaders(false);
+  const sessionUser = await resolvePlayerRoleForFetch('/api/game-logins/cache');
+  if (sessionUser) {
+    return getPlayerApiHeaders(false, { route: '/api/game-logins/cache' });
   }
   await ensureAppSessionBootstrapped();
   if (getLocalAppSessionId()) {

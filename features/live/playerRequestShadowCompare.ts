@@ -1,5 +1,6 @@
 import type { PlayerGameRequest } from '@/features/games/playerGameRequests';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { checkPlayerPollRole } from '@/lib/client/playerPollGuard';
 import { LIVE_STREAM_DISABLED } from '@/features/live/liveStreamFlags';
 type ShadowRequestPayload = {
   entityId?: unknown;
@@ -141,6 +142,11 @@ export function attachPlayerRequestLiveShadowCompare(playerUid: string) {
   };
 
   const bootstrap = async () => {
+    const sessionUser = await checkPlayerPollRole('player_requests_shadow_compare');
+    if (!sessionUser || disposed) {
+      return;
+    }
+
     try {
       const headers = await getPlayerApiHeaders(false);
       const snapshotResponse = await fetch(
@@ -173,7 +179,9 @@ export function attachPlayerRequestLiveShadowCompare(playerUid: string) {
       }
     }
   };
-  void bootstrap();
+  void (async () => {
+    await bootstrap();
+  })();
 
   return {
     reportFirebaseSnapshot(requests: PlayerGameRequest[]) {

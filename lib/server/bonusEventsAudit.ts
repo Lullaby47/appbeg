@@ -20,6 +20,53 @@ export function bonusEventsRequestHeaderFlags(request: Request) {
   };
 }
 
+function sessionHeaderPrefix(request: Request, headerName: string) {
+  const value = cleanText(request.headers.get(headerName));
+  return value ? value.slice(0, 8) : null;
+}
+
+export function logPlayerBonusSessionHeaderCheck(
+  request: Request,
+  values: {
+    route: string;
+    method: string;
+    auth_path?: string | null;
+    reason: string;
+  }
+) {
+  const headerFlags = bonusEventsRequestHeaderFlags(request);
+  console.info('[PLAYER_BONUS_SESSION_HEADER_CHECK]', {
+    route: values.route,
+    method: values.method,
+    hasAppSessionHeader: headerFlags.has_app_session_header,
+    hasPlayerSessionHeader: headerFlags.has_player_session_header,
+    appSessionIdPrefix: sessionHeaderPrefix(request, 'X-App-Session-Id'),
+    playerSessionIdPrefix: sessionHeaderPrefix(request, 'X-Player-Session-Id'),
+    auth_path: values.auth_path ?? null,
+    reason: values.reason,
+  });
+}
+
+export function logPlayerBonusListSql(values: {
+  route: string;
+  playerUid: string;
+  playerCoadminUid: string;
+  queriedCoadminUid: string;
+  totalRowsForCoadmin: number;
+  returnedCount: number;
+  reason: string;
+}) {
+  console.info('[PLAYER_BONUS_LIST_SQL]', {
+    route: values.route,
+    playerUid: values.playerUid,
+    playerCoadminUid: values.playerCoadminUid,
+    queriedCoadminUid: values.queriedCoadminUid,
+    totalRowsForCoadmin: values.totalRowsForCoadmin,
+    returnedCount: values.returnedCount,
+    reason: values.reason,
+  });
+}
+
 export function bonusEventsSqlModeFlags() {
   return {
     ...authSqlReadEnvLogFields(),

@@ -13,7 +13,8 @@ import {
 
 import { getAppSessionRequestHeaders, getLocalAppSessionId, APP_SESSION_EXPIRES_AT_KEY, APP_SESSION_ID_KEY } from '@/features/auth/appSession';
 import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
-import { clearCachedSessionUser, getCachedSessionUser } from '@/features/auth/sessionUser';
+import { clearCachedSessionUser, getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
+import { logPlayerFetchBlockedRole } from '@/lib/client/playerFetchGuard';
 import { logClientFirestoreSkipped, isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { auth, db } from '@/lib/firebase/client';
 
@@ -798,6 +799,33 @@ export async function getPlayerApiHeaders(
   const route = String(options?.route || 'unknown').trim() || 'unknown';
   const generationAtStart = playerSessionGeneration;
 
+  const cachedRoleUser = getCachedSessionUser();
+  const sessionUser =
+    cachedRoleUser?.role === 'player'
+      ? cachedRoleUser
+      : await getSessionUserOnce().catch(() => null);
+  const role = String(sessionUser?.role || '').trim() || null;
+  const uid = String(sessionUser?.uid || auth.currentUser?.uid || '').trim() || null;
+
+  if (role && role !== 'player') {
+    logPlayerFetchBlockedRole({
+      route,
+      uid,
+      role,
+      reason: 'non_player_role',
+    });
+    console.info('[PLAYER_API_HEADERS]', {
+      route,
+      uid,
+      role,
+      hasAppSessionId: Boolean(getLocalAppSessionId()),
+      hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+      blocked: true,
+      reason: 'non_player_role',
+    });
+    throw new Error('Player role required.');
+  }
+
   if (isSqlPlayerAppSessionMode()) {
     await waitForPlayerSessionReady();
   }
@@ -837,14 +865,27 @@ export async function getPlayerApiHeaders(
     throw new Error('Not authenticated.');
   }
   if (!headers.Authorization && hasAppSessionId && !hasPlayerSessionId) {
+    console.info('[PLAYER_API_HEADERS]', {
+      route,
+      uid,
+      role: role || 'player',
+      hasAppSessionId,
+      hasPlayerSessionId,
+      blocked: true,
+      reason: 'missing_player_session_id',
+    });
     throw new Error('Not authenticated.');
   }
   console.info('[PLAYER_API_HEADERS]', {
     route,
+    uid,
+    role: role || 'player',
     hasAppSessionId,
     hasPlayerSessionId,
     playerSessionIdPrefix: sessionIdPrefix(headers['X-Player-Session-Id']),
     appSessionIdPrefix: sessionIdPrefix(headers['X-App-Session-Id']),
+    blocked: false,
+    reason: 'ok',
   });
   return headers;
 }

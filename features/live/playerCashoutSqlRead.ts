@@ -4,6 +4,7 @@ import { Timestamp } from 'firebase/firestore';
 
 import type { PlayerCashoutTask } from '@/features/cashouts/playerCashoutTasks';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import { createPlayerScopedPoll } from '@/lib/client/playerPollGuard';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 const POLL_MS = 10_000;
@@ -77,6 +78,20 @@ export function attachPlayerCashoutTasksSqlPoll(input: {
     uid: input.uid,
   });
 
+  const runPoll = async () => {
+    const tasks = await fetchCashoutTasks(input.scope, input.uid, input.limit || 50);
+    input.onChange(tasks);
+  };
+
+  if (input.scope === 'player') {
+    return createPlayerScopedPoll({
+      pollName: 'player_cashout_tasks',
+      intervalMs: POLL_MS,
+      onTick: runPoll,
+      onError: input.onError,
+    });
+  }
+
   let cancelled = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -85,10 +100,7 @@ export function attachPlayerCashoutTasksSqlPoll(input: {
       return;
     }
     try {
-      const tasks = await fetchCashoutTasks(input.scope, input.uid, input.limit || 50);
-      if (!cancelled) {
-        input.onChange(tasks);
-      }
+      await runPoll();
     } catch (error) {
       if (!cancelled) {
         input.onError?.(error instanceof Error ? error : new Error(String(error)));

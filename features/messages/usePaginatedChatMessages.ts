@@ -13,6 +13,7 @@ import {
 export type UsePaginatedChatMessagesOptions = {
   recentWindowSize?: number;
   pageSize?: number;
+  requirePlayerRole?: boolean;
   onWindowMessages?: (windowMessages: FirestoreChatMessage[]) => void;
   scrollContainerRef?: React.RefObject<HTMLElement | null>;
 };
@@ -63,11 +64,14 @@ export function usePaginatedChatMessages(
           return items.length === recentWindow;
         });
       },
-      { limit: recentWindow }
+      {
+        limit: recentWindow,
+        requirePlayerRole: options?.requirePlayerRole,
+      }
     );
 
     return () => unsubscribe();
-  }, [otherUid, recentWindow]);
+  }, [otherUid, recentWindow, options?.requirePlayerRole]);
 
   const items = useMemo(() => {
     if (olderMessages.length === 0) {

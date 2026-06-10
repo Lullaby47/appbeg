@@ -13,6 +13,8 @@ import {
   logBonusEventsListAuth,
   logBonusEventsListSql,
   logPlayerBonusAuth,
+  logPlayerBonusListSql,
+  logPlayerBonusSessionHeaderCheck,
 } from '@/lib/server/bonusEventsAudit';
 import {
   readActiveBonusEventsByCoadmin,
@@ -131,6 +133,9 @@ function resolveVisibleCoadminUid(values: {
   if (values.role === 'admin') {
     return values.requestedCoadminUid || values.derivedCoadminUid;
   }
+  if (values.role === 'player') {
+    return values.derivedCoadminUid || values.requestedCoadminUid;
+  }
   return values.derivedCoadminUid;
 }
 
@@ -240,6 +245,14 @@ export async function GET(request: Request) {
     const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer', 'player']);
     if ('response' in auth) {
       const headerFlags = bonusEventsRequestHeaderFlags(request);
+      logPlayerBonusSessionHeaderCheck(request, {
+        route: ROUTE,
+        method: 'GET',
+        auth_path: auth.timing?.auth_path || null,
+        reason: headerFlags.has_app_session_header && !headerFlags.has_player_session_header
+          ? 'missing_player_session_header'
+          : 'auth_failed',
+      });
       logBonusEventsBlocked({
         route: ROUTE,
         reason: 'auth_failed',
@@ -311,6 +324,25 @@ export async function GET(request: Request) {
       firestore_fallback: false,
       reason: sqlReadMode ? 'bonus_events_cache_read' : 'legacy_firestore_branch',
     });
+
+    if (auth.user.role === 'player') {
+      logPlayerBonusListSql({
+        route: ROUTE,
+        playerUid: auth.user.uid,
+        playerCoadminUid: derivedCoadminUid,
+        queriedCoadminUid: coadminUid,
+        totalRowsForCoadmin: rawEvents.length,
+        returnedCount: events.length,
+        reason:
+          events.length > 0
+            ? 'bonus_events_cache_read_active'
+            : rawEvents.length > 0
+              ? 'active_filter_empty'
+              : coadminUid
+                ? 'no_rows_for_coadmin'
+                : 'missing_coadmin_scope',
+      });
+    }
 
     if (sqlReadMode) {
       logCacheSqlRead(ROUTE, {

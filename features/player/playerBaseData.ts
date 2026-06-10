@@ -1,4 +1,5 @@
 import { getPlayerApiHeaders, PlayerSessionStaleError } from '@/features/auth/playerSession';
+import { resolvePlayerRoleForFetch } from '@/lib/client/playerFetchGuard';
 import type { GameLogin } from '@/features/games/gameLogins';
 import type { ReferralRewardGroup } from '@/features/referrals/playerReferralRewards';
 
@@ -72,6 +73,10 @@ export async function loadPlayerBaseData(): Promise<PlayerBaseDataResponse> {
   inFlightBaseData = (async () => {
     const startedAt = Date.now();
     try {
+      const sessionUser = await resolvePlayerRoleForFetch('/api/player/base-data');
+      if (!sessionUser) {
+        throw new Error('Player role required.');
+      }
       const headers = await getPlayerApiHeaders(false, { route: '/api/player/base-data' });
       const response = await fetch('/api/player/base-data', {
         method: 'GET',

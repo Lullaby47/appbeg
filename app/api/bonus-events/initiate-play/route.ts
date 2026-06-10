@@ -22,6 +22,7 @@ import {
   logBonusEventsBlocked,
   logBonusEventsInitiateAuth,
   logPlayerBonusAuth,
+  logPlayerBonusSessionHeaderCheck,
 } from '@/lib/server/bonusEventsAudit';
 import { initiateBonusPlayInSql } from '@/lib/sql/authorityBonus';
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
@@ -49,6 +50,14 @@ export async function POST(request: Request) {
     const auth = await requireApiUser(request, ['player']);
     if ('response' in auth) {
       const headerFlags = bonusEventsRequestHeaderFlags(request);
+      logPlayerBonusSessionHeaderCheck(request, {
+        route: ROUTE,
+        method: 'POST',
+        auth_path: auth.timing?.auth_path || null,
+        reason: headerFlags.has_app_session_header && !headerFlags.has_player_session_header
+          ? 'missing_player_session_header'
+          : 'auth_failed',
+      });
       logBonusEventsBlocked({
         route: ROUTE,
         reason: 'auth_failed',

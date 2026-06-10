@@ -801,7 +801,16 @@ async function authenticateApiUserFromAppSession(
   if (role === 'player') {
     const sessionHeaderId = playerSessionId(request);
     if (!sessionHeaderId) {
-      return null;
+      console.info('[API_AUTH] player request blocked', {
+        uid: session.uid,
+        role,
+        reason: 'missing_player_session_header',
+        auth_path: 'app_session_sql',
+        app_session_id: sessionId,
+        player_session_id: null,
+        validates: 'player_session_sql',
+      });
+      return { response: apiError('X-Player-Session-Id header is required.', 401) };
     }
 
     const sqlReadMode = isAuthSqlReadEnabled();

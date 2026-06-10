@@ -11,6 +11,7 @@ import {
 } from 'firebase/firestore';
 
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import { checkPlayerPollRole } from '@/lib/client/playerPollGuard';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { db } from '@/lib/firebase/client';
 
@@ -73,7 +74,10 @@ async function fetchPresenceBatch(uids: string[]) {
  * Real-time map of whether each uid is "online" (fresh lastSeen) for UI dots.
  * Ensure {@link UserPresenceSync} (or equivalent heartbeat) is mounted for the signed-in app.
  */
-export function usePresenceOnlineMap(uids: string[]) {
+export function usePresenceOnlineMap(
+  uids: string[],
+  options?: { requirePlayerRole?: boolean }
+) {
   const contentKey = stableUidListKey(uids);
   const uniqueSorted = useMemo(
     () => (contentKey ? (JSON.parse(contentKey) as string[]) : []),
@@ -105,6 +109,17 @@ export function usePresenceOnlineMap(uids: string[]) {
       const poll = async () => {
         if (cancelled) {
           return;
+        }
+        if (options?.requirePlayerRole) {
+          const sessionUser = await checkPlayerPollRole('player_presence');
+          if (!sessionUser) {
+            cancelled = true;
+            if (timer != null) {
+              clearTimeout(timer);
+              timer = null;
+            }
+            return;
+          }
         }
         try {
           for (let i = 0; i < uniqueSorted.length; i += CHUNK) {
@@ -167,7 +182,7 @@ export function usePresenceOnlineMap(uids: string[]) {
         u();
       }
     };
-  }, [key, uniqueSorted]);
+  }, [key, uniqueSorted, options?.requirePlayerRole]);
 
   return useMemo(() => {
     const now = Date.now() + tick * 0;

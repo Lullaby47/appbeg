@@ -6,13 +6,17 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
-import { isValidRole, UserRole } from '@/lib/auth/roles';
+import { DASHBOARD_BY_ROLE, isValidRole, UserRole } from '@/lib/auth/roles';
 import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { discardStalePlayerSessionIdForRole } from '@/features/auth/playerSession';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { recordDevActiveSession } from '@/features/dev/devUsageEstimates';
 import UserPresenceSync from '@/components/presence/UserPresenceSync';
 import IdleLogoutSync from '@/components/auth/IdleLogoutSync';
+import {
+  currentClientPath,
+  logProtectedRouteDecision,
+} from '@/lib/client/protectedRouteLog';
 import {
   endLocalPlayerSession,
   forcePlayerSessionLogout,
@@ -41,6 +45,26 @@ function routeSupportsSqlSessionGuard(allowedRoles: UserRole[]) {
 
 function routeIsPlayerOnly(allowedRoles: UserRole[]) {
   return allowedRoles.length === 1 && allowedRoles[0] === 'player';
+}
+
+function redirectRoleMismatch(
+  router: ReturnType<typeof useRouter>,
+  sessionUser: { uid: string; role: UserRole },
+  allowedRoles: UserRole[],
+  reason: string
+): 'denied' {
+  const redirectTo = DASHBOARD_BY_ROLE[sessionUser.role];
+  logProtectedRouteDecision({
+    path: currentClientPath(),
+    uid: sessionUser.uid,
+    role: sessionUser.role,
+    allowedRoles,
+    decision: 'redirect',
+    redirectTo,
+    reason,
+  });
+  router.replace(redirectTo);
+  return 'denied';
 }
 
 export default function ProtectedRoute({
@@ -193,9 +217,22 @@ export default function ProtectedRoute({
           reason: 'role_not_allowed',
         });
         setCurrentRole(null);
-        router.replace('/login');
-        return 'denied';
+        return redirectRoleMismatch(
+          router,
+          sessionUser as { uid: string; role: UserRole },
+          allowedRoles,
+          'role_not_allowed_for_route'
+        );
       }
+
+      logProtectedRouteDecision({
+        path: currentClientPath(),
+        uid: sessionUser.uid,
+        role: sessionUser.role,
+        allowedRoles,
+        decision: 'allow',
+        reason: usedCachedSession ? 'cached_app_session' : 'app_session',
+      });
 
       console.info('[PROTECTED_ROUTE_AUTH]', {
         source: usedCachedSession ? 'cached_app_session' : 'app_session',
@@ -265,7 +302,25 @@ export default function ProtectedRoute({
             reason: 'role_not_allowed',
           });
           setCurrentRole(null);
-          router.replace('/login');
+          if (isValidRole(role)) {
+            redirectRoleMismatch(
+              router,
+              { uid: firebaseUser.uid, role },
+              allowedRoles,
+              'firebase_role_not_allowed_for_route'
+            );
+          } else {
+            logProtectedRouteDecision({
+              path: currentClientPath(),
+              uid: firebaseUser.uid,
+              role,
+              allowedRoles,
+              decision: 'deny',
+              redirectTo: '/login',
+              reason: 'invalid_firebase_role',
+            });
+            router.replace('/login');
+          }
           return;
         }
 
@@ -332,6 +387,15 @@ export default function ProtectedRoute({
           role,
         });
 
+        logProtectedRouteDecision({
+          path: currentClientPath(),
+          uid: firebaseUser.uid,
+          role,
+          allowedRoles,
+          decision: 'allow',
+          reason: 'firebase_auth',
+        });
+
         setCurrentRole(role);
 
         if (role !== 'player') {
@@ -351,6 +415,30 @@ export default function ProtectedRoute({
         setCurrentRole(null);
         setChecking(false);
         return;
+      }
+
+      if (getLocalAppSessionId()) {
+        const cachedUser = getCachedSessionUser();
+        const sessionUser =
+          cachedUser && isValidRole(cachedUser.role)
+            ? cachedUser
+            : await getSessionUserOnce();
+        if (cancelled) {
+          return;
+        }
+        if (sessionUser && isValidRole(sessionUser.role)) {
+          if (!allowedRoles.includes(sessionUser.role)) {
+            setCurrentRole(null);
+            setChecking(false);
+            redirectRoleMismatch(
+              router,
+              sessionUser as { uid: string; role: UserRole },
+              allowedRoles,
+              'sql_session_role_not_allowed_for_route'
+            );
+            return;
+          }
+        }
       }
 
       const playerSqlResult = await tryPlayerAppSessionGuard();

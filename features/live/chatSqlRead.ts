@@ -4,6 +4,7 @@ import { Timestamp } from 'firebase/firestore';
 
 import type { FirestoreChatMessage } from '@/features/messages/chatMessages';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import { checkPlayerPollRole } from '@/lib/client/playerPollGuard';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 const POLL_MS = 8_000;
@@ -66,7 +67,8 @@ export async function fetchSqlChatMessages(peerUid: string, limit = 50) {
 
 export function attachSqlUnreadCountsPoll(
   onChange: (counts: Record<string, number>) => void,
-  onError?: (error: Error) => void
+  onError?: (error: Error) => void,
+  options?: { requirePlayerRole?: boolean }
 ) {
   logClientFirestoreSkipped('chat_unread_counts_listener');
   let cancelled = false;
@@ -75,6 +77,17 @@ export function attachSqlUnreadCountsPoll(
   const tick = async () => {
     if (cancelled) {
       return;
+    }
+    if (options?.requirePlayerRole) {
+      const sessionUser = await checkPlayerPollRole('player_chat_unread_counts');
+      if (!sessionUser) {
+        cancelled = true;
+        if (timer != null) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        return;
+      }
     }
     try {
       const counts = await fetchSqlUnreadCounts();
@@ -105,7 +118,7 @@ export function attachSqlUnreadCountsPoll(
 export function attachSqlChatMessagesPoll(
   peerUid: string,
   onChange: (messages: FirestoreChatMessage[]) => void,
-  options?: { limit?: number },
+  options?: { limit?: number; requirePlayerRole?: boolean },
   onError?: (error: Error) => void
 ) {
   logClientFirestoreSkipped('chat_messages_listener', { peerUid });
@@ -115,6 +128,17 @@ export function attachSqlChatMessagesPoll(
   const tick = async () => {
     if (cancelled) {
       return;
+    }
+    if (options?.requirePlayerRole) {
+      const sessionUser = await checkPlayerPollRole('player_chat_messages');
+      if (!sessionUser) {
+        cancelled = true;
+        if (timer != null) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        return;
+      }
     }
     try {
       const messages = await fetchSqlChatMessages(peerUid, options?.limit || 50);

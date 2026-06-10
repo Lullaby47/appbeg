@@ -11,9 +11,10 @@ import {
   where,
 } from 'firebase/firestore';
 
-import ProtectedRoute from '@/components/auth/ProtectedRoute';
+
 import { computeRewardCoinsAfterFee } from '@/lib/rewardCoinTransferFee';
 import { auth, db } from '@/lib/firebase/client';
+import { useIsPlayerSessionRole } from '@/features/player/useIsPlayerSessionRole';
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 import {
   acceptFriendRequest,
@@ -52,6 +53,7 @@ function toTime(value: { toMillis?: () => number } | null | undefined) {
 }
 
 export default function PlayerChatPage() {
+  const isPlayerRole = useIsPlayerSessionRole();
   const [allPlayers, setAllPlayers] = useState<PlayerPeer[]>([]);
   const [selectedPeer, setSelectedPeer] = useState<PlayerPeer | null>(null);
   const [messages, setMessages] = useState<PlayerChatMessage[]>([]);
@@ -78,6 +80,9 @@ export default function PlayerChatPage() {
   const [referralNotice, setReferralNotice] = useState('');
 
   useEffect(() => {
+    if (!isPlayerRole) {
+      return;
+    }
     void ensureReferralFriendLinks();
     const q = query(
       collection(db, 'users'),
@@ -97,11 +102,16 @@ export default function PlayerChatPage() {
         .filter((p) => p.uid !== me);
       setAllPlayers(list);
     });
-  }, []);
+  }, [isPlayerRole]);
 
-  const onlineByUid = usePresenceOnlineMap(allPlayers.map((p) => p.uid));
+  const onlineByUid = usePresenceOnlineMap(allPlayers.map((p) => p.uid), {
+    requirePlayerRole: true,
+  });
 
   useEffect(() => {
+    if (!isPlayerRole) {
+      return;
+    }
     return listenDirectChatList((rows) => {
       const next: Record<string, { unread: number; muted: boolean; last: string }> = {};
       rows.forEach((row) => {
@@ -113,9 +123,12 @@ export default function PlayerChatPage() {
       });
       setChatList(next);
     });
-  }, []);
+  }, [isPlayerRole]);
 
   useEffect(() => {
+    if (!isPlayerRole) {
+      return;
+    }
     return listenFriendLinks((links: FriendLink[]) => {
       const selfUid = auth.currentUser?.uid || '';
       const next: Record<string, { status: 'pending' | 'accepted'; requestedByUid: string }> = {};
@@ -129,10 +142,10 @@ export default function PlayerChatPage() {
       });
       setFriendByUid(next);
     });
-  }, []);
+  }, [isPlayerRole]);
 
   useEffect(() => {
-    if (!selectedPeer) return;
+    if (!isPlayerRole || !selectedPeer) return;
     const unsubMessages = listenDirectMessages(selectedPeer.uid, (list) => {
       const selfUid = auth.currentUser?.uid || '';
       const visible = list.filter((m) => !Array.isArray(m.deletedFor) || !m.deletedFor.includes(selfUid));
@@ -145,7 +158,7 @@ export default function PlayerChatPage() {
       unsubTyping();
       void setDirectTyping(selectedPeer.uid, false);
     };
-  }, [selectedPeer]);
+  }, [isPlayerRole, selectedPeer]);
 
   useEffect(() => {
     setShowRewardPanel(false);
@@ -262,8 +275,8 @@ export default function PlayerChatPage() {
   }
 
   return (
-    <ProtectedRoute allowedRoles={['player']}>
-      <main className="min-h-screen bg-[#050509] text-white">
+    <>
+    <main className="min-h-screen bg-[#050509] text-white">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-4 lg:h-screen lg:flex-row lg:gap-5 lg:p-5">
           <aside className="fire-panel fire-violet w-full rounded-2xl border border-violet-400/30 bg-black/50 p-4 lg:w-[320px] lg:shrink-0">
             <div className="mb-4 flex items-center justify-between">
@@ -616,6 +629,6 @@ export default function PlayerChatPage() {
           </div>
         </div>
       ) : null}
-    </ProtectedRoute>
+    </>
   );
 }

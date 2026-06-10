@@ -7,6 +7,7 @@ import {
   sortPlayerGameRequestsByNewest,
 } from '@/features/games/playerGameRequests';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { checkPlayerPollRole } from '@/lib/client/playerPollGuard';
 import { LIVE_STREAM_DISABLED } from '@/features/live/liveStreamFlags';
 import { isPublicPlayerRequestsSqlReadEnabled } from '@/lib/client/sqlPublicFlags';
 
@@ -276,6 +277,11 @@ export function attachPlayerRequestSqlReadListener(
     const bufferRef = { value: '' };
 
     while (!disposed && !fellBack) {
+      const sessionUser = await checkPlayerPollRole('player_requests_sql_read');
+      if (!sessionUser) {
+        triggerFallback('non_player_role');
+        return;
+      }
       const { done, value } = await reader.read();
       if (done) {
         throw new Error('sse_stream_closed');
@@ -296,6 +302,15 @@ export function attachPlayerRequestSqlReadListener(
   };
 
   const bootstrap = async () => {
+    if (disposed || fellBack) {
+      return;
+    }
+    const sessionUser = await checkPlayerPollRole('player_requests_sql_read');
+    if (!sessionUser) {
+      triggerFallback('non_player_role');
+      return;
+    }
+
     console.info('[PLAYER_REQUESTS_SQL_READ] enabled');
     try {
       const headers = await getPlayerApiHeaders(false);
@@ -354,7 +369,14 @@ export function attachPlayerRequestSqlReadListener(
     }
   };
 
-  void bootstrap();
+  void (async () => {
+    const sessionUser = await checkPlayerPollRole('player_requests_sql_read');
+    if (!sessionUser || disposed) {
+      triggerFallback('non_player_role');
+      return;
+    }
+    await bootstrap();
+  })();
 
   return {
     dispose() {

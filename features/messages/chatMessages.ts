@@ -199,6 +199,7 @@ export type ListenToMessagesOptions = {
    * Omit or set very high to mirror legacy “load all” (not recommended).
    */
   limit?: number;
+  requirePlayerRole?: boolean;
 };
 
 /**
@@ -335,7 +336,8 @@ export async function markConversationAsRead(receiverUid: string) {
 }
 
 export function listenToUnreadCounts(
-  callback: (unreadCounts: Record<string, number>) => void
+  callback: (unreadCounts: Record<string, number>) => void,
+  options?: { requirePlayerRole?: boolean }
 ) {
   const currentUser = auth.currentUser;
 
@@ -345,7 +347,7 @@ export function listenToUnreadCounts(
   }
 
   if (isChatSqlReadEnabled()) {
-    return attachSqlUnreadCountsPoll(callback);
+    return attachSqlUnreadCountsPoll(callback, undefined, options);
   }
 
   const conversationsQuery = query(
