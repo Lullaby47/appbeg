@@ -257,3 +257,24 @@ export function logBonusEventsInitiateAuth(
     reason: values.reason,
   });
 }
+
+export function logPlayerBonusAuth(
+  request: Request,
+  values: {
+    route: string;
+    playerUid: string;
+    auth_path: string;
+    session_source?: string | null;
+    reason: string;
+  }
+) {
+  console.info('[PLAYER_BONUS_AUTH]', {
+    route: values.route,
+    playerUid: values.playerUid,
+    auth_path: values.auth_path,
+    has_app_session_header: bonusEventsRequestHeaderFlags(request).has_app_session_header,
+    has_player_session_header: bonusEventsRequestHeaderFlags(request).has_player_session_header,
+    session_source: values.session_source ?? 'none',
+    reason: values.reason,
+  });
+}

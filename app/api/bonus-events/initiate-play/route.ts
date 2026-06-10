@@ -21,6 +21,7 @@ import {
   bonusEventsRequestHeaderFlags,
   logBonusEventsBlocked,
   logBonusEventsInitiateAuth,
+  logPlayerBonusAuth,
 } from '@/lib/server/bonusEventsAudit';
 import { initiateBonusPlayInSql } from '@/lib/sql/authorityBonus';
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
@@ -73,6 +74,14 @@ export async function POST(request: Request) {
       coadminUid,
       auth_path: auth.authPath,
       session_source: auth.timing?.session_source || 'none',
+      reason: 'player_bonus_claim',
+    });
+
+    logPlayerBonusAuth(request, {
+      route: ROUTE,
+      playerUid,
+      auth_path: auth.authPath,
+      session_source: auth.timing?.session_source || null,
       reason: 'player_bonus_claim',
     });
 

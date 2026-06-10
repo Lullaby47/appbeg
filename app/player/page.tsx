@@ -226,6 +226,7 @@ export default function PlayerPage() {
     Record<string, string>
   >({});
   const [bonusEvents, setBonusEvents] = useState<BonusEvent[]>([]);
+  const [bonusEventsSessionLoading, setBonusEventsSessionLoading] = useState(false);
   const [usernameCarersByGame, setUsernameCarersByGame] = useState<Record<string, string[]>>({});
   const [creatorNames, setCreatorNames] = useState<Record<string, string>>({});
   const [selectedCreatorUid, setSelectedCreatorUid] = useState<string | null>(null);
@@ -1929,6 +1930,7 @@ export default function PlayerPage() {
   useEffect(() => {
     if (!playerCoadminUid || !shouldListenToBonusEvents) {
       setBonusEvents([]);
+      setBonusEventsSessionLoading(false);
       return;
     }
 
@@ -1960,6 +1962,8 @@ export default function PlayerPage() {
       },
       {
         skipTimeWindowFilter: true,
+        isPlayerView: true,
+        onSessionLoading: setBonusEventsSessionLoading,
         onSnapshotDebug: ({ snapshotSize, firstDocData }) => {
           if (PLAYER_BONUS_DEBUG) {
             console.info('[player bonusEvents] snapshot size', snapshotSize);
@@ -3713,7 +3717,7 @@ export default function PlayerPage() {
             {/* DASHBOARD VIEW */}
             {activeView === 'dashboard' && <Lobby activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} agents={agents} bonusStripPaused={bonusStripPaused} bonusVanishedToast={bonusVanishedToast} formatWalletAmount={formatWalletAmount} gameLogins={gameLogins} handleActivateBonusEvent={handleActivateBonusEvent} handleCopyReferralCode={handleCopyReferralCode} handleOpenFirstUnreadAgent={handleOpenFirstUnreadAgent} openCashToCoinTransferModal={openCashToCoinTransferModal} openCoinToCashTransferModal={openCoinToCashTransferModal} isBlockedPlayer={isBlockedPlayer} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} referralCode={referralCode} setActiveView={setActiveView} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} setMessage={setMessage} setShowLoadCoinPanel={setShowLoadCoinPanel} totalUnread={totalUnread} wallet={wallet} />}
 
-            {activeView === 'bonus-events' && <Bonus activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} bonusSwipeStartXRef={bonusSwipeStartXRef} bonusVanishedToast={bonusVanishedToast} handleActivateBonusEvent={handleActivateBonusEvent} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} showBonusPanelHint={showBonusPanelHint} />}
+            {activeView === 'bonus-events' && <Bonus activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} bonusEventsSessionLoading={bonusEventsSessionLoading} bonusSwipeStartXRef={bonusSwipeStartXRef} bonusVanishedToast={bonusVanishedToast} handleActivateBonusEvent={handleActivateBonusEvent} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} showBonusPanelHint={showBonusPanelHint} />}
 
             {/* PLAY VIEW */}
             {activeView === 'play' && <Play copyCredentialValue={copyCredentialValue} gameBackgroundImageByKey={gameBackgroundImageByKey} gameLogins={gameLogins} loadingList={loadingList} openActiveTableSplash={openActiveTableSplash} selectedGameName={selectedGameName} setSelectedGameName={setSelectedGameName} togglePassword={togglePassword} visiblePasswords={visiblePasswords} />}

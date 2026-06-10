@@ -12,6 +12,7 @@ import {
   logBonusEventsBlocked,
   logBonusEventsListAuth,
   logBonusEventsListSql,
+  logPlayerBonusAuth,
 } from '@/lib/server/bonusEventsAudit';
 import {
   readActiveBonusEventsByCoadmin,
@@ -268,6 +269,16 @@ export async function GET(request: Request) {
       auth_path: auth.authPath,
       source: 'postgres',
     });
+
+    if (auth.user.role === 'player') {
+      logPlayerBonusAuth(request, {
+        route: ROUTE,
+        playerUid: auth.user.uid,
+        auth_path: auth.authPath,
+        session_source: auth.timing?.session_source || null,
+        reason: 'player_bonus_list',
+      });
+    }
 
     if (!coadminUid) {
       logBonusEventsListSql({

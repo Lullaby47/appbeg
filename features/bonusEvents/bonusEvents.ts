@@ -20,7 +20,11 @@ import { getCurrentUserCoadminUid } from '@/lib/coadmin/scope';
 import { upsertCarerTaskForPlayerGameRequest } from '@/features/games/carerTasks';
 import type { PlayerGameRequest } from '@/features/games/playerGameRequests';
 import { getLocalAppSessionId } from '@/features/auth/appSession';
-import { getLocalPlayerSessionId, getPlayerApiHeaders } from '@/features/auth/playerSession';
+import {
+  getLocalPlayerSessionId,
+  getPlayerApiHeaders,
+  isPlayerSessionReady,
+} from '@/features/auth/playerSession';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { getStaffAppSessionApiHeaders, staffApiHeaderFlags } from '@/lib/client/staffApiHeaders';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
@@ -811,24 +815,87 @@ export async function getCoadminBonusApiHeaders(contentType = false) {
   return getStaffAppSessionApiHeaders(contentType);
 }
 
-async function getBonusEventsListHeaders() {
+function sessionIdPrefix(value: string | null | undefined) {
+  const clean = String(value || '').trim();
+  return clean ? clean.slice(0, 8) : null;
+}
+
+export function logPlayerBonusApiRequest(values: {
+  action: string;
+  url: string;
+  hasAppSessionId: boolean;
+  hasPlayerSessionId: boolean;
+  appSessionIdPrefix: string | null;
+  playerSessionIdPrefix: string | null;
+  blocked: boolean;
+  reason: string;
+}) {
+  console.info('[PLAYER_BONUS_API_REQUEST]', values);
+}
+
+async function getBonusEventsListHeaders(isPlayerView: boolean) {
+  if (isPlayerView) {
+    return getPlayerApiHeaders(false, { route: '/api/bonus-events/list' });
+  }
   return getCoadminBonusApiHeaders(false);
 }
 
+type FetchBonusEventsOptions = {
+  skipTimeWindowFilter?: boolean;
+  isPlayerView?: boolean;
+  onSessionLoading?: (loading: boolean) => void;
+};
+
 async function fetchBonusEventsFromApi(
   coadminUid: string,
-  options?: { skipTimeWindowFilter?: boolean }
+  options?: FetchBonusEventsOptions
 ) {
-  try {
-    const url = `/api/bonus-events/list?coadminUid=${encodeURIComponent(coadminUid)}`;
-    const headers = await getBonusEventsListHeaders();
-    logBonusEventsUiRequest({
+  const isPlayerView = options?.isPlayerView ?? false;
+  const url = `/api/bonus-events/list?coadminUid=${encodeURIComponent(coadminUid)}`;
+  const appSessionId = getLocalAppSessionId();
+  const playerSessionId = getLocalPlayerSessionId();
+
+  if (isPlayerView && (!appSessionId || !playerSessionId || !isPlayerSessionReady())) {
+    logPlayerBonusApiRequest({
       action: 'list_bonus_events',
-      page: 'coadmin_bonus_events',
-      coadminUid,
       url,
-      headers,
+      hasAppSessionId: Boolean(appSessionId),
+      hasPlayerSessionId: Boolean(playerSessionId),
+      appSessionIdPrefix: sessionIdPrefix(appSessionId),
+      playerSessionIdPrefix: sessionIdPrefix(playerSessionId),
+      blocked: true,
+      reason: 'player_session_not_ready',
     });
+    options?.onSessionLoading?.(true);
+    return null;
+  }
+
+  options?.onSessionLoading?.(false);
+
+  try {
+    const headers = await getBonusEventsListHeaders(isPlayerView);
+    if (isPlayerView) {
+      logPlayerBonusApiRequest({
+        action: 'list_bonus_events',
+        url,
+        hasAppSessionId: Boolean(headers['X-App-Session-Id']),
+        hasPlayerSessionId: Boolean(headers['X-Player-Session-Id']),
+        appSessionIdPrefix: sessionIdPrefix(headers['X-App-Session-Id']),
+        playerSessionIdPrefix: sessionIdPrefix(headers['X-Player-Session-Id']),
+        blocked: false,
+        reason: 'request',
+      });
+    } else {
+      logBonusEventsUiRequest({
+        action: 'list_bonus_events',
+        page: 'coadmin_bonus_events',
+        coadminUid,
+        url,
+        headers,
+        isCoadminView: true,
+        isPlayerView: false,
+      });
+    }
     const response = await fetch(url, {
       method: 'GET',
       headers,
@@ -840,15 +907,28 @@ async function fetchBonusEventsFromApi(
     };
     if (!response.ok) {
       const reason = payload.error || `http_${response.status}`;
-      logBonusEventsUiGuard({
-        page: 'coadmin_bonus_events_list',
-        reason,
-        message: payload.error || reason,
-        blocked: true,
-        coadminUid,
-        isCoadminView: true,
-        isPlayerView: false,
-      });
+      if (isPlayerView) {
+        logPlayerBonusApiRequest({
+          action: 'list_bonus_events',
+          url,
+          hasAppSessionId: Boolean(headers['X-App-Session-Id']),
+          hasPlayerSessionId: Boolean(headers['X-Player-Session-Id']),
+          appSessionIdPrefix: sessionIdPrefix(headers['X-App-Session-Id']),
+          playerSessionIdPrefix: sessionIdPrefix(headers['X-Player-Session-Id']),
+          blocked: true,
+          reason,
+        });
+      } else {
+        logBonusEventsUiGuard({
+          page: 'coadmin_bonus_events_list',
+          reason,
+          message: payload.error || reason,
+          blocked: true,
+          coadminUid,
+          isCoadminView: true,
+          isPlayerView: false,
+        });
+      }
       throw new Error(payload.error || 'Failed to load bonus events.');
     }
     const events = (payload.events || []).map(mapApiBonusEvent);
@@ -858,7 +938,7 @@ async function fetchBonusEventsFromApi(
     return filtered;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('Player session required')) {
+    if (!isPlayerView && message.includes('Player session required')) {
       logBonusEventsUiGuard({
         page: 'coadmin_bonus_events_list',
         reason: 'player_session_required_blocked_on_coadmin_view',
@@ -879,6 +959,8 @@ export function listenBonusEventsByCoadmin(
   onError?: (error: Error) => void,
   options?: {
     skipTimeWindowFilter?: boolean;
+    isPlayerView?: boolean;
+    onSessionLoading?: (loading: boolean) => void;
     onSnapshotDebug?: (values: {
       snapshotSize: number;
       firstDocData: Record<string, unknown> | null;
@@ -905,6 +987,9 @@ export function listenBonusEventsByCoadmin(
         if (cancelled) {
           return;
         }
+        if (events === null) {
+          return;
+        }
         if (!recordedFirstSnapshot) {
           recordedFirstSnapshot = true;
           recordBonusEventsListenerFirstSnapshot(events.length);
@@ -925,15 +1010,28 @@ export function listenBonusEventsByCoadmin(
       } catch (error) {
         if (!cancelled) {
           const err = error instanceof Error ? error : new Error(String(error));
-          logBonusEventsUiGuard({
-            page: 'coadmin_bonus_events_listener',
-            reason: err.message,
-            message: err.message,
-            blocked: true,
-            coadminUid,
-            isCoadminView: true,
-            isPlayerView: false,
-          });
+          if (options?.isPlayerView) {
+            logPlayerBonusApiRequest({
+              action: 'list_bonus_events',
+              url: `/api/bonus-events/list?coadminUid=${encodeURIComponent(coadminUid)}`,
+              hasAppSessionId: Boolean(getLocalAppSessionId()),
+              hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+              appSessionIdPrefix: sessionIdPrefix(getLocalAppSessionId()),
+              playerSessionIdPrefix: sessionIdPrefix(getLocalPlayerSessionId()),
+              blocked: true,
+              reason: err.message,
+            });
+          } else {
+            logBonusEventsUiGuard({
+              page: 'coadmin_bonus_events_listener',
+              reason: err.message,
+              message: err.message,
+              blocked: true,
+              coadminUid,
+              isCoadminView: true,
+              isPlayerView: false,
+            });
+          }
           onError?.(err);
         }
       } finally {
@@ -1041,9 +1139,22 @@ export async function initiateBonusEventPlay(values: {
     throw new Error('Not authenticated as current player.');
   }
 
-  const response = await fetch('/api/bonus-events/initiate-play', {
+  const url = '/api/bonus-events/initiate-play';
+  const headers = await getPlayerApiHeaders(true, { route: url });
+  logPlayerBonusApiRequest({
+    action: 'initiate_bonus_play',
+    url,
+    hasAppSessionId: Boolean(headers['X-App-Session-Id']),
+    hasPlayerSessionId: Boolean(headers['X-Player-Session-Id']),
+    appSessionIdPrefix: sessionIdPrefix(headers['X-App-Session-Id']),
+    playerSessionIdPrefix: sessionIdPrefix(headers['X-Player-Session-Id']),
+    blocked: false,
+    reason: 'request',
+  });
+
+  const response = await fetch(url, {
     method: 'POST',
-    headers: await getPlayerApiHeaders(),
+    headers,
     body: JSON.stringify({ bonusEventId: values.bonusEventId }),
   });
   const payload = (await response.json().catch(() => ({}))) as {

@@ -9,6 +9,7 @@ export default function Bonus(props: Props) {
   const {
     activatingBonusEventId,
     activeBonusCarouselIndex,
+    bonusEventsSessionLoading,
     bonusSwipeStartXRef,
     bonusVanishedToast,
     handleActivateBonusEvent,
@@ -72,7 +73,9 @@ export default function Bonus(props: Props) {
                         🎁
                       </p>
                       <p className="mt-4 text-base font-bold text-violet-100">
-                        No bonus events right now. Check back soon.
+                        {bonusEventsSessionLoading
+                          ? 'Loading session...'
+                          : 'No bonus events right now. Check back soon.'}
                       </p>
                     </div>
                   ) : (
