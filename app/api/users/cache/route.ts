@@ -21,7 +21,7 @@ import {
 
 const ROUTE = '/api/users/cache';
 
-const DIRECTORY_ROLES = new Set<DirectoryRole>(['staff', 'carer', 'coadmin', 'player']);
+const DIRECTORY_ROLES = new Set<DirectoryRole>(['admin', 'staff', 'carer', 'coadmin', 'player']);
 
 function cleanText(value: unknown) {
   return String(value || '').trim();
@@ -177,6 +177,9 @@ function resolveCoadminScope(authUser: ApiUser, explicitCoadminUid: string | nul
 
 function canReadRole(authUser: ApiUser, role: DirectoryRole) {
   if (authUser.role === 'admin') return true;
+  if (role === 'admin') {
+    return authUser.role === 'coadmin' || authUser.role === 'staff';
+  }
   if (role === 'coadmin') {
     return authUser.role === 'staff';
   }
@@ -193,7 +196,7 @@ export async function GET(request: Request) {
 
   const role = resolveRole(request);
   if (!role) {
-    return apiError('role query parameter is required (staff|carer|coadmin|player).', 400);
+    return apiError('role query parameter is required (admin|staff|carer|coadmin|player).', 400);
   }
 
   if (!canReadRole(auth.user, role)) {

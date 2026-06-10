@@ -23,6 +23,9 @@ import {
 import { jobCompleteGuard } from '@/lib/automation/jobCompleteGuard';
 
 import { getAppSessionRequestHeaders, getLocalAppSessionId } from '@/features/auth/appSession';
+import { attachCarerRechargeRedeemTotalsSqlPoll } from '@/features/live/coadminCarerTotalsSqlRead';
+import { clientOnSnapshot } from '@/lib/client/clientFirestoreQuery';
+import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import { assertActivePlayerSession } from '@/features/auth/playerSession';
 import { auth, db } from '@/lib/firebase/client';
@@ -2670,6 +2673,12 @@ export function listenToCarerEscalationAlertsByCoadmin(
   onChange: (alerts: CarerEscalationAlert[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (isClientSqlReadMode()) {
+    logClientFirestoreSkipped('carer_escalation_alerts_listener', { coadminUid });
+    onChange([]);
+    return () => {};
+  }
+
   const alertsQuery = query(
     collection(db, 'carerEscalationAlerts'),
     where('coadminUid', '==', coadminUid),
@@ -2682,8 +2691,15 @@ export function listenToCarerEscalationAlertsByCoadmin(
   );
   console.info('[ALERTS] unbounded global alert listener removed');
 
-  return onSnapshot(
+  return clientOnSnapshot(
     alertsQuery,
+    {
+      file: 'features/games/carerTasks.ts',
+      hook: 'listenToCarerEscalationAlertsByCoadmin',
+      collection: 'carerEscalationAlerts',
+      where: { coadminUid, orderByCreatedAtDesc: true },
+      orderBy: { field: 'createdAt', direction: 'desc' },
+    },
     (snapshot) => {
       const currentUid = auth.currentUser?.uid || '';
       const alerts = snapshot.docs
@@ -2931,6 +2947,14 @@ export function listenCarerRechargeRedeemTotalsByCoadmin(
   onChange: (totalsByCarerUid: Record<string, CarerRechargeRedeemTotals>) => void,
   onError?: (error: Error) => void
 ) {
+  if (isClientSqlReadMode()) {
+    return attachCarerRechargeRedeemTotalsSqlPoll({
+      coadminUid,
+      onChange,
+      onError,
+    });
+  }
+
   const windowStart = Timestamp.fromMillis(Date.now() - CARER_TOTALS_WINDOW_MS);
   const rechargeQuery = query(
     collection(db, 'carerTasks'),
@@ -2979,8 +3003,21 @@ export function listenCarerRechargeRedeemTotalsByCoadmin(
     onChange(totals);
   };
 
-  const unsubRecharge = onSnapshot(
+  const queryMeta = {
+    file: 'features/games/carerTasks.ts',
+    hook: 'listenCarerRechargeRedeemTotalsByCoadmin',
+    collection: 'carerTasks',
+    where: {
+      coadminUid,
+      status: 'completed',
+      completedAtGteWindowStart: true,
+    },
+    orderBy: { field: 'completedAt', direction: 'desc' },
+  };
+
+  const unsubRecharge = clientOnSnapshot(
     rechargeQuery,
+    { ...queryMeta, hook: 'listenCarerRechargeRedeemTotalsByCoadmin/recharge' },
     (snapshot) => {
       rechargeTasks = snapshot.docs.map((docSnap) => ({
         id: docSnap.id,
@@ -2990,8 +3027,9 @@ export function listenCarerRechargeRedeemTotalsByCoadmin(
     },
     (error) => onError?.(error as Error)
   );
-  const unsubRedeem = onSnapshot(
+  const unsubRedeem = clientOnSnapshot(
     redeemQuery,
+    { ...queryMeta, hook: 'listenCarerRechargeRedeemTotalsByCoadmin/redeem' },
     (snapshot) => {
       redeemTasks = snapshot.docs.map((docSnap) => ({
         id: docSnap.id,

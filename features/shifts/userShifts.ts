@@ -13,6 +13,8 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
+import { clientOnSnapshot } from '@/lib/client/clientFirestoreQuery';
+import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 
 export type ShiftRole = 'staff' | 'carer';
@@ -96,12 +98,24 @@ export function listenShiftSessionsByCoadmin(
   onChange: (items: ShiftSession[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (isClientSqlReadMode()) {
+    logClientFirestoreSkipped('shift_sessions_listener', { coadminUid });
+    onChange([]);
+    return () => {};
+  }
+
   const sessionsQuery = query(
     collection(db, 'shiftSessions'),
     where('coadminUid', '==', coadminUid)
   );
-  return onSnapshot(
+  return clientOnSnapshot(
     sessionsQuery,
+    {
+      file: 'features/shifts/userShifts.ts',
+      hook: 'listenShiftSessionsByCoadmin',
+      collection: 'shiftSessions',
+      where: { coadminUid },
+    },
     (snapshot) => {
       const items = snapshot.docs.map((docSnap) => ({
         id: docSnap.id,

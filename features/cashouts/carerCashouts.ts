@@ -15,6 +15,9 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
+import { attachPendingCarerCashoutsSqlPoll } from '@/features/live/coadminCarerCashoutsSqlRead';
+import { clientOnSnapshot } from '@/lib/client/clientFirestoreQuery';
+import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 
 const CARER_CASHOUT_PENDING_LISTENER_LIMIT = 100;
 const CARER_CASHOUT_HISTORY_LISTENER_LIMIT = 50;
@@ -125,6 +128,15 @@ export function listenPendingCashoutsByCoadmin(
   onChange: (items: CarerCashoutRequest[]) => void,
   onError?: (error: Error) => void
 ) {
+  if (isClientSqlReadMode()) {
+    return attachPendingCarerCashoutsSqlPoll({
+      coadminUid,
+      limit: CARER_CASHOUT_PENDING_LISTENER_LIMIT,
+      onChange,
+      onError,
+    });
+  }
+
   const cashoutQuery = query(
     collection(db, 'carerCashouts'),
     where('coadminUid', '==', coadminUid),
@@ -133,8 +145,15 @@ export function listenPendingCashoutsByCoadmin(
     limit(CARER_CASHOUT_PENDING_LISTENER_LIMIT)
   );
 
-  return onSnapshot(
+  return clientOnSnapshot(
     cashoutQuery,
+    {
+      file: 'features/cashouts/carerCashouts.ts',
+      hook: 'listenPendingCashoutsByCoadmin',
+      collection: 'carerCashouts',
+      where: { coadminUid, status: 'pending' },
+      orderBy: { field: 'createdAt', direction: 'desc' },
+    },
     (snapshot) => {
       const items = snapshot.docs
         .map((docSnap) => ({

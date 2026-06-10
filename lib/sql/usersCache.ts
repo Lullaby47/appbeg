@@ -11,7 +11,7 @@ import {
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
 
-export type DirectoryRole = 'staff' | 'carer' | 'coadmin' | 'player';
+export type DirectoryRole = 'admin' | 'staff' | 'carer' | 'coadmin' | 'player';
 
 export type CachedDirectoryUser = {
   id: string;

@@ -141,6 +141,88 @@ export async function tombstoneCarerCashoutCache(firebaseId: string, source = 'a
   }
 }
 
+export type CachedCarerCashout = {
+  id: string;
+  coadminUid: string;
+  carerUid: string;
+  carerUsername: string;
+  amountNpr: number;
+  paymentQrUrl: string | null;
+  paymentQrPublicId: string | null;
+  paymentDetails: string | null;
+  status: string;
+  completedAmountNpr: number | null;
+  remainingAmountNpr: number | null;
+  createdAt: string | null;
+  completedAt: string | null;
+};
+
+function mapCachedCarerCashoutRow(row: Record<string, unknown>): CachedCarerCashout | null {
+  const id = cleanText(row.firebase_id);
+  const carerUid = cleanText(row.carer_uid);
+  if (!id || !carerUid) {
+    return null;
+  }
+  return {
+    id,
+    coadminUid: cleanText(row.coadmin_uid),
+    carerUid,
+    carerUsername: cleanText(row.carer_username),
+    amountNpr: Number(row.amount_npr || 0),
+    paymentQrUrl: cleanText(row.payment_qr_url) || null,
+    paymentQrPublicId: cleanText(row.payment_qr_public_id) || null,
+    paymentDetails: cleanText(row.payment_details) || null,
+    status: cleanText(row.status) || 'pending',
+    completedAmountNpr: numberOrNull(row.completed_amount_npr) ?? null,
+    remainingAmountNpr: numberOrNull(row.remaining_amount_npr) ?? null,
+    createdAt: toIsoString(row.created_at),
+    completedAt: toIsoString(row.completed_at),
+  };
+}
+
+export async function readPendingCarerCashoutsByCoadmin(
+  coadminUid: string,
+  limit = 100
+): Promise<CachedCarerCashout[] | null> {
+  const db = getPlayerMirrorPool();
+  const cleanCoadminUid = cleanText(coadminUid);
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 200));
+  if (!db || !cleanCoadminUid) {
+    return null;
+  }
+
+  try {
+    const startedAt = Date.now();
+    const result = await db.query(
+      `
+        SELECT *
+        FROM public.carer_cashouts_cache
+        WHERE coadmin_uid = $1
+          AND status = 'pending'
+          AND deleted_at IS NULL
+        ORDER BY created_at DESC NULLS LAST
+        LIMIT $2
+      `,
+      [cleanCoadminUid, safeLimit]
+    );
+    const cashouts = result.rows
+      .map((row) => mapCachedCarerCashoutRow(row as Record<string, unknown>))
+      .filter((row): row is CachedCarerCashout => Boolean(row));
+    console.info('[CARER_CASHOUTS_CACHE] pending read ok', {
+      coadminUid: cleanCoadminUid,
+      count: cashouts.length,
+      durationMs: Date.now() - startedAt,
+    });
+    return cashouts;
+  } catch (error) {
+    console.warn('[CARER_CASHOUTS_CACHE] pending read failed', {
+      coadminUid: cleanCoadminUid,
+      error,
+    });
+    return null;
+  }
+}
+
 export async function getCarerCashoutCacheById(firebaseId: string) {
   const db = getPlayerMirrorPool();
   const cleanId = cleanText(firebaseId);

@@ -32,6 +32,8 @@ import {
 } from '@/features/auth/appSession';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
+import { clientGetDocs } from '@/lib/client/clientFirestoreQuery';
+import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { auth, db } from '@/lib/firebase/client';
 import { getApiAuthHeaders, getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import {
@@ -1875,13 +1877,43 @@ export default function CoadminPage() {
 
   async function loadChatUsers(prefetchedStaff?: StaffUser[]) {
     try {
-      const adminQuery = query(collection(db, 'users'), where('role', '==', 'admin'));
-      const adminSnapshot = await getDocs(adminQuery);
+      let admins: AdminUser[];
 
-      const admins = adminSnapshot.docs.map((docSnap) => ({
-        id: docSnap.id,
-        ...(docSnap.data() as any),
-      })) as AdminUser[];
+      if (isClientSqlReadMode()) {
+        logClientFirestoreSkipped('load_chat_users_admins', { route: '/coadmin' });
+        const response = await fetch('/api/users/cache?role=admin', {
+          method: 'GET',
+          headers: await getSqlApiReadHeaders(false),
+          cache: 'no-store',
+        });
+        const payload = (await response.json().catch(() => ({}))) as {
+          users?: Array<Record<string, unknown>>;
+          error?: string;
+        };
+        if (!response.ok) {
+          throw new Error(payload.error || 'Failed to load admin users.');
+        }
+        admins = (payload.users || []).map((user) => ({
+          id: String(user.uid || user.id || ''),
+          uid: String(user.uid || user.id || ''),
+          username: String(user.username || ''),
+          email: String(user.email || ''),
+          role: 'admin',
+          ...(user as Record<string, unknown>),
+        })) as AdminUser[];
+      } else {
+        const adminQuery = query(collection(db, 'users'), where('role', '==', 'admin'));
+        const adminSnapshot = await clientGetDocs(adminQuery, {
+          file: 'app/coadmin/page.tsx',
+          hook: 'loadChatUsers',
+          collection: 'users',
+          where: { role: 'admin' },
+        });
+        admins = adminSnapshot.docs.map((docSnap) => ({
+          id: docSnap.id,
+          ...(docSnap.data() as any),
+        })) as AdminUser[];
+      }
 
       const adminUIDs = admins.map((admin: any) => admin.uid);
       const allStaff = prefetchedStaff ?? (await getStaff());

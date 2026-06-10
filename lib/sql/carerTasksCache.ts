@@ -694,6 +694,77 @@ export async function lookupAutoTickTaskRecheckFromSql(
   }
 }
 
+export type CachedCarerTotalsTask = {
+  id: string;
+  type: 'recharge' | 'redeem';
+  completedByCarerUid: string | null;
+  assignedCarerUid: string | null;
+  amount: number;
+};
+
+function mapCachedCarerTotalsTaskRow(row: Record<string, unknown>): CachedCarerTotalsTask | null {
+  const id = cleanText(row.firebase_id);
+  const type = cleanText(row.type) as 'recharge' | 'redeem';
+  if (!id || (type !== 'recharge' && type !== 'redeem')) {
+    return null;
+  }
+  return {
+    id,
+    type,
+    completedByCarerUid: cleanText(row.completed_by_carer_uid) || null,
+    assignedCarerUid: cleanText(row.assigned_carer_uid) || null,
+    amount: Number(row.amount || 0),
+  };
+}
+
+export async function readCarerRechargeRedeemTotalsFromCache(
+  coadminUid: string,
+  windowStartIso: string,
+  limitPerType: number
+): Promise<CachedCarerTotalsTask[] | null> {
+  const db = getPlayerMirrorPool();
+  const cleanCoadminUid = cleanText(coadminUid);
+  const cleanWindowStart = cleanText(windowStartIso);
+  const safeLimit = Math.max(1, Math.min(Number(limitPerType) || 500, 1000));
+  if (!db || !cleanCoadminUid || !cleanWindowStart) {
+    return null;
+  }
+
+  try {
+    const startedAt = Date.now();
+    const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(
+      db,
+      `
+        SELECT firebase_id, type, completed_by_carer_uid, assigned_carer_uid, amount
+        FROM public.carer_tasks_cache
+        WHERE coadmin_uid = $1
+          AND status = 'completed'
+          AND type IN ('recharge', 'redeem')
+          AND completed_at >= $2::timestamptz
+          AND deleted_at IS NULL
+        ORDER BY completed_at DESC NULLS LAST
+        LIMIT $3
+      `,
+      [cleanCoadminUid, cleanWindowStart, safeLimit * 2]
+    );
+    const tasks = rows
+      .map((row) => mapCachedCarerTotalsTaskRow(row))
+      .filter((task): task is CachedCarerTotalsTask => Boolean(task));
+    console.info('[CARER_TASKS_CACHE] carer_totals read ok', {
+      coadminUid: cleanCoadminUid,
+      count: tasks.length,
+      durationMs: Date.now() - startedAt,
+    });
+    return tasks;
+  } catch (error) {
+    console.warn('[CARER_TASKS_CACHE] carer_totals read failed', {
+      coadminUid: cleanCoadminUid,
+      error,
+    });
+    return null;
+  }
+}
+
 export async function getPendingCarerTaskCandidatesFromSql(
   coadminUid: string,
   limit: number,
