@@ -94,6 +94,7 @@ import {
 } from '@/features/player/playerProfileSqlPoll';
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { reportPlayerUiError } from '@/lib/client/sqlFirestoreError';
+import { performSqlClientLogoutCleanup } from '@/lib/client/sqlLogoutCleanup';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import {
   getCoadminMaintenanceBreakClient,
@@ -3252,7 +3253,12 @@ export default function PlayerPage() {
         function: 'performLogout',
         userClickedLogout: true,
       });
-      await signOut(auth);
+      await performSqlClientLogoutCleanup(options.source);
+      try {
+        await signOut(auth);
+      } catch {
+        // SQL logout does not require Firebase sign-out.
+      }
       setShowLogoutConfirmSplash(false);
       setLogoutConfirmSource(null);
       router.replace('/login');

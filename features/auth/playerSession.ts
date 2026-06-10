@@ -237,6 +237,12 @@ export function clearPlayerSessionBeforeLogin(reason = 'login_start') {
   });
 }
 
+export function resetPlayerAuthClientOnLogout(reason = 'logout') {
+  stopPlayerSessionStatusPolling();
+  forcedPlayerLogout = false;
+  clearPlayerSessionBeforeLogin(reason);
+}
+
 export function storePlayerLoginSessionPair(values: {
   appSessionId: string;
   appSessionExpiresAt: string;

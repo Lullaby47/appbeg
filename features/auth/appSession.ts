@@ -240,23 +240,7 @@ export async function bootstrapAppSessionAfterFirebaseLogin(input?: {
   return payload;
 }
 
-export async function revokeAppSessionOnLogout() {
-  const sessionId = getLocalAppSessionId();
-  clearAppSessionLocal();
-  if (!sessionId) {
-    return;
-  }
-
-  try {
-    await fetch('/api/auth/session/logout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId }),
-    });
-  } catch (error) {
-    console.info('[SQL_AUTH_BOOTSTRAP] logout_revoke_failed', {
-      sessionId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
+export async function revokeAppSessionOnLogout(reason = 'logout') {
+  const { performSqlClientLogoutCleanup } = await import('@/lib/client/sqlLogoutCleanup');
+  await performSqlClientLogoutCleanup(reason);
 }

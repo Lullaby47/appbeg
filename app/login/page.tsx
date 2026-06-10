@@ -16,7 +16,7 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db } from '@/lib/firebase/client';
-import { DASHBOARD_BY_ROLE, isValidRole } from '@/lib/auth/roles';
+import { isValidRole } from '@/lib/auth/roles';
 import { bootstrapAppSessionAfterFirebaseLogin, getLocalAppSessionId } from '@/features/auth/appSession';
 import { dashboardPathForRole, logLoginRoleRedirect } from '@/lib/client/loginRoleRedirect';
 import { migrateCredentialsAfterFirebaseLogin } from '@/features/auth/credentialsMigrate';
@@ -27,8 +27,8 @@ import {
   PLAYER_REPLACED_LOGIN_MESSAGE,
 } from '@/features/auth/playerSession';
 import { attemptSqlLogin, isSqlLoginFirstEnabled } from '@/features/auth/sqlLogin';
-import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
-import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
+import { getSessionUserOnce } from '@/features/auth/sessionUser';
+import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { rememberPlayerLoginCredentials } from '@/features/auth/rememberedPlayerLogin';
 import {
   failLoginUiProgress,
@@ -61,6 +61,19 @@ export default function LoginPage() {
 
   useEffect(() => {
     async function checkAdminExists() {
+      const sqlMode = isSqlLoginFirstEnabled() || isClientSqlReadMode();
+      if (sqlMode) {
+        console.info('[LOGIN_ADMIN_STATUS_CHECK]', {
+          sqlMode: true,
+          skippedFirebase: true,
+          source: 'login_page_mount',
+          ok: true,
+          reason: 'sql_login_mode_skipped_firestore_admin_probe',
+        });
+        setAdminExists(true);
+        return;
+      }
+
       try {
         const adminQuery = query(
           collection(db, 'users'),
@@ -68,50 +81,68 @@ export default function LoginPage() {
         );
 
         const snapshot = await getDocs(adminQuery);
-        setAdminExists(!snapshot.empty);
+        const exists = !snapshot.empty;
+        console.info('[LOGIN_ADMIN_STATUS_CHECK]', {
+          sqlMode: false,
+          skippedFirebase: false,
+          source: 'login_page_mount',
+          ok: true,
+          reason: exists ? 'admin_user_present' : 'no_admin_user',
+        });
+        setAdminExists(exists);
       } catch (err) {
         console.error(err);
-        setError('Failed to check admin status.');
+        console.info('[LOGIN_ADMIN_STATUS_CHECK]', {
+          sqlMode: false,
+          skippedFirebase: false,
+          source: 'login_page_mount',
+          ok: false,
+          reason: err instanceof Error ? err.message : 'firestore_admin_probe_failed',
+        });
         setAdminExists(true);
       }
     }
 
-    checkAdminExists();
+    void checkAdminExists();
   }, []);
 
-  // If the user is already signed in, send them to their app — so the browser
-  // "back" key does not look like a confusing pseudo-logout on /login.
+  // If a valid SQL app session exists, send the user to their dashboard.
   useEffect(() => {
     void (async () => {
       if (loginInProgressRef.current) {
         return;
       }
 
-      if (getLocalAppSessionId()) {
-        try {
-          const cached = getCachedSessionUser();
-          const sessionUser =
-            cached && isValidRole(cached.role) ? cached : await getSessionUserOnce();
-          if (sessionUser && isValidRole(sessionUser.role)) {
-            if (sessionUser.role === 'player' && !isPlayerSessionReady()) {
-              return;
-            }
-            const to = dashboardPathForRole(sessionUser.role);
-            logLoginRoleRedirect({
-              uid: sessionUser.uid,
-              role: sessionUser.role,
-              from: '/login',
-              to,
-              reason: 'existing_app_session',
-            });
-            router.replace(to);
-            return;
-          }
-        } catch {
-          // ignore; user can still use the form
+      const appSessionId = getLocalAppSessionId();
+      if (!appSessionId) {
+        return;
+      }
+
+      try {
+        const sessionUser = await getSessionUserOnce();
+        if (!sessionUser || !isValidRole(sessionUser.role)) {
+          return;
         }
+        if (sessionUser.role === 'player' && !getLocalPlayerSessionId()) {
+          return;
+        }
+        const to = dashboardPathForRole(sessionUser.role);
+        logLoginRoleRedirect({
+          uid: sessionUser.uid,
+          role: sessionUser.role,
+          from: '/login',
+          to,
+          reason: 'existing_app_session',
+        });
+        router.replace(to);
+      } catch {
+        // ignore; user can still use the form
       }
     })();
+
+    if (isSqlLoginFirstEnabled()) {
+      return;
+    }
 
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (loginInProgressRef.current) {
@@ -119,34 +150,6 @@ export default function LoginPage() {
       }
 
       if (!user) {
-        if (
-          isSqlPlayerLoginEnabled() &&
-          getLocalAppSessionId() &&
-          isPlayerSessionReady()
-        ) {
-          try {
-            const cached = getCachedSessionUser();
-            const sessionUser =
-              cached?.role === 'player' ? cached : await getSessionUserOnce();
-            if (sessionUser?.role === 'player') {
-              logLoginRoleRedirect({
-                uid: sessionUser.uid,
-                role: 'player',
-                from: '/login',
-                to: DASHBOARD_BY_ROLE.player,
-                reason: 'sql_app_session',
-              });
-              console.info('[PLAYER_LOGIN_SESSION] login-page redirect allowed', {
-                uid: sessionUser.uid,
-                role: 'player',
-                reason: 'sql_app_session',
-              });
-              router.replace(DASHBOARD_BY_ROLE.player);
-            }
-          } catch {
-            // ignore; user can still use the form
-          }
-        }
         return;
       }
 
@@ -172,11 +175,6 @@ export default function LoginPage() {
             role,
             from: '/login',
             to,
-            reason: 'existing_authenticated_user',
-          });
-          console.info('[PLAYER_LOGIN_SESSION] login-page redirect allowed', {
-            uid: user.uid,
-            role,
             reason: 'existing_authenticated_user',
           });
           router.replace(to);
