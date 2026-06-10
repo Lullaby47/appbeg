@@ -67,7 +67,9 @@ async function tryReadPlayerGameLoginsCacheByCoadmin(
 
   const startedAt = Date.now();
   try {
-    const headers = await getFirebaseApiHeaders(false);
+    const headers = isPlayerGameLoginsSqlReadEnabled()
+      ? await getSqlApiReadHeaders(false)
+      : await getFirebaseApiHeaders(false);
     const response = await fetchWithPlayerGameLoginsCacheTimeout(
       `/api/player-game-logins/cache?coadminUid=${encodeURIComponent(cleanCoadminUid)}`,
       {
@@ -221,7 +223,11 @@ async function upsertPlayerGameLoginViaSql(login: {
   });
   if (!response.ok) {
     const payload = (await response.json().catch(() => ({}))) as { error?: string };
-    throw new Error(payload.error || 'Failed to save player game login.');
+    const rawError = payload.error || 'Failed to save player game login.';
+    const message = /not authenticated|app session required/i.test(rawError)
+      ? 'Session changed. Please refresh.'
+      : rawError;
+    throw new Error(message);
   }
 }
 

@@ -15,6 +15,12 @@ async function resolveClientRole() {
   return String(sessionUser?.role || '').toLowerCase();
 }
 
+const STAFF_ROLES = new Set(['carer', 'staff', 'coadmin', 'admin']);
+
+function isStaffRole(role: string) {
+  return STAFF_ROLES.has(role);
+}
+
 /**
  * SQL read API headers: player routes use player session; staff/coadmin use app session only.
  */
@@ -23,7 +29,7 @@ export async function getSqlApiReadHeaders(contentType = false) {
   if (role === 'player') {
     return getPlayerApiHeaders(contentType);
   }
-  if (role) {
+  if (role && isStaffRole(role)) {
     return getStaffAppSessionApiHeaders(contentType);
   }
   const appSessionId = getLocalAppSessionId();
@@ -32,6 +38,17 @@ export async function getSqlApiReadHeaders(contentType = false) {
     return getStaffAppSessionApiHeaders(contentType);
   }
   if (appSessionId && playerSessionId) {
+    const sessionUser = await getSessionUserOnce().catch(() => null);
+    const resolvedRole = String(sessionUser?.role || '').toLowerCase();
+    if (resolvedRole === 'player') {
+      return getPlayerApiHeaders(contentType);
+    }
+    if (resolvedRole && isStaffRole(resolvedRole)) {
+      return getStaffAppSessionApiHeaders(contentType);
+    }
+    return getStaffAppSessionApiHeaders(contentType);
+  }
+  if (playerSessionId) {
     return getPlayerApiHeaders(contentType);
   }
   return getFirebaseApiHeaders(contentType);

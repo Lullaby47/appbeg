@@ -15,6 +15,7 @@ import {
 
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import { getStaffAppSessionApiHeaders } from '@/lib/client/staffApiHeaders';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { auth, db, getClientDb } from '@/lib/firebase/client';
 import type { CarerTaskStatus } from '@/features/games/carerTasks';
@@ -268,11 +269,21 @@ export async function claimTaskAndCreateJob(input: {
   console.info('[START_TIMING] server claim start at=%s taskId=%s source=client_claimTaskAndCreateJob', new Date(serverClaimStartedAt).toISOString(), input.taskId);
 
   if (isClientSqlReadMode()) {
-    const headers = await getSqlApiReadHeaders(true);
+    const headers = await getStaffAppSessionApiHeaders(true);
     const hasAppSessionId = Boolean(
       (headers as Record<string, string>)['X-App-Session-Id'] ||
         (headers as Record<string, string>)['x-app-session-id']
     );
+    console.info('[CARER_RESET_PASSWORD_AUTH_AUDIT]', {
+      file: 'features/automation/automationJobs.ts',
+      function: 'claimTaskAndCreateJob',
+      authSource: 'app_session_sql',
+      hasAppSessionId,
+      firebaseCurrentUserUid: auth.currentUser?.uid || null,
+      expectedCarerUid: null,
+      firebaseAttempted: false,
+      reason: 'claim_task',
+    });
     console.info('[CARER_RESET_PASSWORD_ACTION]', {
       action: 'claim_task',
       taskId: input.taskId,
@@ -313,8 +324,11 @@ export async function claimTaskAndCreateJob(input: {
       firebaseAttempted: false,
     });
     if (!response.ok) {
-      const message = payload.error || 'Failed to claim task.';
-      if (/not authenticated/i.test(message)) {
+      const messageRaw = payload.error || 'Failed to claim task.';
+      const message = /not authenticated|app session required/i.test(messageRaw)
+        ? 'Session changed. Please refresh.'
+        : messageRaw;
+      if (/not authenticated|session changed/i.test(message)) {
         console.info('[CARER_RESET_PASSWORD_NOT_AUTHENTICATED]', {
           file: 'features/automation/automationJobs.ts',
           function: 'claimTaskAndCreateJob',

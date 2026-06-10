@@ -2721,6 +2721,38 @@ export default function CarerPage() {
             normalizeGameName(game.gameName || '') === normalizeGameName(gameName.trim())
         ) || null;
       const resolvedFrontendUrl = String(matchingCoadminGame?.frontendUrl || '').trim();
+      const activeTaskType = activeUsernameTask
+        ? (getTaskTypeKey(activeUsernameTask) as
+            | 'reset_password'
+            | 'recreate_username'
+            | 'create_game_username')
+        : 'create_game_username';
+
+      if (activeTaskType === 'reset_password' && activeUsernameTask) {
+        const sqlMode = isClientSqlReadMode();
+        const hasAppSessionId = Boolean(getLocalAppSessionId());
+        console.info('[CARER_RESET_PASSWORD_CLICK]', {
+          taskId: activeUsernameTask.id,
+          playerUid: selectedPlayer.uid,
+          playerGameLoginId: (loginToUpdate || existingLoginForSelectedGame)?.id || null,
+          gameName: gameName.trim(),
+          carerUid: carerIdentity?.uid ?? null,
+          coadminUid,
+          sqlMode,
+          hasAppSessionId,
+          source: 'carer_page_handleUsernameSubmit',
+        });
+        console.info('[CARER_RESET_PASSWORD_AUTH_AUDIT]', {
+          file: 'app/carer/page.tsx',
+          function: 'handleUsernameSubmit',
+          authSource: sqlMode ? 'app_session_sql' : 'firebase_token',
+          hasAppSessionId,
+          firebaseCurrentUserUid: null,
+          expectedCarerUid: carerIdentity?.uid ?? null,
+          firebaseAttempted: !sqlMode,
+          reason: 'reset_password_submit',
+        });
+      }
 
       if (loginToUpdate) {
         await updatePlayerGameLogin(loginToUpdate.id, {
@@ -2750,14 +2782,11 @@ export default function CarerPage() {
         selectedPlayer.uid,
         gameName.trim(),
         {
-          taskType: activeUsernameTask
-            ? (getTaskTypeKey(activeUsernameTask) as
-                | 'reset_password'
-                | 'recreate_username'
-                | 'create_game_username')
-            : 'create_game_username',
+          taskType: activeTaskType,
           taskId: activeUsernameTask?.id || null,
           playerGameLoginId: (loginToUpdate || existingLoginForSelectedGame)?.id || null,
+          carerUid: carerIdentity?.uid ?? null,
+          source: 'carer_page_handleUsernameSubmit',
         }
       );
 

@@ -35,7 +35,7 @@ export async function getStaffAppSessionApiHeaders(contentType = false) {
   const currentUser = auth.currentUser;
 
   if (!hasAppSession && !currentUser) {
-    throw new Error('App session required.');
+    throw new Error('Session changed. Please refresh.');
   }
 
   const headers: Record<string, string> = {

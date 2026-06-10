@@ -33,6 +33,7 @@ import {
 } from '@/lib/client/sqlClientMigration';
 import { resolveSqlSessionUser } from '@/lib/client/carerSessionIdentity';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import { getStaffAppSessionApiHeaders } from '@/lib/client/staffApiHeaders';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import { assertActivePlayerSession } from '@/features/auth/playerSession';
@@ -643,18 +644,62 @@ async function getCurrentCarerIdentity() {
   };
 }
 
-async function getAuthHeaders(action?: string) {
-  if (isClientSqlReadMode()) {
+function mapCarerAuthErrorMessage(message: string) {
+  if (/not authenticated|app session required/i.test(message)) {
+    return 'Session changed. Please refresh.';
+  }
+  return message;
+}
+
+async function getAuthHeaders(
+  action?: string,
+  audit?: {
+    logResetPasswordAudit?: boolean;
+    expectedCarerUid?: string | null;
+    file?: string;
+    functionName?: string;
+  }
+) {
+  const sqlMode = isClientSqlReadMode();
+  if (sqlMode) {
+    const headers = await getStaffAppSessionApiHeaders(true);
+    const hasAppSessionId = Boolean(
+      headers['X-App-Session-Id'] || headers['x-app-session-id']
+    );
     if (action) {
       console.info('[CARER_TASK_ACTION_SQL_HEADERS]', {
         action,
         route: 'carer_task_action',
-        hasAppSessionId: true,
+        hasAppSessionId,
         authSource: 'app_session_sql',
         firebaseAttempted: false,
       });
     }
-    return getSqlApiReadHeaders(true);
+    if (audit?.logResetPasswordAudit) {
+      console.info('[CARER_RESET_PASSWORD_AUTH_AUDIT]', {
+        file: audit.file || 'features/games/carerTasks.ts',
+        function: audit.functionName || 'getAuthHeaders',
+        authSource: 'app_session_sql',
+        hasAppSessionId,
+        firebaseCurrentUserUid: auth.currentUser?.uid || null,
+        expectedCarerUid: audit.expectedCarerUid ?? null,
+        firebaseAttempted: false,
+        reason: action || 'carer_task_action',
+      });
+    }
+    return headers;
+  }
+  if (audit?.logResetPasswordAudit) {
+    console.info('[CARER_RESET_PASSWORD_AUTH_AUDIT]', {
+      file: audit.file || 'features/games/carerTasks.ts',
+      function: audit.functionName || 'getAuthHeaders',
+      authSource: 'firebase_token',
+      hasAppSessionId: Boolean(getLocalAppSessionId()),
+      firebaseCurrentUserUid: auth.currentUser?.uid || null,
+      expectedCarerUid: audit.expectedCarerUid ?? null,
+      firebaseAttempted: true,
+      reason: action || 'carer_task_action',
+    });
   }
   return getFirebaseApiHeaders(true);
 }
@@ -2647,27 +2692,49 @@ export async function completeUsernameTaskForPlayerGame(
     taskType?: 'reset_password' | 'recreate_username' | 'create_game_username';
     taskId?: string | null;
     playerGameLoginId?: string | null;
+    carerUid?: string | null;
+    source?: string | null;
   }
 ) {
   const sqlMode = isClientSqlReadMode();
-  const headers = await getAuthHeaders('complete_username');
+  const taskType = options?.taskType || 'create_game_username';
+  const logResetPasswordAudit = taskType === 'reset_password';
+  const headers = await getAuthHeaders('complete_username', {
+    logResetPasswordAudit,
+    expectedCarerUid: options?.carerUid ?? null,
+    functionName: 'completeUsernameTaskForPlayerGame',
+  });
   const hasAppSessionId = Boolean(
     (headers as Record<string, string>)['X-App-Session-Id'] ||
       (headers as Record<string, string>)['x-app-session-id']
   );
+  const authSource = sqlMode ? 'app_session_sql' : 'firebase_token';
+  if (logResetPasswordAudit) {
+    console.info('[CARER_RESET_PASSWORD_CLICK]', {
+      taskId: options?.taskId || null,
+      playerUid,
+      playerGameLoginId: options?.playerGameLoginId || null,
+      gameName,
+      carerUid: options?.carerUid ?? null,
+      coadminUid,
+      sqlMode,
+      hasAppSessionId,
+      source: options?.source || 'complete_username_task',
+    });
+  }
   console.info('[CARER_RESET_PASSWORD_ACTION]', {
     action: 'complete_username_task',
     taskId: options?.taskId || null,
     playerUid,
     playerGameLoginId: options?.playerGameLoginId || null,
     gameId: gameName,
-    carerUid: null,
+    carerUid: options?.carerUid ?? null,
     coadminUid,
     sqlMode,
     hasAppSessionId,
-    authSource: sqlMode ? 'app_session_sql' : 'firebase_token',
-    firebaseAttempted: false,
-    taskType: options?.taskType || 'create_game_username',
+    authSource,
+    firebaseAttempted: !sqlMode,
+    taskType,
   });
   const response = await fetch('/api/carer/tasks/complete-username', {
     method: 'POST',
@@ -2688,20 +2755,21 @@ export async function completeUsernameTaskForPlayerGame(
     method: 'POST',
     status: response.status,
     responseBody: payload,
-    authSource: sqlMode ? 'app_session_sql' : 'firebase_token',
-    hasAppSessionId,
-    firebaseAttempted: false,
+    authSource,
+    firebaseAttempted: !sqlMode,
   });
   if (!response.ok) {
-    const message = readApiError('Failed to complete username task.', payload);
-    if (/not authenticated/i.test(message)) {
+    const message = mapCarerAuthErrorMessage(
+      readApiError('Failed to complete username task.', payload)
+    );
+    if (/not authenticated|session changed/i.test(message)) {
       console.info('[CARER_RESET_PASSWORD_NOT_AUTHENTICATED]', {
         file: 'features/games/carerTasks.ts',
         function: 'completeUsernameTaskForPlayerGame',
         reason: message,
         authCurrentUserUid: auth.currentUser?.uid || null,
-        sessionUid: null,
-        expectedCarerUid: null,
+        sessionUid: options?.carerUid ?? null,
+        expectedCarerUid: options?.carerUid ?? null,
         sqlMode,
       });
     }
