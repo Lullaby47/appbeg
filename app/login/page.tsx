@@ -20,9 +20,10 @@ import { DASHBOARD_BY_ROLE, isValidRole } from '@/lib/auth/roles';
 import { bootstrapAppSessionAfterFirebaseLogin, getLocalAppSessionId } from '@/features/auth/appSession';
 import { migrateCredentialsAfterFirebaseLogin } from '@/features/auth/credentialsMigrate';
 import {
+  clearPlayerSessionBeforeLogin,
   getLocalPlayerSessionId,
+  isPlayerSessionReady,
   PLAYER_REPLACED_LOGIN_MESSAGE,
-  storeLocalPlayerSessionId,
 } from '@/features/auth/playerSession';
 import { attemptSqlLogin, isSqlLoginFirstEnabled } from '@/features/auth/sqlLogin';
 import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
@@ -83,7 +84,7 @@ export default function LoginPage() {
         if (
           isSqlPlayerLoginEnabled() &&
           getLocalAppSessionId() &&
-          getLocalPlayerSessionId()
+          isPlayerSessionReady()
         ) {
           try {
             const cached = getCachedSessionUser();
@@ -112,7 +113,7 @@ export default function LoginPage() {
 
         const role = (userSnap.data() as { role?: string }).role;
         if (role && isValidRole(role)) {
-          if (role === 'player' && !getLocalPlayerSessionId()) {
+          if (role === 'player' && !isPlayerSessionReady()) {
             console.info('[PLAYER_LOGIN_SESSION] login-page redirect blocked', {
               uid: user.uid,
               reason: 'missing_local_session_id',
@@ -183,23 +184,16 @@ export default function LoginPage() {
 
     const bootstrapped = await bootstrapAppSessionAfterFirebaseLogin({
       roleHint: role,
-      playerSessionId: getLocalPlayerSessionId() || undefined,
     });
     if (!bootstrapped?.sessionId) {
       throw new Error('Failed to establish app session.');
     }
 
     if (role === 'player') {
-      const canonicalSessionId = String(
-        bootstrapped?.playerSessionId || bootstrapped?.canonicalSessionId || ''
-      ).trim();
-      if (canonicalSessionId) {
-        storeLocalPlayerSessionId(canonicalSessionId);
-      }
       rememberPlayerLoginCredentials(cleanUsername, password);
       console.info('[PLAYER_LOGIN_SESSION] player login allowed after unified bootstrap', {
         uid: credential.user.uid,
-        canonicalSessionId: canonicalSessionId || null,
+        canonicalSessionId: bootstrapped?.playerSessionId || bootstrapped?.canonicalSessionId || null,
         appSessionId: bootstrapped?.sessionId || null,
         reason: 'unified_bootstrap_saved',
       });
@@ -221,6 +215,7 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
     loginInProgressRef.current = true;
+    clearPlayerSessionBeforeLogin('login_form_submit');
 
     try {
       if (isSqlLoginFirstEnabled()) {

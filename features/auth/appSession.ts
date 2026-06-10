@@ -4,8 +4,7 @@ import { auth } from '@/lib/firebase/client';
 import { isValidRole, type UserRole } from '@/lib/auth/roles';
 import {
   getOrCreatePlayerDeviceId,
-  getLocalPlayerSessionId,
-  storeLocalPlayerSessionId,
+  storePlayerLoginSessionPair,
 } from '@/features/auth/playerSession';
 import {
   clearCachedSessionUser,
@@ -177,7 +176,7 @@ export async function bootstrapAppSessionAfterFirebaseLogin(input?: {
 
   const token = await currentUser.getIdToken();
   const roleHint = String(input?.roleHint || '').trim() || undefined;
-  const playerSessionId = String(input?.playerSessionId || getLocalPlayerSessionId() || '').trim() || undefined;
+  const playerSessionId = String(input?.playerSessionId || '').trim() || undefined;
   const deviceId = getOrCreatePlayerDeviceId() || undefined;
 
   const response = await fetch('/api/auth/session/bootstrap', {
@@ -202,12 +201,19 @@ export async function bootstrapAppSessionAfterFirebaseLogin(input?: {
     return null;
   }
 
-  storeAppSessionLocal(payload.sessionId, String(payload.expiresAt || ''));
   const canonicalSessionId = String(
     payload.canonicalSessionId || payload.playerSessionId || ''
   ).trim();
-  if (canonicalSessionId) {
-    storeLocalPlayerSessionId(canonicalSessionId);
+  if (payload.role === 'player' && canonicalSessionId) {
+    storePlayerLoginSessionPair({
+      appSessionId: payload.sessionId,
+      appSessionExpiresAt: String(payload.expiresAt || ''),
+      playerSessionId: canonicalSessionId,
+      phase: 'firebase_bootstrap',
+      reason: 'bootstrap_ok',
+    });
+  } else {
+    storeAppSessionLocal(payload.sessionId, String(payload.expiresAt || ''));
   }
   if (payload.uid && payload.role && isValidRole(payload.role)) {
     seedSessionUserCache(

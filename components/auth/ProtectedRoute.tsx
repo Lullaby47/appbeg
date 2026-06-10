@@ -18,12 +18,14 @@ import {
   forcePlayerSessionLogout,
   getLocalPlayerSessionId,
   isPlayerForcedLogout,
+  isPlayerSessionReady,
   isSqlPlayerAppSessionMode,
   listenForPlayerSessionReplacement,
   startPlayerSessionStatusPolling,
   touchPlayerSession,
   seedPlayerSessionVerifyCache,
   verifyActivePlayerSession,
+  waitForPlayerSessionReady,
 } from '@/features/auth/playerSession';
 
 type ProtectedRouteProps = {
@@ -64,6 +66,26 @@ export default function ProtectedRoute({
           source: 'player_app_session',
           ok: false,
           reason: 'missing_session_ids',
+        });
+        return 'fallback';
+      }
+
+      try {
+        await waitForPlayerSessionReady();
+      } catch {
+        console.info('[PROTECTED_ROUTE_AUTH]', {
+          source: 'player_app_session',
+          ok: false,
+          reason: 'player_session_not_ready',
+        });
+        return 'fallback';
+      }
+
+      if (!isPlayerSessionReady()) {
+        console.info('[PROTECTED_ROUTE_AUTH]', {
+          source: 'player_app_session',
+          ok: false,
+          reason: 'player_session_not_ready',
         });
         return 'fallback';
       }
@@ -352,6 +374,10 @@ export default function ProtectedRoute({
 
   useEffect(() => {
     if (currentRole !== 'player') {
+      return;
+    }
+
+    if (!isPlayerSessionReady()) {
       return;
     }
 

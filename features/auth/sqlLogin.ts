@@ -2,8 +2,9 @@
 
 import { storeAppSessionLocal } from '@/features/auth/appSession';
 import {
+  clearPlayerSessionBeforeLogin,
   getOrCreatePlayerDeviceId,
-  storeLocalPlayerSessionId,
+  storePlayerLoginSessionPair,
 } from '@/features/auth/playerSession';
 import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
 import { seedSessionUserCache } from '@/features/auth/sessionUser';
@@ -52,6 +53,10 @@ export async function attemptSqlLogin(input: {
   const password = String(input.password || '');
   const deviceId = String(input.deviceId || getOrCreatePlayerDeviceId() || '').trim() || undefined;
 
+  if (typeof window !== 'undefined') {
+    clearPlayerSessionBeforeLogin('sql_login_attempt');
+  }
+
   try {
     const response = await fetch('/api/auth/login-sql', {
       method: 'POST',
@@ -80,15 +85,21 @@ export async function attemptSqlLogin(input: {
     };
 
     if (payload.ok && payload.sessionId && payload.uid && payload.role) {
-      storeAppSessionLocal(payload.sessionId, String(payload.expiresAt || ''));
       if (payload.role === 'player' && payload.playerSessionId) {
         getOrCreatePlayerDeviceId();
-        const canonicalSessionId = String(
-          payload.playerSessionId || (payload as { canonicalSessionId?: string }).canonicalSessionId || ''
-        ).trim();
-        if (canonicalSessionId) {
-          storeLocalPlayerSessionId(canonicalSessionId);
-        }
+        storePlayerLoginSessionPair({
+          appSessionId: payload.sessionId,
+          appSessionExpiresAt: String(payload.expiresAt || ''),
+          playerSessionId: String(
+            payload.playerSessionId ||
+              (payload as { canonicalSessionId?: string }).canonicalSessionId ||
+              ''
+          ).trim(),
+          phase: 'sql_login',
+          reason: 'login_sql_ok',
+        });
+      } else {
+        storeAppSessionLocal(payload.sessionId, String(payload.expiresAt || ''));
       }
       seedSessionUserCache(
         {

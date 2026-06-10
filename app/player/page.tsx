@@ -95,7 +95,7 @@ import {
   listenCoadminMaintenanceBreak,
 } from '@/features/maintenance/maintenanceBreak';
 import { normalizeMaintenanceBreak, type MaintenanceBreak } from '@/lib/maintenance/config';
-import { endLocalPlayerSession, getPlayerApiHeaders } from '@/features/auth/playerSession';
+import { endLocalPlayerSession, getPlayerApiHeaders, PlayerSessionStaleError } from '@/features/auth/playerSession';
 import { rememberPlayerLoginCredentials } from '@/features/auth/rememberedPlayerLogin';
 
 import { AdminUser, ChatMessage } from '../../components/admin/types';
@@ -1530,7 +1530,7 @@ export default function PlayerPage() {
 
     const startedAt = Date.now();
     try {
-      const headers = await getPlayerApiHeaders(false);
+      const headers = await getPlayerApiHeaders(false, { route: '/api/player/staff-list' });
       const response = await fetch('/api/player/staff-list', {
         method: 'GET',
         headers,
@@ -1559,6 +1559,15 @@ export default function PlayerPage() {
         durationMs: Date.now() - startedAt,
       });
     } catch (error) {
+      if (error instanceof PlayerSessionStaleError) {
+        console.info('[PLAYER_STAFF_LIST]', {
+          ok: false,
+          reason: error.message,
+          stale_ignored: true,
+          durationMs: Date.now() - startedAt,
+        });
+        return;
+      }
       setAgents([]);
       setMessage(
         error instanceof Error ? error.message : 'Failed to load agents.'
