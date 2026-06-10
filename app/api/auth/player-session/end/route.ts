@@ -35,6 +35,24 @@ export async function POST(request: Request) {
     }
 
     const reason = cleanText(body.reason) || 'logout';
+    const appSessionIdHeader = cleanText(request.headers.get('X-App-Session-Id'));
+    const playerSessionIdHeader = cleanText(request.headers.get('X-Player-Session-Id'));
+
+    console.info('[PLAYER_SESSION_END_SERVER]', {
+      uid,
+      sessionId,
+      reason,
+      requestPath: new URL(request.url).pathname,
+      userAgent: cleanText(request.headers.get('user-agent')) || null,
+      referer: cleanText(request.headers.get('referer')) || null,
+      appSessionIdPrefix: appSessionIdHeader ? appSessionIdHeader.slice(0, 8) : null,
+      playerSessionIdPrefix: playerSessionIdHeader
+        ? playerSessionIdHeader.slice(0, 8)
+        : sessionId
+          ? sessionId.slice(0, 8)
+          : null,
+    });
+
     invalidatePlayerSessionStatusCache({
       playerSessionId: sessionId,
       uid,

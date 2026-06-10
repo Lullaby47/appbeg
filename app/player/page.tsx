@@ -102,6 +102,7 @@ import { normalizeMaintenanceBreak, type MaintenanceBreak } from '@/lib/maintena
 import {
   ensurePlayerSessionGateReady,
   endLocalPlayerSession,
+  getLocalPlayerSessionId,
   getPlayerApiHeaders,
   PlayerSessionStaleError,
 } from '@/features/auth/playerSession';
@@ -391,6 +392,9 @@ export default function PlayerPage() {
   const [bonusStripPaused, setBonusStripPaused] = useState(false);
   const [showBonusPanelHint, setShowBonusPanelHint] = useState(false);
   const [showLogoutConfirmSplash, setShowLogoutConfirmSplash] = useState(false);
+  const [logoutConfirmSource, setLogoutConfirmSource] = useState<
+    'player_nav' | 'maintenance_break' | null
+  >(null);
   const [logoutLoading, setLogoutLoading] = useState(false);
   const [bonusVanishedToast, setBonusVanishedToast] = useState(false);
   const knownRechargeRequestStatusByIdRef = useRef<Record<string, PlayerGameRequest['status']>>({});
@@ -3144,16 +3148,62 @@ export default function PlayerPage() {
     }
   }
 
-  async function performLogout() {
+  function readPlayerLogoutContext() {
+    const cached = getCachedSessionUser();
+    const appSessionId = getLocalAppSessionId();
+    const playerSessionId = getLocalPlayerSessionId();
+    return {
+      currentPath:
+        typeof window !== 'undefined' ? window.location.pathname || '/player' : '/player',
+      uid: cached?.uid ?? null,
+      role: cached?.role ?? null,
+      appSessionIdPrefix: appSessionId ? appSessionId.slice(0, 8) : null,
+      playerSessionIdPrefix: playerSessionId ? playerSessionId.slice(0, 8) : null,
+    };
+  }
+
+  function openLogoutConfirmSplash(source: 'player_nav' | 'maintenance_break') {
+    setLogoutConfirmSource(source);
+    setShowLogoutConfirmSplash(true);
+  }
+
+  async function performLogout(options: { userConfirmed: boolean; source: string }) {
+    const logoutContext = readPlayerLogoutContext();
+    if (options.userConfirmed !== true) {
+      console.info('[PLAYER_LOGOUT_BLOCKED]', {
+        source: options.source,
+        reason: 'missing_user_confirmation',
+        currentPath: logoutContext.currentPath,
+        uid: logoutContext.uid,
+        role: logoutContext.role,
+        appSessionIdPrefix: logoutContext.appSessionIdPrefix,
+        playerSessionIdPrefix: logoutContext.playerSessionIdPrefix,
+      });
+      return;
+    }
+
+    console.info('[PLAYER_LOGOUT_CONFIRMED]', {
+      source: options.source,
+      currentPath: logoutContext.currentPath,
+      uid: logoutContext.uid,
+      role: logoutContext.role,
+      appSessionIdPrefix: logoutContext.appSessionIdPrefix,
+      playerSessionIdPrefix: logoutContext.playerSessionIdPrefix,
+    });
+
     setLogoutLoading(true);
     setMessage('');
     try {
       await endLocalPlayerSession('logout', {
         trigger: 'user_logout',
-        route: '/player',
+        route: logoutContext.currentPath,
+        file: 'app/player/page.tsx',
+        function: 'performLogout',
+        userClickedLogout: true,
       });
       await signOut(auth);
       setShowLogoutConfirmSplash(false);
+      setLogoutConfirmSource(null);
       router.replace('/login');
     } catch (err) {
       setMessage(
@@ -3456,11 +3506,11 @@ export default function PlayerPage() {
               </p>
               <button
                 type="button"
-                onClick={() => void performLogout()}
+                onClick={() => openLogoutConfirmSplash('maintenance_break')}
                 disabled={logoutLoading}
                 className="mt-7 min-h-[48px] rounded-xl border border-white/15 bg-white/10 px-5 py-3 text-sm font-bold text-white transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {logoutLoading ? 'Logging out...' : 'Logout'}
+                Logout
               </button>
             </div>
           </div>
@@ -3603,7 +3653,7 @@ export default function PlayerPage() {
                             <button
                               type="button"
                               onClick={() => {
-                                setShowLogoutConfirmSplash(true);
+                                openLogoutConfirmSplash('player_nav');
                                 setMobileMenuOpen(false);
                               }}
                               className="w-full rounded-2xl border border-rose-500/40 bg-rose-500/10 py-3.5 text-sm font-black text-rose-100 transition hover:bg-rose-500/20"
@@ -3657,7 +3707,7 @@ export default function PlayerPage() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => setShowLogoutConfirmSplash(true)}
+                        onClick={() => openLogoutConfirmSplash('player_nav')}
                         className="w-full rounded-2xl border border-rose-500/40 bg-rose-950/40 py-3.5 text-sm font-bold text-rose-100 transition hover:bg-rose-500/15"
                       >
                         Log out
@@ -5064,6 +5114,7 @@ export default function PlayerPage() {
             onClick={() => {
               if (!logoutLoading) {
                 setShowLogoutConfirmSplash(false);
+                setLogoutConfirmSource(null);
               }
             }}
             role="dialog"
@@ -5095,7 +5146,14 @@ export default function PlayerPage() {
               <div className="mt-8 flex flex-col gap-3 sm:flex-row-reverse">
                 <button
                   type="button"
-                  onClick={() => void performLogout()}
+                  onClick={() =>
+                    void performLogout({
+                      userConfirmed: true,
+                      source: logoutConfirmSource
+                        ? `logout_confirm:${logoutConfirmSource}`
+                        : 'logout_confirm',
+                    })
+                  }
                   disabled={logoutLoading}
                   className="min-h-[52px] flex-1 rounded-2xl bg-gradient-to-r from-rose-500 to-rose-700 py-3.5 text-base font-black text-white shadow-lg shadow-rose-500/30 transition hover:brightness-110 disabled:opacity-50"
                 >
@@ -5103,7 +5161,10 @@ export default function PlayerPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowLogoutConfirmSplash(false)}
+                  onClick={() => {
+                    setShowLogoutConfirmSplash(false);
+                    setLogoutConfirmSource(null);
+                  }}
                   disabled={logoutLoading}
                   className="min-h-[52px] flex-1 rounded-2xl border border-white/20 bg-white/5 py-3.5 text-base font-bold text-amber-100 transition hover:bg-white/10 disabled:opacity-50"
                 >

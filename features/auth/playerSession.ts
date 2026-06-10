@@ -70,6 +70,29 @@ export type PlayerSessionEndClientContext = {
   isLogoutInProgress?: boolean;
   isRouteNavigation?: boolean;
   willSendEnd?: boolean;
+  file?: string;
+  function?: string;
+  stack?: string;
+  userClickedLogout?: boolean;
+  uid?: string | null;
+  role?: string | null;
+};
+
+export type PlayerSessionEndCallerLog = {
+  reason: string;
+  trigger: string;
+  file: string;
+  function: string;
+  currentPath: string;
+  uid: string | null;
+  role: string | null;
+  appSessionIdPrefix: string | null;
+  playerSessionIdPrefix: string | null;
+  stack: string;
+  userClickedLogout: boolean;
+  isRouteNavigation: boolean;
+  visibilityState: string | null;
+  willSend: boolean;
 };
 
 function sessionIdPrefix(value: string | null | undefined) {
@@ -84,7 +107,52 @@ function currentClientPath() {
   return window.location.pathname || '';
 }
 
+function captureCallerStack() {
+  if (typeof Error === 'undefined') {
+    return '';
+  }
+  const stack = new Error('[PLAYER_SESSION_END_CALLER]').stack;
+  if (!stack) {
+    return '';
+  }
+  return stack
+    .split('\n')
+    .slice(2, 14)
+    .map((line) => line.trim())
+    .join('\n');
+}
+
+function readPlayerSessionEndActor() {
+  const cached = getCachedSessionUser();
+  return {
+    uid: cached?.uid ?? null,
+    role: cached?.role ?? null,
+  };
+}
+
+export function logPlayerSessionEndCaller(values: PlayerSessionEndCallerLog) {
+  console.info('[PLAYER_SESSION_END_CALLER]', values);
+}
+
 function logPlayerSessionEndClient(values: PlayerSessionEndClientContext) {
+  const actor = readPlayerSessionEndActor();
+  const callerLog: PlayerSessionEndCallerLog = {
+    reason: values.reason,
+    trigger: values.trigger,
+    file: values.file || 'features/auth/playerSession.ts',
+    function: values.function || 'endLocalPlayerSession',
+    currentPath: values.currentPath || currentClientPath(),
+    uid: values.uid ?? actor.uid,
+    role: values.role ?? actor.role,
+    appSessionIdPrefix: values.appSessionIdPrefix ?? null,
+    playerSessionIdPrefix: values.playerSessionIdPrefix ?? null,
+    stack: values.stack || captureCallerStack(),
+    userClickedLogout: values.userClickedLogout === true,
+    isRouteNavigation: values.isRouteNavigation === true,
+    visibilityState: values.visibilityState ?? null,
+    willSend: values.willSendEnd === true,
+  };
+  logPlayerSessionEndCaller(callerLog);
   console.info('[PLAYER_SESSION_END_CLIENT]', values);
 }
 
@@ -1122,6 +1190,9 @@ export async function forcePlayerSessionLogout(options?: {
   if (options?.markSessionInactive !== false) {
     await endLocalPlayerSession('replaced_by_new_login', {
       trigger: options?.trigger || 'forcePlayerSessionLogout',
+      file: options?.sourceFile || 'features/auth/playerSession.ts',
+      function: options?.sourceFunction || 'forcePlayerSessionLogout',
+      userClickedLogout: false,
     });
   }
   clearPlayerBrowserState();
@@ -1748,6 +1819,9 @@ export async function endLocalPlayerSession(
     sessionId === expectedPlayerSessionId &&
     sessionId === getLocalPlayerSessionId();
 
+  const entryStack = context?.stack || captureCallerStack();
+  const actor = readPlayerSessionEndActor();
+
   const logValues: PlayerSessionEndClientContext = {
     reason,
     trigger: context?.trigger || 'direct_call',
@@ -1764,6 +1838,12 @@ export async function endLocalPlayerSession(
     isLogoutInProgress: forcedPlayerLogout || isPlayerForcedLogout(),
     isRouteNavigation: context?.isRouteNavigation ?? false,
     willSendEnd: false,
+    file: context?.file,
+    function: context?.function,
+    stack: entryStack,
+    userClickedLogout: context?.userClickedLogout,
+    uid: context?.uid ?? actor.uid,
+    role: context?.role ?? actor.role,
   };
 
   if (!sessionId) {
@@ -1838,6 +1918,9 @@ export async function endLocalPlayerSessionOnBrowserLeave(
     currentPath: currentClientPath(),
     isRouteNavigation,
     willSendEnd,
+    file: 'features/auth/playerSession.ts',
+    function: 'endLocalPlayerSessionOnBrowserLeave',
+    userClickedLogout: false,
   });
 }
 
