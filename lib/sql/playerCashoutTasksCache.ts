@@ -3,6 +3,7 @@ import 'server-only';
 import type { DocumentSnapshot } from 'firebase-admin/firestore';
 
 import { adminDb } from '@/lib/firebase/admin';
+import { extractPgErrorDetails } from '@/lib/server/sqlErrorDetails';
 import {
   cleanText,
   getPlayerMirrorPool,
@@ -11,6 +12,7 @@ import {
   runMirrorPoolQuery,
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
+import { isCacheSqlAuthoritative } from '@/lib/server/cacheSqlRead';
 
 export type PlayerCashoutTaskCacheInput = {
   firebaseId: string;
@@ -242,8 +244,8 @@ async function readPlayerCashoutTasksBySql(
   if (!db) {
     return null;
   }
+  const startedAt = Date.now();
   try {
-    const startedAt = Date.now();
     const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(db, sql, params, {
       context: 'player_cashout_tasks_cache_read',
     });
@@ -257,7 +259,15 @@ async function readPlayerCashoutTasksBySql(
     });
     return tasks;
   } catch (error) {
-    console.warn('[PLAYER_CASHOUT_TASKS_CACHE] read failed', { label, error });
+    const pg = extractPgErrorDetails(error);
+    console.error('[PLAYER_CASHOUT_TASKS_CACHE_ERROR]', {
+      uid: cleanText(params[0]) || null,
+      scope: label,
+      sqlMode: isCacheSqlAuthoritative(),
+      query: sql.trim().split('\n')[0],
+      durationMs: Date.now() - startedAt,
+      ...pg,
+    });
     return null;
   }
 }

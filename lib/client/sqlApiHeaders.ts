@@ -32,7 +32,7 @@ export async function getSqlApiReadHeaders(contentType = false) {
     return getStaffAppSessionApiHeaders(contentType);
   }
   if (appSessionId && playerSessionId) {
-    return getStaffAppSessionApiHeaders(contentType);
+    return getPlayerApiHeaders(contentType);
   }
   return getFirebaseApiHeaders(contentType);
 }

@@ -33,6 +33,7 @@ import {
   resolvePlayerStaffList,
   type PlayerVisibleStaff,
 } from '@/lib/server/playerStaffList';
+import { extractPgErrorDetails } from '@/lib/server/sqlErrorDetails';
 
 export type PlayerBaseDataSource = 'postgres' | 'mixed' | 'fallback';
 
@@ -369,6 +370,43 @@ function emptyPlayerBaseDataPayload(snapshotAt: string): PlayerBaseDataPayload {
   };
 }
 
+export function emptyPlayerBaseDataPayloadExport(snapshotAt: string): PlayerBaseDataPayload {
+  return emptyPlayerBaseDataPayload(snapshotAt);
+}
+
+function logPlayerBaseDataSqlStage(
+  stage: string,
+  input: { ok: boolean; count?: number; durationMs: number }
+) {
+  console.info('[PLAYER_BASE_DATA_SQL_STAGE]', {
+    stage,
+    ok: input.ok,
+    count: input.count ?? null,
+    durationMs: input.durationMs,
+  });
+}
+
+function logPlayerBaseDataError(input: {
+  uid: string;
+  role?: string;
+  authPath?: string;
+  stage: string;
+  sqlQuery?: string;
+  error: unknown;
+  durationMs: number;
+}) {
+  const pg = extractPgErrorDetails(input.error);
+  console.error('[PLAYER_BASE_DATA_ERROR]', {
+    uid: input.uid,
+    role: input.role || 'player',
+    authPath: input.authPath || null,
+    stage: input.stage,
+    sqlQuery: input.sqlQuery || null,
+    durationMs: input.durationMs,
+    ...pg,
+  });
+}
+
 async function loadPlayerBaseDataFallback(
   playerUid: string,
   coadminUid: string
@@ -427,6 +465,8 @@ async function loadPlayerBaseDataFallback(
 async function loadPlayerBaseDataSequentialSql(input: {
   playerUid: string;
   coadminUid: string;
+  role?: string;
+  authPath?: string;
 }): Promise<PlayerBaseDataSqlResult> {
   const sqlStartedAt = Date.now();
   const acquired = await acquirePlayerMirrorClient({
@@ -470,31 +510,77 @@ async function loadPlayerBaseDataSequentialSql(input: {
     const staffStartedAt = Date.now();
     staff = await readSafeStaffListForPlayerWithClient(client, input.coadminUid);
     staffMs = Date.now() - staffStartedAt;
+    logPlayerBaseDataSqlStage('staff', { ok: true, count: staff.length, durationMs: staffMs });
 
     const gameLoginsStartedAt = Date.now();
     gameLogins = await readGameLoginsCacheByCoadminWithClient(client, input.coadminUid);
     gameLoginsMs = Date.now() - gameLoginsStartedAt;
+    logPlayerBaseDataSqlStage('game_logins', {
+      ok: true,
+      count: gameLogins.length,
+      durationMs: gameLoginsMs,
+    });
 
     const freeplayStartedAt = Date.now();
     freeplayLookup = await readFreeplayPendingGiftCacheWithClient(client, input.playerUid);
     freeplayMs = Date.now() - freeplayStartedAt;
+    logPlayerBaseDataSqlStage('freeplay', {
+      ok: freeplayLookup.missReason !== 'postgres_unavailable',
+      count: freeplayLookup.row?.hasPendingGift ? 1 : 0,
+      durationMs: freeplayMs,
+    });
 
     const referralStartedAt = Date.now();
     try {
       referralRewards = await loadReferralRewardGroupsWithClient(client, input.playerUid);
       referralSqlOk = true;
+      logPlayerBaseDataSqlStage('referral_rewards', {
+        ok: true,
+        count: referralRewards.groups.length,
+        durationMs: Date.now() - referralStartedAt,
+      });
     } catch (error) {
-      console.warn('[PLAYER_BASE_DATA] referral rewards sql read failed', {
-        playerUid: input.playerUid,
+      logPlayerBaseDataError({
+        uid: input.playerUid,
+        role: input.role,
+        authPath: input.authPath,
+        stage: 'referral_rewards',
+        sqlQuery: 'players_cache.referred_by + referral_reward_claims + player_game_requests',
         error,
+        durationMs: Date.now() - referralStartedAt,
+      });
+      logPlayerBaseDataSqlStage('referral_rewards', {
+        ok: false,
+        count: 0,
+        durationMs: Date.now() - referralStartedAt,
       });
     }
     referralRewardsMs = Date.now() - referralStartedAt;
   } catch (error) {
-    console.warn('[PLAYER_BASE_DATA] sequential sql read failed', {
-      playerUid: input.playerUid,
-      coadminUid: input.coadminUid,
+    const failedStage =
+      staffMs === 0
+        ? 'staff'
+        : gameLoginsMs === 0
+          ? 'game_logins'
+          : 'freeplay';
+    logPlayerBaseDataError({
+      uid: input.playerUid,
+      role: input.role,
+      authPath: input.authPath,
+      stage: failedStage,
+      sqlQuery: `player_base_data.${failedStage}`,
       error,
+      durationMs: Date.now() - sqlStartedAt,
+    });
+    logPlayerBaseDataSqlStage(failedStage, {
+      ok: false,
+      count: 0,
+      durationMs:
+        failedStage === 'staff'
+          ? staffMs
+          : failedStage === 'game_logins'
+            ? gameLoginsMs
+            : freeplayMs,
     });
     return {
       staff: [],
@@ -539,6 +625,8 @@ async function loadPlayerBaseDataSequentialSql(input: {
 async function loadPlayerBaseDataParallelSql(input: {
   playerUid: string;
   coadminUid: string;
+  role?: string;
+  authPath?: string;
 }): Promise<PlayerBaseDataSqlResult> {
   const sqlStartedAt = Date.now();
   const waitingTracker = { max: 0 };
@@ -570,6 +658,50 @@ async function loadPlayerBaseDataParallelSql(input: {
   ];
 
   const [staffPack, gameLoginsPack, freeplayPack, referralPack] = await Promise.all(parallelReads);
+
+  const stageResults: Array<{
+    stage: string;
+    pack: ParallelReadResult<unknown>;
+    sqlQuery: string;
+  }> = [
+    { stage: 'staff', pack: staffPack, sqlQuery: 'players_cache.staff_by_coadmin' },
+    { stage: 'game_logins', pack: gameLoginsPack, sqlQuery: 'game_logins_cache.by_coadmin' },
+    { stage: 'freeplay', pack: freeplayPack, sqlQuery: 'freeplay_pending_gifts_cache.by_player' },
+    {
+      stage: 'referral_rewards',
+      pack: referralPack,
+      sqlQuery: 'players_cache.referred_by + referral_reward_claims',
+    },
+  ];
+
+  for (const { stage, pack, sqlQuery } of stageResults) {
+    if (pack.ok) {
+      const count =
+        stage === 'staff'
+          ? (pack.value as PlayerVisibleStaff[]).length
+          : stage === 'game_logins'
+            ? (pack.value as CachedGameLogin[]).length
+            : stage === 'freeplay'
+              ? (
+                  pack.value as Awaited<ReturnType<typeof readFreeplayPendingGiftCacheWithClient>>
+                ).row?.hasPendingGift
+                ? 1
+                : 0
+              : (pack.value as PlayerBaseDataReferralRewards).groups.length;
+      logPlayerBaseDataSqlStage(stage, { ok: true, count, durationMs: pack.timing.ms });
+    } else {
+      logPlayerBaseDataError({
+        uid: input.playerUid,
+        role: input.role,
+        authPath: input.authPath,
+        stage,
+        sqlQuery,
+        error: pack.error,
+        durationMs: pack.timing.ms,
+      });
+      logPlayerBaseDataSqlStage(stage, { ok: false, count: 0, durationMs: pack.timing.ms });
+    }
+  }
 
   return {
     staff: staffPack.ok ? staffPack.value : [],
@@ -679,11 +811,63 @@ export async function loadPlayerBaseData(input: {
   playerUid: string;
   coadminUid: string;
   authMs?: number;
+  role?: string;
+  authPath?: string;
 }): Promise<{ payload: PlayerBaseDataPayload; timing: PlayerBaseDataTiming }> {
   const totalStartedAt = Date.now();
   const cleanPlayerUid = cleanText(input.playerUid);
   const cleanCoadminUid = cleanText(input.coadminUid);
   const snapshotAt = new Date().toISOString();
+
+  try {
+  return await loadPlayerBaseDataInner({
+    ...input,
+    playerUid: cleanPlayerUid,
+    coadminUid: cleanCoadminUid,
+    snapshotAt,
+    totalStartedAt,
+  });
+  } catch (error) {
+    logPlayerBaseDataError({
+      uid: cleanPlayerUid,
+      role: input.role,
+      authPath: input.authPath,
+      stage: 'load',
+      error,
+      durationMs: Date.now() - totalStartedAt,
+    });
+    return {
+      payload: emptyPlayerBaseDataPayload(snapshotAt),
+      timing: {
+        auth_ms: input.authMs ?? 0,
+        shared_client: false,
+        parallel: false,
+        client_acquire_ms: 0,
+        staff_ms: 0,
+        game_logins_ms: 0,
+        freeplay_ms: 0,
+        referral_rewards_ms: 0,
+        total_sql_ms: 0,
+        pool_waiting_max: 0,
+        total_ms: Date.now() - totalStartedAt,
+      },
+    };
+  }
+}
+
+async function loadPlayerBaseDataInner(input: {
+  playerUid: string;
+  coadminUid: string;
+  authMs?: number;
+  role?: string;
+  authPath?: string;
+  snapshotAt: string;
+  totalStartedAt: number;
+}): Promise<{ payload: PlayerBaseDataPayload; timing: PlayerBaseDataTiming }> {
+  const cleanPlayerUid = input.playerUid;
+  const cleanCoadminUid = input.coadminUid;
+  const snapshotAt = input.snapshotAt;
+  const totalStartedAt = input.totalStartedAt;
   const pool = getPlayerMirrorPool();
   const poolStats = getPlayerMirrorPoolStats();
   const modeSelection = resolvePlayerBaseDataParallelMode(poolStats);
@@ -746,10 +930,14 @@ export async function loadPlayerBaseData(input: {
       ? await loadPlayerBaseDataParallelSql({
           playerUid: cleanPlayerUid,
           coadminUid: cleanCoadminUid,
+          role: input.role,
+          authPath: input.authPath,
         })
       : await loadPlayerBaseDataSequentialSql({
           playerUid: cleanPlayerUid,
           coadminUid: cleanCoadminUid,
+          role: input.role,
+          authPath: input.authPath,
         });
 
   timing.staff_ms = sqlResult.timing.staff_ms;

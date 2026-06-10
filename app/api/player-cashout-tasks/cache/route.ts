@@ -1,12 +1,19 @@
 import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
-import { apiError, requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
+import {
+  apiError,
+  requireApiUser,
+  requirePlayerApiUser,
+  scopedCoadminUid,
+} from '@/lib/firebase/apiAuth';
 import {
   isCacheSqlAuthoritative,
   logCacheFirestoreFallbackBlocked,
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
+import { logPlayerApiAuthOk } from '@/lib/server/playerApiAuthLog';
+import { extractPgErrorDetails } from '@/lib/server/sqlErrorDetails';
 import {
   readPlayerCashoutTasksCacheByAssignedHandler,
   readPlayerCashoutTasksCacheByCoadmin,
@@ -71,93 +78,124 @@ async function readFirestoreTasks(scope: Scope, uid: string, limit: number) {
 
 export async function GET(request: Request) {
   const startedAt = Date.now();
-  const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer', 'player']);
-  if ('response' in auth) {
-    return auth.response;
-  }
-
+  const url = new URL(request.url);
   const scope = resolveScope(request);
   if (!scope) {
     return apiError('scope query parameter is required (player|coadmin|assigned_handler).', 400);
   }
 
-  const url = new URL(request.url);
-  const requestedUid = cleanText(url.searchParams.get('uid'));
-  const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') || 50)));
-  const scopedCoadmin = scopedCoadminUid(auth.user);
+  const sqlReadMode = isCacheSqlAuthoritative();
 
-  let targetUid = requestedUid;
-  if (scope === 'player') {
-    targetUid = auth.user.role === 'admin' ? requestedUid || auth.user.uid : auth.user.uid;
-    if (!targetUid) {
-      return apiError('uid is required for player scope.', 400);
+  try {
+    let user;
+    if (scope === 'player') {
+      const playerAuth = await requirePlayerApiUser(request);
+      if ('response' in playerAuth) {
+        return playerAuth.response;
+      }
+      user = playerAuth.user;
+      logPlayerApiAuthOk(request, {
+        route: ROUTE,
+        uid: playerAuth.user.uid,
+        role: playerAuth.user.role,
+        authPath: playerAuth.authPath,
+      });
+    } else {
+      const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer', 'player']);
+      if ('response' in auth) {
+        return auth.response;
+      }
+      user = auth.user;
     }
-    if (auth.user.role === 'player' && targetUid !== auth.user.uid) {
-      return apiError('Forbidden.', 403);
+
+    const requestedUid = cleanText(url.searchParams.get('uid'));
+    const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') || 50)));
+    const scopedCoadmin = scopedCoadminUid(user);
+
+    let targetUid = requestedUid;
+    if (scope === 'player') {
+      targetUid = user.role === 'admin' ? requestedUid || user.uid : user.uid;
+      if (!targetUid) {
+        return apiError('uid is required for player scope.', 400);
+      }
+      if (user.role === 'player' && targetUid !== user.uid) {
+        return apiError('Forbidden.', 403);
+      }
+    } else if (scope === 'coadmin') {
+      targetUid =
+        user.role === 'coadmin' ? user.uid : requestedUid || scopedCoadmin || '';
+      if (!targetUid) {
+        return NextResponse.json({ tasks: [], source: 'postgres' });
+      }
+      if (
+        user.role !== 'admin' &&
+        user.role !== 'coadmin' &&
+        scopedCoadmin &&
+        targetUid !== scopedCoadmin
+      ) {
+        return apiError('Forbidden.', 403);
+      }
+    } else {
+      targetUid = user.role === 'admin' ? requestedUid || user.uid : user.uid;
+      if (
+        user.role !== 'admin' &&
+        user.role !== 'staff' &&
+        user.role !== 'carer' &&
+        targetUid !== user.uid
+      ) {
+        return apiError('Forbidden.', 403);
+      }
     }
-  } else if (scope === 'coadmin') {
-    targetUid =
-      auth.user.role === 'coadmin'
-        ? auth.user.uid
-        : requestedUid || scopedCoadmin || '';
+
     if (!targetUid) {
+      return apiError('uid is required for this scope.', 400);
+    }
+
+    let tasks: CachedPlayerCashoutTask[] | null = null;
+
+    if (scope === 'player') {
+      tasks = await readPlayerCashoutTasksCacheByPlayer(targetUid, limit);
+    } else if (scope === 'coadmin') {
+      tasks = await readPlayerCashoutTasksCacheByCoadmin(targetUid, limit);
+    } else {
+      tasks = await readPlayerCashoutTasksCacheByAssignedHandler(targetUid, limit);
+    }
+
+    if (tasks !== null) {
+      if (sqlReadMode) {
+        logCacheSqlRead(ROUTE, {
+          scope,
+          uid: targetUid,
+          count: tasks.length,
+          durationMs: Date.now() - startedAt,
+        });
+        return NextResponse.json({ tasks, source: 'postgres' });
+      }
+      if (tasks.length > 0) {
+        return NextResponse.json({ tasks, source: 'postgres' });
+      }
+    }
+
+    if (sqlReadMode) {
+      logCacheFirestoreFallbackBlocked(ROUTE, 'playerCashoutTasks', { scope, uid: targetUid });
       return NextResponse.json({ tasks: [], source: 'postgres' });
     }
-    if (
-      auth.user.role !== 'admin' &&
-      auth.user.role !== 'coadmin' &&
-      scopedCoadmin &&
-      targetUid !== scopedCoadmin
-    ) {
-      return apiError('Forbidden.', 403);
-    }
-  } else {
-    targetUid = auth.user.role === 'admin' ? requestedUid || auth.user.uid : auth.user.uid;
-    if (
-      auth.user.role !== 'admin' &&
-      auth.user.role !== 'staff' &&
-      auth.user.role !== 'carer' &&
-      targetUid !== auth.user.uid
-    ) {
-      return apiError('Forbidden.', 403);
-    }
-  }
 
-  if (!targetUid) {
-    return apiError('uid is required for this scope.', 400);
-  }
-
-  const sqlReadMode = isCacheSqlAuthoritative();
-  let tasks: CachedPlayerCashoutTask[] | null = null;
-
-  if (scope === 'player') {
-    tasks = await readPlayerCashoutTasksCacheByPlayer(targetUid, limit);
-  } else if (scope === 'coadmin') {
-    tasks = await readPlayerCashoutTasksCacheByCoadmin(targetUid, limit);
-  } else {
-    tasks = await readPlayerCashoutTasksCacheByAssignedHandler(targetUid, limit);
-  }
-
-  if (tasks !== null) {
+    const firestoreTasks = await readFirestoreTasks(scope, targetUid, limit);
+    return NextResponse.json({ tasks: firestoreTasks, source: 'firestore' });
+  } catch (error) {
+    const pg = extractPgErrorDetails(error);
+    console.error('[PLAYER_CASHOUT_TASKS_CACHE_ERROR]', {
+      uid: cleanText(url.searchParams.get('uid')) || null,
+      scope,
+      sqlMode: sqlReadMode,
+      query: `player_cashout_tasks_cache.${scope}`,
+      durationMs: Date.now() - startedAt,
+      ...pg,
+    });
     if (sqlReadMode) {
-      logCacheSqlRead(ROUTE, {
-        scope,
-        uid: targetUid,
-        count: tasks.length,
-        durationMs: Date.now() - startedAt,
-      });
-      return NextResponse.json({ tasks, source: 'postgres' });
+      return NextResponse.json({ tasks: [], source: 'postgres' });
     }
-    if (tasks.length > 0) {
-      return NextResponse.json({ tasks, source: 'postgres' });
-    }
+    return apiError('Failed to load cashout tasks.', 500);
   }
-
-  if (sqlReadMode) {
-    logCacheFirestoreFallbackBlocked(ROUTE, 'playerCashoutTasks', { scope, uid: targetUid });
-    return NextResponse.json({ tasks: [], source: 'postgres' });
-  }
-
-  const firestoreTasks = await readFirestoreTasks(scope, targetUid, limit);
-  return NextResponse.json({ tasks: firestoreTasks, source: 'firestore' });
 }

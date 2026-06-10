@@ -3245,12 +3245,55 @@ export async function getCompletedUsernameCarersByPlayer(playerUid: string) {
     return {} as Record<string, string[]>;
   }
 
-  if (
-    assertClientFirestoreDisabled('completed_username_carers_by_player', 'getDocs', {
+  if (isClientSqlReadMode()) {
+    console.info('[COMPLETED_USERNAME_CARERS_FIRESTORE_SKIPPED]', {
       playerUid,
-    })
-  ) {
-    return {} as Record<string, string[]>;
+      sqlMode: true,
+      reason: 'sql_read_mode',
+    });
+    try {
+      const { getPlayerApiHeaders } = await import('@/features/auth/playerSession');
+      const headers = await getPlayerApiHeaders(false, {
+        route: '/api/player/completed-username-carers',
+      });
+      const response = await fetch('/api/player/completed-username-carers', {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        mapping?: Record<string, string[]>;
+      };
+      if (!response.ok) {
+        console.warn('[COMPLETED_USERNAME_CARERS_SQL_READ]', {
+          playerUid,
+          source: 'sql',
+          count: 0,
+          firestoreAttempted: false,
+          ok: false,
+          status: response.status,
+        });
+        return {} as Record<string, string[]>;
+      }
+      const mapping = payload.mapping || {};
+      console.info('[COMPLETED_USERNAME_CARERS_SQL_READ]', {
+        playerUid,
+        source: 'sql',
+        count: Object.keys(mapping).length,
+        firestoreAttempted: false,
+      });
+      return mapping;
+    } catch (error) {
+      console.warn('[COMPLETED_USERNAME_CARERS_SQL_READ]', {
+        playerUid,
+        source: 'sql',
+        count: 0,
+        firestoreAttempted: false,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {} as Record<string, string[]>;
+    }
   }
 
   const tasksQuery = query(
