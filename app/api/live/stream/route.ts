@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const MAX_CHANNELS = 3;
-const POLL_INTERVAL_MS = 2_000;
+const POLL_INTERVAL_MS = 1_000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const PLAYER_CHANNEL_PATTERN = /^player:([A-Za-z0-9_-]+):requests$/;
 const CARER_CHANNEL_PATTERN = /^carer:([A-Za-z0-9_-]+):tasks$/;
@@ -349,6 +349,11 @@ function createLiveStreamResponse(
   allowedChannels: string[],
   lastEventId: number
 ) {
+  console.info('[LIVE_STREAM_SUBSCRIBE]', {
+    channels: allowedChannels,
+    lastEventId,
+  });
+
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
@@ -401,6 +406,21 @@ function createLiveStreamResponse(
         try {
           const rows = await getLiveOutboxRowsAfter(allowedChannels, cursor, 100);
           for (const row of rows) {
+            if (
+              row.entity_type === 'carer_task' ||
+              row.entity_type === 'player_game_request' ||
+              row.event_type.startsWith('task.') ||
+              row.event_type.endsWith('_create') ||
+              row.event_type.endsWith('_task_create')
+            ) {
+              console.info('[LIVE_STREAM_EVENT_DELIVERED]', {
+                outboxId: row.outbox_id,
+                channel: row.channel,
+                eventType: row.event_type,
+                entityType: row.entity_type,
+                entityId: row.entity_id,
+              });
+            }
             enqueue(formatSseEvent(row));
             cursor = Math.max(cursor, row.outbox_id);
           }
@@ -420,6 +440,22 @@ function createLiveStreamResponse(
         try {
           const replayRows = await getLiveOutboxRowsAfter(allowedChannels, cursor, 200);
           for (const row of replayRows) {
+            if (
+              row.entity_type === 'carer_task' ||
+              row.entity_type === 'player_game_request' ||
+              row.event_type.startsWith('task.') ||
+              row.event_type.endsWith('_create') ||
+              row.event_type.endsWith('_task_create')
+            ) {
+              console.info('[LIVE_STREAM_EVENT_DELIVERED]', {
+                outboxId: row.outbox_id,
+                channel: row.channel,
+                eventType: row.event_type,
+                entityType: row.entity_type,
+                entityId: row.entity_id,
+                phase: 'replay',
+              });
+            }
             enqueue(formatSseEvent(row));
             cursor = Math.max(cursor, row.outbox_id);
           }

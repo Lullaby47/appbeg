@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server';
 
 import { apiError, requireCarerOwnedLiveAuth } from '@/lib/firebase/apiAuth';
-import { carerTaskLiveChannel, getLatestOutboxIdForChannels } from '@/lib/sql/liveOutbox';
+import {
+  carerTaskLiveChannel,
+  coadminTaskLiveChannel,
+  getLatestOutboxIdForChannels,
+} from '@/lib/sql/liveOutbox';
 import {
   acquirePlayerMirrorClient,
   cleanText,
@@ -336,10 +340,13 @@ export async function GET(
   const sqlConnectionAcquireMs = acquired.timing.pool_acquire_ms;
 
   try {
-    const channel = carerTaskLiveChannel(carerUid);
+    const streamChannels = [
+      carerTaskLiveChannel(carerUid),
+      coadminTaskLiveChannel(auth.coadminUid),
+    ];
 
     const snapshotPack = await fetchSnapshotRowsWithClient(client, auth.coadminUid);
-    const outboxPack = await getLatestOutboxIdForChannels([channel], {
+    const outboxPack = await getLatestOutboxIdForChannels(streamChannels, {
       mirrorClient: client,
     });
 

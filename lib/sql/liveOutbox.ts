@@ -154,6 +154,14 @@ export async function insertLiveOutboxEvent(input: {
         entityId,
         eventType: input.eventType,
       });
+      if (cleanText(input.entityType) === 'carer_task') {
+        console.info('[LIVE_STREAM_EVENT_SKIPPED]', {
+          reason: 'duplicate_outbox',
+          channel,
+          entityId,
+          eventType: input.eventType,
+        });
+      }
       return null;
     }
 
@@ -185,12 +193,30 @@ export async function insertLiveOutboxEvent(input: {
     );
 
     const outboxId = Number(result.rows[0]?.outbox_id || 0);
+    const entityType = cleanText(input.entityType);
     console.info('[LIVE_OUTBOX] inserted', {
       outboxId,
       channel,
       entityId,
       eventType: input.eventType,
+      entityType,
     });
+    if (entityType === 'carer_task') {
+      const payload = input.payload || {};
+      console.info('[LIVE_OUTBOX_INSERT_TASK]', {
+        outboxId,
+        channel,
+        eventType: cleanText(input.eventType),
+        entityId,
+        coadminUid: cleanText(payload.coadminUid),
+        carerUid:
+          cleanText(payload.assignedCarerUid) ||
+          cleanText(payload.claimedByUid) ||
+          cleanText(payload.carerUid),
+        taskStatus: cleanText(payload.status),
+        taskType: cleanText(payload.type),
+      });
+    }
     return outboxId;
   } catch (error) {
     console.info('[LIVE_OUTBOX] failed', {
@@ -249,7 +275,25 @@ export async function insertLiveOutboxEventWithClient(
     ]
   );
 
-  return Number(result.rows[0]?.outbox_id || 0) || null;
+  const outboxId = Number(result.rows[0]?.outbox_id || 0) || null;
+  const entityType = cleanText(input.entityType);
+  if (outboxId && entityType === 'carer_task') {
+    const payload = input.payload || {};
+    console.info('[LIVE_OUTBOX_INSERT_TASK]', {
+      outboxId,
+      channel,
+      eventType: cleanText(input.eventType),
+      entityId,
+      coadminUid: cleanText(payload.coadminUid),
+      carerUid:
+        cleanText(payload.assignedCarerUid) ||
+        cleanText(payload.claimedByUid) ||
+        cleanText(payload.carerUid),
+      taskStatus: cleanText(payload.status),
+      taskType: cleanText(payload.type),
+    });
+  }
+  return outboxId;
 }
 
 export function buildPlayerRequestOutboxPayload(input: {

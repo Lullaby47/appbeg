@@ -224,53 +224,6 @@ function mapSnapshotRowToCarerTask(row: SqlSnapshotTask, fallbackCoadminUid: str
   };
 }
 
-function mergePayloadIntoCarerTask(
-  payload: SqlTaskPayload,
-  existing: CarerTask | undefined,
-  fallbackCoadminUid: string
-): CarerTask {
-  const id = cleanText(payload.entityId || payload.taskId || existing?.id);
-  const status = cleanText(payload.status);
-  const clearingToPending = status.toLowerCase() === 'pending';
-  return {
-    id,
-    coadminUid: cleanText(payload.coadminUid) || existing?.coadminUid || fallbackCoadminUid,
-    type: normalizeTaskType(payload.type || existing?.type || 'recharge'),
-    playerUid: cleanText(payload.playerUid) || existing?.playerUid || '',
-    playerUsername: existing?.playerUsername || 'Player',
-    gameName: cleanText(payload.gameName) || existing?.gameName || 'Unknown Game',
-    amount:
-      payload.amount !== undefined && payload.amount !== null
-        ? Number.isFinite(Number(payload.amount))
-          ? Number(payload.amount)
-          : existing?.amount ?? null
-        : existing?.amount ?? null,
-    requestId: cleanText(payload.requestId) || existing?.requestId || null,
-    status: status ? normalizeCarerTaskStatus(status) : existing?.status || 'pending',
-    assignedCarerUid:
-      payload.assignedCarerUid !== undefined
-        ? cleanText(payload.assignedCarerUid) || null
-        : clearingToPending
-          ? null
-          : existing?.assignedCarerUid ?? null,
-    assignedCarerUsername: clearingToPending ? null : existing?.assignedCarerUsername ?? null,
-    claimedByUid:
-      payload.claimedByUid !== undefined
-        ? cleanText(payload.claimedByUid) || null
-        : clearingToPending
-          ? null
-          : existing?.claimedByUid ?? null,
-    automationStatus:
-      payload.automationStatus !== undefined
-        ? ((cleanText(payload.automationStatus) || null) as CarerTask['automationStatus'])
-        : clearingToPending
-          ? null
-          : existing?.automationStatus ?? null,
-    createdAt: existing?.createdAt ?? isoToTimestamp(cleanText(payload.updatedAt)),
-    completedAt: clearingToPending ? null : existing?.completedAt ?? null,
-  };
-}
-
 function sortTasksByNewest(tasks: CarerTask[]) {
   return [...tasks].sort((left, right) => {
     const leftTime =
@@ -334,6 +287,8 @@ export function attachCarerTaskSqlReadListener(
   let abortController: AbortController | null = null;
   let disposed = false;
   let fellBack = false;
+  let refetchTimer: ReturnType<typeof setTimeout> | null = null;
+  let refetchInFlight = false;
   const tasksById = new Map<string, CarerTask>();
 
   const emitTasks = () => {
@@ -341,6 +296,104 @@ export function attachCarerTaskSqlReadListener(
       return;
     }
     onTasksChange(sortTasksByNewest(Array.from(tasksById.values())));
+  };
+
+  const shouldRefetchForLiveEvent = (event: string, entityType: string) => {
+    if (entityType === 'carer_task') {
+      return true;
+    }
+    if (entityType === 'player_game_request') {
+      return (
+        CARER_TASK_UPSERT_EVENTS.has(event) ||
+        GAME_REQUEST_CREATE_EVENTS.has(event) ||
+        CARER_TASK_REMOVE_EVENTS.has(event)
+      );
+    }
+    return (
+      CARER_TASK_UPSERT_EVENTS.has(event) ||
+      GAME_REQUEST_CREATE_EVENTS.has(event) ||
+      CARER_TASK_REMOVE_EVENTS.has(event)
+    );
+  };
+
+  const loadSnapshot = async (
+    headers: Record<string, string>,
+    reason: string
+  ): Promise<boolean> => {
+    console.info('[CARER_TASKS_LIVE_REFETCH_START]', {
+      reason,
+      carerUid: cleanCarerUid,
+      coadminUid: cleanCoadminUid,
+      lastEventId,
+    });
+    const snapshotResponse = await fetch(
+      `/api/live/snapshot/carer/${encodeURIComponent(cleanCarerUid)}/tasks`,
+      {
+        headers,
+        cache: 'no-store',
+      }
+    );
+    const snapshot = (await snapshotResponse.json()) as SqlSnapshotResponse;
+    const source = cleanText(snapshot.source);
+    const ok =
+      snapshotResponse.ok &&
+      source !== 'postgres_snapshot_failed' &&
+      source !== 'postgres_snapshot_unavailable';
+    const rows = Array.isArray(snapshot.tasks) ? snapshot.tasks : [];
+    console.info('[CARER_TASKS_LIVE_REFETCH_RESULT]', {
+      reason,
+      ok,
+      status: snapshotResponse.status,
+      count: rows.length,
+      latestOutboxId: Number(snapshot.latestOutboxId || 0),
+      source: source || 'unknown',
+    });
+    if (!ok) {
+      return false;
+    }
+    lastEventId = Math.max(lastEventId, Number(snapshot.latestOutboxId || 0));
+    tasksById.clear();
+    for (const row of rows) {
+      const mapped = mapSnapshotRowToCarerTask(row, cleanCoadminUid);
+      if (!mapped.id) {
+        continue;
+      }
+      applyVisibleTask(mapped, reason);
+    }
+    emitTasks();
+    console.info('[CARER_TASKS_STATE_UPDATED]', {
+      reason,
+      count: tasksById.size,
+      latestOutboxId: lastEventId,
+    });
+    return true;
+  };
+
+  const scheduleLiveRefetch = (reason: string) => {
+    if (fellBack || disposed || refetchTimer) {
+      return;
+    }
+    refetchTimer = setTimeout(() => {
+      refetchTimer = null;
+      if (fellBack || disposed || refetchInFlight) {
+        return;
+      }
+      refetchInFlight = true;
+      void (async () => {
+        try {
+          const headers = await getSqlApiReadHeaders(false);
+          await loadSnapshot(headers, reason);
+        } catch (error) {
+          console.info('[CARER_TASKS_LIVE_REFETCH_RESULT]', {
+            reason,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          refetchInFlight = false;
+        }
+      })();
+    }, 120);
   };
 
   const applyVisibleTask = (task: CarerTask, mergeReason: string) => {
@@ -433,8 +486,20 @@ export function attachCarerTaskSqlReadListener(
         continue;
       }
       const parsed = parseSseBlock(part);
-      if (!parsed?.entityId) {
+      if (!parsed) {
         continue;
+      }
+
+      console.info('[CARER_LIVE_STREAM_EVENT]', {
+        outboxId: parsed.id,
+        eventType: parsed.event,
+        entityId: parsed.entityId || null,
+        carerUid: cleanCarerUid,
+        coadminUid: cleanCoadminUid,
+      });
+
+      if (parsed.id > 0) {
+        lastEventId = Math.max(lastEventId, parsed.id);
       }
 
       const enrichedPayload = enrichPayloadForSseEvent(
@@ -442,19 +507,27 @@ export function attachCarerTaskSqlReadListener(
         parsed.payload,
         cleanCoadminUid
       );
-      const taskId = resolveCarerTaskIdFromEvent(
-        parsed.event,
-        enrichedPayload,
-        parsed.entityId
-      );
-      if (!taskId) {
+      const taskId = parsed.entityId
+        ? resolveCarerTaskIdFromEvent(parsed.event, enrichedPayload, parsed.entityId)
+        : '';
+      const visibleToCarer = taskId
+        ? isSqlEventVisibleToCarer(enrichedPayload, cleanCarerUid, cleanCoadminUid)
+        : true;
+      const entityType =
+        parsed.event.startsWith('task.') || parsed.event.endsWith('_task_create')
+          ? 'carer_task'
+          : GAME_REQUEST_CREATE_EVENTS.has(parsed.event)
+            ? 'player_game_request'
+            : 'live_event';
+
+      if (shouldRefetchForLiveEvent(parsed.event, entityType)) {
+        scheduleLiveRefetch(`live_event:${parsed.event}`);
+      }
+
+      if (!parsed.entityId || !taskId) {
         continue;
       }
-      const visibleToCarer = isSqlEventVisibleToCarer(
-        enrichedPayload,
-        cleanCarerUid,
-        cleanCoadminUid
-      );
+
       const upsertLike =
         CARER_TASK_UPSERT_EVENTS.has(parsed.event) ||
         GAME_REQUEST_CREATE_EVENTS.has(parsed.event);
@@ -486,11 +559,9 @@ export function attachCarerTaskSqlReadListener(
         });
       }
 
-      if (!visibleToCarer) {
+      if (!visibleToCarer || !accepted) {
         continue;
       }
-
-      lastEventId = Math.max(lastEventId, parsed.id);
 
       if (removeLike) {
         tasksById.delete(taskId);
@@ -503,17 +574,6 @@ export function attachCarerTaskSqlReadListener(
           removed: true,
           reason: parsed.event,
         });
-        emitTasks();
-        continue;
-      }
-
-      if (upsertLike) {
-        const merged = mergePayloadIntoCarerTask(
-          enrichedPayload,
-          tasksById.get(taskId),
-          cleanCoadminUid
-        );
-        applyVisibleTask({ ...merged, id: taskId }, parsed.event);
         emitTasks();
       }
     }
@@ -541,6 +601,13 @@ export function attachCarerTaskSqlReadListener(
     if (!response.ok || !response.body) {
       throw new Error(`sse_http_${response.status}`);
     }
+    console.info('[CARER_LIVE_STREAM_OPEN]', {
+      carerUid: cleanCarerUid,
+      coadminUid: cleanCoadminUid,
+      channels: streamChannels,
+      lastEventId,
+      status: response.status,
+    });
     markCarerPageStartupStreamConnected('carer_tasks');
 
     const reader = response.body.getReader();
@@ -567,6 +634,39 @@ export function attachCarerTaskSqlReadListener(
     onFallback(reason);
   };
 
+  const runLiveStreamLoop = async (headers: Record<string, string>) => {
+    while (!disposed && !fellBack) {
+      try {
+        abortController = new AbortController();
+        await connectStream(headers);
+        if (disposed || fellBack) {
+          break;
+        }
+        console.info('[CARER_LIVE_STREAM_EVENT]', {
+          eventType: 'stream_closed',
+          carerUid: cleanCarerUid,
+          coadminUid: cleanCoadminUid,
+          lastEventId,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      } catch (error) {
+        if (disposed || fellBack) {
+          break;
+        }
+        console.info('[CARER_LIVE_STREAM_EVENT]', {
+          eventType: 'stream_error',
+          carerUid: cleanCarerUid,
+          coadminUid: cleanCoadminUid,
+          error: error instanceof Error ? error.message : String(error),
+          lastEventId,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      } finally {
+        abortController = null;
+      }
+    }
+  };
+
   const bootstrap = async () => {
     console.info('[CARER_TASKS_SQL_READ] enabled');
     const bootstrapStartedAt = Date.now();
@@ -579,41 +679,18 @@ export function attachCarerTaskSqlReadListener(
         uid: cleanCarerUid,
         role: 'carer',
       });
-      const snapshotResponse = await fetch(
-        `/api/live/snapshot/carer/${encodeURIComponent(cleanCarerUid)}/tasks`,
-        {
-          headers,
-          cache: 'no-store',
-        }
-      );
-
-      const snapshot = (await snapshotResponse.json()) as SqlSnapshotResponse;
-      const source = cleanText(snapshot.source);
-      if (
-        !snapshotResponse.ok ||
-        source === 'postgres_snapshot_failed' ||
-        source === 'postgres_snapshot_unavailable'
-      ) {
+      const snapshotOk = await loadSnapshot(headers, 'bootstrap');
+      if (!snapshotOk) {
         logCarerPageStartup({
           stage: 'tasks_snapshot_done',
           ok: false,
           uid: cleanCarerUid,
           role: 'carer',
           durationMs: Date.now() - snapshotStartedAt,
-          reason: `snapshot_http_${snapshotResponse.status}_${source || 'unknown'}`,
+          reason: 'snapshot_load_failed',
         });
-        triggerFallback(`snapshot_http_${snapshotResponse.status}_${source || 'unknown'}`);
+        triggerFallback('snapshot_load_failed');
         return;
-      }
-
-      lastEventId = Number(snapshot.latestOutboxId || 0);
-      tasksById.clear();
-      for (const row of Array.isArray(snapshot.tasks) ? snapshot.tasks : []) {
-        const mapped = mapSnapshotRowToCarerTask(row, cleanCoadminUid);
-        if (!mapped.id) {
-          continue;
-        }
-        applyVisibleTask(mapped, 'snapshot_bootstrap');
       }
 
       logCarerPageStartup({
@@ -625,32 +702,25 @@ export function attachCarerTaskSqlReadListener(
         extra: {
           count: tasksById.size,
           latestOutboxId: lastEventId,
-          source: source || 'unknown',
         },
       });
       console.info(
-        '[CARER_TASKS_SQL_READ] snapshot_loaded count=%s latestOutboxId=%s source=%s',
+        '[CARER_TASKS_SQL_READ] snapshot_loaded count=%s latestOutboxId=%s',
         tasksById.size,
-        lastEventId,
-        source || 'unknown'
+        lastEventId
       );
-      emitTasks();
 
-      abortController = new AbortController();
       const sseStartedAt = Date.now();
-      await connectStream(headers);
+      await runLiveStreamLoop(headers);
       logCarerPageStartup({
         stage: 'sse_start',
         ok: !fellBack,
         uid: cleanCarerUid,
         role: 'carer',
         durationMs: Date.now() - sseStartedAt,
-        reason: fellBack ? 'sse_stream_closed' : null,
+        reason: disposed ? 'disposed' : fellBack ? 'fallback' : 'stream_loop_exited',
         extra: { channel: 'carer_tasks', bootstrapMs: Date.now() - bootstrapStartedAt },
       });
-      if (!disposed && !fellBack) {
-        triggerFallback('sse_stream_closed');
-      }
     } catch (error) {
       if (!disposed) {
         const reason =
@@ -673,6 +743,10 @@ export function attachCarerTaskSqlReadListener(
   return {
     dispose() {
       disposed = true;
+      if (refetchTimer) {
+        clearTimeout(refetchTimer);
+        refetchTimer = null;
+      }
       abortController?.abort();
       abortController = null;
       tasksById.clear();
