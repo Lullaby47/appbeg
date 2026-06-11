@@ -562,6 +562,15 @@ export async function createCashToCoinTransferRequest(
     throw new Error('Not authenticated.');
   }
 
+  console.info('[PLAYER_TRANSFER_API_REQUEST]', {
+    direction: 'cash_to_coin',
+    transferId: transferId || null,
+    amountNpr: requestedAmountNpr ?? 0,
+  });
+  console.info('[PLAYER_TRANSFER_CLIENT_FIRESTORE_BLOCKED]', {
+    direction: 'cash_to_coin',
+    reason: 'server_sql_authority_route',
+  });
   const response = await fetch('/api/player/transfer/cash-to-coin', {
     method: 'POST',
     headers: await getPlayerApiHeaders(),
@@ -577,7 +586,15 @@ export async function createCashToCoinTransferRequest(
     feeAmount?: number;
     tipAmount?: number;
     coinsReceived?: number;
+    authority?: string;
   };
+  console.info('[PLAYER_TRANSFER_API_RESPONSE]', {
+    direction: 'cash_to_coin',
+    transferId: transferId || null,
+    ok: response.ok,
+    status: response.status,
+    authority: payload.authority || null,
+  });
 
   if (!response.ok) {
     throw new Error(
@@ -606,6 +623,15 @@ export async function createCoinToCashTransferRequest(
     throw new Error('Not authenticated.');
   }
 
+  console.info('[PLAYER_TRANSFER_API_REQUEST]', {
+    direction: 'coin_to_cash',
+    transferId: transferId || null,
+    amountCoins: requestedAmountCoins ?? 0,
+  });
+  console.info('[PLAYER_TRANSFER_CLIENT_FIRESTORE_BLOCKED]', {
+    direction: 'coin_to_cash',
+    reason: 'server_sql_authority_route',
+  });
   const response = await fetch('/api/player/transfer/coin-to-cash', {
     method: 'POST',
     headers: await getPlayerApiHeaders(),
@@ -621,7 +647,15 @@ export async function createCoinToCashTransferRequest(
     feeAmount?: number;
     tipAmount?: number;
     cashReceived?: number;
+    authority?: string;
   };
+  console.info('[PLAYER_TRANSFER_API_RESPONSE]', {
+    direction: 'coin_to_cash',
+    transferId: transferId || null,
+    ok: response.ok,
+    status: response.status,
+    authority: payload.authority || null,
+  });
 
   if (!response.ok) {
     throw new Error(

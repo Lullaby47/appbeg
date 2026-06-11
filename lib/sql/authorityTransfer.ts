@@ -16,6 +16,7 @@ import {
 } from '@/lib/sql/authorityLedger';
 import {
   insertLiveOutboxEventWithClient,
+  playerRequestLiveChannel,
   playerTransferLiveChannel,
 } from '@/lib/sql/liveOutbox';
 
@@ -104,6 +105,19 @@ async function writeTransferOutbox(
     updatedAt: string;
   }
 ) {
+  const payload = {
+    entityId: input.transferId,
+    playerUid: input.playerUid,
+    transferId: input.transferId,
+    direction: input.direction,
+    status: input.status,
+    transferAmount: input.transferAmount,
+    cash: input.cash,
+    coin: input.coin,
+    updatedAt: input.updatedAt,
+    source: 'authority',
+  };
+
   await insertLiveOutboxEventWithClient(client, {
     channel: playerTransferLiveChannel(input.playerUid),
     eventType: input.direction === 'cash_to_coin' ? 'cash_to_coin_transfer' : 'coin_to_cash_transfer',
@@ -111,17 +125,20 @@ async function writeTransferOutbox(
     entityId: input.transferId,
     source: 'authority_transfer',
     mirroredAt: input.updatedAt,
+    payload,
+  });
+
+  await insertLiveOutboxEventWithClient(client, {
+    channel: playerRequestLiveChannel(input.playerUid),
+    eventType: 'balance_update',
+    entityType: 'player_balance',
+    entityId: input.playerUid,
+    source: 'authority_transfer',
+    mirroredAt: input.updatedAt,
     payload: {
-      entityId: input.transferId,
-      playerUid: input.playerUid,
-      transferId: input.transferId,
-      direction: input.direction,
-      status: input.status,
-      transferAmount: input.transferAmount,
-      cash: input.cash,
-      coin: input.coin,
-      updatedAt: input.updatedAt,
-      source: 'authority',
+      ...payload,
+      entityId: input.playerUid,
+      reason: input.direction,
     },
   });
 }
@@ -342,6 +359,13 @@ export async function transferPlayerBalancesInSql(input: {
   const operationType =
     direction === 'cash_to_coin' ? 'transfer_cash_to_coin' : 'transfer_coin_to_cash';
 
+  console.info('[AUTHORITY_TRANSFER_START]', {
+    playerUid,
+    direction,
+    transferId,
+    amount,
+    operationKey,
+  });
   const existingPayload = await readAuthorityOperationPayload(operationKey);
   if (existingPayload?.transferId) {
     return storedTransferResult(existingPayload, transferId, eventId);
@@ -448,6 +472,13 @@ export async function transferPlayerBalancesInSql(input: {
 
     const currentCash = Math.max(0, Math.floor(Number(player.cash || 0)));
     const currentCoin = Math.max(0, Math.floor(Number(player.coin || 0)));
+    console.info('[AUTHORITY_TRANSFER_BALANCE_BEFORE]', {
+      playerUid,
+      direction,
+      transferId,
+      cash: currentCash,
+      coin: currentCoin,
+    });
 
     if (direction === 'cash_to_coin') {
       if (currentCash < amount) {
@@ -553,6 +584,12 @@ export async function transferPlayerBalancesInSql(input: {
       nowIso,
       rawEvent,
     });
+    console.info('[AUTHORITY_TRANSFER_LEDGER_WRITTEN]', {
+      playerUid,
+      direction,
+      transferId,
+      eventId,
+    });
 
     await writeTransferOutbox(client, {
       playerUid,
@@ -563,6 +600,14 @@ export async function transferPlayerBalancesInSql(input: {
       cash: newCash,
       coin: newCoin,
       updatedAt: nowIso,
+    });
+    console.info('[PLAYER_BALANCE_EVENT]', {
+      playerUid,
+      direction,
+      transferId,
+      cash: newCash,
+      coin: newCoin,
+      source: 'authority_transfer',
     });
 
     const resultPayload = {
@@ -587,6 +632,19 @@ export async function transferPlayerBalancesInSql(input: {
     );
 
     await client.query('COMMIT');
+    console.info('[AUTHORITY_TRANSFER_BALANCE_AFTER]', {
+      playerUid,
+      direction,
+      transferId,
+      cash: newCash,
+      coin: newCoin,
+    });
+    console.info('[AUTHORITY_TRANSFER_DONE]', {
+      playerUid,
+      direction,
+      transferId,
+      eventId,
+    });
 
     return {
       success: true,

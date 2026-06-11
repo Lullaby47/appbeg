@@ -3285,23 +3285,40 @@ export default function PlayerPage() {
     try {
       const transferId = cashToCoinTransferId || createCashToCoinTransferId();
       setCashToCoinTransferId(transferId);
+      console.info('[PLAYER_TRANSFER_CLICK]', {
+        direction: isCashToCoinTransfer ? 'cash_to_coin' : 'coin_to_cash',
+        transferId,
+        amount: parsedAmount,
+      });
       if (isCashToCoinTransfer) {
         const result = await createCashToCoinTransferRequest(parsedAmount, transferId);
-        setMessage(
-          `Transferred $${formatWalletAmount(result.transferAmount)} cash. Fee ${formatWalletAmount(
-            result.feeAmount
-          )}. Received ${formatWalletAmount(
-            result.coinsReceived
-          )} coins.`
-        );
+        setWallet({ cash: Number(result.cash || 0), coin: Number(result.coin || 0) });
+        setMessage('Cash converted to coins successfully.');
+        console.info('[PLAYER_TRANSFER_SUCCESS_TOAST_SHOW]', {
+          direction: 'cash_to_coin',
+          transferId,
+          message: 'Cash converted to coins successfully.',
+        });
       } else {
         const result = await createCoinToCashTransferRequest(parsedAmount, transferId);
-        setMessage(
-          `Transferred ${formatWalletAmount(result.transferAmount)} coins. Tip ${formatWalletAmount(
-            result.tipAmount
-          )}. Received $${formatWalletAmount(result.cashReceived)} cash.`
-        );
+        setWallet({ cash: Number(result.cash || 0), coin: Number(result.coin || 0) });
+        setMessage('Coins converted to cash successfully.');
+        console.info('[PLAYER_TRANSFER_SUCCESS_TOAST_SHOW]', {
+          direction: 'coin_to_cash',
+          transferId,
+          message: 'Coins converted to cash successfully.',
+        });
       }
+      void loadPlayerProfileSnapshotOnce().then((profile) => {
+        if (profile) {
+          applyPlayerProfileSnapshot(profile, playerUid || auth.currentUser?.uid || '');
+        }
+        console.info('[PLAYER_SESSION_ME_REFETCH_DONE]', {
+          direction: isCashToCoinTransfer ? 'cash_to_coin' : 'coin_to_cash',
+          transferId,
+          profileFound: Boolean(profile),
+        });
+      });
       setShowCoinConfirmSplash(false);
       setTransferCoinAmountInput('');
       setCashToCoinTransferId('');

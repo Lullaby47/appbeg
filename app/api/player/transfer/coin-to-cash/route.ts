@@ -12,8 +12,10 @@ import {
 import {
   authoritySqlWriteEnvLogFields,
   isAuthoritySqlWriteEnabled,
+  logAuthorityFirestoreFallbackBlocked,
   logAuthoritySqlWrite,
 } from '@/lib/server/authoritySqlWrite';
+import { isAppbegSqlOnlyMode } from '@/lib/server/appbegSqlOnlyMode';
 import {
   getCoinToCashTip,
   parsePositiveInteger,
@@ -36,8 +38,14 @@ type Body = {
 
 export async function POST(request: Request) {
   try {
+    console.info('[TRANSFER_API_START]', { route: ROUTE });
     const auth = await requireApiUser(request, ['player']);
     if ('response' in auth) return auth.response;
+    console.info('[TRANSFER_AUTH_OK]', {
+      route: ROUTE,
+      playerUid: auth.user.uid,
+      authPath: auth.authPath,
+    });
 
     const body = (await request.json()) as Body;
     const amountCoins = parsePositiveInteger(body.amountCoins);
@@ -66,6 +74,12 @@ export async function POST(request: Request) {
     if (isAuthoritySqlWriteEnabled()) {
       await rejectIfPlayerMaintenanceBreakFromUser(auth.user, 'coin_to_cash');
 
+      console.info('[TRANSFER_SQL_AUTHORITY_START]', {
+        route: ROUTE,
+        playerUid: auth.user.uid,
+        transferId,
+        amountCoins,
+      });
       const result = await transferCoinToCashInSql({
         playerUid: auth.user.uid,
         amountCoins,
@@ -86,6 +100,14 @@ export async function POST(request: Request) {
         pool_waitingCount: poolStats?.waitingCount ?? null,
         pool_max: poolStats?.max ?? null,
       });
+      console.info('[TRANSFER_SQL_AUTHORITY_SUCCESS]', {
+        route: ROUTE,
+        playerUid: auth.user.uid,
+        transferId,
+        duplicate: result.duplicate,
+        cash: result.cash,
+        coin: result.coin,
+      });
 
       return NextResponse.json({
         success: true,
@@ -99,6 +121,20 @@ export async function POST(request: Request) {
         duplicate: result.duplicate,
         authority: 'sql',
       });
+    }
+
+    if (isAppbegSqlOnlyMode()) {
+      logAuthorityFirestoreFallbackBlocked(ROUTE, 'coin_to_cash_transfer', {
+        playerUid: auth.user.uid,
+        transferId,
+      });
+      console.info('[FIREBASE_RUNTIME_BLOCKED]', {
+        route: ROUTE,
+        operation: 'coin_to_cash_transfer',
+        playerUid: auth.user.uid,
+        reason: 'sql_only_authority_required',
+      });
+      return apiError('SQL transfer authority is not enabled. Set AUTHORITY_SQL_WRITE=1.', 503);
     }
 
     await rejectIfPlayerMaintenanceBreak(auth.user.uid, 'coin_to_cash');
@@ -213,17 +249,26 @@ export async function POST(request: Request) {
       authority: 'firestore',
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to transfer coin to cash.';
+    const rawMessage = error instanceof Error ? error.message : 'Failed to transfer coin to cash.';
+    console.info('[TRANSFER_SQL_AUTHORITY_ERROR]', {
+      route: ROUTE,
+      error: rawMessage,
+    });
+    const message = /not authenticated|authorization|token|session/i.test(rawMessage)
+      ? 'Session expired. Please log in again.'
+      : /not enough coin/i.test(rawMessage)
+        ? 'Not enough coin balance.'
+        : rawMessage;
     if (message.startsWith('MAINTENANCE_BREAK:')) {
       return maintenanceBreakApiResponse(message.replace(/^MAINTENANCE_BREAK:/, ''));
     }
-    const status = /not authenticated|authorization|token/i.test(message)
+    const status = /not authenticated|authorization|token|session/i.test(rawMessage)
       ? 401
-      : /forbidden|blocked/i.test(message)
+      : /forbidden|blocked/i.test(rawMessage)
         ? 403
-        : /duplicate|already/i.test(message)
+        : /duplicate|already/i.test(rawMessage)
           ? 409
-          : /required|valid|not found|only|amount|coin|transfer/i.test(message)
+          : /required|valid|not found|only|amount|coin|transfer/i.test(rawMessage)
             ? 400
             : 500;
 
