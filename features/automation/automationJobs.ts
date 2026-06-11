@@ -1485,16 +1485,18 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
       firestoreAttempted: false,
       hasAppSessionId,
     });
+    const idempotencyKey = `${taskId}:${Date.now()}`;
     const response = await fetch(route, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ taskId }),
+      body: JSON.stringify({ taskId, idempotencyKey }),
     });
     const payload = (await response.json().catch(() => ({}))) as { error?: string };
     console.info('[CARER_RETURN_TO_PENDING_REQUEST]', {
       route,
       method: 'POST',
       taskId,
+      idempotencyKey,
       status: response.status,
       responseBody: payload,
       authSource: 'app_session_sql',
@@ -1529,16 +1531,18 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
     firestoreAttempted: false,
     hasAppSessionId,
   });
+  const idempotencyKey = `${taskId}:${Date.now()}`;
   const response = await fetch(route, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ taskId }),
+    body: JSON.stringify({ taskId, idempotencyKey }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
   console.info('[CARER_RETURN_TO_PENDING_REQUEST]', {
     route,
     method: 'POST',
     taskId,
+    idempotencyKey,
     status: response.status,
     responseBody: payload,
     authSource: 'firebase_token',

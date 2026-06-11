@@ -830,7 +830,7 @@ export async function getPendingCarerTaskCandidatesFromSql(
   coadminUid: string,
   limit: number,
   carerUid?: string,
-  options?: { excludeRetryPending?: boolean }
+  options?: { excludeRetryPending?: boolean; excludeReturnCooldown?: boolean }
 ): Promise<PendingCarerTaskCandidatesSqlResult> {
   const startedAt = Date.now();
   const cleanCoadminUid = cleanText(coadminUid);
@@ -859,6 +859,8 @@ export async function getPendingCarerTaskCandidatesFromSql(
   }
 
   const excludeRetryPending = options?.excludeRetryPending !== false;
+  const excludeReturnCooldown =
+    options?.excludeReturnCooldown ?? excludeRetryPending;
   const returnCooldownSeconds = Math.ceil(30_000 / 1000);
   const pendingSql = `
     SELECT
@@ -896,20 +898,27 @@ export async function getPendingCarerTaskCandidatesFromSql(
       AND COALESCE(claimed_by_uid, '') = ''
       AND COALESCE(automation_job_id, '') = ''
       ${excludeRetryPending ? 'AND COALESCE(retry_pending, false) = false' : ''}
-      AND (
+      ${
+        excludeReturnCooldown
+          ? `AND (
         returned_to_pending_at IS NULL
         OR returned_to_pending_at < NOW() - ($3::int * INTERVAL '1 second')
-      )
+      )`
+          : ''
+      }
     ORDER BY created_at DESC NULLS LAST
     LIMIT $2
   `;
 
   try {
-    const { rows, timing } = await runMirrorPoolQuery<Record<string, unknown>>(db, pendingSql, [
-      cleanCoadminUid,
-      safeLimit,
-      returnCooldownSeconds,
-    ]);
+    const queryParams = excludeReturnCooldown
+      ? [cleanCoadminUid, safeLimit, returnCooldownSeconds]
+      : [cleanCoadminUid, safeLimit];
+    const { rows, timing } = await runMirrorPoolQuery<Record<string, unknown>>(
+      db,
+      pendingSql,
+      queryParams
+    );
 
     const candidates = rows
       .map((row) => mapSqlRowToAutoTickPendingTask(row))

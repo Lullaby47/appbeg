@@ -559,6 +559,7 @@ function getRiskCardTone(level: string, score: number) {
 const WORK_DETAILS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const AUTO_PENDING_LISTENER_LIMIT = 5;
 const AUTO_LISTENER_DEBOUNCE_MS = 500;
+const RETURN_TO_PENDING_AUTOTICK_COOLDOWN_MS = 30_000;
 const BROWSER_AUTO_TICK_INSTANCE_ID = `carer-ui-${Date.now()}-${Math.random()
   .toString(36)
   .slice(2)}`;
@@ -937,6 +938,7 @@ export default function CarerPage() {
   }, [players, tasks]);
   const carerPlayerOnlineByUid = usePresenceOnlineMap(carerPlayerPresenceUids);
   const autoTickRequestInFlightRef = useRef(false);
+  const recentlyReturnedTaskIdsRef = useRef<Record<string, number>>({});
   const autoTickBrowserTokenRef = useRef<{ token: string; expiresAt: number } | null>(null);
   const autoQueueDrainInFlightRef = useRef(false);
   const autoAutomationEnabledRef = useRef(false);
@@ -1574,6 +1576,21 @@ export default function CarerPage() {
         }
         const addedPendingDocs = docChanges.filter((change) => change.type === 'added');
         if (addedPendingDocs.length === 0) {
+          return;
+        }
+        const recentlyReturnedTaskIds = Object.entries(recentlyReturnedTaskIdsRef.current)
+          .filter(([, returnedAt]) => Date.now() - returnedAt < RETURN_TO_PENDING_AUTOTICK_COOLDOWN_MS)
+          .map(([taskId]) => taskId);
+        const blockedReturnedTaskIds = addedPendingDocs
+          .map((change) => change.doc.id)
+          .filter((taskId) => recentlyReturnedTaskIds.includes(taskId));
+        if (blockedReturnedTaskIds.length > 0) {
+          console.info('[AUTO_LISTENER_SKIP_RECENTLY_RETURNED_TASK]', {
+            carerUid: carerIdentity.uid,
+            coadminUid,
+            blockedReturnedTaskIds,
+            cooldownMs: RETURN_TO_PENDING_AUTOTICK_COOLDOWN_MS,
+          });
           return;
         }
         if (autoQueueDrainInFlightRef.current || autoTickRequestInFlightRef.current) {
@@ -3414,6 +3431,10 @@ export default function CarerPage() {
 
     try {
       await returnTaskToPendingAndCancelAutomation(task.id);
+      recentlyReturnedTaskIdsRef.current = {
+        ...recentlyReturnedTaskIdsRef.current,
+        [task.id]: Date.now(),
+      };
       setTasks((previous) =>
         sortByNewest(
           previous.map((current) =>

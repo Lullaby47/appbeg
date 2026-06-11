@@ -257,7 +257,7 @@ export async function POST(request: Request) {
         duplicate: outcome.duplicate,
         cancelledJobs: 'cancelledJobs' in outcome ? outcome.cancelledJobs : null,
       });
-      if (!outcome.duplicate) {
+      if (!outcome.duplicate || ('reapplied' in outcome && outcome.reapplied)) {
         try {
           await syncReturnToPendingFirestore(taskId, caller.uid);
         } catch (syncError) {

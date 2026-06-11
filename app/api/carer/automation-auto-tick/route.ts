@@ -592,7 +592,7 @@ async function resolveAutoTickPendingCandidates(
   coadminUid: string,
   carerUid: string,
   limit: number,
-  options?: { excludeRetryPending?: boolean }
+  options?: { excludeRetryPending?: boolean; excludeReturnCooldown?: boolean }
 ): Promise<{
   candidates: AutoTickPendingTaskCandidate[];
   timing: AutoTickPendingTiming;
@@ -1166,7 +1166,10 @@ export async function POST(request: Request) {
     coadminUid,
     carerUid,
     PENDING_QUERY_LIMIT,
-    { excludeRetryPending: !allowRetryPendingClaim }
+    {
+      excludeRetryPending: !allowRetryPendingClaim,
+      excludeReturnCooldown: !allowRetryPendingClaim,
+    }
   );
   const pendingCandidates = pendingResult.candidates;
   logAutoTickTiming('pending_query', pendingStartedAt, {
@@ -1389,6 +1392,8 @@ export async function POST(request: Request) {
       coadminUid,
       allowRetryPendingClaim,
       retryPending,
+      returnedToPendingAt: returnedToPendingAt || null,
+      cooldownPassed: !withinReturnCooldown,
     });
 
     if (isAuthoritySqlWriteEnabled()) {

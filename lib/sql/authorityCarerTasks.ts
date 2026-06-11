@@ -241,6 +241,71 @@ function taskBlocksAutomationReclaim(task: SqlTaskRow): boolean {
   return taskHasRetryPending(task) || isWithinReturnToPendingCooldown(task);
 }
 
+function taskNeedsReturnReapply(task: SqlTaskRow): boolean {
+  const status = sanitizeStatus(task.status);
+  if (status !== 'pending') {
+    return true;
+  }
+  if (cleanText(task.assigned_carer_uid) || cleanText(task.claimed_by_uid)) {
+    return true;
+  }
+  if (cleanText(task.automation_job_id)) {
+    return true;
+  }
+  if (normalizeClaimedStatus(task.claimed_status) === 'running') {
+    return true;
+  }
+  return false;
+}
+
+async function readTaskReturnFinalState(client: PoolClient, taskId: string) {
+  const finalStateResult = await client.query(
+    `
+      SELECT
+        status,
+        assigned_carer_uid,
+        claimed_by_uid,
+        automation_job_id,
+        claimed_at,
+        started_at,
+        last_heartbeat_at,
+        retry_pending,
+        returned_to_pending_at
+      FROM public.carer_tasks_cache
+      WHERE firebase_id = $1 AND deleted_at IS NULL
+      LIMIT 1
+    `,
+    [taskId]
+  );
+  return (finalStateResult.rows[0] as Record<string, unknown> | undefined) ?? null;
+}
+
+function logTaskReturnFinalState(input: {
+  taskId: string;
+  actorUid: string;
+  finalState: Record<string, unknown> | null;
+  cancelledJobs?: number;
+  duplicate?: boolean;
+  reapplied?: boolean;
+}) {
+  console.info('[SQL_TASK_RETURN_FINAL_STATE]', {
+    taskId: input.taskId,
+    actorUid: input.actorUid,
+    duplicate: input.duplicate === true,
+    reapplied: input.reapplied === true,
+    status: cleanText(input.finalState?.status) || null,
+    assignedCarerUid: cleanText(input.finalState?.assigned_carer_uid) || null,
+    claimedByUid: cleanText(input.finalState?.claimed_by_uid) || null,
+    automationJobId: cleanText(input.finalState?.automation_job_id) || null,
+    claimedAt: toIsoString(input.finalState?.claimed_at),
+    startedAt: toIsoString(input.finalState?.started_at),
+    lastHeartbeatAt: toIsoString(input.finalState?.last_heartbeat_at),
+    retryPending: input.finalState?.retry_pending === true,
+    returnedToPendingAt: toIsoString(input.finalState?.returned_to_pending_at),
+    cancelledJobs: input.cancelledJobs ?? null,
+  });
+}
+
 function jobFromRow(row: Record<string, unknown>): SqlJobRow {
   const raw =
     row.raw_firestore_data &&
@@ -1444,10 +1509,36 @@ export async function returnTaskToPendingInSql(input: {
       actorRole: input.actorRole,
       payload: {},
     });
+    let duplicateReturn = false;
     if (!op.claimed && op.duplicate) {
-      const payload = await readAuthorityOperationPayload(operationKey);
-      await client.query('COMMIT');
-      return { success: true as const, duplicate: true, ...(payload || {}) };
+      duplicateReturn = true;
+      const existingTask = await loadTaskForUpdate(client, taskId);
+      if (!existingTask) {
+        throw new Error('Task not found.');
+      }
+      if (!taskNeedsReturnReapply(existingTask)) {
+        const payload = await readAuthorityOperationPayload(operationKey);
+        const finalState = await readTaskReturnFinalState(client, taskId);
+        logTaskReturnFinalState({
+          taskId,
+          actorUid: input.actorUid,
+          finalState,
+          cancelledJobs:
+            typeof payload?.cancelledJobs === 'number' ? payload.cancelledJobs : undefined,
+          duplicate: true,
+        });
+        await client.query('COMMIT');
+        return { success: true as const, duplicate: true, reapplied: false, ...(payload || {}) };
+      }
+      console.info('[SQL_TASK_RETURN_DUPLICATE_REAPPLY]', {
+        taskId,
+        actorUid: input.actorUid,
+        operationKey,
+        reason: 'task_not_clean_pending_after_prior_return',
+        status: sanitizeStatus(existingTask.status),
+        assignedCarerUid: cleanText(existingTask.assigned_carer_uid) || null,
+        automationJobId: cleanText(existingTask.automation_job_id) || null,
+      });
     }
 
     console.info('[SQL_TASK_RETURN_TO_PENDING_START]', {
@@ -1622,38 +1713,14 @@ export async function returnTaskToPendingInSql(input: {
       returnedToPendingAt: nowIso,
     });
 
-    const finalStateResult = await client.query(
-      `
-        SELECT
-          status,
-          assigned_carer_uid,
-          claimed_by_uid,
-          automation_job_id,
-          claimed_at,
-          started_at,
-          last_heartbeat_at,
-          retry_pending,
-          returned_to_pending_at
-        FROM public.carer_tasks_cache
-        WHERE firebase_id = $1 AND deleted_at IS NULL
-        LIMIT 1
-      `,
-      [taskId]
-    );
-    const finalState = finalStateResult.rows[0] as Record<string, unknown> | undefined;
-    console.info('[SQL_TASK_RETURN_FINAL_STATE]', {
+    const finalState = await readTaskReturnFinalState(client, taskId);
+    logTaskReturnFinalState({
       taskId,
       actorUid: input.actorUid,
-      status: cleanText(finalState?.status) || null,
-      assignedCarerUid: cleanText(finalState?.assigned_carer_uid) || null,
-      claimedByUid: cleanText(finalState?.claimed_by_uid) || null,
-      automationJobId: cleanText(finalState?.automation_job_id) || null,
-      claimedAt: toIsoString(finalState?.claimed_at),
-      startedAt: toIsoString(finalState?.started_at),
-      lastHeartbeatAt: toIsoString(finalState?.last_heartbeat_at),
-      retryPending: finalState?.retry_pending === true,
-      returnedToPendingAt: toIsoString(finalState?.returned_to_pending_at),
+      finalState,
       cancelledJobs,
+      duplicate: duplicateReturn,
+      reapplied: duplicateReturn,
     });
 
     const returnCarerUid = beforeAssignedCarerUid || input.actorUid;
@@ -1686,13 +1753,18 @@ export async function returnTaskToPendingInSql(input: {
       reason: null,
     });
 
-    const outcome = { oldTaskStatus, cancelledJobs, linkedRequestReset: Boolean(requestId) };
+    const outcome = {
+      oldTaskStatus,
+      cancelledJobs,
+      linkedRequestReset: Boolean(requestId),
+      reapplied: duplicateReturn,
+    };
     await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
       operationKey,
       JSON.stringify(outcome),
     ]);
     await client.query('COMMIT');
-    return { success: true as const, duplicate: false, ...outcome };
+    return { success: true as const, duplicate: duplicateReturn, ...outcome };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
