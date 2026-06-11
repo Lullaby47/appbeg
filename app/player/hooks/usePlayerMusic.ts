@@ -25,6 +25,8 @@ export function usePlayerMusic() {
   const playRandomTrackRef = useRef<((previousTrack?: string | null) => Promise<void>) | null>(null);
   const interactionListenerCleanupRef = useRef<null | (() => void)>(null);
   const autoplayRetryTimeoutRef = useRef<number | null>(null);
+  const pageVisibleRef = useRef(true);
+  const audioUnlockedRef = useRef(false);
 
   const chooseRandomTrack = useCallback((previousTrack?: string | null) => {
     if (CASINO_BACKGROUND_TRACKS.length <= 1) {
@@ -62,13 +64,14 @@ export function usePlayerMusic() {
 
   const playCurrentAudio = useCallback(async () => {
     const audio = audioRef.current;
-    if (!audio || !musicEnabledRef.current) {
+    if (!audio || !musicEnabledRef.current || !pageVisibleRef.current) {
       return false;
     }
 
     try {
       audio.volume = DEFAULT_PLAYER_MUSIC_VOLUME;
       await audio.play();
+      audioUnlockedRef.current = true;
       clearInteractionListener();
       clearAutoplayRetry();
       return true;
@@ -108,8 +111,13 @@ export function usePlayerMusic() {
       const audio = new Audio(nextTrack);
       audio.volume = DEFAULT_PLAYER_MUSIC_VOLUME;
       audio.preload = 'auto';
+      audio.loop = true;
       audio.onended = () => {
-        void playRandomTrackRef.current?.(nextTrack);
+        if (!musicEnabledRef.current || !pageVisibleRef.current) {
+          return;
+        }
+        audio.currentTime = 0;
+        void playCurrentAudio();
       };
       audio.onerror = () => {
         clearAutoplayRetry();
@@ -145,6 +153,70 @@ export function usePlayerMusic() {
   useEffect(() => {
     playRandomTrackRef.current = playRandomTrack;
   }, [playRandomTrack]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return undefined;
+    }
+
+    const isDocumentVisible = () => document.visibilityState === 'visible';
+
+    const pauseForBackground = () => {
+      pageVisibleRef.current = false;
+      clearAutoplayRetry();
+      audioRef.current?.pause();
+    };
+
+    const resumeForForeground = () => {
+      pageVisibleRef.current = isDocumentVisible();
+      if (!pageVisibleRef.current || !musicEnabledRef.current) {
+        return;
+      }
+      if (!audioUnlockedRef.current) {
+        attachInteractionListener();
+        return;
+      }
+      if (audioRef.current) {
+        void playCurrentAudio();
+      } else {
+        void playRandomTrack(currentTrackRef.current);
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (isDocumentVisible()) {
+        resumeForForeground();
+      } else {
+        pauseForBackground();
+      }
+    };
+
+    pageVisibleRef.current = isDocumentVisible();
+    if (!pageVisibleRef.current) {
+      pauseForBackground();
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', pauseForBackground);
+    window.addEventListener('blur', pauseForBackground);
+    window.addEventListener('freeze', pauseForBackground);
+    window.addEventListener('pageshow', resumeForForeground);
+    window.addEventListener('focus', resumeForForeground);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', pauseForBackground);
+      window.removeEventListener('blur', pauseForBackground);
+      window.removeEventListener('freeze', pauseForBackground);
+      window.removeEventListener('pageshow', resumeForForeground);
+      window.removeEventListener('focus', resumeForForeground);
+    };
+  }, [
+    attachInteractionListener,
+    clearAutoplayRetry,
+    playCurrentAudio,
+    playRandomTrack,
+  ]);
 
   useEffect(() => {
     musicEnabledRef.current = musicEnabled;
