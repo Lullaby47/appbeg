@@ -49,6 +49,15 @@ const ACTIVE_JOB_STATUSES = new Set([
 const RESETTABLE_TASK_STATUSES = new Set(['pending', 'in_progress', 'failed', 'urgent']);
 const RESETTABLE_REQUEST_STATUSES = new Set(['pending', 'poked', 'pending_review', 'failed']);
 
+const REUSABLE_CLAIM_DUPLICATE_JOB_STATUSES = new Set(['queued', 'running', 'in_progress', 'waiting']);
+
+const FINAL_CLAIM_DUPLICATE_JOB_STATUSES = new Set([
+  'cancelled',
+  'completed',
+  'failed',
+  'dismissed',
+]);
+
 type SqlJobRow = {
   job_id: string;
   task_id: string | null;
@@ -418,9 +427,9 @@ async function patchCarerTaskInTxn(
         active_job_id = CASE WHEN $22::boolean THEN NULLIF($23, '') ELSE active_job_id END,
         automation_error = CASE WHEN $24::boolean THEN NULLIF($25, '') ELSE automation_error END,
         retry_pending = COALESCE($26, retry_pending),
-        started_at = CASE WHEN $27::boolean THEN $28::timestamptz ELSE started_at END,
-        claimed_at = CASE WHEN $29::boolean THEN $30::timestamptz ELSE claimed_at END,
-        last_heartbeat_at = CASE WHEN $31::boolean THEN $32::timestamptz ELSE last_heartbeat_at END,
+        started_at = CASE WHEN $52::boolean THEN NULL WHEN $27::boolean THEN $28::timestamptz ELSE started_at END,
+        claimed_at = CASE WHEN $52::boolean THEN NULL WHEN $29::boolean THEN $30::timestamptz ELSE claimed_at END,
+        last_heartbeat_at = CASE WHEN $52::boolean THEN NULL WHEN $31::boolean THEN $32::timestamptz ELSE last_heartbeat_at END,
         automation_updated_at = CASE WHEN $33::boolean THEN $34::timestamptz ELSE automation_updated_at END,
         completed_at = CASE WHEN $35::boolean THEN $36::timestamptz ELSE completed_at END,
         ttl_expires_at = CASE WHEN $37::boolean THEN $38::timestamptz ELSE ttl_expires_at END,
@@ -487,6 +496,7 @@ async function patchCarerTaskInTxn(
       nowIso,
       source,
       JSON.stringify(rawPatch),
+      patch.__clearClaimTimestamps === true,
     ]
   );
 }
@@ -1124,15 +1134,106 @@ export async function claimCarerTaskInSql(input: ClaimCarerTaskInput): Promise<{
     });
     if (!op.claimed && op.duplicate) {
       const payload = await readAuthorityOperationPayload(operationKey);
-      if (payload?.jobId) {
-        await client.query('COMMIT');
-        return {
-          jobId: String(payload.jobId),
-          taskId,
-          status: String(payload.status || 'queued'),
-          reusedExistingJob: Boolean(payload.reusedExistingJob),
-          duplicate: true,
-        };
+      const staleJobId = cleanText(payload?.jobId);
+      console.info('[SQL_TASK_CLAIM_DUPLICATE_CHECK]', {
+        taskId,
+        carerUid,
+        operationKey,
+        staleJobId: staleJobId || null,
+        hasPayload: Boolean(payload?.jobId),
+      });
+
+      if (staleJobId) {
+        const taskSnap = await client.query(
+          `
+            SELECT status, automation_job_id
+            FROM public.carer_tasks_cache
+            WHERE firebase_id = $1 AND deleted_at IS NULL
+            LIMIT 1
+          `,
+          [taskId]
+        );
+        const taskStatus = sanitizeStatus(
+          (taskSnap.rows[0] as { status?: string | null } | undefined)?.status
+        );
+        const taskAutomationJobId = cleanText(
+          (taskSnap.rows[0] as { automation_job_id?: string | null } | undefined)
+            ?.automation_job_id
+        );
+        const taskPendingWithoutJob = taskStatus === 'pending' && !taskAutomationJobId;
+
+        const jobSnap = await client.query(
+          `
+            SELECT job_id, status
+            FROM public.automation_jobs_cache
+            WHERE job_id = $1 AND deleted_at IS NULL
+            LIMIT 1
+          `,
+          [staleJobId]
+        );
+        const jobStatus = normalizeAutomationStatus(
+          (jobSnap.rows[0] as { status?: string | null } | undefined)?.status
+        );
+
+        if (taskPendingWithoutJob) {
+          console.info('[SQL_TASK_CLAIM_STALE_JOB_IGNORED]', {
+            taskId,
+            carerUid,
+            staleJobId,
+            jobStatus: jobStatus || null,
+            reason: 'task_pending_without_job',
+          });
+          console.info('[SQL_TASK_RECLAIM_AFTER_RETURN]', {
+            taskId,
+            carerUid,
+            staleJobId,
+            priorJobStatus: jobStatus || null,
+          });
+        } else if (REUSABLE_CLAIM_DUPLICATE_JOB_STATUSES.has(jobStatus)) {
+          console.info('[SQL_TASK_CLAIM_REUSE_ACTIVE_JOB]', {
+            taskId,
+            carerUid,
+            jobId: staleJobId,
+            jobStatus,
+            taskStatus,
+          });
+          await client.query('COMMIT');
+          return {
+            jobId: staleJobId,
+            taskId,
+            status: String(payload?.status || jobStatus || 'queued'),
+            reusedExistingJob: Boolean(payload?.reusedExistingJob),
+            duplicate: true,
+          };
+        } else if (
+          !jobSnap.rows.length ||
+          FINAL_CLAIM_DUPLICATE_JOB_STATUSES.has(jobStatus) ||
+          !jobStatus
+        ) {
+          console.info('[SQL_TASK_CLAIM_STALE_JOB_IGNORED]', {
+            taskId,
+            carerUid,
+            staleJobId,
+            jobStatus: jobStatus || 'missing',
+            reason: 'final_or_missing_job',
+          });
+          if (FINAL_CLAIM_DUPLICATE_JOB_STATUSES.has(jobStatus)) {
+            console.info('[SQL_TASK_RECLAIM_AFTER_RETURN]', {
+              taskId,
+              carerUid,
+              staleJobId,
+              priorJobStatus: jobStatus,
+            });
+          }
+        } else {
+          console.info('[SQL_TASK_CLAIM_STALE_JOB_IGNORED]', {
+            taskId,
+            carerUid,
+            staleJobId,
+            jobStatus,
+            reason: 'non_reusable_active_status',
+          });
+        }
       }
     }
 
@@ -1300,6 +1401,7 @@ export async function returnTaskToPendingInSql(input: {
       status: 'pending',
       assignedCarerUid: '',
       assignedCarerUsername: '',
+      assignedCarer: '',
       claimedStatus: '',
       claimedByUid: '',
       claimedByUsername: '',
@@ -1307,6 +1409,9 @@ export async function returnTaskToPendingInSql(input: {
       automationJobId: '',
       linkedJobId: '',
       automationError: '',
+      claimedAt: null,
+      startedAt: null,
+      lastHeartbeatAt: null,
       retryPending: true,
       resetToPendingAt: nowIso,
       returnedToPendingAt: nowIso,
@@ -1319,11 +1424,27 @@ export async function returnTaskToPendingInSql(input: {
       __setAutomationJobId: true,
       __setJobIds: true,
       __clearAutomationError: true,
+      __clearClaimTimestamps: true,
       __setResetToPendingAt: true,
       __setReturnedToPendingAt: true,
       __setPendingSince: true,
       __setAutomationUpdatedAt: true,
     }, 'authority_task_return');
+
+    console.info('[SQL_TASK_RETURN_CLEARED_CLAIM_FIELDS]', {
+      taskId,
+      actorUid: input.actorUid,
+      clearedFields: [
+        'assigned_carer_uid',
+        'claimed_by_uid',
+        'automation_job_id',
+        'claimed_at',
+        'started_at',
+        'last_heartbeat_at',
+      ],
+      resetToPendingAt: nowIso,
+      returnedToPendingAt: nowIso,
+    });
 
     const returnCarerUid = beforeAssignedCarerUid || input.actorUid;
     await writeTaskOutboxInTxn(client, {
