@@ -88,6 +88,66 @@ export const PLAYER_REDEEM_SUCCESS_MESSAGE = 'You have successfully redeemed fro
 export const FAKE_REDEEM_REASON_CODE = 'fake_redeem';
 export const PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE =
   'Redeem could not be completed because the game balance is lower than the requested redeem amount.';
+export const PLAYER_IN_GAME_REASON_CODE = 'PLAYER_IN_GAME';
+export const GAME_RECHARGE_REDEEM_FAILED_IN_GAME_REASON = 'GAME_RECHARGE_REDEEM_FAILED_IN_GAME';
+export const PLAYER_IN_GAME_RECHARGE_SPLASH_MESSAGE =
+  'Recharge failed because player is currently in game. Coins have been refunded.';
+export const PLAYER_IN_GAME_REDEEM_SPLASH_MESSAGE =
+  'Redeem failed because player is currently in game. Cash has been refunded.';
+
+function normalizePlayerInGameFailureText(value: unknown) {
+  return cleanText(value).toLowerCase().replaceAll('in-game', 'in game');
+}
+
+export function requestMatchesPlayerInGameDismiss(input: {
+  dismissReasonCode?: string | null;
+  pokeMessage?: string | null;
+  dismissReasonMessage?: string | null;
+}) {
+  const code = cleanText(input.dismissReasonCode).toUpperCase();
+  if (
+    code === PLAYER_IN_GAME_REASON_CODE ||
+    code === GAME_RECHARGE_REDEEM_FAILED_IN_GAME_REASON
+  ) {
+    return true;
+  }
+  const text = [input.pokeMessage, input.dismissReasonMessage]
+    .map((value) => normalizePlayerInGameFailureText(value))
+    .filter(Boolean)
+    .join(' ');
+  if (!text) {
+    return false;
+  }
+  return (
+    text.includes('recharge or redeem failed in game') ||
+    text.includes('player is currently in game') ||
+    text.includes('player is in game') ||
+    text.includes('currently in game') ||
+    (text.includes('failed in game') &&
+      (text.includes('recharge') || text.includes('redeem') || text.includes('player')))
+  );
+}
+
+export function playerInGameDismissSplashMessage(input: {
+  requestType?: string | null;
+  pokeMessage?: string | null;
+  dismissReasonMessage?: string | null;
+  refunded?: boolean;
+}) {
+  const isRedeem = cleanText(input.requestType).toLowerCase() === 'redeem';
+  const base = isRedeem
+    ? 'Redeem failed because player is currently in game.'
+    : 'Recharge failed because player is currently in game.';
+  if (input.refunded === false) {
+    return (
+      cleanText(input.pokeMessage) ||
+      cleanText(input.dismissReasonMessage) ||
+      base
+    );
+  }
+  const refundLine = isRedeem ? 'Cash has been refunded.' : 'Coins have been refunded.';
+  return `${base} ${refundLine}`;
+}
 
 export function requestMatchesFakeRedeemDismiss(input: {
   dismissReasonCode?: string | null;

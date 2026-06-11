@@ -40,12 +40,14 @@ import { attachPlayerRequestLiveShadowCompare } from '@/features/live/playerRequ
 import {
   attachPlayerRequestSqlReadListener,
   fakeRedeemDismissSplashMessage,
+  playerInGameDismissSplashMessage,
   PLAYER_RECHARGE_SENT_MESSAGE,
   PLAYER_RECHARGE_SUCCESS_MESSAGE,
   PLAYER_REDEEM_SENT_MESSAGE,
   PLAYER_REDEEM_SUCCESS_MESSAGE,
   PLAYER_REQUESTS_SQL_READ_ENABLED,
   requestMatchesFakeRedeemDismiss,
+  requestMatchesPlayerInGameDismiss,
   type PlayerRechargeDismissLiveEvent,
   type PlayerRechargeSuccessLiveEvent,
   type PlayerRedeemDismissLiveEvent,
@@ -1162,21 +1164,36 @@ export default function PlayerPage() {
           showSuccessSplash(PLAYER_RECHARGE_SUCCESS_MESSAGE);
           seenCompletedRechargeSplashIdsRef.current.add(request.id);
         }
-        const justBlockedByMidnightParty =
+        const justBlockedByKnownGameFailure =
           request.status === 'dismissed' &&
-          requestMatchesMidnightPartyDismiss(request) &&
+          (requestMatchesMidnightPartyDismiss(request) ||
+            requestMatchesPlayerInGameDismiss(request)) &&
           ((previousStatus !== undefined && previousStatus !== 'dismissed') ||
             (previousStatus === undefined && recentlyCompleted));
         if (
-          justBlockedByMidnightParty &&
+          justBlockedByKnownGameFailure &&
           !seenDismissedRechargeSplashIdsRef.current.has(request.id)
         ) {
-          console.info('[PLAYER_TOAST_SHOW]', {
-            requestId: request.id,
-            source: 'request_history_transition',
-            pokeMessage: request.pokeMessage || null,
-            dismissReasonCode: request.dismissReasonCode || null,
-          });
+          if (requestMatchesPlayerInGameDismiss(request)) {
+            console.info('[PLAYER_IN_GAME_SPLASH_SHOW]', {
+              requestId: request.id,
+              source: 'request_history_transition',
+              message: playerInGameDismissSplashMessage({
+                requestType: request.type,
+                pokeMessage: request.pokeMessage,
+                dismissReasonMessage: request.dismissReasonMessage,
+                refunded: request.coinRefundedOnDismissal === true ? true : undefined,
+              }),
+            });
+          } else {
+            console.info('[PLAYER_TOAST_SHOW]', {
+              requestId: request.id,
+              source: 'request_history_transition',
+              pokeMessage: request.pokeMessage || null,
+              dismissReasonCode: request.dismissReasonCode || null,
+              midnightParty: true,
+            });
+          }
           setRedeemDismissSplashRequest(request);
           seenDismissedRechargeSplashIdsRef.current.add(request.id);
         }
@@ -1214,6 +1231,16 @@ export default function PlayerPage() {
             requestId: request.id,
             source: 'request_history_transition',
             message: fakeRedeemDismissSplashMessage(request),
+          });
+        } else if (requestMatchesPlayerInGameDismiss(request)) {
+          console.info('[PLAYER_IN_GAME_SPLASH_SHOW]', {
+            requestId: request.id,
+            source: 'request_history_transition',
+            message: playerInGameDismissSplashMessage({
+              requestType: request.type,
+              pokeMessage: request.pokeMessage,
+              dismissReasonMessage: request.dismissReasonMessage,
+            }),
           });
         }
         setRedeemDismissSplashRequest(request);
@@ -1268,11 +1295,21 @@ export default function PlayerPage() {
     redeemDismissSplashRequest?.type === 'redeem' &&
     redeemDismissSplashRequest?.status === 'dismissed' &&
     requestMatchesFakeRedeemDismiss(redeemDismissSplashRequest);
+  const isPlayerInGameDismissSplash =
+    redeemDismissSplashRequest?.status === 'dismissed' &&
+    requestMatchesPlayerInGameDismiss(redeemDismissSplashRequest);
   const midnightPartyDismissMessage = redeemDismissSplashRequest
     ? midnightPartyDismissSplashMessage(redeemDismissSplashRequest)
     : GAME_VAULT_MIDNIGHT_PARTY_PLAYER_MESSAGE;
   const fakeRedeemDismissMessage = redeemDismissSplashRequest
     ? fakeRedeemDismissSplashMessage(redeemDismissSplashRequest)
+    : '';
+  const playerInGameDismissMessage = redeemDismissSplashRequest
+    ? playerInGameDismissSplashMessage({
+        requestType: redeemDismissSplashRequest.type,
+        pokeMessage: redeemDismissSplashRequest.pokeMessage,
+        dismissReasonMessage: redeemDismissSplashRequest.dismissReasonMessage,
+      })
     : '';
 
   useEffect(() => {
@@ -2097,8 +2134,23 @@ export default function PlayerPage() {
             showSuccessSplash(event.message);
             return;
           case 'recharge_dismissed':
-            if (!requestMatchesMidnightPartyDismiss(event)) {
+            if (
+              !requestMatchesMidnightPartyDismiss(event) &&
+              !requestMatchesPlayerInGameDismiss(event)
+            ) {
               return;
+            }
+            if (requestMatchesPlayerInGameDismiss(event)) {
+              console.info('[PLAYER_IN_GAME_SPLASH_SHOW]', {
+                requestId: event.requestId,
+                source: `sse_event:${event.sourceEvent}`,
+                message: playerInGameDismissSplashMessage({
+                  requestType: 'recharge',
+                  pokeMessage: event.pokeMessage,
+                  dismissReasonMessage: event.dismissReasonMessage,
+                  refunded: event.refunded,
+                }),
+              });
             }
             seenDismissedRechargeSplashIdsRef.current.add(event.requestId);
             setRedeemDismissSplashRequest({
@@ -2117,8 +2169,23 @@ export default function PlayerPage() {
             });
             return;
           case 'redeem_dismissed':
-            if (!requestMatchesFakeRedeemDismiss(event)) {
+            if (
+              !requestMatchesFakeRedeemDismiss(event) &&
+              !requestMatchesPlayerInGameDismiss(event)
+            ) {
               return;
+            }
+            if (requestMatchesPlayerInGameDismiss(event)) {
+              console.info('[PLAYER_IN_GAME_SPLASH_SHOW]', {
+                requestId: event.requestId,
+                source: `sse_event:${event.sourceEvent}`,
+                message: playerInGameDismissSplashMessage({
+                  requestType: 'redeem',
+                  pokeMessage: event.pokeMessage,
+                  dismissReasonMessage: event.dismissReasonMessage,
+                  refunded: event.refunded,
+                }),
+              });
             }
             seenDismissedRedeemSplashIdsRef.current.add(event.requestId);
             setRedeemDismissSplashRequest({
@@ -2161,18 +2228,33 @@ export default function PlayerPage() {
         if (event.type !== 'redeem' || event.status !== 'dismissed') {
           return;
         }
-        if (!requestMatchesFakeRedeemDismiss(event)) {
+        if (
+          !requestMatchesFakeRedeemDismiss(event) &&
+          !requestMatchesPlayerInGameDismiss(event)
+        ) {
           return;
         }
         if (seenDismissedRedeemSplashIdsRef.current.has(event.requestId)) {
           return;
         }
-        const message = fakeRedeemDismissSplashMessage(event);
-        console.info('[PLAYER_REDEEM_DISMISS_TOAST_SHOW]', {
-          requestId: event.requestId,
-          source: `sse_event:${event.sourceEvent}`,
-          message,
-        });
+        const message = requestMatchesPlayerInGameDismiss(event)
+          ? playerInGameDismissSplashMessage({
+              requestType: 'redeem',
+              pokeMessage: event.pokeMessage,
+              dismissReasonMessage: event.dismissReasonMessage,
+              refunded: event.refunded,
+            })
+          : fakeRedeemDismissSplashMessage(event);
+        console.info(
+          requestMatchesPlayerInGameDismiss(event)
+            ? '[PLAYER_IN_GAME_SPLASH_SHOW]'
+            : '[PLAYER_REDEEM_DISMISS_TOAST_SHOW]',
+          {
+            requestId: event.requestId,
+            source: `sse_event:${event.sourceEvent}`,
+            message,
+          }
+        );
         seenDismissedRedeemSplashIdsRef.current.add(event.requestId);
         setRedeemDismissSplashRequest({
           id: event.requestId,
@@ -2194,19 +2276,35 @@ export default function PlayerPage() {
         if (event.type !== 'recharge' || event.status !== 'dismissed') {
           return;
         }
-        if (!requestMatchesMidnightPartyDismiss(event)) {
+        if (
+          !requestMatchesMidnightPartyDismiss(event) &&
+          !requestMatchesPlayerInGameDismiss(event)
+        ) {
           return;
         }
         if (seenDismissedRechargeSplashIdsRef.current.has(event.requestId)) {
           return;
         }
-        console.info('[PLAYER_TOAST_SHOW]', {
-          requestId: event.requestId,
-          source: `sse_event:${event.sourceEvent}`,
-          pokeMessage: event.pokeMessage,
-          dismissReasonCode: event.dismissReasonCode,
-          refunded: event.refunded,
-        });
+        console.info(
+          requestMatchesPlayerInGameDismiss(event)
+            ? '[PLAYER_IN_GAME_SPLASH_SHOW]'
+            : '[PLAYER_TOAST_SHOW]',
+          {
+            requestId: event.requestId,
+            source: `sse_event:${event.sourceEvent}`,
+            pokeMessage: event.pokeMessage,
+            dismissReasonCode: event.dismissReasonCode,
+            refunded: event.refunded,
+            message: requestMatchesPlayerInGameDismiss(event)
+              ? playerInGameDismissSplashMessage({
+                  requestType: 'recharge',
+                  pokeMessage: event.pokeMessage,
+                  dismissReasonMessage: event.dismissReasonMessage,
+                  refunded: event.refunded,
+                })
+              : null,
+          }
+        );
         seenDismissedRechargeSplashIdsRef.current.add(event.requestId);
         setRedeemDismissSplashRequest({
           id: event.requestId,
@@ -5469,18 +5567,26 @@ export default function PlayerPage() {
                 >
                   {isMidnightPartyDismissSplash
                     ? 'Recharge blocked'
-                    : isFakeRedeemDismissSplash
-                      ? 'Redeem could not be completed'
-                      : 'Redeem request dismissed'}
+                    : isPlayerInGameDismissSplash
+                      ? redeemDismissSplashRequest.type === 'redeem'
+                        ? 'Redeem failed'
+                        : 'Recharge failed'
+                      : isFakeRedeemDismissSplash
+                        ? 'Redeem could not be completed'
+                        : 'Redeem request dismissed'}
                 </h3>
                 <p className="mt-5 text-center text-base leading-relaxed text-red-50/95">
                   {isMidnightPartyDismissSplash
                     ? midnightPartyDismissMessage
-                    : isFakeRedeemDismissSplash
-                      ? fakeRedeemDismissMessage
-                      : 'A staff member marked this redeem request as fake or mistaken and removed it from the pending queue.'}
+                    : isPlayerInGameDismissSplash
+                      ? playerInGameDismissMessage
+                      : isFakeRedeemDismissSplash
+                        ? fakeRedeemDismissMessage
+                        : 'A staff member marked this redeem request as fake or mistaken and removed it from the pending queue.'}
                 </p>
-                {!isMidnightPartyDismissSplash && !isFakeRedeemDismissSplash ? (
+                {!isMidnightPartyDismissSplash &&
+                !isFakeRedeemDismissSplash &&
+                !isPlayerInGameDismissSplash ? (
                   <p className="mt-4 text-center text-sm leading-relaxed text-red-100/85">
                     If this was an error, contact support with your request amount and game details.
                   </p>
