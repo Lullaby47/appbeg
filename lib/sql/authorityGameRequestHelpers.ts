@@ -514,7 +514,7 @@ export async function writeGameRequestOutboxInTxn(
     refunded: input.refunded === true,
     source: 'authority',
   };
-  await insertLiveOutboxEventWithClient(client, {
+  const playerOutboxId = await insertLiveOutboxEventWithClient(client, {
     channel: playerRequestLiveChannel(input.playerUid),
     eventType: input.eventType,
     entityType: 'player_game_request',
@@ -523,6 +523,15 @@ export async function writeGameRequestOutboxInTxn(
     mirroredAt: input.updatedAt,
     payload,
   });
+  if (input.eventType === 'recharge_dismiss') {
+    console.info('[LIVE_OUTBOX_INSERT_PLAYER_RECHARGE_DISMISS]', {
+      requestId: input.requestId,
+      playerUid: input.playerUid,
+      outboxId: playerOutboxId,
+      eventType: input.eventType,
+      refunded: input.refunded === true,
+    });
+  }
   await insertLiveOutboxEventWithClient(client, {
     channel: coadminTaskLiveChannel(input.coadminUid),
     eventType: input.eventType,

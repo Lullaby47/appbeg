@@ -1829,6 +1829,13 @@ export async function dismissRechargeRequestInSql(
       dismissReasonMessage,
       refunded,
     });
+    console.info('[LIVE_OUTBOX_INSERT_PLAYER_RECHARGE_DISMISS]', {
+      requestId,
+      playerUid,
+      eventType: 'recharge_dismiss',
+      dismissReasonCode,
+      refunded,
+    });
     console.info('[PLAYER_RECHARGE_DISMISS_OUTBOX_INSERTED]', {
       requestId,
       playerUid,
@@ -1851,6 +1858,7 @@ export async function dismissRechargeRequestInSql(
         source: 'authority_dismiss_recharge',
         mirroredAt: nowIso,
         payload: {
+          entityId: requestId,
           playerUid,
           requestId,
           type: 'recharge',
@@ -1887,7 +1895,20 @@ export async function dismissRechargeRequestInSql(
         entityId: playerUid,
         source: 'authority_dismiss_recharge',
         mirroredAt: nowIso,
-        payload: { playerUid, updatedAt: nowIso, source: 'authority' },
+        payload: {
+          entityId: playerUid,
+          playerUid,
+          updatedAt: nowIso,
+          source: 'authority',
+          refunded: true,
+          requestId,
+        },
+      });
+      console.info('[LIVE_OUTBOX_INSERT_PLAYER_BALANCE_UPDATE]', {
+        requestId,
+        playerUid,
+        eventType: 'balance_update',
+        refunded: true,
       });
     }
 

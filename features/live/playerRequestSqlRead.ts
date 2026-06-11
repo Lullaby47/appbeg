@@ -1,5 +1,7 @@
 import { Timestamp } from 'firebase/firestore';
 
+import { getLocalAppSessionId } from '@/features/auth/appSession';
+import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
 import {
   type PlayerGameRequest,
   type PlayerGameRequestStatus,
@@ -40,7 +42,26 @@ const PLAYER_IMMEDIATE_REFETCH_EVENTS = new Set([
   'player_message',
   'balance_update',
   'request.upserted',
+  'request.dismissed',
+  'task.dismissed',
 ]);
+
+const PLAYER_LIVE_SSE_EVENTS = [
+  'recharge_dismiss',
+  'player_message',
+  'balance_update',
+  'request.upserted',
+  'request.tombstoned',
+  'recharge_create',
+  'redeem_create',
+  'request.dismissed',
+  'task.dismissed',
+] as const;
+
+const INITIAL_RECONNECT_MS = 1_000;
+const MAX_RECONNECT_MS = 15_000;
+const SAFETY_REFETCH_MS = 30_000;
+const STALL_TIMEOUT_MS = 90_000;
 
 type SqlSnapshotResponse = {
   requests?: SqlSnapshotRequest[];
@@ -50,6 +71,7 @@ type SqlSnapshotResponse = {
 
 type SqlRequestPayload = {
   entityId?: unknown;
+  requestId?: unknown;
   playerUid?: unknown;
   type?: unknown;
   status?: unknown;
@@ -113,6 +135,17 @@ function normalizeRequestType(type: unknown): PlayerGameRequestType {
   return cleanText(type).toLowerCase() === 'redeem' ? 'redeem' : 'recharge';
 }
 
+function resolveEntityId(payload: SqlRequestPayload, eventName: string) {
+  const entityId = cleanText(payload.entityId) || cleanText(payload.requestId);
+  if (entityId) {
+    return entityId;
+  }
+  if (eventName === 'balance_update') {
+    return cleanText(payload.playerUid);
+  }
+  return '';
+}
+
 function mapSnapshotRowToPlayerGameRequest(row: SqlSnapshotRequest, playerUid: string): PlayerGameRequest {
   const id = cleanText(row.id);
   return {
@@ -140,7 +173,7 @@ function mergePayloadIntoPlayerGameRequest(
   existing: PlayerGameRequest | undefined,
   playerUid: string
 ): PlayerGameRequest {
-  const id = cleanText(payload.entityId || existing?.id);
+  const id = cleanText(payload.entityId || payload.requestId || existing?.id);
   const status = cleanText(payload.status);
   const nextStatus = status ? normalizeRequestStatus(status) : existing?.status || 'pending';
   const updatedAt = isoToTimestamp(cleanText(payload.updatedAt));
@@ -187,40 +220,26 @@ function mergePayloadIntoPlayerGameRequest(
   };
 }
 
-function parseSseBlock(block: string) {
-  const lines = block.split('\n');
-  let id = 0;
-  let event = 'message';
-  const dataLines: string[] = [];
-
-  for (const line of lines) {
-    if (line.startsWith('id:')) {
-      id = Number.parseInt(line.slice(3).trim(), 10) || 0;
-    } else if (line.startsWith('event:')) {
-      event = line.slice(6).trim();
-    } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trim());
-    }
-  }
-
-  if (!dataLines.length) {
+function buildDismissEventFromPayload(
+  eventName: string,
+  entityId: string,
+  payload: SqlRequestPayload,
+  playerUid: string
+): PlayerRechargeDismissLiveEvent | null {
+  const status = normalizeRequestStatus(payload.status || 'dismissed');
+  if (status !== 'dismissed') {
     return null;
   }
-
-  let payload: SqlRequestPayload = {};
-  try {
-    payload = JSON.parse(dataLines.join('\n')) as SqlRequestPayload;
-  } catch {
-    return null;
-  }
-
-  const entityId = cleanText(payload.entityId);
   return {
-    id,
-    event,
-    entityId,
-    payload,
-    receivedAt: Date.now(),
+    requestId: entityId,
+    playerUid: cleanText(payload.playerUid) || playerUid,
+    type: normalizeRequestType(payload.type),
+    status,
+    pokeMessage: cleanText(payload.pokeMessage) || null,
+    dismissReasonCode: cleanText(payload.dismissReasonCode) || null,
+    dismissReasonMessage: cleanText(payload.dismissReasonMessage) || null,
+    refunded: payload.refunded === true,
+    sourceEvent: eventName,
   };
 }
 
@@ -230,14 +249,22 @@ export function attachPlayerRequestSqlReadListener(
   onFallback: (reason: string) => void,
   options?: {
     onRechargeDismissEvent?: (event: PlayerRechargeDismissLiveEvent) => void;
+    onBalanceUpdate?: (reason: string) => void;
   }
 ) {
   const cleanPlayerUid = cleanText(playerUid);
+  const streamChannel = playerRequestLiveChannel(cleanPlayerUid);
   let lastEventId = 0;
-  let abortController: AbortController | null = null;
+  let eventSource: EventSource | null = null;
   let disposed = false;
   let fellBack = false;
   let refetchInFlight = false;
+  let reconnectAttempt = 0;
+  let reconnectBackoffMs = INITIAL_RECONNECT_MS;
+  let lastSseActivityAt = Date.now();
+  let safetyRefetchTimer: ReturnType<typeof setInterval> | null = null;
+  let stallWatchTimer: ReturnType<typeof setInterval> | null = null;
+  let streamConnectResolve: (() => void) | null = null;
   const requestsById = new Map<string, PlayerGameRequest>();
 
   const emitRequests = () => {
@@ -247,12 +274,30 @@ export function attachPlayerRequestSqlReadListener(
     onRequestsChange(sortPlayerGameRequestsByNewest(Array.from(requestsById.values())));
   };
 
-  const refetchSnapshotNow = async (reason: string) => {
-    if (fellBack || disposed || refetchInFlight) {
+  const refetchSnapshotNow = async (reason: string, priority = false) => {
+    if (fellBack || disposed) {
       return false;
     }
+    if (refetchInFlight) {
+      if (!priority) {
+        return false;
+      }
+      for (let attempt = 0; attempt < 50 && refetchInFlight; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (refetchInFlight) {
+        return false;
+      }
+    }
+
     refetchInFlight = true;
     const startedAt = Date.now();
+    console.info('[PLAYER_REQUESTS_REFETCH_START]', {
+      reason,
+      playerUid: cleanPlayerUid,
+      priority,
+      lastEventId,
+    });
     try {
       const headers = await getPlayerApiHeaders(false);
       const snapshotResponse = await fetch(
@@ -269,6 +314,12 @@ export function attachPlayerRequestSqlReadListener(
         source === 'postgres_snapshot_failed' ||
         source === 'postgres_snapshot_unavailable'
       ) {
+        console.info('[PLAYER_REQUESTS_REFETCH_DONE]', {
+          reason,
+          ok: false,
+          playerUid: cleanPlayerUid,
+          durationMs: Date.now() - startedAt,
+        });
         return false;
       }
       lastEventId = Math.max(lastEventId, Number(snapshot.latestOutboxId || 0));
@@ -280,10 +331,30 @@ export function attachPlayerRequestSqlReadListener(
         }
         requestsById.set(mapped.id, mapped);
       }
-      console.info('[PLAYER_REQUESTS_SQL_READ] refetch_done reason=%s count=%s durationMs=%s', reason, requestsById.size, Date.now() - startedAt);
+      console.info('[PLAYER_REQUESTS_REFETCH_DONE]', {
+        reason,
+        ok: true,
+        playerUid: cleanPlayerUid,
+        count: requestsById.size,
+        latestOutboxId: lastEventId,
+        durationMs: Date.now() - startedAt,
+      });
+      console.info(
+        '[PLAYER_REQUESTS_SQL_READ] refetch_done reason=%s count=%s durationMs=%s',
+        reason,
+        requestsById.size,
+        Date.now() - startedAt
+      );
       emitRequests();
       return true;
     } catch (error) {
+      console.info('[PLAYER_REQUESTS_REFETCH_DONE]', {
+        reason,
+        ok: false,
+        playerUid: cleanPlayerUid,
+        error: error instanceof Error ? error.message : String(error),
+        durationMs: Date.now() - startedAt,
+      });
       console.info('[PLAYER_REQUESTS_SQL_READ] refetch_failed reason=%s error=%s', reason, error instanceof Error ? error.message : String(error));
       return false;
     } finally {
@@ -291,120 +362,271 @@ export function attachPlayerRequestSqlReadListener(
     }
   };
 
-  const consumeSseChunk = (chunk: string, bufferRef: { value: string }) => {
-    bufferRef.value += chunk;
-    const parts = bufferRef.value.split('\n\n');
-    bufferRef.value = parts.pop() || '';
+  const handleDismissLiveEvent = (eventName: string, payload: SqlRequestPayload, entityId: string) => {
+    if (eventName !== 'recharge_dismiss' && eventName !== 'player_message') {
+      return;
+    }
+    const dismissEvent = buildDismissEventFromPayload(eventName, entityId, payload, cleanPlayerUid);
+    if (!dismissEvent || !options?.onRechargeDismissEvent) {
+      return;
+    }
+    console.info('[PLAYER_RECHARGE_DISMISS_EVENT]', dismissEvent);
+    if (eventName === 'player_message') {
+      console.info('[PLAYER_MESSAGE_EVENT]', {
+        requestId: dismissEvent.requestId,
+        playerUid: dismissEvent.playerUid,
+        pokeMessage: dismissEvent.pokeMessage,
+      });
+    }
+    options.onRechargeDismissEvent(dismissEvent);
+  };
 
-    for (const part of parts) {
-      if (!part.trim() || part.trim().startsWith(':')) {
-        continue;
-      }
-      const parsed = parseSseBlock(part);
-      if (!parsed?.entityId) {
-        continue;
-      }
+  const handleStreamMessage = (eventName: string, rawData: string, outboxId: number) => {
+    lastSseActivityAt = Date.now();
 
-      const payloadPlayerUid = cleanText(parsed.payload.playerUid);
-      if (payloadPlayerUid && payloadPlayerUid !== cleanPlayerUid) {
-        continue;
-      }
+    if (eventName === 'ping') {
+      return;
+    }
 
-      lastEventId = Math.max(lastEventId, parsed.id);
+    let payload: SqlRequestPayload = {};
+    try {
+      payload = JSON.parse(rawData) as SqlRequestPayload;
+    } catch {
+      return;
+    }
 
-      if (PLAYER_IMMEDIATE_REFETCH_EVENTS.has(parsed.event)) {
-        console.info(
-          '[PLAYER_REQUESTS_SQL_READ] sse_event type=%s requestId=%s immediateRefetch=true',
-          parsed.event,
-          parsed.entityId
-        );
-        if (
-          (parsed.event === 'recharge_dismiss' || parsed.event === 'player_message') &&
-          options?.onRechargeDismissEvent
-        ) {
-          const status = normalizeRequestStatus(parsed.payload.status || 'dismissed');
-          if (status === 'dismissed') {
-            const dismissEvent: PlayerRechargeDismissLiveEvent = {
-              requestId: parsed.entityId,
-              playerUid: cleanPlayerUid,
-              type: normalizeRequestType(parsed.payload.type),
-              status,
-              pokeMessage: cleanText(parsed.payload.pokeMessage) || null,
-              dismissReasonCode: cleanText(parsed.payload.dismissReasonCode) || null,
-              dismissReasonMessage: cleanText(parsed.payload.dismissReasonMessage) || null,
-              refunded: parsed.payload.refunded === true,
-              sourceEvent: parsed.event,
-            };
-            console.info('[PLAYER_RECHARGE_DISMISS_EVENT]', dismissEvent);
-            options.onRechargeDismissEvent(dismissEvent);
-          }
-        }
-        void refetchSnapshotNow(`sse_event:${parsed.event}`);
-        return;
-      }
+    const payloadPlayerUid = cleanText(payload.playerUid);
+    if (payloadPlayerUid && payloadPlayerUid !== cleanPlayerUid) {
+      return;
+    }
 
-      if (parsed.event === 'request.tombstoned') {
-        requestsById.delete(parsed.entityId);
-        console.info(
-          '[PLAYER_REQUESTS_SQL_READ] sse_event type=%s requestId=%s',
-          parsed.event,
-          parsed.entityId
-        );
-        emitRequests();
-        continue;
-      }
+    const entityId = resolveEntityId(payload, eventName);
+    if (!entityId && eventName !== 'balance_update') {
+      return;
+    }
 
-      if (parsed.event === 'request.upserted') {
-        const merged = mergePayloadIntoPlayerGameRequest(
-          parsed.payload,
-          requestsById.get(parsed.entityId),
-          cleanPlayerUid
-        );
-        if (merged.id) {
-          requestsById.set(merged.id, merged);
-        }
-        console.info(
-          '[PLAYER_REQUESTS_SQL_READ] sse_event type=%s requestId=%s',
-          parsed.event,
-          parsed.entityId
-        );
-        emitRequests();
+    if (outboxId > 0) {
+      lastEventId = Math.max(lastEventId, outboxId);
+    }
+
+    console.info('[PLAYER_LIVE_STREAM_EVENT]', {
+      type: eventName,
+      outboxId,
+      entityId: entityId || null,
+      playerUid: cleanPlayerUid,
+      immediateRefetch: PLAYER_IMMEDIATE_REFETCH_EVENTS.has(eventName),
+    });
+
+    if (eventName === 'balance_update') {
+      console.info('[PLAYER_BALANCE_EVENT]', {
+        playerUid: cleanPlayerUid,
+        requestId: cleanText(payload.requestId) || null,
+        refunded: payload.refunded === true,
+      });
+      options?.onBalanceUpdate?.(`sse_event:${eventName}`);
+      void refetchSnapshotNow(`sse_event:${eventName}`, true);
+      return;
+    }
+
+    if (PLAYER_IMMEDIATE_REFETCH_EVENTS.has(eventName)) {
+      handleDismissLiveEvent(eventName, payload, entityId);
+      void refetchSnapshotNow(`sse_event:${eventName}`, true);
+      return;
+    }
+
+    if (eventName === 'request.tombstoned' && entityId) {
+      requestsById.delete(entityId);
+      emitRequests();
+      return;
+    }
+
+    if (eventName === 'request.upserted' && entityId) {
+      const merged = mergePayloadIntoPlayerGameRequest(
+        payload,
+        requestsById.get(entityId),
+        cleanPlayerUid
+      );
+      if (merged.id) {
+        requestsById.set(merged.id, merged);
       }
+      emitRequests();
     }
   };
 
-  const connectStream = async (headers: Record<string, string>) => {
-    const channel = encodeURIComponent(playerRequestLiveChannel(cleanPlayerUid));
-    const url = `/api/live/stream?channels=${channel}&lastEventId=${lastEventId}`;
-    const response = await fetch(url, {
-      headers,
-      signal: abortController?.signal,
-      cache: 'no-store',
+  const buildStreamUrl = () => {
+    const params = new URLSearchParams({
+      channels: streamChannel,
+      lastEventId: String(Math.max(0, lastEventId)),
     });
-    if (!response.ok || !response.body) {
-      const status = response.status;
-      console.info('[PLAYER_REQUESTS_SQL_READ] stream_http_error', {
-        status,
-        logout_suppressed: status === 401,
-      });
-      throw new Error(`sse_http_${status}`);
+    const appSessionId = cleanText(getLocalAppSessionId());
+    const playerSessionId = cleanText(getLocalPlayerSessionId());
+    if (appSessionId) {
+      params.set('appSessionId', appSessionId);
     }
+    if (playerSessionId) {
+      params.set('playerSessionId', playerSessionId);
+    }
+    return `/api/live/stream?${params.toString()}`;
+  };
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    const bufferRef = { value: '' };
+  const closeEventSource = (reason: string) => {
+    if (!eventSource) {
+      return;
+    }
+    eventSource.close();
+    eventSource = null;
+    console.info('[PLAYER_LIVE_STREAM_CLOSE]', {
+      reason,
+      playerUid: cleanPlayerUid,
+      lastEventId,
+    });
+    streamConnectResolve?.();
+    streamConnectResolve = null;
+  };
 
-    while (!disposed && !fellBack) {
-      const sessionUser = await checkPlayerPollRole('player_requests_sql_read');
-      if (!sessionUser) {
-        triggerFallback('non_player_role');
+  const connectEventSource = () =>
+    new Promise<void>((resolve) => {
+      if (disposed || fellBack) {
+        resolve();
         return;
       }
-      const { done, value } = await reader.read();
-      if (done) {
-        throw new Error('sse_stream_closed');
+
+      closeEventSource('replace_existing');
+      streamConnectResolve = resolve;
+
+      const url = buildStreamUrl();
+      console.info('[PLAYER_LIVE_STREAM_SUBSCRIBE]', {
+        playerUid: cleanPlayerUid,
+        channel: streamChannel,
+        lastEventId,
+        url,
+      });
+
+      const source = new EventSource(url);
+      eventSource = source;
+
+      source.onopen = () => {
+        lastSseActivityAt = Date.now();
+        reconnectAttempt = 0;
+        reconnectBackoffMs = INITIAL_RECONNECT_MS;
+        console.info('[PLAYER_LIVE_STREAM_OPEN]', {
+          playerUid: cleanPlayerUid,
+          channel: streamChannel,
+          lastEventId,
+          readyState: source.readyState,
+        });
+      };
+
+      source.addEventListener('ping', (ev: Event) => {
+        const message = ev as MessageEvent<string>;
+        handleStreamMessage('ping', String(message.data || ''), Number(message.lastEventId) || 0);
+      });
+
+      for (const eventName of PLAYER_LIVE_SSE_EVENTS) {
+        source.addEventListener(eventName, (ev: Event) => {
+          const message = ev as MessageEvent<string>;
+          handleStreamMessage(
+            eventName,
+            String(message.data || ''),
+            Number(message.lastEventId) || 0
+          );
+        });
       }
-      consumeSseChunk(decoder.decode(value, { stream: true }), bufferRef);
+
+      source.onmessage = (ev: MessageEvent<string>) => {
+        handleStreamMessage('message', String(ev.data || ''), Number(ev.lastEventId) || 0);
+      };
+
+      source.onerror = () => {
+        console.info('[PLAYER_LIVE_STREAM_ERROR]', {
+          playerUid: cleanPlayerUid,
+          readyState: source.readyState,
+          lastEventId,
+          idleMs: Date.now() - lastSseActivityAt,
+        });
+        closeEventSource('sse_error');
+        void refetchSnapshotNow('sse_error', true).finally(() => {
+          resolve();
+        });
+      };
+    });
+
+  const runLiveStreamLoop = async () => {
+    while (!disposed && !fellBack) {
+      await connectEventSource();
+      if (disposed || fellBack) {
+        break;
+      }
+      reconnectAttempt += 1;
+      console.info('[PLAYER_LIVE_STREAM_RECONNECT]', {
+        playerUid: cleanPlayerUid,
+        attempt: reconnectAttempt,
+        backoffMs: reconnectBackoffMs,
+        lastEventId,
+      });
+      await new Promise((resolve) => setTimeout(resolve, reconnectBackoffMs));
+      reconnectBackoffMs = Math.min(reconnectBackoffMs * 2, MAX_RECONNECT_MS);
+      await refetchSnapshotNow(`reconnect_attempt_${reconnectAttempt}`, true);
+    }
+  };
+
+  const runSafetyRefetch = () => {
+    if (disposed || fellBack) {
+      return;
+    }
+    void refetchSnapshotNow('safety_interval', true);
+  };
+
+  const checkStreamStall = () => {
+    if (disposed || fellBack || !eventSource) {
+      return;
+    }
+    const idleMs = Date.now() - lastSseActivityAt;
+    if (idleMs < STALL_TIMEOUT_MS) {
+      return;
+    }
+    console.info('[PLAYER_LIVE_STREAM_ERROR]', {
+      playerUid: cleanPlayerUid,
+      reason: 'stall_timeout',
+      idleMs,
+      lastEventId,
+    });
+    closeEventSource('stall_timeout');
+    void refetchSnapshotNow('stall_timeout', true);
+  };
+
+  const handleVisibilityRefresh = () => {
+    if (disposed || fellBack || document.visibilityState !== 'visible') {
+      return;
+    }
+    reconnectAttempt = 0;
+    reconnectBackoffMs = INITIAL_RECONNECT_MS;
+    closeEventSource('visibility_refresh');
+    void refetchSnapshotNow('visibility', true);
+  };
+
+  const startMaintenanceTimers = () => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    safetyRefetchTimer = setInterval(runSafetyRefetch, SAFETY_REFETCH_MS);
+    stallWatchTimer = setInterval(checkStreamStall, 15_000);
+    document.addEventListener('visibilitychange', handleVisibilityRefresh);
+    window.addEventListener('focus', handleVisibilityRefresh);
+  };
+
+  const stopMaintenanceTimers = () => {
+    if (safetyRefetchTimer) {
+      clearInterval(safetyRefetchTimer);
+      safetyRefetchTimer = null;
+    }
+    if (stallWatchTimer) {
+      clearInterval(stallWatchTimer);
+      stallWatchTimer = null;
+    }
+    if (typeof window !== 'undefined') {
+      document.removeEventListener('visibilitychange', handleVisibilityRefresh);
+      window.removeEventListener('focus', handleVisibilityRefresh);
     }
   };
 
@@ -419,14 +641,14 @@ export function attachPlayerRequestSqlReadListener(
       )
     ) {
       disposed = true;
-      abortController?.abort();
-      abortController = null;
+      closeEventSource('stale_session');
+      stopMaintenanceTimers();
       console.info('[PLAYER_REQUESTS_SQL_READ] stale_session_stop reason=%s', reason);
       return;
     }
     fellBack = true;
-    abortController?.abort();
-    abortController = null;
+    closeEventSource('fallback');
+    stopMaintenanceTimers();
     console.info('[PLAYER_REQUESTS_SQL_READ] fallback_to_firebase reason=%s', reason);
     onFallback(reason);
   };
@@ -443,51 +665,20 @@ export function attachPlayerRequestSqlReadListener(
 
     console.info('[PLAYER_REQUESTS_SQL_READ] enabled');
     try {
-      const headers = await getPlayerApiHeaders(false);
-      const snapshotResponse = await fetch(
-        `/api/live/snapshot/player/${encodeURIComponent(cleanPlayerUid)}/requests`,
-        {
-          headers,
-          cache: 'no-store',
-        }
-      );
-
-      const snapshot = (await snapshotResponse.json()) as SqlSnapshotResponse;
-      const source = cleanText(snapshot.source);
-      if (
-        !snapshotResponse.ok ||
-        source === 'postgres_snapshot_failed' ||
-        source === 'postgres_snapshot_unavailable'
-      ) {
-        triggerFallback(`snapshot_http_${snapshotResponse.status}_${source || 'unknown'}`);
+      const loaded = await refetchSnapshotNow('bootstrap', true);
+      if (!loaded) {
+        triggerFallback('snapshot_bootstrap_failed');
         return;
       }
-
-      lastEventId = Number(snapshot.latestOutboxId || 0);
-      requestsById.clear();
-      for (const row of Array.isArray(snapshot.requests) ? snapshot.requests : []) {
-        const mapped = mapSnapshotRowToPlayerGameRequest(row, cleanPlayerUid);
-        if (!mapped.id) {
-          continue;
-        }
-        requestsById.set(mapped.id, mapped);
-      }
-
-      console.info(
-        '[PLAYER_REQUESTS_SQL_READ] snapshot_loaded count=%s latestOutboxId=%s source=%s',
-        requestsById.size,
-        lastEventId,
-        source || 'unknown'
-      );
-      emitRequests();
 
       if (LIVE_STREAM_DISABLED) {
         console.info('[PLAYER_REQUESTS_SQL_READ] stream_skipped reason=live_stream_disabled');
+        startMaintenanceTimers();
         return;
       }
 
-      abortController = new AbortController();
-      await connectStream(headers);
+      startMaintenanceTimers();
+      await runLiveStreamLoop();
       if (!disposed && !fellBack) {
         triggerFallback('sse_stream_closed');
       }
@@ -495,8 +686,8 @@ export function attachPlayerRequestSqlReadListener(
       if (!disposed) {
         if (handleStalePlayerFetchError('player_requests_sql_read', error)) {
           disposed = true;
-          abortController?.abort();
-          abortController = null;
+          closeEventSource('stale_session_error');
+          stopMaintenanceTimers();
           return;
         }
         const reason = error instanceof Error ? error.message : 'bootstrap_or_sse_failed';
@@ -507,8 +698,8 @@ export function attachPlayerRequestSqlReadListener(
 
   const disposeRuntime = () => {
     disposed = true;
-    abortController?.abort();
-    abortController = null;
+    closeEventSource('dispose');
+    stopMaintenanceTimers();
     requestsById.clear();
   };
 

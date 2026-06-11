@@ -49,7 +49,14 @@ function parseLastEventId(raw: string | null) {
 }
 
 function formatSseEvent(row: LiveOutboxRow) {
-  return `id: ${row.outbox_id}\nevent: ${row.event_type}\ndata: ${JSON.stringify(row.payload)}\n\n`;
+  const payload = {
+    ...row.payload,
+    entityId:
+      cleanText(row.payload.entityId) ||
+      cleanText(row.payload.requestId) ||
+      cleanText(row.entity_id),
+  };
+  return `id: ${row.outbox_id}\nevent: ${row.event_type}\ndata: ${JSON.stringify(payload)}\n\n`;
 }
 
 function formatPingEvent(channels: string[]) {
@@ -60,12 +67,22 @@ function formatPingEvent(channels: string[]) {
 }
 
 function requestWithAppSessionQuery(request: Request): Request {
-  const sessionFromQuery = cleanText(new URL(request.url).searchParams.get('appSessionId'));
-  if (!sessionFromQuery || request.headers.get('X-App-Session-Id')) {
+  const url = new URL(request.url);
+  const sessionFromQuery = cleanText(url.searchParams.get('appSessionId'));
+  const playerSessionFromQuery = cleanText(url.searchParams.get('playerSessionId'));
+  const headers = new Headers(request.headers);
+  let changed = false;
+  if (sessionFromQuery && !headers.get('X-App-Session-Id')) {
+    headers.set('X-App-Session-Id', sessionFromQuery);
+    changed = true;
+  }
+  if (playerSessionFromQuery && !headers.get('X-Player-Session-Id')) {
+    headers.set('X-Player-Session-Id', playerSessionFromQuery);
+    changed = true;
+  }
+  if (!changed) {
     return request;
   }
-  const headers = new Headers(request.headers);
-  headers.set('X-App-Session-Id', sessionFromQuery);
   return new Request(request.url, {
     headers,
     signal: request.signal,

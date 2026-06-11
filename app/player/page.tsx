@@ -1153,7 +1153,7 @@ export default function PlayerPage() {
           justBlockedByMidnightParty &&
           !seenDismissedRechargeSplashIdsRef.current.has(request.id)
         ) {
-          console.info('[PLAYER_RECHARGE_DISMISS_TOAST_SHOW]', {
+          console.info('[PLAYER_TOAST_SHOW]', {
             requestId: request.id,
             source: 'request_history_transition',
             pokeMessage: request.pokeMessage || null,
@@ -2031,7 +2031,7 @@ export default function PlayerPage() {
         if (seenDismissedRechargeSplashIdsRef.current.has(event.requestId)) {
           return;
         }
-        console.info('[PLAYER_RECHARGE_DISMISS_TOAST_SHOW]', {
+        console.info('[PLAYER_TOAST_SHOW]', {
           requestId: event.requestId,
           source: `sse_event:${event.sourceEvent}`,
           pokeMessage: event.pokeMessage,
@@ -2069,6 +2069,17 @@ export default function PlayerPage() {
         },
         {
           onRechargeDismissEvent: showRechargeDismissFromLiveEvent,
+          onBalanceUpdate: (reason) => {
+            void loadPlayerProfileSnapshotOnce().then((profile) => {
+              if (profile) {
+                applyPlayerProfileSnapshot(profile, playerUid);
+              }
+              console.info('[PLAYER_BALANCE_EVENT] profile_refreshed', {
+                reason,
+                playerUid,
+              });
+            });
+          },
         }
       );
       sqlReadDispose = sqlRead.dispose;
