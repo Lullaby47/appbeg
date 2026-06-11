@@ -10,6 +10,7 @@ import {
 } from '@/lib/sql/authorityLedger';
 import { returnTaskToPendingInSql } from '@/lib/sql/authorityCarerTasks';
 import {
+  buildPlayerRedeemDismissMessage,
   completeRechargeRedeemTaskInSql,
   dismissRechargeRequestInSql,
   dismissRedeemRequestInSql,
@@ -1397,7 +1398,28 @@ export async function agentDismissFakeRedeem(input: {
       ? await db.query(`SELECT request_id FROM public.carer_tasks_cache WHERE firebase_id = $1`, [taskId])
       : { rows: [] as Record<string, unknown>[] };
     const requestId = cleanText(taskRow.rows[0]?.request_id);
-    if (requestId && details.dismissRequest === true) {
+    if (requestId) {
+      const dismissReasonCode =
+        cleanText(details.dismissReasonCode) ||
+        cleanText(details.reasonCode) ||
+        cleanText(details.failureCode) ||
+        cleanText(details.code) ||
+        'fake_redeem';
+      const dismissReasonMessage =
+        cleanText(details.dismissReasonMessage) ||
+        cleanText(details.reasonMessage) ||
+        cleanText(details.dismissReason) ||
+        cleanText(input.reason) ||
+        null;
+      const playerMessage = buildPlayerRedeemDismissMessage(
+        dismissReasonMessage || dismissReasonCode || input.reason
+      );
+      console.info('[PLAYER_REDEEM_DISMISS_MESSAGE_CREATED]', {
+        jobId: input.jobId,
+        requestId,
+        dismissReasonCode,
+        playerMessage,
+      });
       await dismissRedeemRequestInSql({
         requestId,
         actorUid: input.carerUid,
@@ -1405,6 +1427,13 @@ export async function agentDismissFakeRedeem(input: {
         isAdmin: false,
         scopeUid: cleanText(input.scopeUid) || coadminUid || null,
         idempotencyKey: `agent_dismiss:${input.jobId}`,
+        dismissType: cleanText(details.dismissType) || 'fake_redeem',
+        dismissReasonCode,
+        dismissReasonMessage,
+        dismissedByAutomation: true,
+        pokeMessage: playerMessage,
+        fakeRedeem: true,
+        skipTaskTombstone: true,
       });
     }
     console.info('[SQL_FIREBASE_BYPASS_CONFIRMED] operation=dismiss_fake_redeem jobId=%s', input.jobId);

@@ -96,6 +96,8 @@ const CARER_TASK_IMMEDIATE_REFETCH_EVENTS = new Set([
   'recharge_completed',
   'redeem_completed',
   'recharge_dismiss',
+  'redeem_dismiss',
+  'request.dismissed',
 ]);
 
 const ALL_LIVE_TASK_SSE_EVENTS = Array.from(

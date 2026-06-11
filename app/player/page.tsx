@@ -38,10 +38,12 @@ import {
 import { attachPlayerRequestLiveShadowCompare } from '@/features/live/playerRequestShadowCompare';
 import {
   attachPlayerRequestSqlReadListener,
+  buildPlayerRedeemDismissMessage,
   PLAYER_RECHARGE_SUCCESS_MESSAGE,
   PLAYER_REQUESTS_SQL_READ_ENABLED,
   type PlayerRechargeDismissLiveEvent,
   type PlayerRechargeSuccessLiveEvent,
+  type PlayerRedeemDismissLiveEvent,
 } from '@/features/live/playerRequestSqlRead';
 import {
   listenToUnreadCounts,
@@ -399,9 +401,11 @@ export default function PlayerPage() {
   const referralCodeEnsureInFlightRef = useRef(false);
   const clipboardToastTimerRef = useRef<number | null>(null);
   const rechargeSuccessSplashTimerRef = useRef<number | null>(null);
+  const redeemDismissToastTimerRef = useRef<number | null>(null);
 
   const [clipboardToast, setClipboardToast] = useState<ClipboardToastState>(null);
   const [showRechargeSuccessSplash, setShowRechargeSuccessSplash] = useState(false);
+  const [redeemDismissToastMessage, setRedeemDismissToastMessage] = useState<string | null>(null);
 
   const [message, setMessage] = useState('');
   const [loadingList, setLoadingList] = useState(false);
@@ -1181,7 +1185,22 @@ export default function PlayerPage() {
         justDismissed && !seenDismissedRedeemSplashIdsRef.current.has(request.id);
 
       if (shouldShowDismissSplash) {
-        setRedeemDismissSplashRequest(request);
+        const automationFakeRedeem =
+          Boolean(request.pokeMessage?.toLowerCase().startsWith('redeem could not be completed')) ||
+          request.dismissReasonCode?.toUpperCase().includes('FAKE_REDEEM') === true;
+        if (automationFakeRedeem) {
+          const message = buildPlayerRedeemDismissMessage(
+            request.pokeMessage || request.dismissReasonMessage || request.dismissReasonCode
+          );
+          console.info('[PLAYER_REDEEM_DISMISS_TOAST_SHOW]', {
+            requestId: request.id,
+            source: 'request_history_transition',
+            message,
+          });
+          showRedeemDismissToast(message);
+        } else {
+          setRedeemDismissSplashRequest(request);
+        }
         seenDismissedRedeemSplashIdsRef.current.add(request.id);
       }
     }
@@ -1380,6 +1399,9 @@ export default function PlayerPage() {
       if (rechargeSuccessSplashTimerRef.current !== null) {
         clearTimeout(rechargeSuccessSplashTimerRef.current);
       }
+      if (redeemDismissToastTimerRef.current !== null) {
+        clearTimeout(redeemDismissToastTimerRef.current);
+      }
     };
   }, []);
 
@@ -1394,6 +1416,18 @@ export default function PlayerPage() {
       setShowRechargeSuccessSplash(false);
       rechargeSuccessSplashTimerRef.current = null;
     }, 1000);
+  }
+
+  function showRedeemDismissToast(message: string) {
+    if (redeemDismissToastTimerRef.current !== null) {
+      clearTimeout(redeemDismissToastTimerRef.current);
+      redeemDismissToastTimerRef.current = null;
+    }
+    setRedeemDismissToastMessage(message);
+    redeemDismissToastTimerRef.current = window.setTimeout(() => {
+      setRedeemDismissToastMessage(null);
+      redeemDismissToastTimerRef.current = null;
+    }, 4500);
   }
 
   function showClipboardToast(
@@ -2043,6 +2077,25 @@ export default function PlayerPage() {
         showRechargeSuccessToast();
       };
 
+      const showRedeemDismissFromLiveEvent = (event: PlayerRedeemDismissLiveEvent) => {
+        if (event.type !== 'redeem' || event.status !== 'dismissed') {
+          return;
+        }
+        if (seenDismissedRedeemSplashIdsRef.current.has(event.requestId)) {
+          return;
+        }
+        const message = buildPlayerRedeemDismissMessage(
+          event.pokeMessage || event.dismissReasonMessage || event.dismissReasonCode
+        );
+        console.info('[PLAYER_REDEEM_DISMISS_TOAST_SHOW]', {
+          requestId: event.requestId,
+          source: `sse_event:${event.sourceEvent}`,
+          message,
+        });
+        seenDismissedRedeemSplashIdsRef.current.add(event.requestId);
+        showRedeemDismissToast(message);
+      };
+
       const showRechargeDismissFromLiveEvent = (event: PlayerRechargeDismissLiveEvent) => {
         if (event.type !== 'recharge' || event.status !== 'dismissed') {
           return;
@@ -2092,6 +2145,7 @@ export default function PlayerPage() {
         {
           onRechargeDismissEvent: showRechargeDismissFromLiveEvent,
           onRechargeSuccessEvent: showRechargeSuccessFromLiveEvent,
+          onRedeemDismissEvent: showRedeemDismissFromLiveEvent,
           onBalanceUpdate: (reason) => {
             void loadPlayerProfileSnapshotOnce().then((profile) => {
               if (profile) {
@@ -4238,6 +4292,24 @@ export default function PlayerPage() {
           {clipboardToast.text}
         </motion.div>
       ) : null}
+
+      <AnimatePresence>
+        {redeemDismissToastMessage ? (
+          <motion.div
+            className="pointer-events-none fixed inset-x-0 bottom-6 z-[215] flex justify-center px-4"
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{ duration: 0.18, ease: 'easeOut' }}
+            role="status"
+            aria-live="polite"
+          >
+            <div className="w-[min(92vw,28rem)] rounded-2xl border border-amber-200/55 bg-gradient-to-br from-amber-500/95 via-orange-600/95 to-amber-950/95 px-4 py-3 text-center text-sm font-semibold leading-snug text-white shadow-[0_0_36px_-8px_rgba(245,158,11,0.9),0_18px_48px_-20px_rgba(120,53,15,0.95)] backdrop-blur-xl sm:px-5 sm:py-4 sm:text-base">
+              {redeemDismissToastMessage}
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
       <AnimatePresence>
         {showRechargeSuccessSplash ? (

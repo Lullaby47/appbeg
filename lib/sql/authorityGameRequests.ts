@@ -36,10 +36,27 @@ const PLAYER_GAME_REDEEM_MAX_PER_24H = 350;
 const PLAYER_GAME_REDEEM_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
 const FIRST_RECHARGE_MATCH_PERCENT = 50;
 
-const DISMISSIBLE_REDEEM_STATUSES = new Set(['pending', 'poked', 'pending_review']);
+const DISMISSIBLE_REDEEM_STATUSES = new Set(['pending', 'poked', 'pending_review', 'in_progress']);
 const DISMISSIBLE_RECHARGE_STATUSES = new Set(['pending', 'poked', 'pending_review', 'failed']);
 const GAME_VAULT_MIDNIGHT_PARTY_REASON = 'game_vault_midnight_party_pending';
 export const PLAYER_RECHARGE_SUCCESS_MESSAGE = 'Your game is recharged. Enjoy!';
+export const PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE =
+  'Redeem could not be completed because the game balance is lower than the requested redeem amount.';
+
+export function buildPlayerRedeemDismissMessage(rawMessage: string | null | undefined) {
+  const message = cleanText(rawMessage);
+  if (!message) {
+    return PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE;
+  }
+  const lower = message.toLowerCase();
+  if (lower.startsWith('redeem could not be completed')) {
+    return message;
+  }
+  if (/^[a-z][a-z0-9_]*$/i.test(message) && message.includes('_')) {
+    return PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE;
+  }
+  return `Redeem could not be completed: ${message}`;
+}
 
 function buildAutomationMidnightPartyPlayerMessage(gameToast: string, refunded: boolean) {
   const toast = cleanText(gameToast);
@@ -139,6 +156,13 @@ export type AuthorityDismissRedeemInput = {
   isAdmin: boolean;
   scopeUid: string | null;
   idempotencyKey?: string | null;
+  dismissType?: string | null;
+  dismissReasonCode?: string | null;
+  dismissReasonMessage?: string | null;
+  dismissedByAutomation?: boolean;
+  pokeMessage?: string | null;
+  fakeRedeem?: boolean;
+  skipTaskTombstone?: boolean;
 };
 
 export type AuthorityDismissRedeemResult = {
@@ -2182,14 +2206,32 @@ export async function dismissRedeemRequestInSql(
     }
 
     const nowIso = new Date().toISOString();
+    const dismissType = cleanText(input.dismissType) || 'carer_manual';
+    const dismissedByAutomation = input.dismissedByAutomation === true;
+    const dismissReasonCode = cleanText(input.dismissReasonCode) || null;
+    const dismissReasonMessage = cleanText(input.dismissReasonMessage) || null;
+    const pokeMessage =
+      cleanText(input.pokeMessage) ||
+      (dismissedByAutomation
+        ? buildPlayerRedeemDismissMessage(dismissReasonMessage || dismissReasonCode)
+        : null);
     const requestRaw = {
       ...(request.raw_firestore_data as Record<string, unknown>),
       status: 'dismissed',
       completedAt: nowIso,
       ttlExpiresAt: ttlAfterDaysIso(90),
       pokedAt: null,
-      pokeMessage: null,
-      dismissType: 'carer_manual',
+      pokeMessage,
+      dismissType,
+      dismissedByAutomation,
+      dismissReasonCode,
+      dismissReasonMessage,
+      dismissReason: dismissReasonMessage || dismissReasonCode,
+      fakeRedeem: input.fakeRedeem === true,
+      fakeRedeemReason: dismissReasonMessage || dismissReasonCode,
+      automationStatus: dismissedByAutomation ? 'dismissed' : cleanText(request.automation_status) || null,
+      automationError: dismissedByAutomation ? dismissReasonMessage || dismissReasonCode : null,
+      retryPending: false,
       updatedAt: nowIso,
     };
     await upsertGameRequestCacheInTxn(client, requestId, {
@@ -2200,14 +2242,22 @@ export async function dismissRedeemRequestInSql(
       gameName: cleanText(request.game_name),
       type: 'redeem',
       status: 'dismissed',
-      dismissType: 'carer_manual',
+      dismissType,
+      dismissedByAutomation,
+      dismissReasonCode,
+      dismissReasonMessage,
+      dismissReason: dismissReasonMessage || dismissReasonCode,
+      pokeMessage,
+      automationStatus: dismissedByAutomation ? 'dismissed' : cleanText(request.automation_status) || null,
+      automationError: dismissedByAutomation ? dismissReasonMessage || dismissReasonCode : cleanText(request.automation_error) || null,
+      retryPending: false,
       completedAt: nowIso,
       ttlExpiresAt: ttlAfterDaysIso(90),
-      source: 'authority_dismiss_redeem',
+      source: dismissedByAutomation ? 'authority_dismiss_fake_redeem' : 'authority_dismiss_redeem',
       rawFirestoreData: requestRaw,
     });
 
-    if (taskExists) {
+    if (taskExists && input.skipTaskTombstone !== true) {
       await tombstoneLinkedCarerTaskInTxn(client, requestId, 'authority_dismiss_redeem');
     }
 
@@ -2221,8 +2271,70 @@ export async function dismissRedeemRequestInSql(
       amount: Math.max(0, Number(request.amount || 0)),
       eventType: 'redeem_dismiss',
       updatedAt: nowIso,
+      pokeMessage,
+      dismissReasonCode,
+      dismissReasonMessage,
     });
-    if (taskExists) {
+    if (pokeMessage) {
+      console.info('[PLAYER_REDEEM_DISMISS_MESSAGE_CREATED]', {
+        requestId,
+        playerUid,
+        dismissReasonCode,
+        pokeMessage,
+      });
+      console.info('[PLAYER_REDEEM_DISMISS_OUTBOX_INSERTED]', {
+        requestId,
+        playerUid,
+        eventType: 'redeem_dismiss',
+        dismissReasonCode,
+      });
+      await insertLiveOutboxEventWithClient(client, {
+        channel: playerRequestLiveChannel(playerUid),
+        eventType: 'request.dismissed',
+        entityType: 'player_game_request',
+        entityId: requestId,
+        source: 'authority_dismiss_redeem',
+        mirroredAt: nowIso,
+        payload: {
+          entityId: requestId,
+          playerUid,
+          requestId,
+          type: 'redeem',
+          status: 'dismissed',
+          dismissReasonCode,
+          dismissReasonMessage,
+          pokeMessage,
+          updatedAt: nowIso,
+        },
+      });
+      await insertLiveOutboxEventWithClient(client, {
+        channel: playerRequestLiveChannel(playerUid),
+        eventType: 'player_message',
+        entityType: 'player_game_request',
+        entityId: requestId,
+        source: 'authority_dismiss_redeem',
+        mirroredAt: nowIso,
+        payload: {
+          entityId: requestId,
+          playerUid,
+          requestId,
+          type: 'redeem',
+          status: 'dismissed',
+          dismissReasonCode,
+          dismissReasonMessage,
+          pokeMessage,
+          playerMessage: pokeMessage,
+          updatedAt: nowIso,
+        },
+      });
+      console.info('[PLAYER_TOAST_EVENT_QUEUED]', {
+        requestId,
+        playerUid,
+        dismissReasonCode,
+        eventType: 'redeem_dismiss',
+      });
+    }
+    if (taskExists && input.skipTaskTombstone !== true) {
       await writeCarerTaskOutboxInTxn(client, {
         coadminUid: canonicalScope,
         taskId: linkedTaskId,

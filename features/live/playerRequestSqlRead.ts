@@ -39,22 +39,25 @@ type SqlSnapshotRequest = {
 
 const PLAYER_IMMEDIATE_REFETCH_EVENTS = new Set([
   'recharge_dismiss',
+  'redeem_dismiss',
   'recharge_completed',
   'redeem_completed',
   'request.completed',
+  'request.dismissed',
   'game_request_complete',
   'player_message',
   'balance_update',
   'request.upserted',
-  'request.dismissed',
   'task.dismissed',
 ]);
 
 const PLAYER_LIVE_SSE_EVENTS = [
   'recharge_dismiss',
+  'redeem_dismiss',
   'recharge_completed',
   'redeem_completed',
   'request.completed',
+  'request.dismissed',
   'game_request_complete',
   'player_message',
   'balance_update',
@@ -62,11 +65,27 @@ const PLAYER_LIVE_SSE_EVENTS = [
   'request.tombstoned',
   'recharge_create',
   'redeem_create',
-  'request.dismissed',
   'task.dismissed',
 ] as const;
 
 export const PLAYER_RECHARGE_SUCCESS_MESSAGE = 'Your game is recharged. Enjoy!';
+export const PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE =
+  'Redeem could not be completed because the game balance is lower than the requested redeem amount.';
+
+export function buildPlayerRedeemDismissMessage(rawMessage: string | null | undefined) {
+  const message = cleanText(rawMessage);
+  if (!message) {
+    return PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE;
+  }
+  const lower = message.toLowerCase();
+  if (lower.startsWith('redeem could not be completed')) {
+    return message;
+  }
+  if (/^[a-z][a-z0-9_]*$/i.test(message) && message.includes('_')) {
+    return PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE;
+  }
+  return `Redeem could not be completed: ${message}`;
+}
 
 const INITIAL_RECONNECT_MS = 1_000;
 const MAX_RECONNECT_MS = 15_000;
@@ -116,6 +135,8 @@ export type PlayerRechargeSuccessLiveEvent = {
   message: string;
   sourceEvent: string;
 };
+
+export type PlayerRedeemDismissLiveEvent = PlayerRechargeDismissLiveEvent;
 
 function cleanText(value: unknown) {
   return String(value || '').trim();
@@ -298,6 +319,7 @@ export function attachPlayerRequestSqlReadListener(
   options?: {
     onRechargeDismissEvent?: (event: PlayerRechargeDismissLiveEvent) => void;
     onRechargeSuccessEvent?: (event: PlayerRechargeSuccessLiveEvent) => void;
+    onRedeemDismissEvent?: (event: PlayerRedeemDismissLiveEvent) => void;
     onBalanceUpdate?: (reason: string) => void;
   }
 ) {
@@ -429,14 +451,37 @@ export function attachPlayerRequestSqlReadListener(
   };
 
   const handleDismissLiveEvent = (eventName: string, payload: SqlRequestPayload, entityId: string) => {
-    if (eventName !== 'recharge_dismiss' && eventName !== 'player_message') {
+    if (
+      eventName !== 'recharge_dismiss' &&
+      eventName !== 'redeem_dismiss' &&
+      eventName !== 'request.dismissed' &&
+      eventName !== 'player_message'
+    ) {
       return;
     }
     if (normalizeRequestStatus(payload.status) === 'completed') {
       return;
     }
     const dismissEvent = buildDismissEventFromPayload(eventName, entityId, payload, cleanPlayerUid);
-    if (!dismissEvent || !options?.onRechargeDismissEvent) {
+    if (!dismissEvent) {
+      return;
+    }
+    if (dismissEvent.type === 'redeem') {
+      if (!options?.onRedeemDismissEvent) {
+        return;
+      }
+      console.info('[PLAYER_REDEEM_DISMISS_EVENT]', dismissEvent);
+      if (eventName === 'player_message') {
+        console.info('[PLAYER_MESSAGE_EVENT]', {
+          requestId: dismissEvent.requestId,
+          playerUid: dismissEvent.playerUid,
+          pokeMessage: dismissEvent.pokeMessage,
+        });
+      }
+      options.onRedeemDismissEvent(dismissEvent);
+      return;
+    }
+    if (!options?.onRechargeDismissEvent) {
       return;
     }
     console.info('[PLAYER_RECHARGE_DISMISS_EVENT]', dismissEvent);
