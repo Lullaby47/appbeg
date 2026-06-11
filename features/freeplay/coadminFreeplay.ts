@@ -14,6 +14,14 @@ export async function giveFreeplayGift(input?: GiveFreeplayGiftInput) {
       }
     : {};
 
+  if (targetPlayerUid) {
+    console.info('[FREEPLAY_GIVE_API_REQUEST]', {
+      route: '/api/coadmin/freeplay/give',
+      targetPlayerUid,
+      reason: (body as { reason?: string }).reason || 'manual_specific_player',
+    });
+  }
+
   const response = await fetch('/api/coadmin/freeplay/give', {
     method: 'POST',
     headers: await getFirebaseApiHeaders(true),

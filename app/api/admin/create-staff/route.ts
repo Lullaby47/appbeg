@@ -26,6 +26,7 @@ import {
   logAuthoritySqlWrite,
 } from '@/lib/server/authoritySqlWrite';
 import { createPlayerInSql } from '@/lib/sql/authorityAdminPlayer';
+import { scheduleAutoClaimPendingTaskOnCreate } from '@/lib/sql/authorityAutoClaim';
 import { lookupReferrerByCodeFromSql } from '@/lib/sql/authorityReferralCodes';
 import { lookupUserDirectoryFromSql } from '@/lib/sql/authorityLookup';
 import {
@@ -192,7 +193,7 @@ function setInitialCreateUsernameTasksForPlayerInTransaction(input: {
       automationError: null,
       error: null,
       failureReason: null,
-      retryPending: true,
+      retryPending: false,
       resetToPendingAt: null,
       returnedToPendingAt: null,
       pendingSince: now,
@@ -499,6 +500,11 @@ export async function POST(request: Request) {
       });
       createdTaskIds.forEach((taskId) => {
         void mirrorCarerTaskById(taskId, 'appbeg_create_player');
+        scheduleAutoClaimPendingTaskOnCreate({
+          taskId,
+          coadminUid: ownerCoadminUid,
+          trigger: 'appbeg_create_player_firestore',
+        });
       });
       await recordPlayerLoginUsernameAfterFirebaseSave({
         username,

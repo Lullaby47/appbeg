@@ -12,6 +12,7 @@ import LogoutButton from '../../components/auth/LogoutButton';
 import DashboardView from '../../components/admin/DashboardView';
 import CreateUserForm from '../../components/admin/CreateUserForm';
 import ReachOutView from '../../components/admin/ReachOutView';
+import UserManagementView from '../../components/admin/UserManagementView';
 import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/RoleSidebarLayout';
 
 import { auth, db } from '@/lib/firebase/client';
@@ -164,6 +165,7 @@ export default function StaffPage() {
   const [allStaffUsers, setAllStaffUsers] = useState<StaffUser[]>([]);
   const [chatUsers, setChatUsers] = useState<AdminUser[]>([]);
   const [selectedChatUser, setSelectedChatUser] = useState<AdminUser | null>(null);
+  const [selectedViewPlayer, setSelectedViewPlayer] = useState<PlayerUser | null>(null);
   const [selectedPlayerChatUser, setSelectedPlayerChatUser] = useState<PlayerUser | null>(null);
   const [newMessage, setNewMessage] = useState('');
   const staffReachOutScrollRef = useRef<HTMLDivElement | null>(null);
@@ -1100,9 +1102,13 @@ export default function StaffPage() {
   }
 
   async function handleGiveFreeplayToPlayer(player: PlayerUser) {
-    if (freeplayGiveTargetUid) {
+    if (freeplayGiveTargetUid || !player.uid) {
       return;
     }
+    console.info('[FREEPLAY_GIVE_BUTTON_CLICK]', {
+      source: 'selected_player_panel',
+      targetPlayerUid: player.uid,
+    });
     setFreeplayGiveTargetUid(player.uid);
     setMessage('');
     try {
@@ -1479,149 +1485,71 @@ export default function StaffPage() {
 
           {!isAdminCreatedStaff && activeView === 'view-players' && (
             <div>
-              <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-3xl font-bold">Players</h2>
-                {playerChatUnreadTotal > 0 && (
+              {playerChatUnreadTotal > 0 && (
+                <div className="mb-4 flex justify-end">
                   <span className="rounded-full bg-red-500 px-3 py-1 text-xs font-bold text-white">
                     {playerChatUnreadTotal} unread
                   </span>
-                )}
-              </div>
-
-              {loadingList ? (
-                <p className="text-sm text-neutral-400">Loading...</p>
-              ) : players.length === 0 ? (
-                <p className="text-sm text-neutral-400">No players found.</p>
-              ) : (
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                  {playersSortedByUnread.map((player) => {
-                    const unreadFromPlayer = unreadCounts[player.uid] || 0;
-                    const playerRisk = riskByPlayerUid.get(player.uid);
-                    const playerCardClass = getRiskPlayerCardClass(
-                      playerRisk?.riskLevel || 'low',
-                      playerRisk?.riskScore || 0,
-                      unreadFromPlayer > 0
-                    );
-
-                    return (
-                    <div
-                      key={player.uid}
-                      className={`${playerCardClass} relative overflow-hidden`}
-                    >
-                      {unreadFromPlayer > 0 && (
-                        <div
-                          className="absolute right-3 top-3 z-10 flex h-8 min-w-[2rem] items-center justify-center rounded-full bg-red-500 px-2 text-xs font-bold text-white shadow-lg ring-2 ring-red-400/40 animate-pulse"
-                          title={`${unreadFromPlayer} unread message${unreadFromPlayer === 1 ? '' : 's'}`}
-                        >
-                          {unreadFromPlayer > 99 ? '99+' : unreadFromPlayer}
-                        </div>
-                      )}
-                      <h3
-                        className={`flex flex-wrap items-center gap-2 pr-20 text-2xl font-bold capitalize`}
-                      >
-                        <OnlineIndicator
-                          online={Boolean(staffOnlineByUid[player.uid])}
-                          sizeClassName="h-3 w-3"
-                        />
-                        <span>{player.username || 'Unnamed Player'}</span>
-                        {unreadFromPlayer > 0 && (
-                          <span className="ml-1 inline-block align-middle text-sm font-semibold text-red-300">
-                            · Unread
-                          </span>
-                        )}
-                      </h3>
-                      <p className="mt-3 text-sm text-neutral-400">
-                        Role: <span className="text-white">{player.role}</span>
-                      </p>
-                      <p className="mt-1 text-sm text-neutral-400">
-                        Status:{' '}
-                        <span
-                          className={
-                            player.status === 'disabled' ? 'text-amber-200' : 'text-white'
-                          }
-                        >
-                          {player.status}
-                        </span>
-                      </p>
-                      {playerRisk ? (
-                        <p className="mt-2 text-xs font-semibold text-orange-200/90">
-                          Risk: {String(playerRisk.riskLevel).toUpperCase()} ({playerRisk.riskScore || 0})
-                        </p>
-                      ) : null}
-                      <p className="mt-2 text-sm text-neutral-300">
-                        Coin:{' '}
-                        <span className="font-bold tabular-nums text-amber-200">
-                          {Math.max(0, Math.floor(Number(player.coin || 0))).toLocaleString()}
-                        </span>
-                      </p>
-                      {player.cash != null && (
-                        <p className="mt-0.5 text-xs text-neutral-500">
-                          Cash (view only):{' '}
-                          {Math.max(0, Math.floor(Number(player.cash || 0))).toLocaleString()}
-                        </p>
-                      )}
-                      <div className="mt-4 flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void handleGiveFreeplayToPlayer(player)}
-                          disabled={
-                            Boolean(freeplayGiveTargetUid) || player.status === 'disabled'
-                          }
-                          className="rounded-lg border border-fuchsia-400/35 bg-fuchsia-500/15 px-3 py-2 text-xs font-semibold text-fuchsia-100 hover:bg-fuchsia-500/25 disabled:opacity-60"
-                        >
-                          {freeplayGiveTargetUid === player.uid
-                            ? 'Sending...'
-                            : 'Give Freeplay'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void handleOpenRiskPanel(player.uid)}
-                          disabled={riskActionLoading === `open-${player.uid}`}
-                          className="rounded-lg bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/20 disabled:opacity-60"
-                        >
-                          {riskActionLoading === `open-${player.uid}`
-                            ? 'Loading...'
-                            : 'View Player Risk Data'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleOpenPlayerChat(player)}
-                          className={`rounded-lg px-3 py-2 text-xs font-semibold ${
-                            unreadFromPlayer > 0
-                              ? 'bg-cyan-500/40 text-cyan-50 ring-1 ring-cyan-300/50 hover:bg-cyan-500/50'
-                              : 'bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30'
-                          }`}
-                        >
-                          Message Player{' '}
-                          {unreadFromPlayer > 0
-                            ? `(${unreadFromPlayer > 9 ? '9+' : unreadFromPlayer} unread)`
-                            : ''}
-                        </button>
-                        {player.status === 'disabled' ? (
-                          <button
-                            type="button"
-                            onClick={() => void handleTogglePlayerStatus(player)}
-                            disabled={playerBlockActionUid === player.uid}
-                            className="rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-3 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-60"
-                          >
-                            {playerBlockActionUid === player.uid ? 'Working…' : 'Unblock player'}
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => void handleTogglePlayerStatus(player)}
-                            disabled={playerBlockActionUid === player.uid}
-                            className="rounded-lg border border-rose-500/35 bg-rose-500/15 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/25 disabled:opacity-60"
-                          >
-                            {playerBlockActionUid === player.uid ? 'Working…' : 'Block player'}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    );
-                  })}
                 </div>
               )}
+
+              <UserManagementView<PlayerUser>
+                title="Players"
+                emptyText="No players found."
+                selectText="Select a player to manage."
+                deleteTitle="Delete player?"
+                deleteMessage="Are you sure you want to delete"
+                users={playersSortedByUnread}
+                selectedUser={selectedViewPlayer}
+                deleteTarget={null}
+                loadingList={loadingList}
+                loading={loading}
+                unreadCounts={unreadCounts}
+                onSelectUser={setSelectedViewPlayer}
+                onSetDeleteTarget={() => {}}
+                onToggleBlock={handleTogglePlayerStatus}
+                blocking={playerBlockActionUid !== null}
+                onGiveFreeplay={(player) => void handleGiveFreeplayToPlayer(player)}
+                freeplayGiveBusyUid={freeplayGiveTargetUid}
+                onlineByUid={staffOnlineByUid}
+                nameMode="coadmin"
+                onStartChat={handleOpenPlayerChat}
+                renderSelectedExtras={(user) => {
+                  const playerRisk = riskByPlayerUid.get(user.uid);
+                  return (
+                    <div className="mt-5 space-y-3">
+                      {playerRisk ? (
+                        <p className="text-sm font-semibold text-orange-200/90">
+                          Risk: {String(playerRisk.riskLevel).toUpperCase()} (
+                          {playerRisk.riskScore || 0})
+                        </p>
+                      ) : null}
+                      <p className="text-sm text-neutral-300">
+                        Coin:{' '}
+                        <span className="font-bold tabular-nums text-amber-200">
+                          {Math.max(0, Math.floor(Number(user.coin || 0))).toLocaleString()}
+                        </span>
+                      </p>
+                      {user.cash != null && (
+                        <p className="text-xs text-neutral-500">
+                          Cash (view only):{' '}
+                          {Math.max(0, Math.floor(Number(user.cash || 0))).toLocaleString()}
+                        </p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void handleOpenRiskPanel(user.uid)}
+                        disabled={riskActionLoading === `open-${user.uid}`}
+                        className="rounded-lg bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/20 disabled:opacity-60"
+                      >
+                        {riskActionLoading === `open-${user.uid}`
+                          ? 'Loading...'
+                          : 'View Player Risk Data'}
+                      </button>
+                    </div>
+                  );
+                }}
+              />
 
               {selectedPlayerChatUser && (
                 <div className="mt-6 flex max-h-[min(80dvh,42rem)] flex-col overflow-hidden rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-4 sm:max-h-[min(85dvh,46rem)]">

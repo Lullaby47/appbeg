@@ -2252,16 +2252,39 @@ export default function PlayerPage() {
               });
             });
           },
-          onPlayerGameLoginUpdated: (reason) => {
+          onPlayerGameLoginUpdated: (reason, meta) => {
+            const playerMessage =
+              meta?.pokeMessage ||
+              (meta?.updateReason === 'reset_password'
+                ? 'Your game password has been reset successfully.'
+                : meta?.updateReason === 'create_username'
+                  ? 'Your game account has been created.'
+                  : 'Your game credentials have been updated.');
+            console.info('[PLAYER_PLAYTAB_GAMES_REFETCH]', {
+              playerUid,
+              reason,
+              updateReason: meta?.updateReason || null,
+              gameName: meta?.gameName || null,
+            });
+            console.info('[PLAYER_VAULT_REFETCH]', {
+              playerUid,
+              reason,
+              updateReason: meta?.updateReason || null,
+            });
             console.info('[PLAYER_GAME_LOGINS_REFETCH_START]', {
               playerUid,
               reason,
             });
-            setMessage('Your game password has been reset successfully.');
+            setMessage(playerMessage);
             void getPlayerGameLoginsByPlayer(playerUid)
               .then((logins) => {
                 setGameLogins(sortByNewest(logins));
                 void syncCredentialSidecarsForPlayer(playerUid, logins);
+                console.info('[PLAYER_PLAYTAB_GAMES_SQL_READ]', {
+                  playerUid,
+                  count: logins.length,
+                  reason,
+                });
                 console.info('[PLAYER_GAME_LOGINS_REFETCH_DONE]', {
                   playerUid,
                   count: logins.length,

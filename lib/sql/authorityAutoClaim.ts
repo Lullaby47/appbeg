@@ -162,7 +162,20 @@ export async function autoClaimPendingTaskOnCreate(
   }
 
   const mappedType = mapTaskType(resolveTaskTypeLabel(taskRow));
+  if (mappedType === 'CREATE_USERNAME') {
+    console.info('[AUTO_TICK_SQL_CREATE_USERNAME_ELIGIBLE]', {
+      taskId,
+      coadminUid,
+      trigger,
+    });
+  }
   if (!isAgentSupportedAutomationType(mappedType)) {
+    console.info('[AUTO_TICK_SQL_SKIPPED_TYPE]', {
+      taskId,
+      coadminUid,
+      mappedType,
+      trigger,
+    });
     const reason = 'unsupported_automation_type';
     console.info('[AUTO_CLAIM_PENDING_TASKS_RESULT]', {
       taskId,

@@ -735,9 +735,13 @@ export default function CoadminPage() {
   }
 
   async function handleGiveFreeplayToPlayer(player: PlayerUser) {
-    if (freeplayGiveBusy || freeplayGiveTargetUid) {
+    if (freeplayGiveBusy || freeplayGiveTargetUid || !player.uid) {
       return;
     }
+    console.info('[FREEPLAY_GIVE_BUTTON_CLICK]', {
+      source: 'selected_player_panel',
+      targetPlayerUid: player.uid,
+    });
     setFreeplayGiveTargetUid(player.uid);
     setMessage('');
     try {
@@ -4558,20 +4562,8 @@ export default function CoadminPage() {
               coadminCredentialsLoading={workerCredentialsLoading}
               onlineByUid={coadminOnlineByUid}
               nameMode="coadmin"
-              renderUserRowActions={(player) => (
-                <button
-                  type="button"
-                  onClick={() => void handleGiveFreeplayToPlayer(player)}
-                  disabled={
-                    freeplayGiveBusy ||
-                    Boolean(freeplayGiveTargetUid) ||
-                    player.status === 'disabled'
-                  }
-                  className="w-full rounded-lg border border-fuchsia-400/35 bg-fuchsia-500/15 px-3 py-2 text-xs font-semibold text-fuchsia-100 hover:bg-fuchsia-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {freeplayGiveTargetUid === player.uid ? 'Sending...' : 'Give Freeplay'}
-                </button>
-              )}
+              onGiveFreeplay={(player) => void handleGiveFreeplayToPlayer(player)}
+              freeplayGiveBusyUid={freeplayGiveTargetUid}
               renderSelectedExtras={(user) => (
                 <div className="mt-5 w-full max-w-6xl space-y-4">
                   <div className="rounded-2xl border border-emerald-500/20 bg-emerald-950/30 p-4">

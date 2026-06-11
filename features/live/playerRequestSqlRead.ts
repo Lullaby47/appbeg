@@ -537,7 +537,10 @@ export function attachPlayerRequestSqlReadListener(
     onRechargeSuccessEvent?: (event: PlayerRechargeSuccessLiveEvent) => void;
     onRedeemDismissEvent?: (event: PlayerRedeemDismissLiveEvent) => void;
     onBalanceUpdate?: (reason: string) => void;
-    onPlayerGameLoginUpdated?: (reason: string) => void;
+    onPlayerGameLoginUpdated?: (
+      reason: string,
+      meta?: { updateReason?: string | null; gameName?: string | null; pokeMessage?: string | null }
+    ) => void;
   }
 ) {
   const cleanPlayerUid = cleanText(playerUid);
@@ -781,14 +784,29 @@ export function attachPlayerRequestSqlReadListener(
       const loginPayload = payload as SqlRequestPayload & {
         loginId?: unknown;
         taskId?: unknown;
+        updateReason?: unknown;
+        pokeMessage?: unknown;
       };
+      const updateReason = cleanText(loginPayload.updateReason) || null;
+      const gameName = cleanText(loginPayload.gameName) || null;
+      const pokeMessage = cleanText(loginPayload.pokeMessage) || null;
       console.info('[PLAYER_GAME_LOGIN_UPDATED_EVENT]', {
         playerUid: cleanPlayerUid,
         loginId: cleanText(loginPayload.loginId) || cleanText(loginPayload.entityId) || null,
-        gameName: cleanText(loginPayload.gameName) || null,
+        gameName,
         taskId: cleanText(loginPayload.taskId) || null,
+        updateReason,
       });
-      options?.onPlayerGameLoginUpdated?.(`sse_event:${eventName}`);
+      console.info('[PLAYER_PLAYTAB_GAME_LOGIN_UPDATED_EVENT]', {
+        playerUid: cleanPlayerUid,
+        gameName,
+        updateReason,
+      });
+      options?.onPlayerGameLoginUpdated?.(`sse_event:${eventName}`, {
+        updateReason,
+        gameName,
+        pokeMessage,
+      });
       return;
     }
 

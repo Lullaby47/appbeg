@@ -22,6 +22,7 @@ import {
   coadminTaskLiveChannel,
   insertLiveOutboxEventWithClient,
 } from '@/lib/sql/liveOutbox';
+import { scheduleAutoClaimPendingTaskOnCreate } from '@/lib/sql/authorityAutoClaim';
 import { readGameLoginsCacheByCoadminWithClient } from '@/lib/sql/gameLoginsCache';
 import { cleanText, getPlayerMirrorPool, toIsoString } from '@/lib/sql/playerMirrorCommon';
 import { updatePlayerBalancesInTxn } from '@/lib/sql/authorityGameRequestHelpers';
@@ -89,7 +90,7 @@ async function upsertCreateUsernameTaskInTxn(
     amount: null,
     requestId: null,
     status: 'pending',
-    retryPending: true,
+    retryPending: false,
     pendingSince: input.nowIso,
     createdAt: input.nowIso,
     updatedAt: input.nowIso,
@@ -110,7 +111,7 @@ async function upsertCreateUsernameTaskInTxn(
       VALUES (
         $1, $2, $3, $4, $5, $6, $7, NULL, NULL, 'pending',
         NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, ''),
-        NULLIF($13, ''), NULLIF($14, ''), TRUE,
+        NULLIF($13, ''), NULLIF($14, ''), FALSE,
         $15::timestamptz, $15::timestamptz, $15::timestamptz, 'authority_create_player', now(), NULL,
         $16::jsonb
       )
@@ -391,6 +392,12 @@ export async function createPlayerInSql(input: CreatePlayerInSqlInput): Promise<
     const createdTaskIds: string[] = [];
     for (const game of games) {
       const taskId = createGameUsernameTaskId(ownerCoadminUid, uid, game.gameName);
+      console.info('[CREATE_USERNAME_TASK_CREATE_START]', {
+        taskId,
+        coadminUid: ownerCoadminUid,
+        playerUid: uid,
+        gameName: game.gameName,
+      });
       await upsertCreateUsernameTaskInTxn(client, {
         taskId,
         coadminUid: ownerCoadminUid,
@@ -401,9 +408,24 @@ export async function createPlayerInSql(input: CreatePlayerInSqlInput): Promise<
         nowIso,
       });
       createdTaskIds.push(taskId);
+      console.info('[CREATE_USERNAME_TASK_CREATED]', {
+        taskId,
+        coadminUid: ownerCoadminUid,
+        playerUid: uid,
+        gameName: game.gameName,
+        status: 'pending',
+        retryPending: false,
+      });
     }
 
     await client.query('COMMIT');
+    for (const taskId of createdTaskIds) {
+      scheduleAutoClaimPendingTaskOnCreate({
+        taskId,
+        coadminUid: ownerCoadminUid,
+        trigger: 'authority_create_player',
+      });
+    }
     return {
       success: true,
       uid,

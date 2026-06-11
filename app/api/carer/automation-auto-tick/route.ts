@@ -1231,6 +1231,32 @@ export async function POST(request: Request) {
     });
   }
 
+  if (sqlReadMode) {
+    console.info('[AUTO_TICK_SQL_PENDING_SCAN]', {
+      carerUid,
+      coadminUid,
+      candidateCount: pendingCandidates.length,
+      pending_source: pendingResult.timing.pending_source,
+    });
+    for (const task of pendingCandidates) {
+      const mapped = mapTaskType(resolveTaskTypeLabel(task));
+      console.info('[AUTO_TICK_SQL_PENDING_TASK_ROW]', {
+        taskId: task.id,
+        type: String(task['type'] || task['kind'] || '').trim() || null,
+        mappedType: mapped,
+        status: String(task['status'] || '').trim() || null,
+        retryPending: task['retryPending'] === true,
+      });
+      if (mapped === 'CREATE_USERNAME') {
+        console.info('[AUTO_TICK_SQL_CREATE_USERNAME_ELIGIBLE]', {
+          taskId: task.id,
+          carerUid,
+          coadminUid,
+        });
+      }
+    }
+  }
+
   if (sqlReadMode && pendingCandidates.length > 0) {
     console.info('[AUTO_TICK_SQL_PENDING_FOUND]', {
       carerUid,
@@ -1312,6 +1338,11 @@ export async function POST(request: Request) {
     });
     const mapped = mapTaskType(resolveTaskTypeLabel(task));
     if (!isAgentSupportedAutomationType(mapped)) {
+      console.info('[AUTO_TICK_SQL_SKIPPED_TYPE]', {
+        taskId,
+        mapped,
+        reason: 'unsupported_automation_type',
+      });
       console.info('[AUTO_TICK] skipped task (unsupported type)', {
         taskId,
         reason: 'unsupported_automation_type',

@@ -178,6 +178,8 @@ async function writePlayerGameLoginOutboxInTxn(
     jobId?: string | null;
     updatedAt: string;
     eventType?: string;
+    updateReason?: string | null;
+    pokeMessage?: string | null;
   }
 ) {
   const payload = {
@@ -189,6 +191,8 @@ async function writePlayerGameLoginOutboxInTxn(
     gameUsername: input.gameUsername,
     taskId: cleanText(input.taskId) || null,
     jobId: cleanText(input.jobId) || null,
+    updateReason: cleanText(input.updateReason) || null,
+    pokeMessage: cleanText(input.pokeMessage) || null,
     updatedAt: input.updatedAt,
     source: 'authority_agent',
   };
@@ -831,12 +835,28 @@ export async function agentCompleteUsernameJob(input: {
   evidence?: Record<string, unknown> | null;
   actorUsername?: string | null;
 }) {
+  console.info('[CREATE_USERNAME_COMPLETION_START]', {
+    jobId: input.jobId,
+    taskId: input.taskId,
+    carerUid: input.carerUid,
+  });
   console.info('[SQL_JOB_COMPLETE_START] action=complete_username jobId=%s taskId=%s', input.jobId, input.taskId);
   const evidence = input.evidence || {};
-  const payloadUsername = cleanText(evidence.createdUsername || evidence.username);
-  const payloadPassword = cleanText(evidence.createdPassword || evidence.gamePassword);
+  const payloadUsername = cleanText(
+    evidence.createdUsername || evidence.username || evidence.gameAccountUsername
+  );
+  const payloadPassword = cleanText(
+    evidence.createdPassword || evidence.gamePassword || evidence.newPassword || evidence.password
+  );
   const siteUrl = cleanText(evidence.siteUrl);
   const frontendUrl = cleanText(evidence.frontendUrl);
+  console.info('[CREATE_USERNAME_RESULT_RETURNED]', {
+    jobId: input.jobId,
+    taskId: input.taskId,
+    usernamePresent: Boolean(payloadUsername),
+    passwordPresent: Boolean(payloadPassword),
+    evidenceKeys: Object.keys(evidence),
+  });
 
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL pool unavailable.');
@@ -874,6 +894,14 @@ export async function agentCompleteUsernameJob(input: {
     }
 
     const loginId = `${playerUid}__${normalizeGameName(gameName)}`;
+    console.info('[GAME_LOGIN_AUTHORITY_UPSERT_START]', {
+      jobId: input.jobId,
+      taskId: input.taskId,
+      playerUid,
+      coadminUid,
+      gameName,
+      loginId,
+    });
     await upsertPlayerGameLoginInTxn(client, {
       loginId,
       playerUid,
@@ -886,6 +914,14 @@ export async function agentCompleteUsernameJob(input: {
       frontendUrl,
       jobId: input.jobId,
       carerUid: input.carerUid,
+    });
+    console.info('[GAME_LOGIN_AUTHORITY_UPSERT_DONE]', {
+      jobId: input.jobId,
+      taskId: input.taskId,
+      playerUid,
+      gameName,
+      loginId,
+      gameUsername: createdUsername,
     });
 
     const nowIso = new Date().toISOString();
@@ -901,6 +937,7 @@ export async function agentCompleteUsernameJob(input: {
       automationError: null,
       completedAt: nowIso,
       ttlExpiresAt: ttlAfterDaysIso(COMPLETED_CARER_TASK_TTL_DAYS),
+      retryPending: false,
       updatedAt: nowIso,
     });
     await finalizeAutomationJobCompletedInTxn(client, {
@@ -911,7 +948,7 @@ export async function agentCompleteUsernameJob(input: {
       jobType: 'CREATE_USERNAME',
       gameName,
       requestId: cleanText(task.request_id),
-      result: { success: true, createdUsername, evidence },
+      result: { success: true, createdUsername, createdPassword: createdPassword, evidence },
     });
     await writeTaskOutboxInTxn(client, {
       coadminUid,
@@ -924,12 +961,66 @@ export async function agentCompleteUsernameJob(input: {
       updatedAt: nowIso,
       eventType: 'task.completed',
     });
+    console.info('[LIVE_OUTBOX_INSERT_CREATE_USERNAME_COMPLETED]', {
+      taskId: input.taskId,
+      jobId: input.jobId,
+      playerUid,
+      gameName,
+    });
+    await writePlayerGameLoginOutboxInTxn(client, {
+      playerUid,
+      coadminUid,
+      loginId,
+      gameName,
+      gameUsername: createdUsername,
+      taskId: input.taskId,
+      jobId: input.jobId,
+      updatedAt: nowIso,
+      updateReason: 'create_username',
+      pokeMessage: 'Your game account has been created.',
+    });
+    await insertLiveOutboxEventWithClient(client, {
+      channel: playerRequestLiveChannel(playerUid),
+      eventType: 'player_message',
+      entityType: 'carer_task',
+      entityId: input.taskId,
+      source: 'authority_agent_jobs',
+      mirroredAt: nowIso,
+      payload: {
+        entityId: input.taskId,
+        playerUid,
+        taskId: input.taskId,
+        type: 'create_username',
+        status: 'completed',
+        gameName,
+        pokeMessage: 'Your game account has been created.',
+        updatedAt: nowIso,
+        source: 'authority',
+      },
+    });
+    console.info('[LIVE_OUTBOX_INSERT_PLAYER_MESSAGE]', {
+      taskId: input.taskId,
+      jobId: input.jobId,
+      playerUid,
+      message: 'Your game account has been created.',
+    });
     await client.query('COMMIT');
     console.info('[SQL_JOB_COMPLETE_SUCCESS] action=complete_username jobId=%s', input.jobId);
     console.info('[SQL_FIREBASE_BYPASS_CONFIRMED] operation=complete_username jobId=%s', input.jobId);
     return { success: true as const, duplicate: false, loginId };
   } catch (error) {
     await client.query('ROLLBACK');
+    const message = error instanceof Error ? error.message : String(error);
+    console.info('[CREATE_USERNAME_COMPLETION_EXCEPTION]', {
+      jobId: input.jobId,
+      taskId: input.taskId,
+      error: message,
+    });
+    console.info('[CREATE_USERNAME_RETURN_TO_PENDING_CAUSE]', {
+      jobId: input.jobId,
+      taskId: input.taskId,
+      error: message,
+    });
     console.error('[SQL_JOB_COMPLETE_FAILED] action=complete_username jobId=%s error=%s', input.jobId, error);
     throw error;
   } finally {
@@ -1097,6 +1188,8 @@ export async function agentCompleteResetPasswordJob(input: {
       taskId: input.taskId,
       jobId: input.jobId,
       updatedAt: nowIso,
+      updateReason: 'reset_password',
+      pokeMessage: 'Your game password has been reset successfully.',
     });
     await insertLiveOutboxEventWithClient(client, {
       channel: playerRequestLiveChannel(playerUid),
