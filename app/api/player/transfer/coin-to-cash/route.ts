@@ -23,7 +23,7 @@ import {
   parsePositiveInteger,
   parseTransferId,
 } from '@/lib/server/playerTransferRules';
-import { transferCoinToCashInSql } from '@/lib/sql/authorityTransfer';
+import { mapAuthorityTransferSqlError, transferCoinToCashInSql } from '@/lib/sql/authorityTransfer';
 import { getPlayerMirrorPoolStats } from '@/lib/sql/playerMirrorCommon';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
@@ -308,11 +308,16 @@ export async function POST(request: Request) {
       route: ROUTE,
       error: rawMessage,
     });
+    const mappedSqlMessage = mapAuthorityTransferSqlError(error);
     const message = /not authenticated|authorization|token|session/i.test(rawMessage)
       ? 'Session expired. Please refresh or log in again.'
-      : /not enough coin/i.test(rawMessage)
-        ? 'Not enough coin balance.'
-        : rawMessage;
+      : mappedSqlMessage !== rawMessage
+        ? mappedSqlMessage
+        : /not enough coin/i.test(rawMessage)
+          ? 'Not enough coin balance.'
+          : /could not determine data type|parameter \$\d+/i.test(rawMessage)
+            ? 'Transfer fee could not be calculated. Please try again.'
+            : rawMessage;
     if (message.startsWith('MAINTENANCE_BREAK:')) {
       return maintenanceBreakApiResponse(message.replace(/^MAINTENANCE_BREAK:/, ''));
     }

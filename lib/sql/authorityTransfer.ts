@@ -53,6 +53,47 @@ function resolveFinancialEventType(direction: TransferDirection) {
   return direction === 'cash_to_coin' ? 'cash_to_coin_transfer' : 'coin_to_cash_transfer';
 }
 
+function normalizeTransferFeeAmount(direction: TransferDirection, rawFee: unknown) {
+  const feeRaw = rawFee;
+  let feeNumber = Number(rawFee);
+  if (!Number.isFinite(feeNumber) || feeNumber < 0) {
+    feeNumber = 0;
+  }
+  if (direction === 'cash_to_coin') {
+    feeNumber = Number(feeNumber.toFixed(2));
+  } else {
+    feeNumber = Math.floor(feeNumber);
+  }
+  return {
+    feeRaw,
+    feeNumber,
+    feeReason: feeNumber > 0 ? 'calculated' : 'none',
+  };
+}
+
+function normalizeTransferAmount(rawAmount: unknown) {
+  const amountRaw = rawAmount;
+  const amountNumber = parsePositiveInteger(rawAmount);
+  return { amountRaw, amountNumber };
+}
+
+function isTransferSqlParameterError(message: string) {
+  return /could not determine data type of parameter|invalid input syntax for type/i.test(
+    message
+  );
+}
+
+export function mapAuthorityTransferSqlError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (
+    isTransferSqlParameterError(message) ||
+    message === 'Transfer fee could not be calculated. Please try again.'
+  ) {
+    return 'Transfer fee could not be calculated. Please try again.';
+  }
+  return message;
+}
+
 function readTransferBlockedUntilMs(row: Record<string, unknown>) {
   const direct = toIsoString(row.transfer_blocked_until);
   if (direct) {
@@ -202,10 +243,10 @@ async function insertTransferFinancialEvent(
         raw_firestore_data
       )
       VALUES (
-        $1, $2, $2, NULLIF($3, ''), $4,
-        $5, $6, $7,
-        $8, $9, $10, $11,
-        $12, $13, $14, $15,
+        $1::text, $2::text, $2::text, NULLIF($3::text, ''), $4::text,
+        $5::numeric, $6::numeric, $7::text,
+        $8::numeric, $9::numeric, $10::numeric, $11::numeric,
+        $12::numeric, $13::numeric, $14::numeric, $15::numeric,
         $16::jsonb, $17::jsonb,
         $18::timestamptz, $18::timestamptz, 'authority_transfer', now(), NULL,
         $19::jsonb
@@ -220,8 +261,8 @@ async function insertTransferFinancialEvent(
       input.direction === 'cash_to_coin' ? input.transferAmount : null,
       input.direction === 'coin_to_cash' ? input.transferAmount : null,
       input.transferId,
-      input.feeAmount,
-      input.tipAmount,
+      Number(input.feeAmount) || 0,
+      Number(input.tipAmount) || 0,
       input.cashReceived ?? null,
       input.coinsReceived ?? null,
       input.beforeCash,
@@ -329,10 +370,10 @@ export async function transferPlayerBalancesInSql(input: {
     throw new Error('Transfer id is required.');
   }
 
-  const amount =
+  const { amountRaw, amountNumber: amount } =
     direction === 'cash_to_coin'
-      ? parsePositiveInteger(input.amountNpr)
-      : parsePositiveInteger(input.amountCoins);
+      ? normalizeTransferAmount(input.amountNpr)
+      : normalizeTransferAmount(input.amountCoins);
 
   if (!amount) {
     throw new Error('Amount must be a positive whole number.');
@@ -341,11 +382,31 @@ export async function transferPlayerBalancesInSql(input: {
     throw new Error('Minimum Coin to Cash amount is 10.');
   }
 
-  const feeAmount =
+  const rawFee =
     direction === 'cash_to_coin' ? getCashToCoinFee(amount) : getCoinToCashTip(amount);
+  const { feeRaw, feeNumber: feeAmount, feeReason } = normalizeTransferFeeAmount(
+    direction,
+    rawFee
+  );
   const tipAmount = direction === 'coin_to_cash' ? feeAmount : 0;
   const coinsReceived = direction === 'cash_to_coin' ? amount - feeAmount : undefined;
   const cashReceived = direction === 'coin_to_cash' ? amount - tipAmount : undefined;
+
+  console.info('[AUTHORITY_TRANSFER_INPUT]', {
+    uid: playerUid,
+    direction,
+    amountRaw,
+    amountNumber: amount,
+    feeRaw,
+    feeNumber: feeAmount,
+    feeReason,
+    tipAmount,
+    transferId,
+  });
+
+  if (feeAmount < 0) {
+    throw new Error('Transfer fee could not be calculated. Please try again.');
+  }
 
   if (direction === 'cash_to_coin' && (coinsReceived ?? 0) <= 0) {
     throw new Error('Transfer amount is too low after fee.');
@@ -500,12 +561,12 @@ export async function transferPlayerBalancesInSql(input: {
       `
         UPDATE public.players_cache
         SET
-          cash = $2,
-          coin = $3,
+          cash = $2::numeric,
+          coin = $3::numeric,
           updated_at = $4::timestamptz,
           raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb)
-            || jsonb_build_object('cash', $2, 'coin', $3)
-        WHERE uid = $1
+            || jsonb_build_object('cash', $2::numeric, 'coin', $3::numeric)
+        WHERE uid = $1::text
           AND deleted_at IS NULL
       `,
       [playerUid, newCash, newCoin, nowIso]
@@ -515,13 +576,13 @@ export async function transferPlayerBalancesInSql(input: {
       `
         UPDATE public.user_balance_snapshots_cache
         SET
-          cash = $2,
-          coin = $3,
+          cash = $2::numeric,
+          coin = $3::numeric,
           updated_at = $4::timestamptz,
           mirrored_at = now(),
           raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb)
-            || jsonb_build_object('cash', $2, 'coin', $3)
-        WHERE firebase_id = $1
+            || jsonb_build_object('cash', $2::numeric, 'coin', $3::numeric)
+        WHERE firebase_id = $1::text
           AND deleted_at IS NULL
       `,
       [playerUid, newCash, newCoin, nowIso]
@@ -661,6 +722,16 @@ export async function transferPlayerBalancesInSql(input: {
     };
   } catch (error) {
     await client.query('ROLLBACK');
+    const message = error instanceof Error ? error.message : String(error || '');
+    console.info('[AUTHORITY_TRANSFER_ERROR]', {
+      playerUid,
+      direction,
+      transferId,
+      error: message,
+    });
+    if (isTransferSqlParameterError(message)) {
+      throw new Error('Transfer fee could not be calculated. Please try again.');
+    }
     throw error;
   } finally {
     client.release();
