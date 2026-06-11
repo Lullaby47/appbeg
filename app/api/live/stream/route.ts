@@ -14,7 +14,7 @@ export const runtime = 'nodejs';
 
 const MAX_CHANNELS = 3;
 const POLL_INTERVAL_MS = 1_000;
-const HEARTBEAT_INTERVAL_MS = 15_000;
+const HEARTBEAT_INTERVAL_MS = 25_000;
 const PLAYER_CHANNEL_PATTERN = /^player:([A-Za-z0-9_-]+):requests$/;
 const CARER_CHANNEL_PATTERN = /^carer:([A-Za-z0-9_-]+):tasks$/;
 const COADMIN_CHANNEL_PATTERN = /^coadmin:([A-Za-z0-9_-]+):tasks$/;
@@ -50,6 +50,26 @@ function parseLastEventId(raw: string | null) {
 
 function formatSseEvent(row: LiveOutboxRow) {
   return `id: ${row.outbox_id}\nevent: ${row.event_type}\ndata: ${JSON.stringify(row.payload)}\n\n`;
+}
+
+function formatPingEvent(channels: string[]) {
+  return `event: ping\ndata: ${JSON.stringify({
+    now: new Date().toISOString(),
+    channels,
+  })}\n\n`;
+}
+
+function requestWithAppSessionQuery(request: Request): Request {
+  const sessionFromQuery = cleanText(new URL(request.url).searchParams.get('appSessionId'));
+  if (!sessionFromQuery || request.headers.get('X-App-Session-Id')) {
+    return request;
+  }
+  const headers = new Headers(request.headers);
+  headers.set('X-App-Session-Id', sessionFromQuery);
+  return new Request(request.url, {
+    headers,
+    signal: request.signal,
+  });
 }
 
 function resolvePlayerOwnedChannels(channels: string[]): string[] | null {
@@ -251,7 +271,8 @@ async function authorizeCarerJobStream(
 }
 
 export async function GET(request: Request) {
-  const url = new URL(request.url);
+  const liveRequest = requestWithAppSessionQuery(request);
+  const url = new URL(liveRequest.url);
   const channels = parseChannels(url.searchParams.get('channels'));
   if (!channels.length) {
     return apiError('channels query parameter is required.', 400);
@@ -261,7 +282,7 @@ export async function GET(request: Request) {
   if (playerChannels) {
     const playerUid = playerChannels[0].match(PLAYER_CHANNEL_PATTERN)?.[1] || '';
     const headerSessions = sessionIdsFromRequest(request);
-    const auth = await requirePlayerOwnedLiveAuth(request, playerUid);
+    const auth = await requirePlayerOwnedLiveAuth(liveRequest, playerUid);
     if (!auth.ok) {
       logRouteSessionValidation('/api/live/stream', {
         ok: false,
@@ -288,7 +309,7 @@ export async function GET(request: Request) {
     });
 
     return createLiveStreamResponse(
-      request,
+      liveRequest,
       playerChannels,
       parseLastEventId(url.searchParams.get('lastEventId'))
     );
@@ -302,7 +323,7 @@ export async function GET(request: Request) {
   }
 
   if (carerTaskStream) {
-    const auth = await authorizeCarerTaskStream(request, carerTaskStream);
+    const auth = await authorizeCarerTaskStream(liveRequest, carerTaskStream);
     if (!auth.ok) {
       return auth.response;
     }
@@ -315,14 +336,14 @@ export async function GET(request: Request) {
     });
 
     return createLiveStreamResponse(
-      request,
+      liveRequest,
       carerTaskStream.channels,
       parseLastEventId(url.searchParams.get('lastEventId'))
     );
   }
 
   if (carerJobStream) {
-    const auth = await authorizeCarerJobStream(request, carerJobStream);
+    const auth = await authorizeCarerJobStream(liveRequest, carerJobStream);
     if (!auth.ok) {
       return auth.response;
     }
@@ -335,7 +356,7 @@ export async function GET(request: Request) {
     });
 
     return createLiveStreamResponse(
-      request,
+      liveRequest,
       carerJobStream.channels,
       parseLastEventId(url.searchParams.get('lastEventId'))
     );
@@ -359,10 +380,10 @@ function createLiveStreamResponse(
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let cursor = lastEventId;
-      let lastHeartbeatAt = Date.now();
       let closed = false;
       let pollInFlight = false;
       let wakeTimer: ReturnType<typeof setTimeout> | null = null;
+      let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
       const clearWakeTimer = () => {
         if (wakeTimer) {
@@ -371,10 +392,33 @@ function createLiveStreamResponse(
         }
       };
 
-      const closeStream = () => {
+      const clearHeartbeatTimer = () => {
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+        }
+      };
+
+      const sendHeartbeat = (phase: 'initial' | 'interval') => {
+        if (closed) return;
+        enqueue(formatPingEvent(allowedChannels));
+        console.info('[LIVE_STREAM_HEARTBEAT]', {
+          channels: allowedChannels,
+          lastEventId: cursor,
+          phase,
+        });
+      };
+
+      const closeStream = (reason: string) => {
         if (closed) return;
         closed = true;
         clearWakeTimer();
+        clearHeartbeatTimer();
+        console.info('[LIVE_STREAM_CLOSE]', {
+          channels: allowedChannels,
+          lastEventId: cursor,
+          reason,
+        });
         try {
           controller.close();
         } catch {
@@ -424,13 +468,13 @@ function createLiveStreamResponse(
             enqueue(formatSseEvent(row));
             cursor = Math.max(cursor, row.outbox_id);
           }
-
-          if (Date.now() - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) {
-            enqueue(': heartbeat\n\n');
-            lastHeartbeatAt = Date.now();
-          }
         } catch (error) {
-          console.info('[LIVE_OUTBOX] failed', { reason: 'sse_poll', error });
+          console.info('[LIVE_STREAM_ERROR]', {
+            phase: 'poll',
+            channels: allowedChannels,
+            lastEventId: cursor,
+            error,
+          });
         } finally {
           pollInFlight = false;
         }
@@ -460,8 +504,18 @@ function createLiveStreamResponse(
             cursor = Math.max(cursor, row.outbox_id);
           }
         } catch (error) {
-          console.info('[LIVE_OUTBOX] failed', { reason: 'sse_replay', error });
+          console.info('[LIVE_STREAM_ERROR]', {
+            phase: 'replay',
+            channels: allowedChannels,
+            lastEventId: cursor,
+            error,
+          });
         }
+
+        sendHeartbeat('initial');
+        heartbeatTimer = setInterval(() => {
+          sendHeartbeat('interval');
+        }, HEARTBEAT_INTERVAL_MS);
 
         while (!closed && !request.signal.aborted) {
           await pollOnce();
@@ -470,8 +524,12 @@ function createLiveStreamResponse(
         }
       };
 
-      request.signal.addEventListener('abort', closeStream, { once: true });
-      void pump().finally(closeStream);
+      request.signal.addEventListener(
+        'abort',
+        () => closeStream('client_abort'),
+        { once: true }
+      );
+      void pump().finally(() => closeStream('pump_finished'));
     },
     cancel() {
       // Abort is wired once on request.signal; client disconnect triggers abort.

@@ -7,6 +7,7 @@ import {
   getVisibleTaskForCarer,
 } from '@/features/games/carerTasks';
 import { logCarerPageStartup, markCarerPageStartupStreamConnected } from '@/features/carer/carerStartupLogs';
+import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { isPublicCarerTasksSqlReadEnabled } from '@/lib/client/sqlPublicFlags';
 
@@ -83,6 +84,20 @@ const CARER_TASK_REMOVE_EVENTS = new Set([
   'recharge_task_dismiss',
   'redeem_task_dismiss',
 ]);
+
+const ALL_LIVE_TASK_SSE_EVENTS = Array.from(
+  new Set([
+    ...CARER_TASK_UPSERT_EVENTS,
+    ...CARER_TASK_REMOVE_EVENTS,
+    ...GAME_REQUEST_CREATE_EVENTS,
+    'game_request_task_complete',
+  ])
+);
+
+const SAFETY_REFETCH_MS = 45_000;
+const STALL_TIMEOUT_MS = 90_000;
+const INITIAL_RECONNECT_MS = 1_000;
+const MAX_RECONNECT_MS = 30_000;
 
 function normalizeTaskType(value: unknown): CarerTask['type'] {
   const normalized = cleanText(value).toLowerCase();
@@ -238,43 +253,6 @@ function sortTasksByNewest(tasks: CarerTask[]) {
   });
 }
 
-function parseSseBlock(block: string) {
-  const lines = block.split('\n');
-  let id = 0;
-  let event = 'message';
-  const dataLines: string[] = [];
-
-  for (const line of lines) {
-    if (line.startsWith('id:')) {
-      id = Number.parseInt(line.slice(3).trim(), 10) || 0;
-    } else if (line.startsWith('event:')) {
-      event = line.slice(6).trim();
-    } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trim());
-    }
-  }
-
-  if (!dataLines.length) {
-    return null;
-  }
-
-  let payload: SqlTaskPayload = {};
-  try {
-    payload = JSON.parse(dataLines.join('\n')) as SqlTaskPayload;
-  } catch {
-    return null;
-  }
-
-  const entityId = cleanText(payload.entityId || payload.taskId);
-  return {
-    id,
-    event,
-    entityId,
-    payload,
-    receivedAt: Date.now(),
-  };
-}
-
 export function attachCarerTaskSqlReadListener(
   carerUid: string,
   coadminUid: string,
@@ -284,12 +262,22 @@ export function attachCarerTaskSqlReadListener(
   const cleanCarerUid = cleanText(carerUid);
   const cleanCoadminUid = cleanText(coadminUid);
   let lastEventId = 0;
-  let abortController: AbortController | null = null;
+  let eventSource: EventSource | null = null;
   let disposed = false;
   let fellBack = false;
   let refetchTimer: ReturnType<typeof setTimeout> | null = null;
   let refetchInFlight = false;
+  let reconnectAttempt = 0;
+  let reconnectBackoffMs = INITIAL_RECONNECT_MS;
+  let lastSseActivityAt = Date.now();
+  let safetyRefetchTimer: ReturnType<typeof setInterval> | null = null;
+  let stallWatchTimer: ReturnType<typeof setInterval> | null = null;
+  let streamConnectResolve: (() => void) | null = null;
   const tasksById = new Map<string, CarerTask>();
+  const streamChannels = [
+    carerTaskLiveChannel(cleanCarerUid),
+    coadminTaskLiveChannel(cleanCoadminUid),
+  ];
 
   const emitTasks = () => {
     if (fellBack || disposed) {
@@ -367,6 +355,44 @@ export function attachCarerTaskSqlReadListener(
       latestOutboxId: lastEventId,
     });
     return true;
+  };
+
+  const refetchSnapshotNow = async (
+    reason: string,
+    priority = false
+  ): Promise<boolean> => {
+    if (fellBack || disposed) {
+      return false;
+    }
+    if (refetchTimer) {
+      clearTimeout(refetchTimer);
+      refetchTimer = null;
+    }
+    if (refetchInFlight) {
+      if (!priority) {
+        return false;
+      }
+      for (let attempt = 0; attempt < 50 && refetchInFlight; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      if (refetchInFlight) {
+        return false;
+      }
+    }
+    refetchInFlight = true;
+    try {
+      const headers = await getSqlApiReadHeaders(false);
+      return await loadSnapshot(headers, reason);
+    } catch (error) {
+      console.info('[CARER_TASKS_LIVE_REFETCH_RESULT]', {
+        reason,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    } finally {
+      refetchInFlight = false;
+    }
   };
 
   const scheduleLiveRefetch = (reason: string) => {
@@ -476,150 +502,287 @@ export function attachCarerTaskSqlReadListener(
     });
   };
 
-  const consumeSseChunk = (chunk: string, bufferRef: { value: string }) => {
-    bufferRef.value += chunk;
-    const parts = bufferRef.value.split('\n\n');
-    bufferRef.value = parts.pop() || '';
+  const buildStreamUrl = () => {
+    const appSessionId = cleanText(getLocalAppSessionId());
+    const params = new URLSearchParams({
+      channels: streamChannels.join(','),
+      lastEventId: String(Math.max(0, lastEventId)),
+    });
+    if (appSessionId) {
+      params.set('appSessionId', appSessionId);
+    }
+    return `/api/live/stream?${params.toString()}`;
+  };
 
-    for (const part of parts) {
-      if (!part.trim() || part.trim().startsWith(':')) {
-        continue;
-      }
-      const parsed = parseSseBlock(part);
-      if (!parsed) {
-        continue;
-      }
+  const closeEventSource = (reason: string) => {
+    if (!eventSource) {
+      return;
+    }
+    const readyState = eventSource.readyState;
+    eventSource.close();
+    eventSource = null;
+    console.info('[CARER_LIVE_STREAM_RECONNECT]', {
+      phase: 'close',
+      reason,
+      readyState,
+      carerUid: cleanCarerUid,
+      coadminUid: cleanCoadminUid,
+      lastEventId,
+    });
+    streamConnectResolve?.();
+    streamConnectResolve = null;
+  };
 
-      console.info('[CARER_LIVE_STREAM_EVENT]', {
-        outboxId: parsed.id,
-        eventType: parsed.event,
-        entityId: parsed.entityId || null,
+  const handleStreamMessage = (eventName: string, rawData: string, outboxId: number) => {
+    lastSseActivityAt = Date.now();
+
+    if (eventName === 'ping') {
+      let pingPayload: Record<string, unknown> = {};
+      try {
+        pingPayload = JSON.parse(rawData) as Record<string, unknown>;
+      } catch {
+        pingPayload = {};
+      }
+      console.info('[CARER_LIVE_STREAM_PING]', {
         carerUid: cleanCarerUid,
         coadminUid: cleanCoadminUid,
+        lastEventId,
+        now: pingPayload.now || null,
+        channels: pingPayload.channels || streamChannels,
       });
+      return;
+    }
 
-      if (parsed.id > 0) {
-        lastEventId = Math.max(lastEventId, parsed.id);
-      }
+    let payload: SqlTaskPayload = {};
+    try {
+      payload = JSON.parse(rawData) as SqlTaskPayload;
+    } catch {
+      return;
+    }
 
-      const enrichedPayload = enrichPayloadForSseEvent(
-        parsed.event,
-        parsed.payload,
-        cleanCoadminUid
-      );
-      const taskId = parsed.entityId
-        ? resolveCarerTaskIdFromEvent(parsed.event, enrichedPayload, parsed.entityId)
-        : '';
-      const visibleToCarer = taskId
-        ? isSqlEventVisibleToCarer(enrichedPayload, cleanCarerUid, cleanCoadminUid)
-        : true;
-      const entityType =
-        parsed.event.startsWith('task.') || parsed.event.endsWith('_task_create')
-          ? 'carer_task'
-          : GAME_REQUEST_CREATE_EVENTS.has(parsed.event)
-            ? 'player_game_request'
-            : 'live_event';
+    const entityId = cleanText(payload.entityId || payload.taskId);
+    console.info('[CARER_LIVE_STREAM_EVENT]', {
+      outboxId,
+      eventType: eventName,
+      entityId: entityId || null,
+      carerUid: cleanCarerUid,
+      coadminUid: cleanCoadminUid,
+    });
 
-      if (shouldRefetchForLiveEvent(parsed.event, entityType)) {
-        scheduleLiveRefetch(`live_event:${parsed.event}`);
-      }
+    if (outboxId > 0) {
+      lastEventId = Math.max(lastEventId, outboxId);
+    }
 
-      if (!parsed.entityId || !taskId) {
-        continue;
-      }
+    const enrichedPayload = enrichPayloadForSseEvent(eventName, payload, cleanCoadminUid);
+    const taskId = entityId
+      ? resolveCarerTaskIdFromEvent(eventName, enrichedPayload, entityId)
+      : '';
+    const entityType =
+      eventName.startsWith('task.') || eventName.endsWith('_task_create')
+        ? 'carer_task'
+        : GAME_REQUEST_CREATE_EVENTS.has(eventName)
+          ? 'player_game_request'
+          : 'live_event';
 
-      const upsertLike =
-        CARER_TASK_UPSERT_EVENTS.has(parsed.event) ||
-        GAME_REQUEST_CREATE_EVENTS.has(parsed.event);
-      const removeLike = CARER_TASK_REMOVE_EVENTS.has(parsed.event);
-      const accepted = visibleToCarer && (upsertLike || removeLike);
-      const taskType = cleanText(enrichedPayload.type) || null;
+    if (shouldRefetchForLiveEvent(eventName, entityType)) {
+      scheduleLiveRefetch(`live_event:${eventName}`);
+    }
 
-      console.info('[CARER_TASK_SSE_EVENT]', {
-        channel: null,
-        taskId,
-        taskType,
-        status: cleanText(enrichedPayload.status) || null,
-        accepted,
-        mergeReason: parsed.event,
-      });
+    if (!entityId || !taskId) {
+      return;
+    }
 
-      if (taskType === 'recharge' || taskType === 'redeem') {
-        const auditChannel = GAME_REQUEST_CREATE_EVENTS.has(parsed.event)
-          ? coadminTaskLiveChannel(cleanCoadminUid)
-          : carerTaskLiveChannel(cleanCarerUid);
-        console.info('[CARER_TASK_SSE_AUDIT]', {
-          channel: auditChannel,
-          eventType: parsed.event,
-          taskId,
-          taskType,
-          status: cleanText(enrichedPayload.status) || null,
-          accepted,
-          reason: accepted ? parsed.event : visibleToCarer ? 'event_not_handled' : 'not_visible_to_carer',
-        });
-      }
+    const visibleToCarer = isSqlEventVisibleToCarer(enrichedPayload, cleanCarerUid, cleanCoadminUid);
+    const upsertLike =
+      CARER_TASK_UPSERT_EVENTS.has(eventName) || GAME_REQUEST_CREATE_EVENTS.has(eventName);
+    const removeLike = CARER_TASK_REMOVE_EVENTS.has(eventName);
+    const accepted = visibleToCarer && (upsertLike || removeLike);
 
-      if (!visibleToCarer || !accepted) {
-        continue;
-      }
+    if (!visibleToCarer || !accepted) {
+      return;
+    }
 
-      if (removeLike) {
-        tasksById.delete(taskId);
-        console.info('[CARER_TASK_LIVE_MERGE]', {
-          taskId,
-          status: cleanText(enrichedPayload.status) || parsed.event,
-          assignedCarerUid: cleanText(enrichedPayload.assignedCarerUid) || null,
-          addedToPending: false,
-          addedToInProgress: false,
-          removed: true,
-          reason: parsed.event,
-        });
-        emitTasks();
-      }
+    if (removeLike) {
+      tasksById.delete(taskId);
+      emitTasks();
     }
   };
 
-  const connectStream = async (headers: Record<string, string>) => {
-    const streamChannels = [
-      carerTaskLiveChannel(cleanCarerUid),
-      coadminTaskLiveChannel(cleanCoadminUid),
-    ];
-    console.info('[CARER_TASK_STREAM_SUBSCRIPTIONS]', {
-      carerUid: cleanCarerUid,
-      coadminUid: cleanCoadminUid,
-      channels: streamChannels,
-      includesCoadminPool: true,
-      includesCarerAssigned: true,
-    });
-    const channelList = streamChannels.map(encodeURIComponent).join(',');
-    const url = `/api/live/stream?channels=${channelList}&lastEventId=${lastEventId}`;
-    const response = await fetch(url, {
-      headers,
-      signal: abortController?.signal,
-      cache: 'no-store',
-    });
-    if (!response.ok || !response.body) {
-      throw new Error(`sse_http_${response.status}`);
-    }
-    console.info('[CARER_LIVE_STREAM_OPEN]', {
-      carerUid: cleanCarerUid,
-      coadminUid: cleanCoadminUid,
-      channels: streamChannels,
-      lastEventId,
-      status: response.status,
-    });
-    markCarerPageStartupStreamConnected('carer_tasks');
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    const bufferRef = { value: '' };
-
-    while (!disposed && !fellBack) {
-      const { done, value } = await reader.read();
-      if (done) {
-        throw new Error('sse_stream_closed');
+  const connectEventSource = () =>
+    new Promise<void>((resolve) => {
+      if (disposed || fellBack) {
+        resolve();
+        return;
       }
-      consumeSseChunk(decoder.decode(value, { stream: true }), bufferRef);
+
+      closeEventSource('replace_existing');
+      streamConnectResolve = resolve;
+
+      const url = buildStreamUrl();
+      console.info('[CARER_TASK_STREAM_SUBSCRIPTIONS]', {
+        carerUid: cleanCarerUid,
+        coadminUid: cleanCoadminUid,
+        channels: streamChannels,
+        lastEventId,
+        url,
+      });
+
+      const source = new EventSource(url);
+      eventSource = source;
+
+      source.onopen = () => {
+        lastSseActivityAt = Date.now();
+        reconnectAttempt = 0;
+        reconnectBackoffMs = INITIAL_RECONNECT_MS;
+        console.info('[CARER_LIVE_STREAM_OPEN]', {
+          carerUid: cleanCarerUid,
+          coadminUid: cleanCoadminUid,
+          channels: streamChannels,
+          lastEventId,
+          readyState: source.readyState,
+        });
+        markCarerPageStartupStreamConnected('carer_tasks');
+      };
+
+      source.addEventListener('ping', (ev: Event) => {
+        const message = ev as MessageEvent<string>;
+        handleStreamMessage('ping', String(message.data || ''), Number(message.lastEventId) || 0);
+      });
+
+      for (const eventName of ALL_LIVE_TASK_SSE_EVENTS) {
+        source.addEventListener(eventName, (ev: Event) => {
+          const message = ev as MessageEvent<string>;
+          handleStreamMessage(
+            eventName,
+            String(message.data || ''),
+            Number(message.lastEventId) || 0
+          );
+        });
+      }
+
+      source.onmessage = (ev: MessageEvent<string>) => {
+        handleStreamMessage('message', String(ev.data || ''), Number(ev.lastEventId) || 0);
+      };
+
+      source.onerror = () => {
+        console.info('[CARER_LIVE_STREAM_ERROR]', {
+          carerUid: cleanCarerUid,
+          coadminUid: cleanCoadminUid,
+          readyState: source.readyState,
+          lastEventId,
+          idleMs: Date.now() - lastSseActivityAt,
+        });
+        closeEventSource('sse_error');
+        void refetchSnapshotNow('sse_error', true).finally(() => {
+          resolve();
+        });
+      };
+    });
+
+  const runSafetyRefetch = () => {
+    if (disposed || fellBack) {
+      return;
+    }
+    console.info('[CARER_TASKS_SAFETY_REFETCH]', {
+      carerUid: cleanCarerUid,
+      coadminUid: cleanCoadminUid,
+      lastEventId,
+      idleMs: Date.now() - lastSseActivityAt,
+    });
+    void refetchSnapshotNow('safety_interval', true);
+  };
+
+  const checkStreamStall = () => {
+    if (disposed || fellBack || !eventSource) {
+      return;
+    }
+    const idleMs = Date.now() - lastSseActivityAt;
+    if (idleMs < STALL_TIMEOUT_MS) {
+      return;
+    }
+    console.info('[CARER_LIVE_STREAM_ERROR]', {
+      carerUid: cleanCarerUid,
+      coadminUid: cleanCoadminUid,
+      reason: 'stall_timeout',
+      idleMs,
+      lastEventId,
+    });
+    closeEventSource('stall_timeout');
+    void refetchSnapshotNow('stall_timeout', true).then(() => {
+      console.info('[CARER_LIVE_STREAM_RECONNECT]', {
+        phase: 'stall_recovery',
+        carerUid: cleanCarerUid,
+        coadminUid: cleanCoadminUid,
+        lastEventId,
+      });
+    });
+  };
+
+  const handleVisibilityRefresh = () => {
+    if (disposed || fellBack || document.visibilityState !== 'visible') {
+      return;
+    }
+    console.info('[CARER_TASKS_VISIBILITY_REFETCH]', {
+      carerUid: cleanCarerUid,
+      coadminUid: cleanCoadminUid,
+      lastEventId,
+    });
+    reconnectAttempt = 0;
+    reconnectBackoffMs = INITIAL_RECONNECT_MS;
+    closeEventSource('visibility_refresh');
+    void refetchSnapshotNow('visibility', true).then(() => {
+      console.info('[CARER_LIVE_STREAM_RECONNECT]', {
+        phase: 'visibility',
+        carerUid: cleanCarerUid,
+        coadminUid: cleanCoadminUid,
+        lastEventId,
+      });
+    });
+  };
+
+  const runLiveStreamLoop = async () => {
+    while (!disposed && !fellBack) {
+      await connectEventSource();
+      if (disposed || fellBack) {
+        break;
+      }
+      reconnectAttempt += 1;
+      console.info('[CARER_LIVE_STREAM_RECONNECT]', {
+        phase: 'backoff',
+        attempt: reconnectAttempt,
+        backoffMs: reconnectBackoffMs,
+        carerUid: cleanCarerUid,
+        coadminUid: cleanCoadminUid,
+        lastEventId,
+      });
+      await new Promise((resolve) => setTimeout(resolve, reconnectBackoffMs));
+      reconnectBackoffMs = Math.min(reconnectBackoffMs * 2, MAX_RECONNECT_MS);
+      await refetchSnapshotNow(`reconnect_attempt_${reconnectAttempt}`, true);
+    }
+  };
+
+  const startMaintenanceTimers = () => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    safetyRefetchTimer = setInterval(runSafetyRefetch, SAFETY_REFETCH_MS);
+    stallWatchTimer = setInterval(checkStreamStall, 15_000);
+    document.addEventListener('visibilitychange', handleVisibilityRefresh);
+    window.addEventListener('focus', handleVisibilityRefresh);
+  };
+
+  const stopMaintenanceTimers = () => {
+    if (safetyRefetchTimer) {
+      clearInterval(safetyRefetchTimer);
+      safetyRefetchTimer = null;
+    }
+    if (stallWatchTimer) {
+      clearInterval(stallWatchTimer);
+      stallWatchTimer = null;
+    }
+    if (typeof window !== 'undefined') {
+      document.removeEventListener('visibilitychange', handleVisibilityRefresh);
+      window.removeEventListener('focus', handleVisibilityRefresh);
     }
   };
 
@@ -628,43 +791,10 @@ export function attachCarerTaskSqlReadListener(
       return;
     }
     fellBack = true;
-    abortController?.abort();
-    abortController = null;
+    stopMaintenanceTimers();
+    closeEventSource('fallback');
     console.info('[CARER_TASKS_SQL_READ] fallback_to_firebase reason=%s', reason);
     onFallback(reason);
-  };
-
-  const runLiveStreamLoop = async (headers: Record<string, string>) => {
-    while (!disposed && !fellBack) {
-      try {
-        abortController = new AbortController();
-        await connectStream(headers);
-        if (disposed || fellBack) {
-          break;
-        }
-        console.info('[CARER_LIVE_STREAM_EVENT]', {
-          eventType: 'stream_closed',
-          carerUid: cleanCarerUid,
-          coadminUid: cleanCoadminUid,
-          lastEventId,
-        });
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      } catch (error) {
-        if (disposed || fellBack) {
-          break;
-        }
-        console.info('[CARER_LIVE_STREAM_EVENT]', {
-          eventType: 'stream_error',
-          carerUid: cleanCarerUid,
-          coadminUid: cleanCoadminUid,
-          error: error instanceof Error ? error.message : String(error),
-          lastEventId,
-        });
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-      } finally {
-        abortController = null;
-      }
-    }
   };
 
   const bootstrap = async () => {
@@ -710,16 +840,17 @@ export function attachCarerTaskSqlReadListener(
         lastEventId
       );
 
-      const sseStartedAt = Date.now();
-      await runLiveStreamLoop(headers);
+      lastSseActivityAt = Date.now();
+      startMaintenanceTimers();
+      void runLiveStreamLoop();
+
       logCarerPageStartup({
         stage: 'sse_start',
-        ok: !fellBack,
+        ok: true,
         uid: cleanCarerUid,
         role: 'carer',
-        durationMs: Date.now() - sseStartedAt,
-        reason: disposed ? 'disposed' : fellBack ? 'fallback' : 'stream_loop_exited',
-        extra: { channel: 'carer_tasks', bootstrapMs: Date.now() - bootstrapStartedAt },
+        durationMs: Date.now() - bootstrapStartedAt,
+        extra: { channel: 'carer_tasks', transport: 'eventsource' },
       });
     } catch (error) {
       if (!disposed) {
@@ -743,12 +874,12 @@ export function attachCarerTaskSqlReadListener(
   return {
     dispose() {
       disposed = true;
+      stopMaintenanceTimers();
       if (refetchTimer) {
         clearTimeout(refetchTimer);
         refetchTimer = null;
       }
-      abortController?.abort();
-      abortController = null;
+      closeEventSource('dispose');
       tasksById.clear();
     },
     hasFallenBack() {
