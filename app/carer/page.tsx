@@ -942,6 +942,7 @@ export default function CarerPage() {
   const autoTickBrowserTokenRef = useRef<{ token: string; expiresAt: number } | null>(null);
   const autoQueueDrainInFlightRef = useRef(false);
   const autoAutomationEnabledRef = useRef(false);
+  const lastAutoDispatchSignatureRef = useRef('');
   const pageInitInFlightUidRef = useRef<string | null>(null);
   const startupMountStartedAtRef = useRef<number>(Date.now());
 
@@ -1101,6 +1102,7 @@ export default function CarerPage() {
       agentId: linkedAgentId,
       instanceId: BROWSER_AUTO_TICK_INSTANCE_ID,
       allowRetryPendingClaim: source === 'immediate',
+      source,
     };
 
     console.info(`${logPrefix} request`, {
@@ -1835,6 +1837,76 @@ export default function CarerPage() {
 
     previousPendingCountRef.current = pendingCount;
   }, [claimablePendingTasks.length]);
+
+  useEffect(() => {
+    const pendingCount = claimablePendingTasks.length;
+    const activeCount = myInProgressTasks.length;
+    if (!autoAutomationEnabled || pendingCount === 0 || !carerIdentity?.uid || !coadminUid) {
+      lastAutoDispatchSignatureRef.current = '';
+      return;
+    }
+
+    const linkedAgentId =
+      String(carerIdentity.automationAgentId || '').trim() ||
+      String(agentInputDraft || '').trim();
+    if (!linkedAgentId) {
+      return;
+    }
+
+    const signature = [
+      carerIdentity.uid,
+      coadminUid,
+      pendingCount,
+      activeCount,
+      claimablePendingTasks.map((task) => task.id).join(','),
+      myInProgressTasks.map((task) => `${task.id}:${task.status}:${task.automationStatus || ''}`).join(','),
+    ].join('|');
+    if (lastAutoDispatchSignatureRef.current === signature) {
+      return;
+    }
+    lastAutoDispatchSignatureRef.current = signature;
+
+    console.info('[DISPATCH_TRIGGER]', {
+      source: 'carer_page_refill_effect',
+      carerUid: carerIdentity.uid,
+      coadminUid,
+      pendingCount,
+      activeCount,
+      pendingTaskIds: claimablePendingTasks.map((task) => task.id),
+      activeTaskIds: myInProgressTasks.map((task) => task.id),
+    });
+
+    if (autoQueueDrainInFlightRef.current || autoTickRequestInFlightRef.current || isQueueDraining) {
+      console.info('[DISPATCH_IDLE_WITH_PENDING]', {
+        source: 'carer_page_refill_effect',
+        carerUid: carerIdentity.uid,
+        coadminUid,
+        pendingCount,
+        activeCount,
+        reason: 'drain_already_running',
+      });
+      return;
+    }
+
+    console.info('[DISPATCH_IDLE_WITH_PENDING]', {
+      source: 'carer_page_refill_effect',
+      carerUid: carerIdentity.uid,
+      coadminUid,
+      pendingCount,
+      activeCount,
+      reason: 'refill_requested',
+    });
+    void drainAutomationQueueUntilEmpty('listener');
+  }, [
+    autoAutomationEnabled,
+    claimablePendingTasks,
+    myInProgressTasks,
+    carerIdentity?.uid,
+    carerIdentity?.automationAgentId,
+    agentInputDraft,
+    coadminUid,
+    isQueueDraining,
+  ]);
 
   useEffect(() => {
     if (claimablePendingTasks.length === 0) {

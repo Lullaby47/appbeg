@@ -43,6 +43,7 @@ import {
   mirrorCarerTaskById,
   type AutoTickPendingTaskCandidate,
 } from '@/lib/sql/carerTasksCache';
+import { getPlayerMirrorPool } from '@/lib/sql/playerMirrorCommon';
 import {
 
   lookupApiUserProfileFromSqlCache,
@@ -52,7 +53,7 @@ import {
 export const runtime = 'nodejs';
 
 const LEASE_TTL_MS = 70_000;
-const MAX_CLAIMS_PER_TICK = 1;
+const MAX_CLAIMS_PER_TICK = 5;
 const PENDING_QUERY_LIMIT = 15;
 
 function logAutoTickTiming(step: string, startedAt: number, details: Record<string, unknown> = {}) {
@@ -69,6 +70,53 @@ function isAgentSupportedAutomationType(value: string) {
     value === 'RECHARGE' ||
     value === 'REDEEM'
   );
+}
+
+async function countAutoTickDispatchRows(coadminUid: string, carerUid: string) {
+  const db = getPlayerMirrorPool();
+  if (!db) {
+    return { pendingCount: null, activeCount: null };
+  }
+  try {
+    const result = await db.query<{
+      pending_count: string | number | null;
+      active_count: string | number | null;
+    }>(
+      `
+        SELECT
+          COUNT(*) FILTER (
+            WHERE status = 'pending'
+              AND COALESCE(assigned_carer_uid, '') = ''
+              AND COALESCE(claimed_by_uid, '') = ''
+              AND COALESCE(automation_job_id, '') = ''
+          ) AS pending_count,
+          COUNT(*) FILTER (
+            WHERE status = 'in_progress'
+              AND (
+                assigned_carer_uid = $2
+                OR claimed_by_uid = $2
+              )
+          ) AS active_count
+        FROM public.carer_tasks_cache
+        WHERE deleted_at IS NULL
+          AND coadmin_uid = $1
+      `,
+      [coadminUid, carerUid]
+    );
+    const row = result.rows[0];
+    return {
+      pendingCount: Number(row?.pending_count || 0),
+      activeCount: Number(row?.active_count || 0),
+    };
+  } catch (error) {
+    console.warn('[DISPATCH_COUNT_FAILED]', {
+      route: '/api/carer/automation-auto-tick',
+      coadminUid,
+      carerUid,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { pendingCount: null, activeCount: null };
+  }
 }
 
 function validateAutomationAgentId(agentId: string): {
@@ -869,6 +917,7 @@ export async function POST(request: Request) {
     agentId?: unknown;
     instanceId?: unknown;
     allowRetryPendingClaim?: unknown;
+    source?: unknown;
   };
   try {
     body = (await request.json()) as typeof body;
@@ -880,6 +929,7 @@ export async function POST(request: Request) {
   const agentId = String(body.agentId || '').trim();
   const instanceId = String(body.instanceId || '').trim();
   const allowRetryPendingClaim = body.allowRetryPendingClaim === true;
+  const dispatchSource = String(body.source || 'unknown').trim() || 'unknown';
   if (!carerUid || !agentId || !instanceId) {
     return apiError('carerUid, agentId, and instanceId are required.', 400);
   }
@@ -1175,6 +1225,15 @@ export async function POST(request: Request) {
   }
 
   const pendingStartedAt = Date.now();
+  const dispatchCounts = await countAutoTickDispatchRows(coadminUid, carerUid);
+  console.info('[DISPATCH_TRIGGER]', {
+    route: '/api/carer/automation-auto-tick',
+    source: dispatchSource,
+    carerUid,
+    coadminUid,
+    pendingCount: dispatchCounts.pendingCount,
+    activeCount: dispatchCounts.activeCount,
+  });
   const pendingResult = await resolveAutoTickPendingCandidates(
     coadminUid,
     carerUid,
@@ -1203,6 +1262,15 @@ export async function POST(request: Request) {
   });
 
   if (pendingCandidates.length === 0) {
+    console.info('[DISPATCH_REFILL]', {
+      route: '/api/carer/automation-auto-tick',
+      source: dispatchSource,
+      started: 0,
+      skipped: 0,
+      pendingCount: dispatchCounts.pendingCount,
+      activeCount: dispatchCounts.activeCount,
+      reason: 'no_pending_tasks',
+    });
     if (sqlReadMode) {
       console.info('[AUTO_TICK_SQL_NO_PENDING]', {
         carerUid,
@@ -1739,6 +1807,15 @@ export async function POST(request: Request) {
   }
 
   if (claimedJobs.length > 0) {
+    console.info('[DISPATCH_REFILL]', {
+      route: '/api/carer/automation-auto-tick',
+      source: dispatchSource,
+      started: claimedJobs.length,
+      skipped: skippedTasks.length,
+      pendingCount: dispatchCounts.pendingCount,
+      activeCount: dispatchCounts.activeCount,
+      maxClaimsPerTick: MAX_CLAIMS_PER_TICK,
+    });
     console.info('[AUTO_TICK] claim batch complete', {
       carerUid,
       coadminUid,
@@ -1778,6 +1855,25 @@ export async function POST(request: Request) {
     skippedCount: skippedTasks.length,
     skippedTasks,
   });
+  console.info('[DISPATCH_REFILL]', {
+    route: '/api/carer/automation-auto-tick',
+    source: dispatchSource,
+    started: 0,
+    skipped: skippedTasks.length,
+    pendingCount: dispatchCounts.pendingCount,
+    activeCount: dispatchCounts.activeCount,
+    reason: 'no_claimable_task',
+  });
+  if (Number(dispatchCounts.pendingCount || 0) > 0) {
+    console.info('[DISPATCH_IDLE_WITH_PENDING]', {
+      route: '/api/carer/automation-auto-tick',
+      source: dispatchSource,
+      pendingCount: dispatchCounts.pendingCount,
+      activeCount: dispatchCounts.activeCount,
+      skippedCount: skippedTasks.length,
+      skippedTasks,
+    });
+  }
   console.info('[AUTO_TICK] no claimable pending task after scanning candidates', {
     candidateCount: pendingCandidates.length,
     skippedCount: skippedTasks.length,
