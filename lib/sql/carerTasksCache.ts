@@ -61,9 +61,15 @@ async function upsertCarerTaskCacheDirect(input: CarerTaskCacheInput) {
   });
 
   try {
+    const incomingSource = cleanText(input.source) || 'appbeg';
+    const incomingUpdatedAtMs = (() => {
+      const raw = toIsoString(input.updatedAt);
+      const parsed = raw ? Date.parse(raw) : NaN;
+      return Number.isFinite(parsed) ? parsed : Date.now();
+    })();
     const existing = await db.query(
       `
-        SELECT status, deleted_at
+        SELECT status, deleted_at, source, updated_at
         FROM public.carer_tasks_cache
         WHERE firebase_id = $1
         LIMIT 1
@@ -71,7 +77,12 @@ async function upsertCarerTaskCacheDirect(input: CarerTaskCacheInput) {
       [firebaseId]
     );
     if (existing.rows.length) {
-      const row = existing.rows[0] as { status?: string | null; deleted_at?: string | null };
+      const row = existing.rows[0] as {
+        status?: string | null;
+        deleted_at?: string | null;
+        source?: string | null;
+        updated_at?: string | null;
+      };
       if (row.deleted_at) {
         console.info('[CARER_TASK_RESURRECTION_AUDIT]', {
           taskId: firebaseId,
@@ -85,6 +96,27 @@ async function upsertCarerTaskCacheDirect(input: CarerTaskCacheInput) {
           reason: 'tombstoned_row_preserved',
         });
         return false;
+      }
+      const existingSource = cleanText(row.source);
+      const isIncomingFirestoreMirror = !incomingSource.startsWith('authority');
+      if (existingSource.startsWith('authority') && isIncomingFirestoreMirror) {
+        const existingUpdatedAtMs = (() => {
+          const parsed = Date.parse(toIsoString(row.updated_at) || '');
+          return Number.isFinite(parsed) ? parsed : 0;
+        })();
+        if (existingUpdatedAtMs && incomingUpdatedAtMs <= existingUpdatedAtMs + 1000) {
+          console.info('[CARER_TASK_MIRROR_SKIP_STALE]', {
+            taskId: firebaseId,
+            existingSource,
+            incomingSource,
+            existingStatus: cleanText(row.status) || null,
+            incomingStatus: cleanText(input.status) || null,
+            existingUpdatedAt: toIsoString(row.updated_at),
+            incomingUpdatedAt: toIsoString(input.updatedAt),
+            reason: 'authority_row_newer_than_firestore_mirror',
+          });
+          return false;
+        }
       }
     }
 
@@ -827,6 +859,7 @@ export async function getPendingCarerTaskCandidatesFromSql(
   }
 
   const excludeRetryPending = options?.excludeRetryPending !== false;
+  const returnCooldownSeconds = Math.ceil(30_000 / 1000);
   const pendingSql = `
     SELECT
       firebase_id,
@@ -859,7 +892,14 @@ export async function getPendingCarerTaskCandidatesFromSql(
     WHERE coadmin_uid = $1
       AND status = 'pending'
       AND deleted_at IS NULL
+      AND COALESCE(assigned_carer_uid, '') = ''
+      AND COALESCE(claimed_by_uid, '') = ''
+      AND COALESCE(automation_job_id, '') = ''
       ${excludeRetryPending ? 'AND COALESCE(retry_pending, false) = false' : ''}
+      AND (
+        returned_to_pending_at IS NULL
+        OR returned_to_pending_at < NOW() - ($3::int * INTERVAL '1 second')
+      )
     ORDER BY created_at DESC NULLS LAST
     LIMIT $2
   `;
@@ -868,6 +908,7 @@ export async function getPendingCarerTaskCandidatesFromSql(
     const { rows, timing } = await runMirrorPoolQuery<Record<string, unknown>>(db, pendingSql, [
       cleanCoadminUid,
       safeLimit,
+      returnCooldownSeconds,
     ]);
 
     const candidates = rows

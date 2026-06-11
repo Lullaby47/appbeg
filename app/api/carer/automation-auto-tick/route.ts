@@ -1239,15 +1239,29 @@ export async function POST(request: Request) {
       pending_source: pendingResult.timing.pending_source,
     });
     const retryPending = task['retryPending'] === true;
-    if (retryPending && !allowRetryPendingClaim) {
+    const returnedToPendingAt = String(task['returnedToPendingAt'] || '').trim();
+    const returnedMs = returnedToPendingAt ? Date.parse(returnedToPendingAt) : NaN;
+    const withinReturnCooldown =
+      Number.isFinite(returnedMs) && Date.now() - returnedMs < 30_000;
+    if ((retryPending || withinReturnCooldown) && !allowRetryPendingClaim) {
       console.info('[AUTO_TICK_RECLAIM_AFTER_RETURN_BLOCKED]', {
         taskId,
         carerUid,
         coadminUid,
         retryPending,
-        returnedToPendingAt: task['returnedToPendingAt'] || null,
+        returnedToPendingAt: returnedToPendingAt || null,
+        withinReturnCooldown,
         allowRetryPendingClaim,
       });
+      if (withinReturnCooldown) {
+        console.info('[AUTO_TICK_SKIP_RECENTLY_RETURNED_TASK]', {
+          taskId,
+          carerUid,
+          coadminUid,
+          returnedToPendingAt,
+          cooldownMs: 30_000,
+        });
+      }
       skippedTasks.push({
         taskId,
         reason: 'returned_to_pending_requires_manual_or_start_automation',

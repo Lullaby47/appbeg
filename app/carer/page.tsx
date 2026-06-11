@@ -756,6 +756,11 @@ export default function CarerPage() {
         logTaskTabFilter(task, included ? 'pending' : null, included ? null : `status_${status || 'missing'}`);
         return included;
       });
+      console.info('[CARER_TASK_GROUPING_DEBUG]', {
+        section: 'pending',
+        count: filtered.length,
+        taskIds: filtered.map((task) => task.id),
+      });
       return sortByNewest(filtered);
     },
     [tasks]
@@ -781,6 +786,18 @@ export default function CarerPage() {
           included ? null : `assigned_carer_mismatch_current_${uid}`
         );
         return included;
+      });
+      console.info('[CARER_TASK_GROUPING_DEBUG]', {
+        section: 'mine',
+        count: filtered.length,
+        taskIds: filtered.map((task) => task.id),
+        statuses: filtered.map((task) => ({
+          taskId: task.id,
+          status: task.status,
+          assignedCarerUid: task.assignedCarerUid ?? null,
+          claimedByUid: task.claimedByUid ?? null,
+          automationJobId: task.automationJobId ?? null,
+        })),
       });
       return sortByNewest(filtered);
     },
@@ -3373,6 +3390,13 @@ export default function CarerPage() {
       automationJobId: task.automationJobId || null,
       automationStatus: task.automationStatus || null,
       sectionStatus: task.status,
+    });
+    console.info('[RETURN_TO_PENDING_CLICK]', {
+      taskId: task.id,
+      statusBefore: task.status,
+      assignedCarerUid: task.assignedCarerUid ?? null,
+      carerUid: carerIdentity.uid,
+      coadminUid,
     });
     console.info('[CARER_RETURN_TO_PENDING_CLICK]', {
       taskId: task.id,

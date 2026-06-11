@@ -1472,6 +1472,12 @@ export async function returnTaskToPendingAndCancelAutomation(taskId: string) {
       authSource: 'app_session_sql',
       firebaseAttempted: false,
     });
+    console.info('[RETURN_TO_PENDING_API]', {
+      taskId,
+      route,
+      sqlMode: true,
+      authSource: 'app_session_sql',
+    });
     console.info('[CARER_BACK_TO_PENDING_FETCH_START]', {
       taskId,
       route,

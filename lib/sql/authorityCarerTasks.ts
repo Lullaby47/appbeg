@@ -36,6 +36,7 @@ import { cleanText, getPlayerMirrorPool, toIsoString } from '@/lib/sql/playerMir
 
 const STALE_TASK_CLAIM_TIMEOUT_MS = 5 * 60 * 1000;
 const AUTOMATION_JOB_TTL_DAYS = 14;
+export const RETURN_TO_PENDING_COOLDOWN_MS = 30_000;
 const AGENT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
 const ACTIVE_JOB_STATUSES = new Set([
@@ -218,6 +219,26 @@ function taskHasRetryPending(task: SqlTaskRow): boolean {
     return true;
   }
   return task.raw_firestore_data?.retryPending === true;
+}
+
+export function isWithinReturnToPendingCooldown(
+  task: Pick<SqlTaskRow, 'returned_to_pending_at' | 'raw_firestore_data'>
+): boolean {
+  const returnedAt =
+    toIsoString(task.returned_to_pending_at) ||
+    toIsoString(task.raw_firestore_data?.returnedToPendingAt);
+  if (!returnedAt) {
+    return false;
+  }
+  const returnedMs = Date.parse(returnedAt);
+  if (!Number.isFinite(returnedMs)) {
+    return false;
+  }
+  return Date.now() - returnedMs < RETURN_TO_PENDING_COOLDOWN_MS;
+}
+
+function taskBlocksAutomationReclaim(task: SqlTaskRow): boolean {
+  return taskHasRetryPending(task) || isWithinReturnToPendingCooldown(task);
 }
 
 function jobFromRow(row: Record<string, unknown>): SqlJobRow {
@@ -701,6 +722,14 @@ async function cancelAutomationJobInTxn(
     ttlExpiresAt: ttlAfterDaysIso(AUTOMATION_JOB_TTL_DAYS),
   };
   await upsertAutomationJobInTxn(client, job.job_id, raw, 'authority_carer_task');
+  if (reason === 'returned_to_pending') {
+    console.info('[SQL_JOB_CANCELLED_FOR_RETURN]', {
+      jobId: job.job_id,
+      taskId: cleanText(job.task_id) || null,
+      cancelledReason: reason,
+      priorStatus: normalizeAutomationStatus(job.status),
+    });
+  }
   return job.job_id;
 }
 
@@ -805,7 +834,17 @@ export async function claimCarerTaskInTxn(
     const linkedJobId = cleanText(task.automation_job_id);
     const currentUserUid = carerUid;
 
-    if (taskHasRetryPending(task) && input.allowRetryPendingClaim !== true) {
+    if (taskBlocksAutomationReclaim(task) && input.allowRetryPendingClaim !== true) {
+      console.info('[AUTO_TICK_SKIP_RECENTLY_RETURNED_TASK]', {
+        taskId,
+        carerUid,
+        retryPending: taskHasRetryPending(task),
+        returnedToPendingAt:
+          toIsoString(task.returned_to_pending_at) ||
+          toIsoString(task.raw_firestore_data?.returnedToPendingAt),
+        cooldownMs: RETURN_TO_PENDING_COOLDOWN_MS,
+        allowRetryPendingClaim: input.allowRetryPendingClaim ?? false,
+      });
       throw new Error('Task was returned to pending and is not reclaimable by automation yet.');
     }
 
@@ -896,12 +935,14 @@ export async function claimCarerTaskInTxn(
       throw new Error('Task already claimed');
     }
 
-    let result: {
-      jobId: string;
-      taskId: string;
-      status: string;
-      reusedExistingJob: boolean;
-    };
+    let result:
+      | {
+          jobId: string;
+          taskId: string;
+          status: string;
+          reusedExistingJob: boolean;
+        }
+      | undefined;
     let reusedExistingJob = false;
 
     const pendingQueuedJob =
@@ -913,6 +954,24 @@ export async function claimCarerTaskInTxn(
       );
 
     if (
+      rawTaskStatus === 'pending' &&
+      pendingQueuedJob &&
+      isActiveAutomationJobStatus(pendingQueuedJob.status) &&
+      taskBlocksAutomationReclaim(task)
+    ) {
+      console.info('[SQL_TASK_CLAIM_CANCEL_STALE_QUEUED_JOB]', {
+        taskId,
+        carerUid: currentUserUid,
+        jobId: pendingQueuedJob.job_id,
+        reason: 'returned_to_pending_cooldown',
+      });
+      await cancelAutomationJobInTxn(
+        client,
+        pendingQueuedJob,
+        'returned_to_pending_stale_job',
+        nowIso
+      );
+    } else if (
       rawTaskStatus === 'pending' &&
       pendingQueuedJob &&
       isActiveAutomationJobStatus(pendingQueuedJob.status)
@@ -1015,7 +1074,20 @@ export async function claimCarerTaskInTxn(
           jobOwnerUid(job) === currentUserUid &&
           normalizeAutomationStatus(job.status) === 'queued'
       );
-      if (existingActiveQueued) {
+      if (existingActiveQueued && taskBlocksAutomationReclaim(task)) {
+        console.info('[SQL_TASK_CLAIM_CANCEL_STALE_QUEUED_JOB]', {
+          taskId,
+          carerUid: currentUserUid,
+          jobId: existingActiveQueued.job_id,
+          reason: 'returned_to_pending_cooldown',
+        });
+        await cancelAutomationJobInTxn(
+          client,
+          existingActiveQueued,
+          'returned_to_pending_stale_job',
+          nowIso
+        );
+      } else if (existingActiveQueued) {
         console.info('[SQL_AUTOMATION_JOB_ALREADY_EXISTS]', {
           taskId,
           jobId: existingActiveQueued.job_id,
@@ -1124,6 +1196,10 @@ export async function claimCarerTaskInTxn(
         __setAutomationUpdatedAt: true,
       });
       }
+    }
+
+    if (!result) {
+      throw new Error('Failed to claim task: no automation job was created.');
     }
 
     await writeTaskOutboxInTxn(client, {
@@ -1374,7 +1450,7 @@ export async function returnTaskToPendingInSql(input: {
       return { success: true as const, duplicate: true, ...(payload || {}) };
     }
 
-    console.info('[SQL_TASK_RETURN_TO_PENDING]', {
+    console.info('[SQL_TASK_RETURN_TO_PENDING_START]', {
       taskId,
       actorUid: input.actorUid,
       actorRole: input.actorRole,
@@ -1414,7 +1490,9 @@ export async function returnTaskToPendingInSql(input: {
       if (jobScope && jobScope !== taskScope) {
         throw new Error('Forbidden: linked automation job is outside your scope.');
       }
-      if (!ACTIVE_JOB_STATUSES.has(normalizeAutomationStatus(job.status))) continue;
+      const jobStatus = normalizeAutomationStatus(job.status);
+      if (FINAL_CLAIM_DUPLICATE_JOB_STATUSES.has(jobStatus)) continue;
+      if (!jobStatus) continue;
       await cancelAutomationJobInTxn(client, job, 'returned_to_pending', nowIso);
       cancelledJobs += 1;
       await writeJobOutboxInTxn(client, {

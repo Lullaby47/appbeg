@@ -231,6 +231,51 @@ export async function mirrorAutomationJobCache(
     const row = normalizeAutomationJobForCache(jobId, data);
     if (!row.jobId) throw new Error('Missing automation job id.');
 
+    const incomingSource = cleanText(source) || 'appbeg';
+    const incomingUpdatedAtMs = (() => {
+      const parsed = Date.parse(row.updatedAt || '');
+      return Number.isFinite(parsed) ? parsed : Date.now();
+    })();
+    const existing = await db.query(
+      `
+        SELECT source, updated_at, status
+        FROM public.automation_jobs_cache
+        WHERE job_id = $1
+        LIMIT 1
+      `,
+      [row.jobId]
+    );
+    if (existing.rows.length) {
+      const existingRow = existing.rows[0] as {
+        source?: string | null;
+        updated_at?: string | null;
+        status?: string | null;
+      };
+      const existingSource = cleanText(existingRow.source);
+      const isIncomingFirestoreMirror = !incomingSource.startsWith('authority');
+      if (existingSource.startsWith('authority') && isIncomingFirestoreMirror) {
+        const existingUpdatedAtMs = (() => {
+          const parsed = Date.parse(toIsoString(existingRow.updated_at) || '');
+          return Number.isFinite(parsed) ? parsed : 0;
+        })();
+        if (
+          existingUpdatedAtMs &&
+          incomingUpdatedAtMs <= existingUpdatedAtMs + 1000 &&
+          cleanText(existingRow.status).toLowerCase() === 'cancelled'
+        ) {
+          console.info('[AUTOMATION_JOB_MIRROR_SKIP_STALE]', {
+            jobId: row.jobId,
+            existingSource,
+            incomingSource,
+            existingStatus: cleanText(existingRow.status) || null,
+            incomingStatus: cleanText(row.status) || null,
+            reason: 'authority_cancelled_row_newer_than_firestore_mirror',
+          });
+          return false;
+        }
+      }
+    }
+
     await db.query(
       `
         INSERT INTO public.automation_jobs_cache (

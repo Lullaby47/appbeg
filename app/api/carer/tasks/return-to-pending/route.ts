@@ -138,6 +138,72 @@ function buildLinkedRequestPendingResetFields() {
   };
 }
 
+async function syncReturnToPendingFirestore(taskId: string, carerUid: string) {
+  const taskRef = adminDb.collection('carerTasks').doc(taskId);
+  const taskSnap = await taskRef.get();
+  if (!taskSnap.exists) {
+    return;
+  }
+
+  const batch = adminDb.batch();
+  batch.update(taskRef, buildTaskPendingResetFields());
+
+  const linkedJobIds = new Set<string>([automationJobDocId(carerUid, taskId)]);
+  const taskData = taskSnap.data() as TaskRecord;
+  for (const value of [
+    taskData.automationJobId,
+    taskData.linkedJobId,
+    taskData.currentJobId,
+    taskData.activeJobId,
+  ]) {
+    const jobId = String(value || '').trim();
+    if (jobId) {
+      linkedJobIds.add(jobId);
+    }
+  }
+
+  const sameTaskJobsSnap = await adminDb
+    .collection('automation_jobs')
+    .where('taskId', '==', taskId)
+    .limit(20)
+    .get();
+  sameTaskJobsSnap.docs.forEach((jobSnap) => {
+    linkedJobIds.add(jobSnap.id);
+  });
+
+  for (const jobId of linkedJobIds) {
+    const jobRef = adminDb.collection('automation_jobs').doc(jobId);
+    const jobSnap = await jobRef.get();
+    if (!jobSnap.exists) {
+      continue;
+    }
+    const jobStatus = String((jobSnap.data() as { status?: string }).status || '')
+      .trim()
+      .toLowerCase();
+    if (!ACTIVE_JOB_STATUSES.has(jobStatus)) {
+      continue;
+    }
+    batch.update(jobRef, {
+      status: 'cancelled',
+      claimedStatus: 'cancelled',
+      cancelledAt: FieldValue.serverTimestamp(),
+      cancelledReason: 'returned_to_pending',
+      updatedAt: FieldValue.serverTimestamp(),
+      lastHeartbeatAt: FieldValue.serverTimestamp(),
+      completedAt: FieldValue.serverTimestamp(),
+      ttlExpiresAt: ttlAfterDays(14),
+      error: 'Cancelled by carer (returned_to_pending).',
+    });
+  }
+
+  await batch.commit();
+  console.info('[RETURN_TO_PENDING_FIRESTORE_SYNC_OK]', {
+    taskId,
+    carerUid,
+    cancelledJobIds: Array.from(linkedJobIds),
+  });
+}
+
 function errorStatus(message: string) {
   if (/not authenticated|authorization|token/i.test(message)) return 401;
   if (/forbidden|outside your scope/i.test(message)) return 403;
@@ -173,6 +239,11 @@ export async function POST(request: Request) {
       String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
 
     if (isAuthoritySqlWriteEnabled()) {
+      console.info('[RETURN_TO_PENDING_API]', {
+        taskId,
+        callerUid: caller.uid,
+        authority: 'sql',
+      });
       const outcome = await returnTaskToPendingInSql({
         taskId,
         actorUid: caller.uid,
@@ -186,6 +257,16 @@ export async function POST(request: Request) {
         duplicate: outcome.duplicate,
         cancelledJobs: 'cancelledJobs' in outcome ? outcome.cancelledJobs : null,
       });
+      if (!outcome.duplicate) {
+        try {
+          await syncReturnToPendingFirestore(taskId, caller.uid);
+        } catch (syncError) {
+          console.warn('[RETURN_TO_PENDING_FIRESTORE_SYNC_FAILED]', {
+            taskId,
+            error: syncError instanceof Error ? syncError.message : String(syncError),
+          });
+        }
+      }
       return NextResponse.json({ authority: 'sql', ...outcome });
     }
 
