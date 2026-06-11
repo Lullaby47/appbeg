@@ -448,6 +448,20 @@ export type SetUserPasswordInSqlResult = {
   directoryUpdated: boolean;
 };
 
+function isResetPasswordSqlParameterError(message: string) {
+  return /could not determine data type of parameter|invalid input syntax for type/i.test(
+    message
+  );
+}
+
+export function mapResetPasswordSqlError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (isResetPasswordSqlParameterError(message)) {
+    return 'Password reset failed. Please try again.';
+  }
+  return message;
+}
+
 export type SetUserStatusInSqlInput = {
   uid: string;
   status: UserDirectoryStatus;
@@ -488,6 +502,24 @@ export async function setUserPasswordInSql(
   const now = new Date();
   const nowIso = now.toISOString();
 
+  console.info('[RESET_PASSWORD_SQL_INPUT]', {
+    targetUid: uid,
+    actingUid: actorUid,
+    passwordHashPresent: Boolean(hashed.hash),
+    passwordHashLength: hashed.hash.length,
+    metadataType: 'jsonb_patch',
+    param1Type: 'text',
+    param2Type: 'timestamptz',
+    param3Type: 'text',
+    param4Type: 'text',
+  });
+  console.info('[RESET_PASSWORD_SQL_START]', {
+    targetUid: uid,
+    actingUid: actorUid,
+    actorRole,
+    revokeReason,
+  });
+
   const client = await db.connect();
   try {
     await client.query('BEGIN');
@@ -504,7 +536,10 @@ export async function setUserPasswordInSql(
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4::timestamptz, FALSE, FALSE, $4::timestamptz, $4::timestamptz)
+        VALUES (
+          $1::text, $2::text, $3::text, $4::timestamptz,
+          FALSE, FALSE, $4::timestamptz, $4::timestamptz
+        )
         ON CONFLICT (uid) DO UPDATE SET
           password_hash = EXCLUDED.password_hash,
           password_algo = EXCLUDED.password_algo,
@@ -522,10 +557,10 @@ export async function setUserPasswordInSql(
         SET
           active = FALSE,
           ended_at = $2::timestamptz,
-          ended_reason = $3,
+          ended_reason = $3::text,
           revoked_at = $2::timestamptz,
           updated_at = $2::timestamptz
-        WHERE uid = $1
+        WHERE uid = $1::text
           AND active = TRUE
       `,
       [uid, nowIso, revokeReason]
@@ -537,15 +572,15 @@ export async function setUserPasswordInSql(
         UPDATE public.players_cache
         SET
           password_updated_at = $2::timestamptz,
-          password_updated_by_uid = $3,
-          password_updated_by_role = $4,
+          password_updated_by_uid = $3::text,
+          password_updated_by_role = $4::text,
           updated_at = $2::timestamptz,
           raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object(
             'passwordUpdatedAt', $2::text,
-            'passwordUpdatedByUid', $3,
-            'passwordUpdatedByRole', $4
+            'passwordUpdatedByUid', $3::text,
+            'passwordUpdatedByRole', $4::text
           )
-        WHERE uid = $1
+        WHERE uid = $1::text
           AND deleted_at IS NULL
       `,
       [uid, nowIso, actorUid, actorRole]
@@ -553,9 +588,24 @@ export async function setUserPasswordInSql(
     const directoryUpdated = (directoryResult.rowCount || 0) > 0;
 
     await client.query('COMMIT');
+    console.info('[RESET_PASSWORD_SQL_SUCCESS]', {
+      targetUid: uid,
+      actingUid: actorUid,
+      sessionsRevoked,
+      directoryUpdated,
+    });
     return { sessionsRevoked, directoryUpdated };
   } catch (error) {
     await client.query('ROLLBACK');
+    const message = error instanceof Error ? error.message : String(error || '');
+    console.info('[RESET_PASSWORD_SQL_ERROR]', {
+      targetUid: uid,
+      actingUid: actorUid,
+      error: message,
+    });
+    if (isResetPasswordSqlParameterError(message)) {
+      throw new Error('Password reset failed. Please try again.');
+    }
     throw error;
   } finally {
     client.release();

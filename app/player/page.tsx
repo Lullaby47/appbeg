@@ -3164,6 +3164,10 @@ export default function PlayerPage() {
   }
 
   function openPlayerPasswordResetModal() {
+    console.info('[RESET_PASSWORD_CLICK]', {
+      playerUid: playerUid || null,
+      sqlMode: isSqlPlayerRuntimeMode(),
+    });
     setPlayerResetNewPassword('');
     setPlayerResetConfirmPassword('');
     setPlayerResetPasswordError('');
@@ -3203,17 +3207,41 @@ export default function PlayerPage() {
     setPlayerResetPasswordLoading(true);
     setPlayerResetPasswordError('');
     try {
+      console.info('[RESET_PASSWORD_SUBMIT_START]', {
+        playerUid: playerUid || null,
+        sqlMode: isSqlPlayerRuntimeMode(),
+      });
+      const headers = await getPlayerApiHeaders(true, { route: '/api/player/reset-password' });
+      console.info('[RESET_PASSWORD_API_REQUEST]', {
+        route: '/api/player/reset-password',
+        hasAppSession: Boolean(headers['X-App-Session-Id']),
+        hasPlayerSession: Boolean(headers['X-Player-Session-Id']),
+        credentials: 'include',
+      });
       const response = await fetch('/api/player/reset-password', {
         method: 'POST',
-        headers: await getPlayerApiHeaders(),
+        credentials: 'include',
+        headers,
         body: JSON.stringify({ newPassword, confirmPassword }),
       });
       const payload = (await response.json().catch(() => ({}))) as {
         error?: string;
         username?: string;
+        authority?: string;
       };
+      console.info('[RESET_PASSWORD_API_RESPONSE]', {
+        ok: response.ok,
+        status: response.status,
+        authority: payload.authority || null,
+        body: payload,
+      });
       if (!response.ok) {
-        throw new Error(payload.error || 'Failed to reset password.');
+        const errorMessage =
+          payload.error ||
+          (response.status === 401
+            ? 'Session expired. Please log in again.'
+            : 'Password reset failed. Please try again.');
+        throw new Error(errorMessage);
       }
 
       const rememberedUsername =
@@ -3221,15 +3249,21 @@ export default function PlayerPage() {
         playerUsername.trim() ||
         String(auth.currentUser?.displayName || '').trim();
       rememberPlayerLoginCredentials(rememberedUsername, newPassword);
-      await auth.currentUser?.getIdToken(true);
+      if (!isSqlPlayerRuntimeMode()) {
+        await auth.currentUser?.getIdToken(true);
+      }
       setMessage('Password reset successfully.');
       setShowPlayerPasswordResetModal(false);
       setPlayerResetNewPassword('');
       setPlayerResetConfirmPassword('');
     } catch (error) {
-      setPlayerResetPasswordError(
-        error instanceof Error ? error.message : 'Failed to reset password.'
-      );
+      const errorMessage =
+        error instanceof Error ? error.message : 'Password reset failed. Please try again.';
+      console.info('[RESET_PASSWORD_API_ERROR]', {
+        playerUid: playerUid || null,
+        error: errorMessage,
+      });
+      setPlayerResetPasswordError(errorMessage);
     } finally {
       setPlayerResetPasswordLoading(false);
     }
