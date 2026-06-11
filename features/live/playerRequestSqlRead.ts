@@ -57,7 +57,22 @@ type SqlRequestPayload = {
   amount?: unknown;
   baseAmount?: unknown;
   pokeMessage?: unknown;
+  dismissReasonCode?: unknown;
+  dismissReasonMessage?: unknown;
+  refunded?: unknown;
   updatedAt?: unknown;
+};
+
+export type PlayerRechargeDismissLiveEvent = {
+  requestId: string;
+  playerUid: string;
+  type: PlayerGameRequestType;
+  status: PlayerGameRequestStatus;
+  pokeMessage: string | null;
+  dismissReasonCode: string | null;
+  dismissReasonMessage: string | null;
+  refunded: boolean;
+  sourceEvent: string;
 };
 
 function cleanText(value: unknown) {
@@ -152,6 +167,14 @@ function mergePayloadIntoPlayerGameRequest(
       payload.pokeMessage !== undefined
         ? cleanText(payload.pokeMessage) || null
         : existing?.pokeMessage ?? null,
+    dismissReasonCode:
+      payload.dismissReasonCode !== undefined
+        ? cleanText(payload.dismissReasonCode) || null
+        : existing?.dismissReasonCode ?? null,
+    dismissReasonMessage:
+      payload.dismissReasonMessage !== undefined
+        ? cleanText(payload.dismissReasonMessage) || null
+        : existing?.dismissReasonMessage ?? null,
     createdAt: existing?.createdAt ?? updatedAt,
     completedAt:
       nextStatus === 'completed' || nextStatus === 'dismissed'
@@ -204,7 +227,10 @@ function parseSseBlock(block: string) {
 export function attachPlayerRequestSqlReadListener(
   playerUid: string,
   onRequestsChange: (requests: PlayerGameRequest[]) => void,
-  onFallback: (reason: string) => void
+  onFallback: (reason: string) => void,
+  options?: {
+    onRechargeDismissEvent?: (event: PlayerRechargeDismissLiveEvent) => void;
+  }
 ) {
   const cleanPlayerUid = cleanText(playerUid);
   let lastEventId = 0;
@@ -292,6 +318,27 @@ export function attachPlayerRequestSqlReadListener(
           parsed.event,
           parsed.entityId
         );
+        if (
+          (parsed.event === 'recharge_dismiss' || parsed.event === 'player_message') &&
+          options?.onRechargeDismissEvent
+        ) {
+          const status = normalizeRequestStatus(parsed.payload.status || 'dismissed');
+          if (status === 'dismissed') {
+            const dismissEvent: PlayerRechargeDismissLiveEvent = {
+              requestId: parsed.entityId,
+              playerUid: cleanPlayerUid,
+              type: normalizeRequestType(parsed.payload.type),
+              status,
+              pokeMessage: cleanText(parsed.payload.pokeMessage) || null,
+              dismissReasonCode: cleanText(parsed.payload.dismissReasonCode) || null,
+              dismissReasonMessage: cleanText(parsed.payload.dismissReasonMessage) || null,
+              refunded: parsed.payload.refunded === true,
+              sourceEvent: parsed.event,
+            };
+            console.info('[PLAYER_RECHARGE_DISMISS_EVENT]', dismissEvent);
+            options.onRechargeDismissEvent(dismissEvent);
+          }
+        }
         void refetchSnapshotNow(`sse_event:${parsed.event}`);
         return;
       }

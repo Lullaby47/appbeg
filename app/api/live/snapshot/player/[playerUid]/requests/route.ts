@@ -39,6 +39,14 @@ type SnapshotRequest = {
   pokedAt: string | null;
 };
 
+function readRawField(row: Record<string, unknown>, key: string) {
+  const raw =
+    row.raw_firestore_data && typeof row.raw_firestore_data === 'object'
+      ? (row.raw_firestore_data as Record<string, unknown>)
+      : null;
+  return raw ? cleanText(raw[key]) || null : null;
+}
+
 function mapSnapshotRow(row: Record<string, unknown>): SnapshotRequest {
   return {
     id: cleanText(row.firebase_id),
@@ -48,9 +56,11 @@ function mapSnapshotRow(row: Record<string, unknown>): SnapshotRequest {
     status: cleanText(row.status),
     amount: Number.isFinite(Number(row.amount)) ? Number(row.amount) : null,
     baseAmount: Number.isFinite(Number(row.base_amount)) ? Number(row.base_amount) : null,
-    pokeMessage: cleanText(row.poke_message) || null,
-    dismissReasonCode: cleanText(row.dismiss_reason_code) || null,
-    dismissReasonMessage: cleanText(row.dismiss_reason_message) || null,
+    pokeMessage: cleanText(row.poke_message) || readRawField(row, 'pokeMessage'),
+    dismissReasonCode:
+      cleanText(row.dismiss_reason_code) || readRawField(row, 'dismissReasonCode'),
+    dismissReasonMessage:
+      cleanText(row.dismiss_reason_message) || readRawField(row, 'dismissReasonMessage'),
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
     completedAt: toIsoString(row.completed_at),

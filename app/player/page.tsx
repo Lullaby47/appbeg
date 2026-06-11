@@ -39,6 +39,7 @@ import { attachPlayerRequestLiveShadowCompare } from '@/features/live/playerRequ
 import {
   attachPlayerRequestSqlReadListener,
   PLAYER_REQUESTS_SQL_READ_ENABLED,
+  type PlayerRechargeDismissLiveEvent,
 } from '@/features/live/playerRequestSqlRead';
 import {
   listenToUnreadCounts,
@@ -178,6 +179,31 @@ const GAME_VAULT_MIDNIGHT_PARTY_WARNING_MARKER =
   'players can only deposit again after selecting whether or not to participate in the midnight party program';
 const GAME_VAULT_MIDNIGHT_PARTY_PLAYER_MESSAGE =
   'Recharge blocked: Please open Game Vault and choose whether to participate in the Midnight Party program for your previous deposit before depositing again.';
+
+function requestMatchesMidnightPartyDismiss(input: {
+  dismissReasonCode?: string | null;
+  dismissReasonMessage?: string | null;
+  pokeMessage?: string | null;
+}) {
+  const markerHit = [input.dismissReasonMessage, input.pokeMessage].some((value) =>
+    String(value || '')
+      .toLowerCase()
+      .includes(GAME_VAULT_MIDNIGHT_PARTY_WARNING_MARKER)
+  );
+  return input.dismissReasonCode === GAME_VAULT_MIDNIGHT_PARTY_REASON || markerHit;
+}
+
+function midnightPartyDismissSplashMessage(input: {
+  pokeMessage?: string | null;
+  dismissReasonMessage?: string | null;
+}) {
+  return (
+    String(input.pokeMessage || '').trim() ||
+    String(input.dismissReasonMessage || '').trim() ||
+    GAME_VAULT_MIDNIGHT_PARTY_PLAYER_MESSAGE
+  );
+}
+
 const PLAYER_BONUS_DEBUG =
   process.env.NODE_ENV !== 'production' &&
   process.env.NEXT_PUBLIC_DEBUG_PLAYER_BONUS_EVENTS === '1';
@@ -1120,16 +1146,19 @@ export default function PlayerPage() {
         }
         const justBlockedByMidnightParty =
           request.status === 'dismissed' &&
-          (request.dismissReasonCode === GAME_VAULT_MIDNIGHT_PARTY_REASON ||
-            String(request.dismissReasonMessage || '')
-              .toLowerCase()
-              .includes(GAME_VAULT_MIDNIGHT_PARTY_WARNING_MARKER)) &&
+          requestMatchesMidnightPartyDismiss(request) &&
           ((previousStatus !== undefined && previousStatus !== 'dismissed') ||
             (previousStatus === undefined && recentlyCompleted));
         if (
           justBlockedByMidnightParty &&
           !seenDismissedRechargeSplashIdsRef.current.has(request.id)
         ) {
+          console.info('[PLAYER_RECHARGE_DISMISS_TOAST_SHOW]', {
+            requestId: request.id,
+            source: 'request_history_transition',
+            pokeMessage: request.pokeMessage || null,
+            dismissReasonCode: request.dismissReasonCode || null,
+          });
           setRedeemDismissSplashRequest(request);
           seenDismissedRechargeSplashIdsRef.current.add(request.id);
         }
@@ -1193,10 +1222,10 @@ export default function PlayerPage() {
   const isTimedSplashAlert = Boolean(playerAlert && playerAlert.variant !== 'index');
   const isMidnightPartyDismissSplash =
     redeemDismissSplashRequest?.type === 'recharge' &&
-    (redeemDismissSplashRequest.dismissReasonCode === GAME_VAULT_MIDNIGHT_PARTY_REASON ||
-      String(redeemDismissSplashRequest.dismissReasonMessage || '')
-        .toLowerCase()
-        .includes(GAME_VAULT_MIDNIGHT_PARTY_WARNING_MARKER));
+    requestMatchesMidnightPartyDismiss(redeemDismissSplashRequest);
+  const midnightPartyDismissMessage = redeemDismissSplashRequest
+    ? midnightPartyDismissSplashMessage(redeemDismissSplashRequest)
+    : GAME_VAULT_MIDNIGHT_PARTY_PLAYER_MESSAGE;
 
   useEffect(() => {
     if (!isTimedSplashAlert) {
@@ -1992,6 +2021,40 @@ export default function PlayerPage() {
     }
 
     if (sqlRequestsRead) {
+      const showRechargeDismissFromLiveEvent = (event: PlayerRechargeDismissLiveEvent) => {
+        if (event.type !== 'recharge' || event.status !== 'dismissed') {
+          return;
+        }
+        if (!requestMatchesMidnightPartyDismiss(event)) {
+          return;
+        }
+        if (seenDismissedRechargeSplashIdsRef.current.has(event.requestId)) {
+          return;
+        }
+        console.info('[PLAYER_RECHARGE_DISMISS_TOAST_SHOW]', {
+          requestId: event.requestId,
+          source: `sse_event:${event.sourceEvent}`,
+          pokeMessage: event.pokeMessage,
+          dismissReasonCode: event.dismissReasonCode,
+          refunded: event.refunded,
+        });
+        seenDismissedRechargeSplashIdsRef.current.add(event.requestId);
+        setRedeemDismissSplashRequest({
+          id: event.requestId,
+          playerUid: event.playerUid,
+          gameName: 'Unknown Game',
+          type: 'recharge',
+          status: 'dismissed',
+          amount: 0,
+          pokeMessage: event.pokeMessage,
+          dismissReasonCode: event.dismissReasonCode,
+          dismissReasonMessage: event.dismissReasonMessage,
+          createdAt: null,
+          completedAt: null,
+          pokedAt: null,
+        });
+      };
+
       const sqlRead = attachPlayerRequestSqlReadListener(
         playerUid,
         (requests) => {
@@ -2003,6 +2066,9 @@ export default function PlayerPage() {
             reason,
             sqlMode: isClientSqlReadMode(),
           });
+        },
+        {
+          onRechargeDismissEvent: showRechargeDismissFromLiveEvent,
         }
       );
       sqlReadDispose = sqlRead.dispose;
@@ -5105,7 +5171,7 @@ export default function PlayerPage() {
                 </h3>
                 <p className="mt-5 text-center text-base leading-relaxed text-red-50/95">
                   {isMidnightPartyDismissSplash
-                    ? GAME_VAULT_MIDNIGHT_PARTY_PLAYER_MESSAGE
+                    ? midnightPartyDismissMessage
                     : 'A staff member marked this redeem request as fake or mistaken and removed it from the pending queue.'}
                 </p>
                 {!isMidnightPartyDismissSplash ? (

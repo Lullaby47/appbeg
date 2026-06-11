@@ -1824,6 +1824,17 @@ export async function dismissRechargeRequestInSql(
       amount: Math.max(0, Number(request.amount || 0)),
       eventType: 'recharge_dismiss',
       updatedAt: nowIso,
+      pokeMessage,
+      dismissReasonCode,
+      dismissReasonMessage,
+      refunded,
+    });
+    console.info('[PLAYER_RECHARGE_DISMISS_OUTBOX_INSERTED]', {
+      requestId,
+      playerUid,
+      eventType: 'recharge_dismiss',
+      dismissReasonCode,
+      refunded,
     });
     if (pokeMessage) {
       console.info('[PLAYER_RECHARGE_DISMISS_MESSAGE_CREATED]', {

@@ -177,7 +177,9 @@ export async function upsertGameRequestCacheInTxn(
         first_recharge_match_applied, coin_deducted_on_request,
         coin_refunded_on_dismissal, coin_refunded_on_dismissal_at, task_id,
         poke_message, created_at, updated_at, completed_at, poked_at, dismissed_at,
-        ttl_expires_at, dismiss_type, source, mirrored_at, deleted_at, raw_firestore_data
+        ttl_expires_at, dismiss_type, dismissed_by_automation, dismiss_reason_code,
+        dismiss_reason_message, dismiss_reason, automation_status, automation_error,
+        source, mirrored_at, deleted_at, raw_firestore_data
       )
       VALUES (
         $1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''),
@@ -185,7 +187,9 @@ export async function upsertGameRequestCacheInTxn(
         NULLIF($10, ''), NULLIF($11, ''), $12, $13, $14, NULLIF($15, ''),
         $16, $17, $18, $19::timestamptz, NULLIF($20, ''),
         NULLIF($21, ''), $22::timestamptz, $23::timestamptz, $24::timestamptz, $25::timestamptz,
-        $26::timestamptz, $27::timestamptz, NULLIF($28, ''), $29, now(), NULL, $30::jsonb
+        $26::timestamptz, $27::timestamptz, NULLIF($28, ''), $29, NULLIF($30, ''),
+        NULLIF($31, ''), NULLIF($32, ''), NULLIF($33, ''), NULLIF($34, ''), $35, now(), NULL,
+        $36::jsonb
       )
       ON CONFLICT (firebase_id) DO UPDATE SET
         player_uid = EXCLUDED.player_uid,
@@ -215,6 +219,12 @@ export async function upsertGameRequestCacheInTxn(
         dismissed_at = EXCLUDED.dismissed_at,
         ttl_expires_at = EXCLUDED.ttl_expires_at,
         dismiss_type = EXCLUDED.dismiss_type,
+        dismissed_by_automation = EXCLUDED.dismissed_by_automation,
+        dismiss_reason_code = EXCLUDED.dismiss_reason_code,
+        dismiss_reason_message = EXCLUDED.dismiss_reason_message,
+        dismiss_reason = EXCLUDED.dismiss_reason,
+        automation_status = EXCLUDED.automation_status,
+        automation_error = EXCLUDED.automation_error,
         source = EXCLUDED.source,
         mirrored_at = now(),
         deleted_at = NULL,
@@ -249,6 +259,12 @@ export async function upsertGameRequestCacheInTxn(
       toIsoString(input.dismissedAt || input.completedAt),
       toIsoString(input.ttlExpiresAt),
       cleanText(input.dismissType),
+      input.dismissedByAutomation === true,
+      cleanText(input.dismissReasonCode),
+      cleanText(input.dismissReasonMessage),
+      cleanText(input.dismissReason),
+      cleanText(input.automationStatus),
+      cleanText(input.automationError),
       cleanText(input.source) || 'authority',
       JSON.stringify(raw),
     ]
@@ -477,6 +493,10 @@ export async function writeGameRequestOutboxInTxn(
     amount: number;
     eventType: string;
     updatedAt: string;
+    pokeMessage?: string | null;
+    dismissReasonCode?: string | null;
+    dismissReasonMessage?: string | null;
+    refunded?: boolean;
   }
 ) {
   const payload = {
@@ -488,6 +508,10 @@ export async function writeGameRequestOutboxInTxn(
     gameName: input.gameName,
     amount: input.amount,
     updatedAt: input.updatedAt,
+    pokeMessage: cleanText(input.pokeMessage) || null,
+    dismissReasonCode: cleanText(input.dismissReasonCode) || null,
+    dismissReasonMessage: cleanText(input.dismissReasonMessage) || null,
+    refunded: input.refunded === true,
     source: 'authority',
   };
   await insertLiveOutboxEventWithClient(client, {
