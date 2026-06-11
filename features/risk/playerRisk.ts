@@ -17,7 +17,128 @@ import {
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { auth, db } from '@/lib/firebase/client';
 import { resolveCoadminUid } from '@/lib/coadmin/scope';
-import { getPlayerApiHeaders } from '@/features/auth/playerSession';
+import {
+  getPlayerApiHeaders,
+  PlayerSessionStaleError,
+} from '@/features/auth/playerSession';
+
+const PLAYER_TRANSFER_SESSION_EXPIRED_MESSAGE =
+  'Session expired. Please refresh or log in again.';
+
+type TransferDirection = 'cash_to_coin' | 'coin_to_cash';
+
+type PlayerTransferApiPayload = {
+  error?: string | boolean;
+  message?: string;
+  cash?: number;
+  coin?: number;
+  transferAmount?: number;
+  feeAmount?: number;
+  tipAmount?: number;
+  coinsReceived?: number;
+  cashReceived?: number;
+  authority?: string;
+};
+
+function mapPlayerTransferAuthError(error: unknown) {
+  if (error instanceof PlayerSessionStaleError) {
+    return PLAYER_TRANSFER_SESSION_EXPIRED_MESSAGE;
+  }
+  const message = error instanceof Error ? error.message : '';
+  if (/not authenticated|authorization|session|token/i.test(message)) {
+    return PLAYER_TRANSFER_SESSION_EXPIRED_MESSAGE;
+  }
+  return message;
+}
+
+function mapPlayerTransferApiError(
+  status: number,
+  payload: PlayerTransferApiPayload,
+  fallback: string
+) {
+  const raw =
+    payload.message ||
+    (typeof payload.error === 'string' ? payload.error : '') ||
+    '';
+  if (status === 401 || /not authenticated|authorization|session|token/i.test(raw)) {
+    return PLAYER_TRANSFER_SESSION_EXPIRED_MESSAGE;
+  }
+  return raw || fallback;
+}
+
+async function postPlayerTransferApi(input: {
+  direction: TransferDirection;
+  path: string;
+  body: Record<string, unknown>;
+  transferId?: string;
+  failureFallback: string;
+}) {
+  console.info('[PLAYER_TRANSFER_FETCH_CREDENTIALS]', {
+    include: true,
+    direction: input.direction,
+    transferId: input.transferId || null,
+  });
+  console.info('[PLAYER_TRANSFER_API_REQUEST]', {
+    direction: input.direction,
+    transferId: input.transferId || null,
+    ...input.body,
+  });
+  console.info('[PLAYER_TRANSFER_CLIENT_FIRESTORE_BLOCKED]', {
+    direction: input.direction,
+    reason: 'server_sql_authority_route',
+  });
+
+  let headers: Record<string, string>;
+  try {
+    headers = await getPlayerApiHeaders(true, { route: input.path });
+  } catch (error) {
+    const errorMessage =
+      mapPlayerTransferAuthError(error) || input.failureFallback;
+    console.info('[PLAYER_TRANSFER_API_ERROR]', {
+      direction: input.direction,
+      transferId: input.transferId || null,
+      status: null,
+      error: errorMessage,
+      phase: 'headers',
+    });
+    throw new Error(errorMessage);
+  }
+
+  const response = await fetch(input.path, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: JSON.stringify(input.body),
+  });
+
+  const payload = (await response.json().catch(() => ({}))) as PlayerTransferApiPayload;
+  console.info('[PLAYER_TRANSFER_API_RESPONSE]', {
+    direction: input.direction,
+    transferId: input.transferId || null,
+    ok: response.ok,
+    status: response.status,
+    authority: payload.authority || null,
+    body: payload,
+  });
+
+  if (!response.ok) {
+    const errorMessage = mapPlayerTransferApiError(
+      response.status,
+      payload,
+      input.failureFallback
+    );
+    console.info('[PLAYER_TRANSFER_API_ERROR]', {
+      direction: input.direction,
+      transferId: input.transferId || null,
+      status: response.status,
+      error: errorMessage,
+      phase: 'response',
+    });
+    throw new Error(errorMessage);
+  }
+
+  return payload;
+}
 
 export type RiskLevel = 'low' | 'medium' | 'high';
 export type TransferRequestStatus = 'pending' | 'approved' | 'rejected';
@@ -558,57 +679,13 @@ export async function createCashToCoinTransferRequest(
   requestedAmountNpr?: number,
   transferId?: string
 ) {
-  if (!auth.currentUser) {
-    throw new Error('Not authenticated.');
-  }
-
-  console.info('[PLAYER_TRANSFER_API_REQUEST]', {
+  const payload = await postPlayerTransferApi({
     direction: 'cash_to_coin',
-    transferId: transferId || null,
-    amountNpr: requestedAmountNpr ?? 0,
+    path: '/api/player/transfer/cash-to-coin',
+    transferId,
+    failureFallback: 'Failed to transfer cash to coin.',
+    body: { amountNpr: requestedAmountNpr ?? 0, transferId },
   });
-  console.info('[PLAYER_TRANSFER_CLIENT_FIRESTORE_BLOCKED]', {
-    direction: 'cash_to_coin',
-    reason: 'server_sql_authority_route',
-  });
-  const response = await fetch('/api/player/transfer/cash-to-coin', {
-    method: 'POST',
-    headers: await getPlayerApiHeaders(),
-    body: JSON.stringify({ amountNpr: requestedAmountNpr ?? 0, transferId }),
-  });
-
-  const payload = (await response.json().catch(() => ({}))) as {
-    error?: string | boolean;
-    message?: string;
-    cash?: number;
-    coin?: number;
-    transferAmount?: number;
-    feeAmount?: number;
-    tipAmount?: number;
-    coinsReceived?: number;
-    authority?: string;
-  };
-  console.info('[PLAYER_TRANSFER_API_RESPONSE]', {
-    direction: 'cash_to_coin',
-    transferId: transferId || null,
-    ok: response.ok,
-    status: response.status,
-    authority: payload.authority || null,
-  });
-
-  if (!response.ok) {
-    const errorMessage =
-      payload.message ||
-      (typeof payload.error === 'string' ? payload.error : '') ||
-      'Failed to transfer cash to coin.';
-    console.info('[PLAYER_TRANSFER_API_ERROR]', {
-      direction: 'cash_to_coin',
-      transferId: transferId || null,
-      status: response.status,
-      error: errorMessage,
-    });
-    throw new Error(errorMessage);
-  }
 
   return {
     message: 'Cash transferred to coin.',
@@ -625,57 +702,13 @@ export async function createCoinToCashTransferRequest(
   requestedAmountCoins?: number,
   transferId?: string
 ) {
-  if (!auth.currentUser) {
-    throw new Error('Not authenticated.');
-  }
-
-  console.info('[PLAYER_TRANSFER_API_REQUEST]', {
+  const payload = await postPlayerTransferApi({
     direction: 'coin_to_cash',
-    transferId: transferId || null,
-    amountCoins: requestedAmountCoins ?? 0,
+    path: '/api/player/transfer/coin-to-cash',
+    transferId,
+    failureFallback: 'Failed to transfer coin to cash.',
+    body: { amountCoins: requestedAmountCoins ?? 0, transferId },
   });
-  console.info('[PLAYER_TRANSFER_CLIENT_FIRESTORE_BLOCKED]', {
-    direction: 'coin_to_cash',
-    reason: 'server_sql_authority_route',
-  });
-  const response = await fetch('/api/player/transfer/coin-to-cash', {
-    method: 'POST',
-    headers: await getPlayerApiHeaders(),
-    body: JSON.stringify({ amountCoins: requestedAmountCoins ?? 0, transferId }),
-  });
-
-  const payload = (await response.json().catch(() => ({}))) as {
-    error?: string | boolean;
-    message?: string;
-    cash?: number;
-    coin?: number;
-    transferAmount?: number;
-    feeAmount?: number;
-    tipAmount?: number;
-    cashReceived?: number;
-    authority?: string;
-  };
-  console.info('[PLAYER_TRANSFER_API_RESPONSE]', {
-    direction: 'coin_to_cash',
-    transferId: transferId || null,
-    ok: response.ok,
-    status: response.status,
-    authority: payload.authority || null,
-  });
-
-  if (!response.ok) {
-    const errorMessage =
-      payload.message ||
-      (typeof payload.error === 'string' ? payload.error : '') ||
-      'Failed to transfer coin to cash.';
-    console.info('[PLAYER_TRANSFER_API_ERROR]', {
-      direction: 'coin_to_cash',
-      transferId: transferId || null,
-      status: response.status,
-      error: errorMessage,
-    });
-    throw new Error(errorMessage);
-  }
 
   return {
     message: 'Coin transferred to cash.',

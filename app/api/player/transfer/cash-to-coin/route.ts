@@ -2,7 +2,9 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
-import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { apiError, requirePlayerApiUser } from '@/lib/firebase/apiAuth';
+import { logPlayerApiAuthOk } from '@/lib/server/playerApiAuthLog';
+import { logRouteSessionValidation, sessionIdsFromRequest } from '@/lib/server/sessionAuthLog';
 import {
   getCoadminMaintenanceBreak,
   maintenanceBreakApiResponse,
@@ -28,6 +30,8 @@ import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCac
 
 export const runtime = 'nodejs';
 
+export const dynamic = 'force-dynamic';
+
 const ROUTE = '/api/player/transfer/cash-to-coin';
 
 type Body = {
@@ -37,19 +41,63 @@ type Body = {
 };
 
 export async function POST(request: Request) {
+  const headerSessions = sessionIdsFromRequest(request);
   try {
-    console.info('[TRANSFER_API_START]', { route: ROUTE });
-    const auth = await requireApiUser(request, ['player']);
+    console.info('[TRANSFER_API_START]', {
+      route: ROUTE,
+      ...headerSessions,
+      canonicalSessionId: headerSessions.player_session_id,
+    });
+    console.info('[TRANSFER_AUTH_BEGIN]', {
+      route: ROUTE,
+      ...headerSessions,
+      canonicalSessionId: headerSessions.player_session_id,
+    });
+    const auth = await requirePlayerApiUser(request);
     if ('response' in auth) {
       console.info('[TRANSFER_AUTH_FAILED]', {
         route: ROUTE,
+        uid: null,
+        ...headerSessions,
+        canonicalSessionId: headerSessions.player_session_id,
+        activeSessionId: auth.timing.active_session_id ?? null,
+        auth_path: auth.timing.auth_path,
+        reason: 'requirePlayerApiUser_denied',
         status: auth.response.status,
+      });
+      logRouteSessionValidation(ROUTE, {
+        ok: false,
+        ...headerSessions,
+        canonical_session_id: headerSessions.player_session_id,
+        validates: 'player_session_sql',
+        auth_path: auth.timing.auth_path,
+        session_source: auth.timing.session_source,
       });
       return auth.response;
     }
     console.info('[TRANSFER_AUTH_OK]', {
       route: ROUTE,
-      playerUid: auth.user.uid,
+      uid: auth.user.uid,
+      ...headerSessions,
+      canonicalSessionId: auth.timing.request_session_id ?? headerSessions.player_session_id,
+      activeSessionId: auth.timing.active_session_id ?? null,
+      auth_path: auth.authPath,
+      session_source: auth.timing.session_source,
+      status: 200,
+    });
+    logRouteSessionValidation(ROUTE, {
+      ok: true,
+      ...headerSessions,
+      canonical_session_id: auth.timing.request_session_id ?? headerSessions.player_session_id,
+      validates: 'player_session_sql',
+      auth_path: auth.authPath,
+      session_source: auth.timing.session_source,
+      uid: auth.user.uid,
+    });
+    logPlayerApiAuthOk(request, {
+      route: ROUTE,
+      uid: auth.user.uid,
+      role: auth.user.role,
       authPath: auth.authPath,
     });
 
@@ -258,7 +306,7 @@ export async function POST(request: Request) {
       error: rawMessage,
     });
     const message = /not authenticated|authorization|token|session/i.test(rawMessage)
-      ? 'Session expired. Please log in again.'
+      ? 'Session expired. Please refresh or log in again.'
       : /not enough cash/i.test(rawMessage)
         ? 'Not enough cash balance.'
         : rawMessage;
