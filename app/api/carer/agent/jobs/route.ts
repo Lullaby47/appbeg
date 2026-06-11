@@ -15,10 +15,39 @@ import { apiError } from '@/lib/firebase/apiAuth';
 function verifyAgentSecret(request: Request) {
   const expected = String(process.env.CARER_AUTOMATION_TICK_SECRET || '').trim();
   const provided = String(request.headers.get('x-carer-automation-tick-secret') || '').trim();
-  return Boolean(expected && provided && provided === expected);
+  const ok = Boolean(expected && provided && provided === expected);
+  if (ok) {
+    console.info('[AGENT_JOBS_API_AUTH_OK]', {
+      hasExpected: true,
+      hasProvided: true,
+      expectedPrefix: expected.slice(0, 4),
+      providedPrefix: provided.slice(0, 4),
+    });
+  } else {
+    console.info('[AGENT_JOBS_API_AUTH_OK]', {
+      ok: false,
+      hasExpected: Boolean(expected),
+      hasProvided: Boolean(provided),
+      expectedPrefix: expected ? expected.slice(0, 4) : null,
+      providedPrefix: provided ? provided.slice(0, 4) : null,
+    });
+  }
+  return ok;
 }
 
 export async function GET(request: Request) {
+  const url = new URL(request.url);
+  const carerUid = String(url.searchParams.get('carerUid') || '').trim();
+  const agentId = String(url.searchParams.get('agentId') || '').trim();
+  const resource = String(url.searchParams.get('resource') || 'queued_jobs').trim().toLowerCase();
+
+  console.info('[AGENT_JOBS_API_REQUEST]', {
+    method: 'GET',
+    resource,
+    carerUid: carerUid || null,
+    agentId: agentId || null,
+  });
+
   if (!isAuthoritySqlWriteEnabled()) {
     return apiError('SQL authority writes are disabled.', 503);
   }
@@ -26,10 +55,6 @@ export async function GET(request: Request) {
     return apiError('Unauthorized.', 401);
   }
 
-  const url = new URL(request.url);
-  const carerUid = String(url.searchParams.get('carerUid') || '').trim();
-  const agentId = String(url.searchParams.get('agentId') || '').trim();
-  const resource = String(url.searchParams.get('resource') || 'queued_jobs').trim().toLowerCase();
   const limit = Number(url.searchParams.get('limit') || 100);
   const jobId = String(url.searchParams.get('jobId') || '').trim();
   const taskId = String(url.searchParams.get('taskId') || '').trim();
@@ -42,7 +67,15 @@ export async function GET(request: Request) {
 
   try {
     if (resource === 'queued_jobs') {
+      console.info('[AGENT_JOBS_API_SQL_READ]', { resource: 'queued_jobs', carerUid, agentId, limit });
       const jobs = await listQueuedAutomationJobsForAgent({ carerUid, agentId, limit });
+      if (!jobs.length) {
+        console.info('[AGENT_JOBS_API_NO_JOBS]', {
+          resource: 'queued_jobs',
+          carerUid,
+          agentId,
+        });
+      }
       return NextResponse.json({ ok: true, jobs });
     }
     if (resource === 'job' && jobId) {
@@ -73,13 +106,6 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  if (!isAuthoritySqlWriteEnabled()) {
-    return apiError('SQL authority writes are disabled.', 503);
-  }
-  if (!verifyAgentSecret(request)) {
-    return apiError('Unauthorized.', 401);
-  }
-
   let body: Record<string, unknown>;
   try {
     body = (await request.json()) as Record<string, unknown>;
@@ -90,17 +116,37 @@ export async function POST(request: Request) {
   const carerUid = String(body.carerUid || '').trim();
   const agentId = String(body.agentId || '').trim();
   const action = String(body.action || '').trim();
+  const jobId = String(body.jobId || '').trim();
+
+  console.info('[AGENT_JOBS_API_REQUEST]', {
+    method: 'POST',
+    action: action || null,
+    carerUid: carerUid || null,
+    agentId: agentId || null,
+    jobId: jobId || null,
+  });
+
+  if (!isAuthoritySqlWriteEnabled()) {
+    return apiError('SQL authority writes are disabled.', 503);
+  }
+  if (!verifyAgentSecret(request)) {
+    return apiError('Unauthorized.', 401);
+  }
+
   if (!carerUid || !agentId || !action) {
     return apiError('carerUid, agentId, and action are required.', 400);
   }
 
   try {
     await verifyAgentLinkedToCarerInSql(carerUid, agentId);
+    if (action === 'claim') {
+      console.info('[AGENT_JOBS_API_CLAIM_ATTEMPT]', { carerUid, agentId, jobId: jobId || null });
+    }
     const result = await runAgentJobAction({
       action,
       carerUid,
       agentId,
-      jobId: String(body.jobId || '').trim() || undefined,
+      jobId: jobId || undefined,
       taskId: String(body.taskId || '').trim() || undefined,
       reason: String(body.reason || '').trim() || undefined,
       details: body.details && typeof body.details === 'object' ? (body.details as Record<string, unknown>) : undefined,
@@ -114,6 +160,25 @@ export async function POST(request: Request) {
       carerName: String(body.carerName || '').trim() || undefined,
       limit: body.limit === undefined ? undefined : Number(body.limit),
     });
+    if (action === 'claim') {
+      if (result && typeof result === 'object' && 'id' in (result as Record<string, unknown>)) {
+        const claimed = result as Record<string, unknown>;
+        console.info('[AGENT_JOBS_API_CLAIMED]', {
+          jobId: claimed.id,
+          taskId: claimed.taskId || null,
+          carerUid,
+          agentId,
+        });
+      } else {
+        console.info('[AGENT_JOBS_API_NO_JOBS]', {
+          action: 'claim',
+          carerUid,
+          agentId,
+          jobId: jobId || null,
+          reason: 'claim_returned_empty',
+        });
+      }
+    }
     return NextResponse.json({ ok: true, result });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

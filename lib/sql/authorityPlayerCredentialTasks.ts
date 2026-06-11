@@ -248,6 +248,16 @@ async function upsertCredentialCarerTaskInTxn(
       JSON.stringify(raw),
     ]
   );
+
+  console.info('[SQL_TASK_CREATED_PENDING]', {
+    taskId: input.taskId,
+    coadminUid: input.coadminUid,
+    type: input.taskType,
+    playerUid: input.playerUid,
+    status: 'pending',
+    gameName: input.gameName,
+  });
+
 }
 
 export async function createPlayerCredentialTaskInSql(input: {

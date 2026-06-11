@@ -938,3 +938,94 @@ export async function getPendingCarerTaskCandidatesFromSql(
     };
   }
 }
+
+export type CarerActiveInProgressTaskSqlResult = {
+  hit: boolean;
+  taskId: string | null;
+  jobId: string | null;
+  jobStatus: string | null;
+  timing: PlayerMirrorSqlTiming;
+};
+
+export async function getCarerActiveInProgressTaskFromSql(
+  coadminUid: string,
+  carerUid: string
+): Promise<CarerActiveInProgressTaskSqlResult> {
+  const startedAt = Date.now();
+  const cleanCoadminUid = cleanText(coadminUid);
+  const cleanCarerUid = cleanText(carerUid);
+  const db = getPlayerMirrorPool();
+  const emptyTiming = createPlayerMirrorSqlTiming({
+    total_ms: Date.now() - startedAt,
+  });
+
+  if (!db || !cleanCoadminUid || !cleanCarerUid) {
+    return { hit: false, taskId: null, jobId: null, jobStatus: null, timing: emptyTiming };
+  }
+
+  try {
+    const { rows, timing } = await runMirrorPoolQuery<Record<string, unknown>>(
+      db,
+      `
+        SELECT
+          t.firebase_id AS task_id,
+          j.job_id,
+          j.status AS job_status
+        FROM public.carer_tasks_cache t
+        LEFT JOIN public.automation_jobs_cache j
+          ON j.job_id = t.automation_job_id
+         AND j.deleted_at IS NULL
+        WHERE t.deleted_at IS NULL
+          AND t.coadmin_uid = $1
+          AND t.status = 'in_progress'
+          AND (
+            t.assigned_carer_uid = $2
+            OR t.claimed_by_uid = $2
+          )
+        ORDER BY t.updated_at DESC NULLS LAST
+        LIMIT 1
+      `,
+      [cleanCoadminUid, cleanCarerUid]
+    );
+
+    if (!rows.length) {
+      return { hit: false, taskId: null, jobId: null, jobStatus: null, timing };
+    }
+
+    const row = rows[0];
+    const jobStatus = cleanText(row.job_status).toLowerCase();
+    const activeJobStatuses = new Set([
+      'queued',
+      'waiting',
+      'running',
+      'in_progress',
+      'cancelled_requested',
+      'claimed',
+      'processing',
+      'pending_review',
+    ]);
+    const jobId = cleanText(row.job_id) || null;
+    const blocksNextClaim = !jobId || activeJobStatuses.has(jobStatus);
+
+    return {
+      hit: blocksNextClaim,
+      taskId: cleanText(row.task_id) || null,
+      jobId,
+      jobStatus: jobStatus || null,
+      timing,
+    };
+  } catch (error) {
+    console.warn('[AUTO_TICK_IN_PROGRESS_SQL] lookup_failed', {
+      coadminUid: cleanCoadminUid,
+      carerUid: cleanCarerUid,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return {
+      hit: false,
+      taskId: null,
+      jobId: null,
+      jobStatus: null,
+      timing: createPlayerMirrorSqlTiming({ total_ms: Date.now() - startedAt }),
+    };
+  }
+}

@@ -379,6 +379,17 @@ export async function upsertLinkedCarerTaskInTxn(
       JSON.stringify(raw),
     ]
   );
+
+  console.info('[SQL_TASK_CREATED_PENDING]', {
+    taskId,
+    coadminUid: input.coadminUid,
+    type: input.type,
+    playerUid: input.playerUid,
+    requestId: input.requestId,
+    status: 'pending',
+    gameName: input.gameName,
+  });
+
   return { taskId, inserted: true };
 }
 

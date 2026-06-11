@@ -684,7 +684,7 @@ function readCashBoxNpr(row: Record<string, unknown> | null) {
   return Math.max(0, Math.floor(Number(row.cash_box_npr ?? raw.cashBoxNpr ?? 0)));
 }
 
-export async function claimCarerTaskInSql(input: {
+export type ClaimCarerTaskInput = {
   carerUid: string;
   carerCoadminUid: string;
   taskId: string;
@@ -696,50 +696,22 @@ export async function claimCarerTaskInSql(input: {
     automationAgentId?: string | null;
   };
   skipLocked?: boolean;
-}): Promise<{
+};
+
+export async function claimCarerTaskInTxn(
+  client: PoolClient,
+  input: ClaimCarerTaskInput
+): Promise<{
   jobId: string;
   taskId: string;
   status: string;
   reusedExistingJob: boolean;
-  duplicate?: boolean;
 }> {
-  const db = getPlayerMirrorPool();
-  if (!db) {
-    throw new Error('SQL pool unavailable.');
-  }
-
   const taskId = cleanText(input.taskId);
   const carerUid = cleanText(input.carerUid);
   const carerCoadminUid = cleanText(input.carerCoadminUid);
-  const operationKey = `task_claim:${taskId}:${carerUid}`;
 
-  const client = await db.connect();
-  try {
-    await client.query('BEGIN');
-
-    const op = await claimAuthorityOperation(client, {
-      operationKey,
-      operationType: 'task_claim',
-      userUid: carerUid,
-      sourceId: taskId,
-      actorUid: carerUid,
-      payload: {},
-    });
-    if (!op.claimed && op.duplicate) {
-      const payload = await readAuthorityOperationPayload(operationKey);
-      if (payload?.jobId) {
-        await client.query('COMMIT');
-        return {
-          jobId: String(payload.jobId),
-          taskId,
-          status: String(payload.status || 'queued'),
-          reusedExistingJob: Boolean(payload.reusedExistingJob),
-          duplicate: true,
-        };
-      }
-    }
-
-    const task = await loadTaskForUpdate(client, taskId, Boolean(input.skipLocked));
+  const task = await loadTaskForUpdate(client, taskId, Boolean(input.skipLocked));
     if (!task) {
       throw new Error(input.skipLocked ? 'Task locked or not found.' : 'Task not found');
     }
@@ -779,9 +751,8 @@ export async function claimCarerTaskInSql(input: {
     const activeJobs = jobs.filter((job) => isActiveAutomationJobStatus(job.status));
     const freshJobs = activeJobs.filter((job) => isFreshAutomationJobSignal(job));
     const jobOwnerUid = (job: SqlJobRow) => cleanText(job.carer_uid || job.raw_firestore_data?.createdByUid);
-    const freshJobsAllowed = isPendingCleanTask ? [] : freshJobs;
-    const myFreshJobs = freshJobsAllowed.filter((job) => jobOwnerUid(job) === currentUserUid);
-    const blockingFreshOtherCarer = freshJobsAllowed.filter((job) => jobOwnerUid(job) !== currentUserUid);
+    const myFreshJobs = freshJobs.filter((job) => jobOwnerUid(job) === currentUserUid);
+    const blockingFreshOtherCarer = freshJobs.filter((job) => jobOwnerUid(job) !== currentUserUid);
     if (blockingFreshOtherCarer.length > 0) {
       throw new Error('Automation job already exists for this task.');
     }
@@ -789,17 +760,21 @@ export async function claimCarerTaskInSql(input: {
     const nowIso = new Date().toISOString();
     const cancelledJobIds: string[] = [];
 
-    if (rawTaskStatus === 'pending' && (!myFreshJobs[0] || isPendingCleanTask)) {
-      const freshIds = new Set(isPendingCleanTask ? [] : freshJobs.map((job) => job.job_id));
-      for (const job of activeJobs) {
-        if (freshIds.has(job.job_id)) continue;
-        cancelledJobIds.push(
-          await cancelAutomationJobInTxn(
-            client,
-            job,
-            isPendingCleanTask ? 'stale_returned_to_pending' : 'pending_reclaim_stale_job',
-            nowIso
+    if (rawTaskStatus === 'pending' && !myFreshJobs[0]) {
+      const keepJobIds = new Set(
+        activeJobs
+          .filter(
+            (job) =>
+              jobOwnerUid(job) === currentUserUid &&
+              normalizeAutomationStatus(job.status) === 'queued'
           )
+          .map((job) => job.job_id)
+      );
+      for (const job of activeJobs) {
+        if (keepJobIds.has(job.job_id)) continue;
+        if (jobOwnerUid(job) === currentUserUid) continue;
+        cancelledJobIds.push(
+          await cancelAutomationJobInTxn(client, job, 'pending_reclaim_stale_job', nowIso)
         );
       }
     }
@@ -859,7 +834,60 @@ export async function claimCarerTaskInSql(input: {
     };
     let reusedExistingJob = false;
 
+    const pendingQueuedJob =
+      myFreshJobs.find((job) => normalizeAutomationStatus(job.status) === 'queued') ??
+      activeJobs.find(
+        (job) =>
+          jobOwnerUid(job) === currentUserUid &&
+          normalizeAutomationStatus(job.status) === 'queued'
+      );
+
     if (
+      rawTaskStatus === 'pending' &&
+      pendingQueuedJob &&
+      isActiveAutomationJobStatus(pendingQueuedJob.status)
+    ) {
+      console.info('[SQL_AUTOMATION_JOB_ALREADY_EXISTS]', {
+        taskId,
+        jobId: pendingQueuedJob.job_id,
+        carerUid: currentUserUid,
+        agentId: resolvedAgentId,
+        status: normalizeAutomationStatus(pendingQueuedJob.status),
+        phase: 'claim_reuse',
+      });
+      reusedExistingJob = true;
+      result = {
+        jobId: pendingQueuedJob.job_id,
+        taskId,
+        status: 'queued',
+        reusedExistingJob: true,
+      };
+      await patchCarerTaskInTxn(client, taskId, {
+        ...claimedTaskData,
+        claimedStatus: 'running',
+        claimedByUid: currentUserUid,
+        claimedByUsername: createdByName,
+        claimedAt: nowIso,
+        startedAt: nowIso,
+        lastHeartbeatAt: nowIso,
+        automationStatus: 'waiting',
+        automationJobId: pendingQueuedJob.job_id,
+        linkedJobId: pendingQueuedJob.job_id,
+        automationError: null,
+        automationUpdatedAt: nowIso,
+        __setAssignedCarer: true,
+        __setClaimedStatus: true,
+        __setClaimedBy: true,
+        __setAutomationStatus: true,
+        __setAutomationJobId: true,
+        __setJobIds: true,
+        __clearAutomationError: true,
+        __setStartedAt: true,
+        __setClaimedAt: true,
+        __setLastHeartbeatAt: true,
+        __setAutomationUpdatedAt: true,
+      });
+    } else if (
       rawTaskStatus !== 'pending' &&
       reusableActiveJob &&
       isActiveAutomationJobStatus(reusableActiveJob.status) &&
@@ -912,6 +940,53 @@ export async function claimCarerTaskInSql(input: {
         }
       }
 
+      const existingActiveQueued = activeJobs.find(
+        (job) =>
+          jobOwnerUid(job) === currentUserUid &&
+          normalizeAutomationStatus(job.status) === 'queued'
+      );
+      if (existingActiveQueued) {
+        console.info('[SQL_AUTOMATION_JOB_ALREADY_EXISTS]', {
+          taskId,
+          jobId: existingActiveQueued.job_id,
+          carerUid: currentUserUid,
+          agentId: resolvedAgentId,
+          status: 'queued',
+          phase: 'claim_else_reuse',
+        });
+        reusedExistingJob = true;
+        result = {
+          jobId: existingActiveQueued.job_id,
+          taskId,
+          status: 'queued',
+          reusedExistingJob: true,
+        };
+        await patchCarerTaskInTxn(client, taskId, {
+          ...claimedTaskData,
+          claimedStatus: 'running',
+          claimedByUid: currentUserUid,
+          claimedByUsername: createdByName,
+          claimedAt: nowIso,
+          startedAt: nowIso,
+          lastHeartbeatAt: nowIso,
+          automationStatus: 'waiting',
+          automationJobId: existingActiveQueued.job_id,
+          linkedJobId: existingActiveQueued.job_id,
+          automationError: null,
+          automationUpdatedAt: nowIso,
+          __setAssignedCarer: true,
+          __setClaimedStatus: true,
+          __setClaimedBy: true,
+          __setAutomationStatus: true,
+          __setAutomationJobId: true,
+          __setJobIds: true,
+          __clearAutomationError: true,
+          __setStartedAt: true,
+          __setClaimedAt: true,
+          __setLastHeartbeatAt: true,
+          __setAutomationUpdatedAt: true,
+        });
+      } else {
       const payload = buildAutomationPayload({
         taskId,
         freshTask: claimedTaskData,
@@ -942,6 +1017,16 @@ export async function claimCarerTaskInSql(input: {
         playerUid: cleanText(task.player_uid),
       };
       await upsertAutomationJobInTxn(client, jobId, jobData);
+      console.info('[SQL_AUTOMATION_JOB_QUEUED]', {
+        taskId,
+        jobId,
+        carerUid: currentUserUid,
+        agentId: resolvedAgentId,
+        coadminUid: taskCoadminUid,
+        type: mappedType,
+        status: 'queued',
+        phase: 'claim_create',
+      });
       result = { jobId, taskId, status: 'queued', reusedExistingJob: false };
       await patchCarerTaskInTxn(client, taskId, {
         ...claimedTaskData,
@@ -968,6 +1053,7 @@ export async function claimCarerTaskInSql(input: {
         __setLastHeartbeatAt: true,
         __setAutomationUpdatedAt: true,
       });
+      }
     }
 
     await writeTaskOutboxInTxn(client, {
@@ -1004,6 +1090,53 @@ export async function claimCarerTaskInSql(input: {
         eventType: 'job.cancelled',
       });
     }
+
+  return result;
+}
+
+export async function claimCarerTaskInSql(input: ClaimCarerTaskInput): Promise<{
+  jobId: string;
+  taskId: string;
+  status: string;
+  reusedExistingJob: boolean;
+  duplicate?: boolean;
+}> {
+  const db = getPlayerMirrorPool();
+  if (!db) {
+    throw new Error('SQL pool unavailable.');
+  }
+
+  const taskId = cleanText(input.taskId);
+  const carerUid = cleanText(input.carerUid);
+  const operationKey = `task_claim:${taskId}:${carerUid}`;
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+
+    const op = await claimAuthorityOperation(client, {
+      operationKey,
+      operationType: 'task_claim',
+      userUid: carerUid,
+      sourceId: taskId,
+      actorUid: carerUid,
+      payload: {},
+    });
+    if (!op.claimed && op.duplicate) {
+      const payload = await readAuthorityOperationPayload(operationKey);
+      if (payload?.jobId) {
+        await client.query('COMMIT');
+        return {
+          jobId: String(payload.jobId),
+          taskId,
+          status: String(payload.status || 'queued'),
+          reusedExistingJob: Boolean(payload.reusedExistingJob),
+          duplicate: true,
+        };
+      }
+    }
+
+    const result = await claimCarerTaskInTxn(client, input);
 
     await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
       operationKey,

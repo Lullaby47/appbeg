@@ -32,6 +32,7 @@ import {
   mirrorAutomationAutoStateSnapshot,
 } from '@/lib/sql/automationAutoStateCache';
 import {
+  getCarerActiveInProgressTaskFromSql,
   getPendingCarerTaskCandidatesFromSql,
   hasAutoTickTaskRecheckFields,
   lookupAutoTickTaskRecheckFromSql,
@@ -44,7 +45,7 @@ import {
 } from '@/lib/sql/playersCache';
 
 const LEASE_TTL_MS = 70_000;
-const MAX_CLAIMS_PER_TICK = 5;
+const MAX_CLAIMS_PER_TICK = 1;
 const PENDING_QUERY_LIMIT = 15;
 
 function logAutoTickTiming(step: string, startedAt: number, details: Record<string, unknown> = {}) {
@@ -914,13 +915,17 @@ export async function POST(request: Request) {
     coadminUid,
     auto_state_source: stateTiming.state_source,
     firestore_fallback: false,
+    agentSecretAuth: hasValidSecret,
   });
-  if (!stateResult.enabled) {
+  if (!stateResult.enabled && !hasValidSecret) {
     console.info('[AUTO_TICK] skipped auto tick', {
       carerUid,
       reason: 'automation_disabled',
     });
     return NextResponse.json({ ok: true, claimed: false, reason: 'disabled' });
+  }
+  if (!stateResult.enabled && hasValidSecret) {
+    console.info('[AUTO_TICK] agent secret bypass automation_disabled carerUid=%s agentId=%s', carerUid, agentId);
   }
 
   const leaseStartedAt = Date.now();
@@ -1106,25 +1111,43 @@ export async function POST(request: Request) {
   }
 
   const inProgressStartedAt = Date.now();
+  const activeInProgress = await getCarerActiveInProgressTaskFromSql(coadminUid, carerUid);
   logAutoTickTiming('in_progress_query', inProgressStartedAt, {
     carerUid,
     coadminUid,
-    resultCount: 0,
-    skipped: true,
-    reason: 'diagnostic_only_not_required_for_claim',
+    resultCount: activeInProgress.hit ? 1 : 0,
+    activeTaskId: activeInProgress.taskId,
+    activeJobId: activeInProgress.jobId,
+    activeJobStatus: activeInProgress.jobStatus,
+    in_progress_sql_ms: activeInProgress.timing.total_ms,
   });
 
-  console.info('[AUTO_TICK] pending candidates and in-progress snapshot', {
-    carerUid,
-    carerUsername: carerProfile.username || null,
-    coadminUid,
-    maxClaimsPerTick: MAX_CLAIMS_PER_TICK,
-    pendingQueryLimit: PENDING_QUERY_LIMIT,
-    inProgressPoolCount: null,
-    myInProgressCount: null,
-    myInProgressTaskIds: [],
-    inProgressSnapshotSkipped: true,
-  });
+  if (activeInProgress.hit) {
+    console.info('[AUTO_TICK_NO_TASKS]', {
+      carerUid,
+      coadminUid,
+      reason: 'in_progress_active',
+      activeTaskId: activeInProgress.taskId,
+      activeJobId: activeInProgress.jobId,
+      activeJobStatus: activeInProgress.jobStatus,
+    });
+    logAutoTickTiming('total', routeStartedAt, {
+      carerUid,
+      coadminUid,
+      claimed: false,
+      claimedCount: 0,
+      reason: 'in_progress_active',
+    });
+    return NextResponse.json({
+      ok: true,
+      claimed: false,
+      claimedCount: 0,
+      claimedJobs: [],
+      reason: 'in_progress_active',
+      activeTaskId: activeInProgress.taskId,
+      activeJobId: activeInProgress.jobId,
+    });
+  }
 
   const pendingStartedAt = Date.now();
   const pendingResult = await resolveAutoTickPendingCandidates(
@@ -1149,6 +1172,29 @@ export async function POST(request: Request) {
     candidateTaskIds: pendingCandidates.map((task) => task.id),
     pending_source: pendingResult.timing.pending_source,
   });
+
+  if (pendingCandidates.length === 0) {
+    console.info('[AUTO_TICK_NO_TASKS]', {
+      carerUid,
+      coadminUid,
+      reason: 'no_pending_tasks',
+      pending_source: pendingResult.timing.pending_source,
+    });
+    logAutoTickTiming('total', routeStartedAt, {
+      carerUid,
+      coadminUid,
+      claimed: false,
+      claimedCount: 0,
+      reason: 'no_pending_tasks',
+    });
+    return NextResponse.json({
+      ok: true,
+      claimed: false,
+      claimedCount: 0,
+      claimedJobs: [],
+      reason: 'no_pending_tasks',
+    });
+  }
 
   const claimedJobs: Array<{
     taskId: string;
@@ -1177,6 +1223,13 @@ export async function POST(request: Request) {
     console.info('[AUTO_TICK] pending task from query', {
       taskId,
       fields: taskDebugFields(task),
+      pending_source: pendingResult.timing.pending_source,
+    });
+    console.info('[AUTO_TICK_PENDING_TASK_FOUND]', {
+      taskId,
+      carerUid,
+      coadminUid,
+      mappedTypePreview: mapTaskType(resolveTaskTypeLabel(task)),
       pending_source: pendingResult.timing.pending_source,
     });
     const mapped = mapTaskType(resolveTaskTypeLabel(task));
@@ -1276,6 +1329,14 @@ export async function POST(request: Request) {
       playerUid,
       beforeFields: taskDebugFields(task),
     });
+    console.info('[AUTO_TICK_CLAIM_START]', {
+      taskId,
+      carerUid,
+      coadminUid,
+      agentId: linked.normalized,
+      gameName,
+      playerUid,
+    });
 
     if (isAuthoritySqlWriteEnabled()) {
       await logAuthorityAutoTickDb({
@@ -1314,6 +1375,25 @@ export async function POST(request: Request) {
         automationJobCreated: !result.reusedExistingJob,
         originalTaskUpdatedToInProgress: true,
       });
+      console.info('[AUTO_TICK_CLAIMED_IN_PROGRESS]', {
+        taskId: result.taskId,
+        jobId: result.jobId,
+        carerUid,
+        coadminUid,
+        agentId: linked.normalized,
+        status: 'in_progress',
+        reusedExistingJob: result.reusedExistingJob,
+      });
+      if (!result.reusedExistingJob) {
+        console.info('[AUTO_TICK_JOB_QUEUED]', {
+          taskId: result.taskId,
+          jobId: result.jobId,
+          carerUid,
+          coadminUid,
+          agentId: linked.normalized,
+          jobStatus: result.status,
+        });
+      }
       if (!sqlReadMode && !isAuthoritySqlWriteEnabled()) {
         void mirrorCarerTaskById(result.taskId, 'appbeg_automation_auto_tick');
       }
@@ -1428,6 +1508,14 @@ export async function POST(request: Request) {
     });
   }
 
+  console.info('[AUTO_TICK_NO_TASKS]', {
+    carerUid,
+    coadminUid,
+    reason: 'no_claimable_pending_task',
+    candidateCount: pendingCandidates.length,
+    skippedCount: skippedTasks.length,
+    skippedTasks,
+  });
   console.info('[AUTO_TICK] no claimable pending task after scanning candidates', {
     candidateCount: pendingCandidates.length,
     skippedCount: skippedTasks.length,
