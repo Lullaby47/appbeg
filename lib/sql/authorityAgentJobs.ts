@@ -16,6 +16,8 @@ import {
   dismissRedeemRequestInSql,
   FAKE_REDEEM_REASON_CODE,
   PLAYER_IN_GAME_MESSAGE,
+  PLAYER_IN_GAME_RECHARGE_MESSAGE,
+  PLAYER_IN_GAME_REDEEM_MESSAGE,
   PLAYER_IN_GAME_REASON_CODE,
 } from '@/lib/sql/authorityGameRequests';
 import { ttlAfterDaysIso } from '@/lib/sql/authorityGameRequestHelpers';
@@ -1675,7 +1677,7 @@ export async function agentDismissPlayerInGame(input: {
   if (!db) throw new Error('SQL pool unavailable.');
   const details = input.details || {};
   const reasonCode = PLAYER_IN_GAME_REASON_CODE;
-  const playerMessage = PLAYER_IN_GAME_MESSAGE;
+  let playerMessage = PLAYER_IN_GAME_MESSAGE;
   const authorityStartedAt = Date.now();
   console.info('[AGENT_JOBS_API_DISMISS_ATTEMPT]', {
     jobId: input.jobId,
@@ -1730,6 +1732,12 @@ export async function agentDismissPlayerInGame(input: {
     requestType = requestType || logFields.taskType;
     console.info('[PLAYER_IN_GAME_TOAST_DETECTED] taskId=%s game=%s taskType=%s username=%s', taskId, gameName, requestType, username);
     console.info('[PLAYER_IN_GAME_DETECTED] game=%s username=%s taskType=%s', gameName, username, requestType);
+    playerMessage =
+      requestType === 'REDEEM'
+        ? PLAYER_IN_GAME_REDEEM_MESSAGE
+        : requestType === 'RECHARGE'
+          ? PLAYER_IN_GAME_RECHARGE_MESSAGE
+          : PLAYER_IN_GAME_MESSAGE;
     console.info(
       '[KNOWN_GAME_FAILURE_DETECTED] game=%s taskId/jobId=%s taskType=%s username=%s reason=%s toastText=%s',
       gameName,
@@ -1774,15 +1782,12 @@ export async function agentDismissPlayerInGame(input: {
         dismissReasonMessage: playerMessage,
         dismissedByAutomation: true,
         pokeMessage: playerMessage,
-        refundCashOnDismissal: true,
+        refundCashOnDismissal: false,
         skipTaskTombstone: true,
         txnClient: client,
       });
-      refunded = dismissOutcome.refunded === true;
+      refunded = false;
       refundAmount = Number(dismissOutcome.refundAmount || 0);
-      console.info('[PLAYER_IN_GAME_REDEEM_REFUND] amount=%s', refunded ? refundAmount : 0);
-      console.info('[PLAYER_IN_GAME_REFUND_APPLIED] taskId=%s refundType=cash amount=%s', taskId, refunded ? refundAmount : 0);
-      console.info('[KNOWN_GAME_FAILURE_REFUND_APPLIED] game=%s taskId/jobId=%s refundType=cash amount=%s', gameName, taskId || input.jobId, refunded ? refundAmount : 0);
     } else if (requestId) {
       throw new Error(`PLAYER_IN_GAME dismissal is not supported for ${requestType || 'unknown'} tasks.`);
     }

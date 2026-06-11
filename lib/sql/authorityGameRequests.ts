@@ -47,6 +47,10 @@ export const PLAYER_REDEEM_SUCCESS_MESSAGE = 'You have successfully redeemed fro
 export const FAKE_REDEEM_REASON_CODE = 'fake_redeem';
 export const PLAYER_IN_GAME_REASON_CODE = 'PLAYER_IN_GAME';
 export const PLAYER_IN_GAME_MESSAGE = 'Player is currently in game.';
+export const PLAYER_IN_GAME_RECHARGE_MESSAGE =
+  'Recharge failed because player is currently in game. Coins have been refunded.';
+export const PLAYER_IN_GAME_REDEEM_MESSAGE =
+  'Redeem failed because player is currently in game. Please try again later.';
 export const PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE =
   'Redeem could not be completed because the game balance is lower than the requested redeem amount.';
 

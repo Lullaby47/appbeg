@@ -93,7 +93,7 @@ export const GAME_RECHARGE_REDEEM_FAILED_IN_GAME_REASON = 'GAME_RECHARGE_REDEEM_
 export const PLAYER_IN_GAME_RECHARGE_SPLASH_MESSAGE =
   'Recharge failed because player is currently in game. Coins have been refunded.';
 export const PLAYER_IN_GAME_REDEEM_SPLASH_MESSAGE =
-  'Redeem failed because player is currently in game. Cash has been refunded.';
+  'Redeem failed because player is currently in game. Please try again later.';
 
 function normalizePlayerInGameFailureText(value: unknown) {
   return cleanText(value).toLowerCase().replaceAll('in-game', 'in game');
@@ -145,7 +145,7 @@ export function playerInGameDismissSplashMessage(input: {
       base
     );
   }
-  const refundLine = isRedeem ? 'Cash has been refunded.' : 'Coins have been refunded.';
+  const refundLine = isRedeem ? 'Please try again later.' : 'Coins have been refunded.';
   return `${base} ${refundLine}`;
 }
 
