@@ -17,6 +17,7 @@ import {
   tombstoneLinkedCarerTaskInTxn,
   ttlAfterDaysIso,
   updatePlayerBalancesInTxn,
+  emitPlayerRequestOutcomeMessage,
   upsertGameRequestCacheInTxn,
   upsertLinkedCarerTaskInTxn,
   writeGameRequestOutboxInTxn,
@@ -40,11 +41,33 @@ const DISMISSIBLE_REDEEM_STATUSES = new Set(['pending', 'poked', 'pending_review
 const DISMISSIBLE_RECHARGE_STATUSES = new Set(['pending', 'poked', 'pending_review', 'failed']);
 const GAME_VAULT_MIDNIGHT_PARTY_REASON = 'game_vault_midnight_party_pending';
 export const PLAYER_RECHARGE_SUCCESS_MESSAGE = 'Your game is recharged. Enjoy!';
+export const FAKE_REDEEM_REASON_CODE = 'fake_redeem';
 export const PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE =
   'Redeem could not be completed because the game balance is lower than the requested redeem amount.';
 
-export function buildPlayerRedeemDismissMessage(rawMessage: string | null | undefined) {
-  const message = cleanText(rawMessage);
+function formatFakeRedeemAmount(value: number) {
+  if (Number.isInteger(value)) {
+    return String(value);
+  }
+  return String(value);
+}
+
+export function buildFakeRedeemPlayerMessage(input: {
+  playerBalance?: number | null;
+  requestedAmount?: number | null;
+  rawMessage?: string | null;
+}) {
+  const balance = input.playerBalance;
+  const requested = input.requestedAmount;
+  if (
+    balance != null &&
+    requested != null &&
+    Number.isFinite(Number(balance)) &&
+    Number.isFinite(Number(requested))
+  ) {
+    return `Redeem could not be completed because game balance is ${formatFakeRedeemAmount(Number(balance))}, but requested redeem amount is ${formatFakeRedeemAmount(Number(requested))}.`;
+  }
+  const message = cleanText(input.rawMessage);
   if (!message) {
     return PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE;
   }
@@ -56,6 +79,10 @@ export function buildPlayerRedeemDismissMessage(rawMessage: string | null | unde
     return PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE;
   }
   return `Redeem could not be completed: ${message}`;
+}
+
+export function buildPlayerRedeemDismissMessage(rawMessage: string | null | undefined) {
+  return buildFakeRedeemPlayerMessage({ rawMessage });
 }
 
 function buildAutomationMidnightPartyPlayerMessage(gameToast: string, refunded: boolean) {
@@ -163,6 +190,7 @@ export type AuthorityDismissRedeemInput = {
   pokeMessage?: string | null;
   fakeRedeem?: boolean;
   skipTaskTombstone?: boolean;
+  txnClient?: PoolClient;
 };
 
 export type AuthorityDismissRedeemResult = {
@@ -1396,67 +1424,22 @@ export async function completeRechargeRedeemTaskInSql(
       });
     }
 
-    const playerCompleteEventType =
-      requestType === 'redeem' ? 'redeem_completed' : 'recharge_completed';
     const playerSuccessMessage =
       requestType === 'redeem'
         ? 'Your redeem request was completed successfully.'
         : PLAYER_RECHARGE_SUCCESS_MESSAGE;
 
-    await writeGameRequestOutboxInTxn(client, {
+    await emitPlayerRequestOutcomeMessage(client, {
       playerUid,
       coadminUid,
       requestId,
-      type: requestType,
-      status: 'completed',
+      requestType: requestType === 'redeem' ? 'redeem' : 'recharge',
+      outcome: 'completed',
       gameName: cleanText(request.game_name),
       amount,
-      eventType: playerCompleteEventType,
       updatedAt: nowIso,
-      pokeMessage: playerSuccessMessage,
-    });
-    console.info('[LIVE_OUTBOX_INSERT_PLAYER_RECHARGE_SUCCESS]', {
-      requestId,
-      playerUid,
-      eventType: playerCompleteEventType,
-      requestType,
-    });
-    await insertLiveOutboxEventWithClient(client, {
-      channel: playerRequestLiveChannel(playerUid),
-      eventType: 'request.completed',
-      entityType: 'player_game_request',
-      entityId: requestId,
+      playerMessage: playerSuccessMessage,
       source: 'authority_game_request_complete',
-      mirroredAt: nowIso,
-      payload: {
-        entityId: requestId,
-        playerUid,
-        requestId,
-        type: requestType,
-        status: 'completed',
-        gameName: cleanText(request.game_name),
-        amount,
-        pokeMessage: playerSuccessMessage,
-        updatedAt: nowIso,
-      },
-    });
-    await insertLiveOutboxEventWithClient(client, {
-      channel: playerRequestLiveChannel(playerUid),
-      eventType: 'player_message',
-      entityType: 'player_game_request',
-      entityId: requestId,
-      source: 'authority_game_request_complete',
-      mirroredAt: nowIso,
-      payload: {
-        entityId: requestId,
-        playerUid,
-        requestId,
-        type: requestType,
-        status: 'completed',
-        pokeMessage: playerSuccessMessage,
-        playerMessage: playerSuccessMessage,
-        updatedAt: nowIso,
-      },
     });
     console.info('[PLAYER_RECHARGE_SUCCESS_TOAST_QUEUED]', {
       requestId,
@@ -1937,72 +1920,21 @@ export async function dismissRechargeRequestInSql(
       }
     }
 
-    await writeGameRequestOutboxInTxn(client, {
-      playerUid,
-      coadminUid: requestCoadminUid,
-      requestId,
-      type: 'recharge',
-      status: 'dismissed',
-      gameName: cleanText(request.game_name),
-      amount: Math.max(0, Number(request.amount || 0)),
-      eventType: 'recharge_dismiss',
-      updatedAt: nowIso,
-      pokeMessage,
-      dismissReasonCode,
-      dismissReasonMessage,
-      refunded,
-    });
-    console.info('[LIVE_OUTBOX_INSERT_PLAYER_RECHARGE_DISMISS]', {
-      requestId,
-      playerUid,
-      eventType: 'recharge_dismiss',
-      dismissReasonCode,
-      refunded,
-    });
-    console.info('[PLAYER_RECHARGE_DISMISS_OUTBOX_INSERTED]', {
-      requestId,
-      playerUid,
-      eventType: 'recharge_dismiss',
-      dismissReasonCode,
-      refunded,
-    });
     if (pokeMessage) {
-      console.info('[PLAYER_RECHARGE_DISMISS_MESSAGE_CREATED]', {
-        requestId,
+      await emitPlayerRequestOutcomeMessage(client, {
         playerUid,
+        coadminUid: requestCoadminUid,
+        requestId,
+        requestType: 'recharge',
+        outcome: 'dismissed',
+        gameName: cleanText(request.game_name),
+        amount: Math.max(0, Number(request.amount || 0)),
+        updatedAt: nowIso,
+        playerMessage: pokeMessage,
         dismissReasonCode,
-        pokeMessage,
-      });
-      await insertLiveOutboxEventWithClient(client, {
-        channel: playerRequestLiveChannel(playerUid),
-        eventType: 'player_message',
-        entityType: 'player_game_request',
-        entityId: requestId,
+        dismissReasonMessage,
+        refunded,
         source: 'authority_dismiss_recharge',
-        mirroredAt: nowIso,
-        payload: {
-          entityId: requestId,
-          playerUid,
-          requestId,
-          type: 'recharge',
-          status: 'dismissed',
-          dismissReasonCode,
-          dismissReasonMessage,
-          pokeMessage,
-          refunded,
-          updatedAt: nowIso,
-        },
-      });
-      console.info('[LIVE_OUTBOX_INSERT_PLAYER_MESSAGE]', {
-        requestId,
-        playerUid,
-        eventType: 'player_message',
-      });
-      console.info('[PLAYER_TOAST_EVENT_QUEUED]', {
-        requestId,
-        playerUid,
-        dismissReasonCode,
-        durationMs: Date.now() - outboxStartedAt,
       });
     }
     console.info('[LIVE_OUTBOX_INSERT_DONE]', {
@@ -2105,9 +2037,12 @@ export async function dismissRedeemRequestInSql(
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL authority unavailable.');
 
-  const client = await db.connect();
+  const ownsTransaction = !input.txnClient;
+  const client = input.txnClient ?? (await db.connect());
   try {
-    await client.query('BEGIN');
+    if (ownsTransaction) {
+      await client.query('BEGIN');
+    }
     const claim = await claimAuthorityOperation(client, {
       operationKey,
       operationType: 'game_request_dismiss',
@@ -2118,7 +2053,9 @@ export async function dismissRedeemRequestInSql(
       payload: {},
     });
     if (!claim.claimed) {
-      await client.query('ROLLBACK');
+      if (ownsTransaction) {
+        await client.query('ROLLBACK');
+      }
       const payload = await readAuthorityOperationPayload(operationKey);
       if (payload?.requestId) {
         return {
@@ -2212,9 +2149,11 @@ export async function dismissRedeemRequestInSql(
     const dismissReasonMessage = cleanText(input.dismissReasonMessage) || null;
     const pokeMessage =
       cleanText(input.pokeMessage) ||
-      (dismissedByAutomation
-        ? buildPlayerRedeemDismissMessage(dismissReasonMessage || dismissReasonCode)
-        : null);
+      (dismissedByAutomation && input.fakeRedeem === true
+        ? buildFakeRedeemPlayerMessage({ rawMessage: dismissReasonMessage || dismissReasonCode })
+        : dismissedByAutomation
+          ? buildPlayerRedeemDismissMessage(dismissReasonMessage || dismissReasonCode)
+          : null);
     const requestRaw = {
       ...(request.raw_firestore_data as Record<string, unknown>),
       status: 'dismissed',
@@ -2261,77 +2200,24 @@ export async function dismissRedeemRequestInSql(
       await tombstoneLinkedCarerTaskInTxn(client, requestId, 'authority_dismiss_redeem');
     }
 
-    await writeGameRequestOutboxInTxn(client, {
-      playerUid,
-      coadminUid: canonicalScope,
-      requestId,
-      type: 'redeem',
-      status: 'dismissed',
-      gameName: cleanText(request.game_name),
-      amount: Math.max(0, Number(request.amount || 0)),
-      eventType: 'redeem_dismiss',
-      updatedAt: nowIso,
-      pokeMessage,
-      dismissReasonCode,
-      dismissReasonMessage,
-    });
     if (pokeMessage) {
-      console.info('[PLAYER_REDEEM_DISMISS_MESSAGE_CREATED]', {
-        requestId,
+      const outcomeSource =
+        dismissedByAutomation && input.fakeRedeem === true
+          ? 'authority_dismiss_fake_redeem'
+          : 'authority_dismiss_redeem';
+      await emitPlayerRequestOutcomeMessage(client, {
         playerUid,
-        dismissReasonCode,
-        pokeMessage,
-      });
-      console.info('[PLAYER_REDEEM_DISMISS_OUTBOX_INSERTED]', {
+        coadminUid: canonicalScope,
         requestId,
-        playerUid,
-        eventType: 'redeem_dismiss',
+        requestType: 'redeem',
+        outcome: 'dismissed',
+        gameName: cleanText(request.game_name),
+        amount: Math.max(0, Number(request.amount || 0)),
+        updatedAt: nowIso,
+        playerMessage: pokeMessage,
         dismissReasonCode,
-      });
-      await insertLiveOutboxEventWithClient(client, {
-        channel: playerRequestLiveChannel(playerUid),
-        eventType: 'request.dismissed',
-        entityType: 'player_game_request',
-        entityId: requestId,
-        source: 'authority_dismiss_redeem',
-        mirroredAt: nowIso,
-        payload: {
-          entityId: requestId,
-          playerUid,
-          requestId,
-          type: 'redeem',
-          status: 'dismissed',
-          dismissReasonCode,
-          dismissReasonMessage,
-          pokeMessage,
-          updatedAt: nowIso,
-        },
-      });
-      await insertLiveOutboxEventWithClient(client, {
-        channel: playerRequestLiveChannel(playerUid),
-        eventType: 'player_message',
-        entityType: 'player_game_request',
-        entityId: requestId,
-        source: 'authority_dismiss_redeem',
-        mirroredAt: nowIso,
-        payload: {
-          entityId: requestId,
-          playerUid,
-          requestId,
-          type: 'redeem',
-          status: 'dismissed',
-          dismissReasonCode,
-          dismissReasonMessage,
-          pokeMessage,
-          playerMessage: pokeMessage,
-          updatedAt: nowIso,
-        },
-      });
-      console.info('[PLAYER_TOAST_EVENT_QUEUED]', {
-        requestId,
-        playerUid,
-        dismissReasonCode,
-        eventType: 'redeem_dismiss',
+        dismissReasonMessage,
+        source: outcomeSource,
       });
     }
     if (taskExists && input.skipTaskTombstone !== true) {
@@ -2357,7 +2243,9 @@ export async function dismissRedeemRequestInSql(
         taskDeleted: taskExists,
       }),
     ]);
-    await client.query('COMMIT');
+    if (ownsTransaction) {
+      await client.query('COMMIT');
+    }
     return {
       success: true,
       duplicate: false,
@@ -2367,9 +2255,13 @@ export async function dismissRedeemRequestInSql(
       taskDeleted: taskExists,
     };
   } catch (error) {
-    await client.query('ROLLBACK');
+    if (ownsTransaction) {
+      await client.query('ROLLBACK');
+    }
     throw error;
   } finally {
-    client.release();
+    if (ownsTransaction) {
+      client.release();
+    }
   }
 }

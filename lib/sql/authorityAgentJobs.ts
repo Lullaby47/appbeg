@@ -10,10 +10,11 @@ import {
 } from '@/lib/sql/authorityLedger';
 import { returnTaskToPendingInSql } from '@/lib/sql/authorityCarerTasks';
 import {
-  buildPlayerRedeemDismissMessage,
+  buildFakeRedeemPlayerMessage,
   completeRechargeRedeemTaskInSql,
   dismissRechargeRequestInSql,
   dismissRedeemRequestInSql,
+  FAKE_REDEEM_REASON_CODE,
 } from '@/lib/sql/authorityGameRequests';
 import { ttlAfterDaysIso } from '@/lib/sql/authorityGameRequestHelpers';
 import { lookupAutomationAutoStateFromSqlCache } from '@/lib/sql/automationAutoStateCache';
@@ -1321,7 +1322,42 @@ export async function agentDismissFakeRedeem(input: {
 }) {
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL pool unavailable.');
+  const details = input.details || {};
+  const reasonCode = FAKE_REDEEM_REASON_CODE;
+  const requestedAmount = Number(
+    details.requestedRedeemAmount ?? details.requestedAmount ?? details.amount ?? NaN
+  );
+  const playerBalance = Number(
+    details.playerBalance ??
+      details.orionBalance ??
+      details.customerBalance ??
+      details.mafiaBalance ??
+      NaN
+  );
+  const dismissReasonMessage =
+    cleanText(details.dismissReasonMessage) ||
+    cleanText(details.reasonMessage) ||
+    cleanText(details.message) ||
+    cleanText(details.dismissReason) ||
+    cleanText(input.reason) ||
+    null;
+  const playerMessage = buildFakeRedeemPlayerMessage({
+    playerBalance: Number.isFinite(playerBalance) ? playerBalance : null,
+    requestedAmount: Number.isFinite(requestedAmount) ? requestedAmount : null,
+    rawMessage: dismissReasonMessage,
+  });
+  const authorityStartedAt = Date.now();
+  console.info('[AGENT_JOBS_API_DISMISS_ATTEMPT]', {
+    jobId: input.jobId,
+    reasonCode,
+    playerMessage,
+  });
+
   const client = await db.connect();
+  let taskId = '';
+  let requestId = '';
+  let coadminUid = '';
+  let playerUid = '';
   try {
     await client.query('BEGIN');
     const jobResult = await client.query(
@@ -1330,13 +1366,63 @@ export async function agentDismissFakeRedeem(input: {
     );
     if (!jobResult.rows.length) {
       await client.query('COMMIT');
-      return { success: true as const };
+      return { success: true as const, skipped: true };
     }
     const job = jobResult.rows[0] as SqlJobRow;
-    const taskId = cleanText(job.task_id);
-    const coadminUid = cleanText(job.coadmin_uid);
+    taskId = cleanText(job.task_id);
+    coadminUid = cleanText(job.coadmin_uid);
+    playerUid = cleanText(job.player_uid);
+    if (taskId) {
+      const taskRow = await client.query(
+        `SELECT request_id, player_uid FROM public.carer_tasks_cache WHERE firebase_id = $1 FOR UPDATE`,
+        [taskId]
+      );
+      if (taskRow.rows.length) {
+        requestId = cleanText(taskRow.rows[0]?.request_id);
+        playerUid = playerUid || cleanText(taskRow.rows[0]?.player_uid);
+      }
+    }
+    if (!requestId && taskId.startsWith('request__')) {
+      requestId = taskId.slice('request__'.length);
+    }
+
+    if (requestId) {
+      await dismissRedeemRequestInSql({
+        requestId,
+        actorUid: input.carerUid,
+        actorRole: 'carer',
+        isAdmin: false,
+        scopeUid: cleanText(input.scopeUid) || coadminUid || null,
+        idempotencyKey: `agent_dismiss:${input.jobId}`,
+        dismissType: reasonCode,
+        dismissReasonCode: reasonCode,
+        dismissReasonMessage,
+        dismissedByAutomation: true,
+        pokeMessage: playerMessage,
+        fakeRedeem: true,
+        skipTaskTombstone: true,
+        txnClient: client,
+      });
+    }
+
     const nowIso = new Date().toISOString();
-    const details = input.details || {};
+    const resultDetails = {
+      success: true,
+      dismissed: true,
+      status: 'dismissed',
+      reason: reasonCode,
+      reasonCode,
+      requestType: 'redeem',
+      message: playerMessage,
+      playerMessage,
+      dismissType: reasonCode,
+      dismissReasonCode: reasonCode,
+      dismissReasonMessage,
+      nonRetryable: true,
+      retryPending: false,
+      requestId: requestId || null,
+      ...details,
+    };
     await patchAutomationJobInTxn(client, input.jobId, {
       status: 'completed',
       claimedStatus: 'completed',
@@ -1345,13 +1431,8 @@ export async function agentDismissFakeRedeem(input: {
       lastHeartbeatAt: nowIso,
       ttlExpiresAt: ttlAfterDaysIso(AUTOMATION_JOB_TTL_DAYS),
       error: null,
-      result: {
-        success: true,
-        dismissed: true,
-        dismissType: 'fake_redeem',
-        reason: input.reason,
-        ...details,
-      },
+      needsManualReview: false,
+      result: resultDetails,
     });
     if (taskId) {
       await patchCarerTaskAgentInTxn(client, taskId, {
@@ -1359,11 +1440,16 @@ export async function agentDismissFakeRedeem(input: {
         claimedStatus: 'completed',
         completedByCarerUid: input.carerUid,
         automationStatus: 'dismissed',
-        automationError: input.reason,
+        automationError: playerMessage,
         fakeRedeem: true,
-        fakeRedeemReason: input.reason,
-        dismissType: 'fake_redeem',
+        fakeRedeemReason: playerMessage,
+        dismissType: reasonCode,
+        dismissReasonCode: reasonCode,
+        dismissReasonMessage,
+        dismissReason: playerMessage,
         dismissedByAutomation: true,
+        pokeMessage: playerMessage,
+        retryPending: false,
         completedAt: nowIso,
         ttlExpiresAt: ttlAfterDaysIso(COMPLETED_CARER_TASK_TTL_DAYS),
         updatedAt: nowIso,
@@ -1393,57 +1479,35 @@ export async function agentDismissFakeRedeem(input: {
       }
     }
     await client.query('COMMIT');
-
-    const taskRow = taskId
-      ? await db.query(`SELECT request_id FROM public.carer_tasks_cache WHERE firebase_id = $1`, [taskId])
-      : { rows: [] as Record<string, unknown>[] };
-    const requestId = cleanText(taskRow.rows[0]?.request_id);
-    if (requestId) {
-      const dismissReasonCode =
-        cleanText(details.dismissReasonCode) ||
-        cleanText(details.reasonCode) ||
-        cleanText(details.failureCode) ||
-        cleanText(details.code) ||
-        'fake_redeem';
-      const dismissReasonMessage =
-        cleanText(details.dismissReasonMessage) ||
-        cleanText(details.reasonMessage) ||
-        cleanText(details.dismissReason) ||
-        cleanText(input.reason) ||
-        null;
-      const playerMessage = buildPlayerRedeemDismissMessage(
-        dismissReasonMessage || dismissReasonCode || input.reason
-      );
-      console.info('[PLAYER_REDEEM_DISMISS_MESSAGE_CREATED]', {
-        jobId: input.jobId,
-        requestId,
-        dismissReasonCode,
-        playerMessage,
-      });
-      await dismissRedeemRequestInSql({
-        requestId,
-        actorUid: input.carerUid,
-        actorRole: 'carer',
-        isAdmin: false,
-        scopeUid: cleanText(input.scopeUid) || coadminUid || null,
-        idempotencyKey: `agent_dismiss:${input.jobId}`,
-        dismissType: cleanText(details.dismissType) || 'fake_redeem',
-        dismissReasonCode,
-        dismissReasonMessage,
-        dismissedByAutomation: true,
-        pokeMessage: playerMessage,
-        fakeRedeem: true,
-        skipTaskTombstone: true,
-      });
-    }
-    console.info('[SQL_FIREBASE_BYPASS_CONFIRMED] operation=dismiss_fake_redeem jobId=%s', input.jobId);
-    return { success: true as const };
   } catch (error) {
     await client.query('ROLLBACK');
+    console.error('[AUTHORITY_FAKE_REDEEM_DISMISS_DONE]', {
+      jobId: input.jobId,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      durationMs: Date.now() - authorityStartedAt,
+    });
     throw error;
   } finally {
     client.release();
   }
+
+  console.info('[AUTHORITY_FAKE_REDEEM_DISMISS_DONE]', {
+    jobId: input.jobId,
+    requestId: requestId || null,
+    playerUid: playerUid || null,
+    ok: true,
+    durationMs: Date.now() - authorityStartedAt,
+  });
+  console.info('[PLAYER_REQUEST_OUTCOME_MESSAGE_CREATED]', {
+    jobId: input.jobId,
+    requestId: requestId || null,
+    playerUid: playerUid || null,
+    reasonCode,
+    playerMessage,
+  });
+  console.info('[SQL_FIREBASE_BYPASS_CONFIRMED] operation=dismiss_fake_redeem jobId=%s', input.jobId);
+  return { success: true as const, requestId: requestId || null };
 }
 
 export async function agentUpdateJobStatus(input: {

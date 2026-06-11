@@ -559,4 +559,137 @@ export async function writeGameRequestOutboxInTxn(
     mirroredAt: input.updatedAt,
     payload,
   });
+  return playerOutboxId;
+}
+
+export async function emitPlayerRequestOutcomeMessage(
+  client: PoolClient,
+  input: {
+    playerUid: string;
+    coadminUid: string;
+    requestId: string;
+    requestType: 'recharge' | 'redeem';
+    outcome: 'dismissed' | 'completed';
+    gameName: string;
+    amount: number;
+    updatedAt: string;
+    playerMessage: string;
+    dismissReasonCode?: string | null;
+    dismissReasonMessage?: string | null;
+    refunded?: boolean;
+    source: string;
+  }
+) {
+  const dismissed = input.outcome === 'dismissed';
+  const eventType = dismissed
+    ? input.requestType === 'redeem'
+      ? 'redeem_dismiss'
+      : 'recharge_dismiss'
+    : input.requestType === 'redeem'
+      ? 'redeem_completed'
+      : 'recharge_completed';
+  const dismissReasonCode = cleanText(input.dismissReasonCode) || null;
+  const dismissReasonMessage = cleanText(input.dismissReasonMessage) || null;
+  const playerMessage = cleanText(input.playerMessage) || null;
+  if (!playerMessage) {
+    return;
+  }
+
+  await writeGameRequestOutboxInTxn(client, {
+    playerUid: input.playerUid,
+    coadminUid: input.coadminUid,
+    requestId: input.requestId,
+    type: input.requestType,
+    status: input.outcome,
+    gameName: input.gameName,
+    amount: input.amount,
+    eventType,
+    updatedAt: input.updatedAt,
+    pokeMessage: playerMessage,
+    dismissReasonCode,
+    dismissReasonMessage,
+    refunded: input.refunded,
+  });
+
+  const basePayload = {
+    entityId: input.requestId,
+    playerUid: input.playerUid,
+    requestId: input.requestId,
+    type: input.requestType,
+    status: input.outcome,
+    gameName: input.gameName,
+    amount: input.amount,
+    dismissReasonCode,
+    dismissReasonMessage,
+    pokeMessage: playerMessage,
+    playerMessage,
+    refunded: input.refunded === true,
+    updatedAt: input.updatedAt,
+  };
+
+  if (dismissed) {
+    await insertLiveOutboxEventWithClient(client, {
+      channel: playerRequestLiveChannel(input.playerUid),
+      eventType: 'player_message',
+      entityType: 'player_game_request',
+      entityId: input.requestId,
+      source: input.source,
+      mirroredAt: input.updatedAt,
+      payload: basePayload,
+    });
+    if (input.requestType === 'redeem') {
+      await insertLiveOutboxEventWithClient(client, {
+        channel: playerRequestLiveChannel(input.playerUid),
+        eventType: 'request.dismissed',
+        entityType: 'player_game_request',
+        entityId: input.requestId,
+        source: input.source,
+        mirroredAt: input.updatedAt,
+        payload: basePayload,
+      });
+    }
+  } else {
+    await insertLiveOutboxEventWithClient(client, {
+      channel: playerRequestLiveChannel(input.playerUid),
+      eventType: 'request.completed',
+      entityType: 'player_game_request',
+      entityId: input.requestId,
+      source: input.source,
+      mirroredAt: input.updatedAt,
+      payload: basePayload,
+    });
+    await insertLiveOutboxEventWithClient(client, {
+      channel: playerRequestLiveChannel(input.playerUid),
+      eventType: 'player_message',
+      entityType: 'player_game_request',
+      entityId: input.requestId,
+      source: input.source,
+      mirroredAt: input.updatedAt,
+      payload: basePayload,
+    });
+  }
+
+  console.info('[PLAYER_REQUEST_OUTCOME_MESSAGE_CREATED]', {
+    requestId: input.requestId,
+    playerUid: input.playerUid,
+    requestType: input.requestType,
+    outcome: input.outcome,
+    eventType,
+    dismissReasonCode,
+    playerMessage,
+  });
+  console.info('[PLAYER_REQUEST_OUTCOME_OUTBOX_INSERTED]', {
+    requestId: input.requestId,
+    playerUid: input.playerUid,
+    eventType,
+    source: input.source,
+  });
+  if (dismissed) {
+    console.info('[PLAYER_TOAST_EVENT_QUEUED]', {
+      requestId: input.requestId,
+      playerUid: input.playerUid,
+      dismissReasonCode,
+      eventType,
+    });
+  }
 }

@@ -38,9 +38,10 @@ import {
 import { attachPlayerRequestLiveShadowCompare } from '@/features/live/playerRequestShadowCompare';
 import {
   attachPlayerRequestSqlReadListener,
-  buildPlayerRedeemDismissMessage,
+  fakeRedeemDismissSplashMessage,
   PLAYER_RECHARGE_SUCCESS_MESSAGE,
   PLAYER_REQUESTS_SQL_READ_ENABLED,
+  requestMatchesFakeRedeemDismiss,
   type PlayerRechargeDismissLiveEvent,
   type PlayerRechargeSuccessLiveEvent,
   type PlayerRedeemDismissLiveEvent,
@@ -401,11 +402,9 @@ export default function PlayerPage() {
   const referralCodeEnsureInFlightRef = useRef(false);
   const clipboardToastTimerRef = useRef<number | null>(null);
   const rechargeSuccessSplashTimerRef = useRef<number | null>(null);
-  const redeemDismissToastTimerRef = useRef<number | null>(null);
 
   const [clipboardToast, setClipboardToast] = useState<ClipboardToastState>(null);
   const [showRechargeSuccessSplash, setShowRechargeSuccessSplash] = useState(false);
-  const [redeemDismissToastMessage, setRedeemDismissToastMessage] = useState<string | null>(null);
 
   const [message, setMessage] = useState('');
   const [loadingList, setLoadingList] = useState(false);
@@ -1185,22 +1184,14 @@ export default function PlayerPage() {
         justDismissed && !seenDismissedRedeemSplashIdsRef.current.has(request.id);
 
       if (shouldShowDismissSplash) {
-        const automationFakeRedeem =
-          Boolean(request.pokeMessage?.toLowerCase().startsWith('redeem could not be completed')) ||
-          request.dismissReasonCode?.toUpperCase().includes('FAKE_REDEEM') === true;
-        if (automationFakeRedeem) {
-          const message = buildPlayerRedeemDismissMessage(
-            request.pokeMessage || request.dismissReasonMessage || request.dismissReasonCode
-          );
+        if (requestMatchesFakeRedeemDismiss(request)) {
           console.info('[PLAYER_REDEEM_DISMISS_TOAST_SHOW]', {
             requestId: request.id,
             source: 'request_history_transition',
-            message,
+            message: fakeRedeemDismissSplashMessage(request),
           });
-          showRedeemDismissToast(message);
-        } else {
-          setRedeemDismissSplashRequest(request);
         }
+        setRedeemDismissSplashRequest(request);
         seenDismissedRedeemSplashIdsRef.current.add(request.id);
       }
     }
@@ -1248,9 +1239,16 @@ export default function PlayerPage() {
   const isMidnightPartyDismissSplash =
     redeemDismissSplashRequest?.type === 'recharge' &&
     requestMatchesMidnightPartyDismiss(redeemDismissSplashRequest);
+  const isFakeRedeemDismissSplash =
+    redeemDismissSplashRequest?.type === 'redeem' &&
+    redeemDismissSplashRequest?.status === 'dismissed' &&
+    requestMatchesFakeRedeemDismiss(redeemDismissSplashRequest);
   const midnightPartyDismissMessage = redeemDismissSplashRequest
     ? midnightPartyDismissSplashMessage(redeemDismissSplashRequest)
     : GAME_VAULT_MIDNIGHT_PARTY_PLAYER_MESSAGE;
+  const fakeRedeemDismissMessage = redeemDismissSplashRequest
+    ? fakeRedeemDismissSplashMessage(redeemDismissSplashRequest)
+    : '';
 
   useEffect(() => {
     if (!isTimedSplashAlert) {
@@ -1399,9 +1397,6 @@ export default function PlayerPage() {
       if (rechargeSuccessSplashTimerRef.current !== null) {
         clearTimeout(rechargeSuccessSplashTimerRef.current);
       }
-      if (redeemDismissToastTimerRef.current !== null) {
-        clearTimeout(redeemDismissToastTimerRef.current);
-      }
     };
   }, []);
 
@@ -1416,18 +1411,6 @@ export default function PlayerPage() {
       setShowRechargeSuccessSplash(false);
       rechargeSuccessSplashTimerRef.current = null;
     }, 1000);
-  }
-
-  function showRedeemDismissToast(message: string) {
-    if (redeemDismissToastTimerRef.current !== null) {
-      clearTimeout(redeemDismissToastTimerRef.current);
-      redeemDismissToastTimerRef.current = null;
-    }
-    setRedeemDismissToastMessage(message);
-    redeemDismissToastTimerRef.current = window.setTimeout(() => {
-      setRedeemDismissToastMessage(null);
-      redeemDismissToastTimerRef.current = null;
-    }, 4500);
   }
 
   function showClipboardToast(
@@ -2081,19 +2064,33 @@ export default function PlayerPage() {
         if (event.type !== 'redeem' || event.status !== 'dismissed') {
           return;
         }
+        if (!requestMatchesFakeRedeemDismiss(event)) {
+          return;
+        }
         if (seenDismissedRedeemSplashIdsRef.current.has(event.requestId)) {
           return;
         }
-        const message = buildPlayerRedeemDismissMessage(
-          event.pokeMessage || event.dismissReasonMessage || event.dismissReasonCode
-        );
+        const message = fakeRedeemDismissSplashMessage(event);
         console.info('[PLAYER_REDEEM_DISMISS_TOAST_SHOW]', {
           requestId: event.requestId,
           source: `sse_event:${event.sourceEvent}`,
           message,
         });
         seenDismissedRedeemSplashIdsRef.current.add(event.requestId);
-        showRedeemDismissToast(message);
+        setRedeemDismissSplashRequest({
+          id: event.requestId,
+          playerUid: event.playerUid,
+          gameName: 'Unknown Game',
+          type: 'redeem',
+          status: 'dismissed',
+          amount: 0,
+          pokeMessage: event.pokeMessage,
+          dismissReasonCode: event.dismissReasonCode,
+          dismissReasonMessage: event.dismissReasonMessage,
+          createdAt: null,
+          completedAt: null,
+          pokedAt: null,
+        });
       };
 
       const showRechargeDismissFromLiveEvent = (event: PlayerRechargeDismissLiveEvent) => {
@@ -4294,24 +4291,6 @@ export default function PlayerPage() {
       ) : null}
 
       <AnimatePresence>
-        {redeemDismissToastMessage ? (
-          <motion.div
-            className="pointer-events-none fixed inset-x-0 bottom-6 z-[215] flex justify-center px-4"
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 8 }}
-            transition={{ duration: 0.18, ease: 'easeOut' }}
-            role="status"
-            aria-live="polite"
-          >
-            <div className="w-[min(92vw,28rem)] rounded-2xl border border-amber-200/55 bg-gradient-to-br from-amber-500/95 via-orange-600/95 to-amber-950/95 px-4 py-3 text-center text-sm font-semibold leading-snug text-white shadow-[0_0_36px_-8px_rgba(245,158,11,0.9),0_18px_48px_-20px_rgba(120,53,15,0.95)] backdrop-blur-xl sm:px-5 sm:py-4 sm:text-base">
-              {redeemDismissToastMessage}
-            </div>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
-
-      <AnimatePresence>
         {showRechargeSuccessSplash ? (
           <motion.div
             className="pointer-events-none fixed inset-0 z-[210] flex items-center justify-center px-4"
@@ -5270,14 +5249,20 @@ export default function PlayerPage() {
                   id="redeem-dismiss-splash-title"
                   className="mt-2 text-center text-2xl font-black text-white"
                 >
-                  {isMidnightPartyDismissSplash ? 'Recharge blocked' : 'Redeem request dismissed'}
+                  {isMidnightPartyDismissSplash
+                    ? 'Recharge blocked'
+                    : isFakeRedeemDismissSplash
+                      ? 'Redeem could not be completed'
+                      : 'Redeem request dismissed'}
                 </h3>
                 <p className="mt-5 text-center text-base leading-relaxed text-red-50/95">
                   {isMidnightPartyDismissSplash
                     ? midnightPartyDismissMessage
-                    : 'A staff member marked this redeem request as fake or mistaken and removed it from the pending queue.'}
+                    : isFakeRedeemDismissSplash
+                      ? fakeRedeemDismissMessage
+                      : 'A staff member marked this redeem request as fake or mistaken and removed it from the pending queue.'}
                 </p>
-                {!isMidnightPartyDismissSplash ? (
+                {!isMidnightPartyDismissSplash && !isFakeRedeemDismissSplash ? (
                   <p className="mt-4 text-center text-sm leading-relaxed text-red-100/85">
                     If this was an error, contact support with your request amount and game details.
                   </p>

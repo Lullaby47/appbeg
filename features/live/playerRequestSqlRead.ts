@@ -69,8 +69,23 @@ const PLAYER_LIVE_SSE_EVENTS = [
 ] as const;
 
 export const PLAYER_RECHARGE_SUCCESS_MESSAGE = 'Your game is recharged. Enjoy!';
+export const FAKE_REDEEM_REASON_CODE = 'fake_redeem';
 export const PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE =
   'Redeem could not be completed because the game balance is lower than the requested redeem amount.';
+
+export function requestMatchesFakeRedeemDismiss(input: {
+  dismissReasonCode?: string | null;
+  pokeMessage?: string | null;
+  dismissReasonMessage?: string | null;
+}) {
+  const code = cleanText(input.dismissReasonCode).toLowerCase();
+  if (code === FAKE_REDEEM_REASON_CODE || code.includes('fake_redeem')) {
+    return true;
+  }
+  return [input.pokeMessage, input.dismissReasonMessage].some((value) =>
+    cleanText(value).toLowerCase().startsWith('redeem could not be completed')
+  );
+}
 
 export function buildPlayerRedeemDismissMessage(rawMessage: string | null | undefined) {
   const message = cleanText(rawMessage);
@@ -85,6 +100,17 @@ export function buildPlayerRedeemDismissMessage(rawMessage: string | null | unde
     return PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE;
   }
   return `Redeem could not be completed: ${message}`;
+}
+
+export function fakeRedeemDismissSplashMessage(input: {
+  pokeMessage?: string | null;
+  dismissReasonMessage?: string | null;
+}) {
+  return (
+    cleanText(input.pokeMessage) ||
+    cleanText(input.dismissReasonMessage) ||
+    PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE
+  );
 }
 
 const INITIAL_RECONNECT_MS = 1_000;
