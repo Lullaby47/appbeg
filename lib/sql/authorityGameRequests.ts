@@ -40,7 +40,10 @@ const FIRST_RECHARGE_MATCH_PERCENT = 50;
 const DISMISSIBLE_REDEEM_STATUSES = new Set(['pending', 'poked', 'pending_review', 'in_progress']);
 const DISMISSIBLE_RECHARGE_STATUSES = new Set(['pending', 'poked', 'pending_review', 'failed']);
 const GAME_VAULT_MIDNIGHT_PARTY_REASON = 'game_vault_midnight_party_pending';
+export const PLAYER_RECHARGE_SENT_MESSAGE = 'Recharge successfully sent.';
+export const PLAYER_REDEEM_SENT_MESSAGE = 'Redeem request successfully sent.';
 export const PLAYER_RECHARGE_SUCCESS_MESSAGE = 'Your game is recharged. Enjoy!';
+export const PLAYER_REDEEM_SUCCESS_MESSAGE = 'You have successfully redeemed from your game.';
 export const FAKE_REDEEM_REASON_CODE = 'fake_redeem';
 export const PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE =
   'Redeem could not be completed because the game balance is lower than the requested redeem amount.';
@@ -784,16 +787,19 @@ export async function createRechargeRequestInSql(
       sourceFields: { amount, requestId },
     });
 
-    await writeGameRequestOutboxInTxn(client, {
+    await emitPlayerRequestOutcomeMessage(client, {
       playerUid,
       coadminUid,
       requestId,
-      type: 'recharge',
+      requestType: 'recharge',
+      outcomeType: 'recharge_sent',
       status: 'pending',
       gameName,
       amount: boostedAmount,
-      eventType: 'recharge_create',
       updatedAt: nowIso,
+      message: PLAYER_RECHARGE_SENT_MESSAGE,
+      toastVariant: 'info',
+      source: 'authority_recharge_create',
     });
     const rechargeOutboxChannels = await writeCarerTaskOutboxInTxn(client, {
       coadminUid,
@@ -1005,16 +1011,19 @@ export async function createRedeemRequestInSql(
       nowIso
     );
 
-    await writeGameRequestOutboxInTxn(client, {
+    await emitPlayerRequestOutcomeMessage(client, {
       playerUid,
       coadminUid,
       requestId,
-      type: 'redeem',
+      requestType: 'redeem',
+      outcomeType: 'redeem_sent',
       status: 'pending',
       gameName,
       amount,
-      eventType: 'redeem_create',
       updatedAt: nowIso,
+      message: PLAYER_REDEEM_SENT_MESSAGE,
+      toastVariant: 'info',
+      source: 'authority_redeem_create',
     });
     const redeemOutboxChannels = await writeCarerTaskOutboxInTxn(client, {
       coadminUid,
@@ -1425,20 +1434,22 @@ export async function completeRechargeRedeemTaskInSql(
     }
 
     const playerSuccessMessage =
-      requestType === 'redeem'
-        ? 'Your redeem request was completed successfully.'
-        : PLAYER_RECHARGE_SUCCESS_MESSAGE;
+      requestType === 'redeem' ? PLAYER_REDEEM_SUCCESS_MESSAGE : PLAYER_RECHARGE_SUCCESS_MESSAGE;
+    const completeOutcomeType =
+      requestType === 'redeem' ? 'redeem_completed' : 'recharge_completed';
 
     await emitPlayerRequestOutcomeMessage(client, {
       playerUid,
       coadminUid,
       requestId,
       requestType: requestType === 'redeem' ? 'redeem' : 'recharge',
-      outcome: 'completed',
+      outcomeType: completeOutcomeType,
+      status: 'completed',
       gameName: cleanText(request.game_name),
       amount,
       updatedAt: nowIso,
-      playerMessage: playerSuccessMessage,
+      message: playerSuccessMessage,
+      toastVariant: 'success',
       source: 'authority_game_request_complete',
     });
     console.info('[PLAYER_RECHARGE_SUCCESS_TOAST_QUEUED]', {
@@ -1926,11 +1937,13 @@ export async function dismissRechargeRequestInSql(
         coadminUid: requestCoadminUid,
         requestId,
         requestType: 'recharge',
-        outcome: 'dismissed',
+        outcomeType: 'recharge_dismissed',
+        status: 'dismissed',
         gameName: cleanText(request.game_name),
         amount: Math.max(0, Number(request.amount || 0)),
         updatedAt: nowIso,
-        playerMessage: pokeMessage,
+        message: pokeMessage,
+        toastVariant: 'error',
         dismissReasonCode,
         dismissReasonMessage,
         refunded,
@@ -2210,11 +2223,13 @@ export async function dismissRedeemRequestInSql(
         coadminUid: canonicalScope,
         requestId,
         requestType: 'redeem',
-        outcome: 'dismissed',
+        outcomeType: 'redeem_dismissed',
+        status: 'dismissed',
         gameName: cleanText(request.game_name),
         amount: Math.max(0, Number(request.amount || 0)),
         updatedAt: nowIso,
-        playerMessage: pokeMessage,
+        message: pokeMessage,
+        toastVariant: 'error',
         dismissReasonCode,
         dismissReasonMessage,
         source: outcomeSource,

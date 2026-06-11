@@ -37,11 +37,22 @@ type SqlSnapshotRequest = {
   pokedAt?: string | null;
 };
 
-const PLAYER_IMMEDIATE_REFETCH_EVENTS = new Set([
-  'recharge_dismiss',
-  'redeem_dismiss',
+const PLAYER_OUTCOME_SSE_EVENTS = [
+  'request.message',
+  'recharge_sent',
+  'redeem_sent',
   'recharge_completed',
   'redeem_completed',
+  'recharge_dismissed',
+  'redeem_dismissed',
+] as const;
+
+const PLAYER_IMMEDIATE_REFETCH_EVENTS = new Set([
+  ...PLAYER_OUTCOME_SSE_EVENTS,
+  'recharge_dismiss',
+  'redeem_dismiss',
+  'recharge_create',
+  'redeem_create',
   'request.completed',
   'request.dismissed',
   'game_request_complete',
@@ -52,6 +63,7 @@ const PLAYER_IMMEDIATE_REFETCH_EVENTS = new Set([
 ]);
 
 const PLAYER_LIVE_SSE_EVENTS = [
+  ...PLAYER_OUTCOME_SSE_EVENTS,
   'recharge_dismiss',
   'redeem_dismiss',
   'recharge_completed',
@@ -68,7 +80,10 @@ const PLAYER_LIVE_SSE_EVENTS = [
   'task.dismissed',
 ] as const;
 
+export const PLAYER_RECHARGE_SENT_MESSAGE = 'Recharge successfully sent.';
+export const PLAYER_REDEEM_SENT_MESSAGE = 'Redeem request successfully sent.';
 export const PLAYER_RECHARGE_SUCCESS_MESSAGE = 'Your game is recharged. Enjoy!';
+export const PLAYER_REDEEM_SUCCESS_MESSAGE = 'You have successfully redeemed from your game.';
 export const FAKE_REDEEM_REASON_CODE = 'fake_redeem';
 export const PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE =
   'Redeem could not be completed because the game balance is lower than the requested redeem amount.';
@@ -129,7 +144,11 @@ type SqlRequestPayload = {
   requestId?: unknown;
   playerUid?: unknown;
   type?: unknown;
+  requestType?: unknown;
   status?: unknown;
+  outcomeType?: unknown;
+  message?: unknown;
+  toastVariant?: unknown;
   gameName?: unknown;
   amount?: unknown;
   baseAmount?: unknown;
@@ -138,7 +157,33 @@ type SqlRequestPayload = {
   dismissReasonCode?: unknown;
   dismissReasonMessage?: unknown;
   refunded?: unknown;
+  createdAt?: unknown;
   updatedAt?: unknown;
+};
+
+export type PlayerRequestToastVariant = 'success' | 'info' | 'error' | 'warning';
+
+export type PlayerRequestOutcomeType =
+  | 'recharge_sent'
+  | 'redeem_sent'
+  | 'recharge_completed'
+  | 'redeem_completed'
+  | 'recharge_dismissed'
+  | 'redeem_dismissed';
+
+export type PlayerRequestOutcomeLiveEvent = {
+  requestId: string;
+  playerUid: string;
+  requestType: PlayerGameRequestType;
+  outcomeType: PlayerRequestOutcomeType;
+  status: PlayerGameRequestStatus;
+  message: string;
+  toastVariant: PlayerRequestToastVariant;
+  pokeMessage: string | null;
+  dismissReasonCode: string | null;
+  dismissReasonMessage: string | null;
+  refunded: boolean;
+  sourceEvent: string;
 };
 
 export type PlayerRechargeDismissLiveEvent = {
@@ -287,6 +332,149 @@ function mergePayloadIntoPlayerGameRequest(
   };
 }
 
+function normalizeOutcomeType(
+  eventName: string,
+  payload: SqlRequestPayload
+): PlayerRequestOutcomeType | null {
+  const explicit = cleanText(payload.outcomeType);
+  if (
+    explicit === 'recharge_sent' ||
+    explicit === 'redeem_sent' ||
+    explicit === 'recharge_completed' ||
+    explicit === 'redeem_completed' ||
+    explicit === 'recharge_dismissed' ||
+    explicit === 'redeem_dismissed'
+  ) {
+    return explicit;
+  }
+  if (eventName === 'recharge_sent') return 'recharge_sent';
+  if (eventName === 'redeem_sent') return 'redeem_sent';
+  if (eventName === 'recharge_completed') return 'recharge_completed';
+  if (eventName === 'redeem_completed') return 'redeem_completed';
+  if (eventName === 'recharge_dismissed' || eventName === 'recharge_dismiss') {
+    return 'recharge_dismissed';
+  }
+  if (eventName === 'redeem_dismissed' || eventName === 'redeem_dismiss') {
+    return 'redeem_dismissed';
+  }
+  if (eventName === 'recharge_create') return 'recharge_sent';
+  if (eventName === 'redeem_create') return 'redeem_sent';
+  if (eventName === 'request.completed') {
+    return normalizeRequestType(payload.requestType || payload.type) === 'redeem'
+      ? 'redeem_completed'
+      : 'recharge_completed';
+  }
+  if (eventName === 'request.dismissed') {
+    return 'redeem_dismissed';
+  }
+  if (eventName === 'player_message') {
+    const status = normalizeRequestStatus(payload.status);
+    const requestType = normalizeRequestType(payload.requestType || payload.type);
+    if (status === 'completed') {
+      return requestType === 'redeem' ? 'redeem_completed' : 'recharge_completed';
+    }
+    if (status === 'dismissed') {
+      return requestType === 'redeem' ? 'redeem_dismissed' : 'recharge_dismissed';
+    }
+  }
+  return null;
+}
+
+function normalizeToastVariant(value: unknown): PlayerRequestToastVariant {
+  const normalized = cleanText(value).toLowerCase();
+  if (normalized === 'success' || normalized === 'info' || normalized === 'error' || normalized === 'warning') {
+    return normalized;
+  }
+  return 'info';
+}
+
+function defaultToastVariantForOutcome(outcomeType: PlayerRequestOutcomeType): PlayerRequestToastVariant {
+  if (outcomeType.endsWith('_completed')) {
+    return 'success';
+  }
+  if (outcomeType.endsWith('_dismissed')) {
+    return 'error';
+  }
+  return 'info';
+}
+
+function defaultMessageForOutcome(outcomeType: PlayerRequestOutcomeType): string {
+  switch (outcomeType) {
+    case 'recharge_sent':
+      return PLAYER_RECHARGE_SENT_MESSAGE;
+    case 'redeem_sent':
+      return PLAYER_REDEEM_SENT_MESSAGE;
+    case 'recharge_completed':
+      return PLAYER_RECHARGE_SUCCESS_MESSAGE;
+    case 'redeem_completed':
+      return PLAYER_REDEEM_SUCCESS_MESSAGE;
+    case 'redeem_dismissed':
+      return PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE;
+    default:
+      return '';
+  }
+}
+
+function buildOutcomeEventFromPayload(
+  eventName: string,
+  entityId: string,
+  payload: SqlRequestPayload,
+  playerUid: string
+): PlayerRequestOutcomeLiveEvent | null {
+  const outcomeType = normalizeOutcomeType(eventName, payload);
+  if (!outcomeType) {
+    return null;
+  }
+  const requestType =
+    outcomeType.startsWith('redeem') || normalizeRequestType(payload.requestType || payload.type) === 'redeem'
+      ? 'redeem'
+      : 'recharge';
+  const status =
+    outcomeType.endsWith('_sent')
+      ? 'pending'
+      : outcomeType.endsWith('_completed')
+        ? 'completed'
+        : outcomeType.endsWith('_dismissed')
+          ? 'dismissed'
+          : normalizeRequestStatus(payload.status);
+  const message =
+    cleanText(payload.message) ||
+    cleanText(payload.playerMessage) ||
+    cleanText(payload.pokeMessage) ||
+    defaultMessageForOutcome(outcomeType);
+  if (!message) {
+    return null;
+  }
+  return {
+    requestId: entityId,
+    playerUid: cleanText(payload.playerUid) || playerUid,
+    requestType,
+    outcomeType,
+    status,
+    message,
+    toastVariant: cleanText(payload.toastVariant)
+      ? normalizeToastVariant(payload.toastVariant)
+      : defaultToastVariantForOutcome(outcomeType),
+    pokeMessage: cleanText(payload.pokeMessage) || cleanText(payload.message) || null,
+    dismissReasonCode: cleanText(payload.dismissReasonCode) || null,
+    dismissReasonMessage: cleanText(payload.dismissReasonMessage) || null,
+    refunded: payload.refunded === true,
+    sourceEvent: eventName,
+  };
+}
+
+function outcomeEventNeedsBalanceRefetch(eventName: string, payload: SqlRequestPayload) {
+  const outcomeType = normalizeOutcomeType(eventName, payload);
+  return (
+    outcomeType === 'recharge_sent' ||
+    outcomeType === 'recharge_completed' ||
+    outcomeType === 'recharge_dismissed' ||
+    outcomeType === 'redeem_completed' ||
+    payload.refunded === true ||
+    eventName === 'balance_update'
+  );
+}
+
 function buildSuccessEventFromPayload(
   eventName: string,
   entityId: string,
@@ -297,7 +485,7 @@ function buildSuccessEventFromPayload(
   if (status !== 'completed') {
     return null;
   }
-  const type = normalizeRequestType(payload.type);
+  const type = normalizeRequestType(payload.requestType || payload.type);
   if (type !== 'recharge') {
     return null;
   }
@@ -343,6 +531,7 @@ export function attachPlayerRequestSqlReadListener(
   onRequestsChange: (requests: PlayerGameRequest[]) => void,
   onFallback: (reason: string) => void,
   options?: {
+    onRequestOutcomeEvent?: (event: PlayerRequestOutcomeLiveEvent) => void;
     onRechargeDismissEvent?: (event: PlayerRechargeDismissLiveEvent) => void;
     onRechargeSuccessEvent?: (event: PlayerRechargeSuccessLiveEvent) => void;
     onRedeemDismissEvent?: (event: PlayerRedeemDismissLiveEvent) => void;
@@ -459,6 +648,15 @@ export function attachPlayerRequestSqlReadListener(
     }
   };
 
+  const handleOutcomeLiveEvent = (eventName: string, payload: SqlRequestPayload, entityId: string) => {
+    const outcomeEvent = buildOutcomeEventFromPayload(eventName, entityId, payload, cleanPlayerUid);
+    if (!outcomeEvent || !options?.onRequestOutcomeEvent) {
+      return;
+    }
+    console.info('[PLAYER_REQUEST_OUTCOME_EVENT]', outcomeEvent);
+    options.onRequestOutcomeEvent(outcomeEvent);
+  };
+
   const handleSuccessLiveEvent = (eventName: string, payload: SqlRequestPayload, entityId: string) => {
     if (
       eventName !== 'recharge_completed' &&
@@ -470,6 +668,9 @@ export function attachPlayerRequestSqlReadListener(
     }
     const successEvent = buildSuccessEventFromPayload(eventName, entityId, payload, cleanPlayerUid);
     if (!successEvent || successEvent.type !== 'recharge' || !options?.onRechargeSuccessEvent) {
+      return;
+    }
+    if (options?.onRequestOutcomeEvent) {
       return;
     }
     console.info('[PLAYER_RECHARGE_SUCCESS_EVENT]', successEvent);
@@ -496,6 +697,9 @@ export function attachPlayerRequestSqlReadListener(
       if (!options?.onRedeemDismissEvent) {
         return;
       }
+      if (options?.onRequestOutcomeEvent) {
+        return;
+      }
       console.info('[PLAYER_REDEEM_DISMISS_EVENT]', dismissEvent);
       if (eventName === 'player_message') {
         console.info('[PLAYER_MESSAGE_EVENT]', {
@@ -508,6 +712,9 @@ export function attachPlayerRequestSqlReadListener(
       return;
     }
     if (!options?.onRechargeDismissEvent) {
+      return;
+    }
+    if (options?.onRequestOutcomeEvent) {
       return;
     }
     console.info('[PLAYER_RECHARGE_DISMISS_EVENT]', dismissEvent);
@@ -569,8 +776,15 @@ export function attachPlayerRequestSqlReadListener(
     }
 
     if (PLAYER_IMMEDIATE_REFETCH_EVENTS.has(eventName)) {
+      handleOutcomeLiveEvent(eventName, payload, entityId);
       handleSuccessLiveEvent(eventName, payload, entityId);
       handleDismissLiveEvent(eventName, payload, entityId);
+      if (
+        outcomeEventNeedsBalanceRefetch(eventName, payload) &&
+        options?.onBalanceUpdate
+      ) {
+        options.onBalanceUpdate(`sse_event:${eventName}`);
+      }
       void refetchSnapshotNow(`sse_event:${eventName}`, true);
       return;
     }

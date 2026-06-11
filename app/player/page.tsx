@@ -39,12 +39,16 @@ import { attachPlayerRequestLiveShadowCompare } from '@/features/live/playerRequ
 import {
   attachPlayerRequestSqlReadListener,
   fakeRedeemDismissSplashMessage,
+  PLAYER_RECHARGE_SENT_MESSAGE,
   PLAYER_RECHARGE_SUCCESS_MESSAGE,
+  PLAYER_REDEEM_SENT_MESSAGE,
+  PLAYER_REDEEM_SUCCESS_MESSAGE,
   PLAYER_REQUESTS_SQL_READ_ENABLED,
   requestMatchesFakeRedeemDismiss,
   type PlayerRechargeDismissLiveEvent,
   type PlayerRechargeSuccessLiveEvent,
   type PlayerRedeemDismissLiveEvent,
+  type PlayerRequestOutcomeLiveEvent,
 } from '@/features/live/playerRequestSqlRead';
 import {
   listenToUnreadCounts,
@@ -404,7 +408,9 @@ export default function PlayerPage() {
   const rechargeSuccessSplashTimerRef = useRef<number | null>(null);
 
   const [clipboardToast, setClipboardToast] = useState<ClipboardToastState>(null);
-  const [showRechargeSuccessSplash, setShowRechargeSuccessSplash] = useState(false);
+  const [successSplashMessage, setSuccessSplashMessage] = useState<string | null>(null);
+  const seenRequestOutcomeKeysRef = useRef<Set<string>>(new Set());
+  const seenCompletedRedeemSplashIdsRef = useRef<Set<string>>(new Set());
 
   const [message, setMessage] = useState('');
   const [loadingList, setLoadingList] = useState(false);
@@ -1127,6 +1133,8 @@ export default function PlayerPage() {
       seenDismissedRechargeSplashIdsRef.current = new Set();
       knownRedeemRequestStatusByIdRef.current = {};
       seenDismissedRedeemSplashIdsRef.current = new Set();
+      seenCompletedRedeemSplashIdsRef.current = new Set();
+      seenRequestOutcomeKeysRef.current = new Set();
       return;
     }
 
@@ -1150,7 +1158,7 @@ export default function PlayerPage() {
             requestId: request.id,
             source: 'request_history_transition',
           });
-          showRechargeSuccessToast();
+          showSuccessSplash(PLAYER_RECHARGE_SUCCESS_MESSAGE);
           seenCompletedRechargeSplashIdsRef.current.add(request.id);
         }
         const justBlockedByMidnightParty =
@@ -1179,6 +1187,22 @@ export default function PlayerPage() {
 
       nextStatusById[request.id] = request.status;
       const previousStatus = knownRedeemRequestStatusByIdRef.current[request.id];
+      const completedAtMs = getTimestampMs(request.completedAt);
+      const recentlyCompleted = completedAtMs >= recentCompletionCutoffMs;
+      const justCompleted =
+        request.status === 'completed' &&
+        ((previousStatus !== undefined && previousStatus !== 'completed') ||
+          (previousStatus === undefined && recentlyCompleted));
+      if (justCompleted && !seenCompletedRedeemSplashIdsRef.current.has(request.id)) {
+        console.info('[PLAYER_REQUEST_OUTCOME_TOAST_SHOW]', {
+          requestId: request.id,
+          source: 'request_history_transition',
+          outcomeType: 'redeem_completed',
+          message: PLAYER_REDEEM_SUCCESS_MESSAGE,
+        });
+        showSuccessSplash(PLAYER_REDEEM_SUCCESS_MESSAGE);
+        seenCompletedRedeemSplashIdsRef.current.add(request.id);
+      }
       const justDismissed = previousStatus && previousStatus !== 'dismissed' && request.status === 'dismissed';
       const shouldShowDismissSplash =
         justDismissed && !seenDismissedRedeemSplashIdsRef.current.has(request.id);
@@ -1400,17 +1424,17 @@ export default function PlayerPage() {
     };
   }, []);
 
-  function showRechargeSuccessToast() {
+  function showSuccessSplash(message: string) {
     if (rechargeSuccessSplashTimerRef.current !== null) {
       clearTimeout(rechargeSuccessSplashTimerRef.current);
       rechargeSuccessSplashTimerRef.current = null;
     }
 
-    setShowRechargeSuccessSplash(true);
+    setSuccessSplashMessage(message);
     rechargeSuccessSplashTimerRef.current = window.setTimeout(() => {
-      setShowRechargeSuccessSplash(false);
+      setSuccessSplashMessage(null);
       rechargeSuccessSplashTimerRef.current = null;
-    }, 1000);
+    }, 1800);
   }
 
   function showClipboardToast(
@@ -2044,6 +2068,78 @@ export default function PlayerPage() {
     }
 
     if (sqlRequestsRead) {
+      const handleRequestOutcomeFromLive = (event: PlayerRequestOutcomeLiveEvent) => {
+        const outcomeKey = `${event.requestId}:${event.outcomeType}`;
+        if (seenRequestOutcomeKeysRef.current.has(outcomeKey)) {
+          return;
+        }
+        seenRequestOutcomeKeysRef.current.add(outcomeKey);
+        console.info('[PLAYER_REQUEST_OUTCOME_TOAST_SHOW]', {
+          requestId: event.requestId,
+          source: `sse_event:${event.sourceEvent}`,
+          outcomeType: event.outcomeType,
+          message: event.message,
+          toastVariant: event.toastVariant,
+        });
+
+        switch (event.outcomeType) {
+          case 'recharge_sent':
+          case 'redeem_sent':
+            setMessage(event.message);
+            return;
+          case 'recharge_completed':
+            seenCompletedRechargeSplashIdsRef.current.add(event.requestId);
+            showSuccessSplash(event.message);
+            return;
+          case 'redeem_completed':
+            seenCompletedRedeemSplashIdsRef.current.add(event.requestId);
+            showSuccessSplash(event.message);
+            return;
+          case 'recharge_dismissed':
+            if (!requestMatchesMidnightPartyDismiss(event)) {
+              return;
+            }
+            seenDismissedRechargeSplashIdsRef.current.add(event.requestId);
+            setRedeemDismissSplashRequest({
+              id: event.requestId,
+              playerUid: event.playerUid,
+              gameName: 'Unknown Game',
+              type: 'recharge',
+              status: 'dismissed',
+              amount: 0,
+              pokeMessage: event.pokeMessage,
+              dismissReasonCode: event.dismissReasonCode,
+              dismissReasonMessage: event.dismissReasonMessage,
+              createdAt: null,
+              completedAt: null,
+              pokedAt: null,
+            });
+            return;
+          case 'redeem_dismissed':
+            if (!requestMatchesFakeRedeemDismiss(event)) {
+              return;
+            }
+            seenDismissedRedeemSplashIdsRef.current.add(event.requestId);
+            setRedeemDismissSplashRequest({
+              id: event.requestId,
+              playerUid: event.playerUid,
+              gameName: 'Unknown Game',
+              type: 'redeem',
+              status: 'dismissed',
+              amount: 0,
+              pokeMessage: event.pokeMessage,
+              dismissReasonCode: event.dismissReasonCode,
+              dismissReasonMessage: event.dismissReasonMessage,
+              createdAt: null,
+              completedAt: null,
+              pokedAt: null,
+            });
+            return;
+          default:
+            return;
+        }
+      };
+
       const showRechargeSuccessFromLiveEvent = (event: PlayerRechargeSuccessLiveEvent) => {
         if (event.type !== 'recharge' || event.status !== 'completed') {
           return;
@@ -2057,7 +2153,7 @@ export default function PlayerPage() {
           message: event.message,
         });
         seenCompletedRechargeSplashIdsRef.current.add(event.requestId);
-        showRechargeSuccessToast();
+        showSuccessSplash(event.message);
       };
 
       const showRedeemDismissFromLiveEvent = (event: PlayerRedeemDismissLiveEvent) => {
@@ -2140,6 +2236,7 @@ export default function PlayerPage() {
           });
         },
         {
+          onRequestOutcomeEvent: handleRequestOutcomeFromLive,
           onRechargeDismissEvent: showRechargeDismissFromLiveEvent,
           onRechargeSuccessEvent: showRechargeSuccessFromLiveEvent,
           onRedeemDismissEvent: showRedeemDismissFromLiveEvent,
@@ -2785,8 +2882,8 @@ export default function PlayerPage() {
       });
 
       saveRecentPlayAmount(type, amountText);
-      if (type === 'redeem') {
-        setMessage('Redeem request sent.');
+      if (!isClientSqlReadMode() && !PLAYER_REQUESTS_SQL_READ_ENABLED) {
+        setMessage(type === 'redeem' ? PLAYER_REDEEM_SENT_MESSAGE : PLAYER_RECHARGE_SENT_MESSAGE);
       }
       setPlayAmount('');
     } catch (error) {
@@ -4291,7 +4388,7 @@ export default function PlayerPage() {
       ) : null}
 
       <AnimatePresence>
-        {showRechargeSuccessSplash ? (
+        {successSplashMessage ? (
           <motion.div
             className="pointer-events-none fixed inset-0 z-[210] flex items-center justify-center px-4"
             initial={{ opacity: 0 }}
@@ -4312,7 +4409,7 @@ export default function PlayerPage() {
                 ✓
               </div>
               <p className="mt-3 text-lg font-black leading-tight text-white sm:text-xl">
-                {PLAYER_RECHARGE_SUCCESS_MESSAGE}
+                {successSplashMessage}
               </p>
             </motion.div>
           </motion.div>

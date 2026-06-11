@@ -7,6 +7,7 @@ import {
   requestLinkedCarerTaskId,
   type RequestLinkedCarerTaskInput,
 } from '@/lib/games/requestLinkedCarerTask';
+import { claimAuthorityOperation } from '@/lib/sql/authorityLedger';
 import { cleanText, toIsoString } from '@/lib/sql/playerMirrorCommon';
 import {
   carerTaskLiveChannel,
@@ -14,6 +15,16 @@ import {
   insertLiveOutboxEventWithClient,
   playerRequestLiveChannel,
 } from '@/lib/sql/liveOutbox';
+
+export type PlayerRequestOutcomeType =
+  | 'recharge_sent'
+  | 'redeem_sent'
+  | 'recharge_completed'
+  | 'redeem_completed'
+  | 'recharge_dismissed'
+  | 'redeem_dismissed';
+
+export type PlayerRequestToastVariant = 'success' | 'info' | 'error' | 'warning';
 
 export function normalizeGameName(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
@@ -541,8 +552,15 @@ export async function writeGameRequestOutboxInTxn(
       dismissReasonCode: cleanText(input.dismissReasonCode) || null,
     });
   }
-  if (input.eventType === 'recharge_completed' || input.eventType === 'redeem_completed') {
-    console.info('[LIVE_OUTBOX_INSERT_PLAYER_RECHARGE_SUCCESS]', {
+  if (
+    input.eventType === 'recharge_completed' ||
+    input.eventType === 'redeem_completed' ||
+    input.eventType === 'recharge_sent' ||
+    input.eventType === 'redeem_sent' ||
+    input.eventType === 'recharge_dismissed' ||
+    input.eventType === 'redeem_dismissed'
+  ) {
+    console.info('[LIVE_OUTBOX_INSERT_PLAYER_REQUEST_OUTCOME]', {
       requestId: input.requestId,
       playerUid: input.playerUid,
       outboxId: playerOutboxId,
@@ -562,6 +580,50 @@ export async function writeGameRequestOutboxInTxn(
   return playerOutboxId;
 }
 
+function legacyOutcomeEventType(outcomeType: PlayerRequestOutcomeType) {
+  switch (outcomeType) {
+    case 'recharge_dismissed':
+      return 'recharge_dismiss';
+    case 'redeem_dismissed':
+      return 'redeem_dismiss';
+    case 'recharge_completed':
+      return 'recharge_completed';
+    case 'redeem_completed':
+      return 'redeem_completed';
+    case 'recharge_sent':
+      return 'recharge_create';
+    case 'redeem_sent':
+      return 'redeem_create';
+    default:
+      return outcomeType;
+  }
+}
+
+function logPlayerOutcomeMessage(outcomeType: PlayerRequestOutcomeType, details: Record<string, unknown>) {
+  switch (outcomeType) {
+    case 'recharge_sent':
+      console.info('[PLAYER_RECHARGE_SENT_MESSAGE]', details);
+      break;
+    case 'redeem_sent':
+      console.info('[PLAYER_REDEEM_SENT_MESSAGE]', details);
+      break;
+    case 'recharge_completed':
+      console.info('[PLAYER_RECHARGE_COMPLETED_MESSAGE]', details);
+      break;
+    case 'redeem_completed':
+      console.info('[PLAYER_REDEEM_COMPLETED_MESSAGE]', details);
+      break;
+    case 'recharge_dismissed':
+      console.info('[PLAYER_RECHARGE_DISMISSED_MESSAGE]', details);
+      break;
+    case 'redeem_dismissed':
+      console.info('[PLAYER_REDEEM_DISMISSED_MESSAGE]', details);
+      break;
+    default:
+      break;
+  }
+}
+
 export async function emitPlayerRequestOutcomeMessage(
   client: PoolClient,
   input: {
@@ -569,65 +631,141 @@ export async function emitPlayerRequestOutcomeMessage(
     coadminUid: string;
     requestId: string;
     requestType: 'recharge' | 'redeem';
-    outcome: 'dismissed' | 'completed';
+    outcomeType: PlayerRequestOutcomeType;
+    status: string;
     gameName: string;
     amount: number;
     updatedAt: string;
-    playerMessage: string;
+    message: string;
+    toastVariant: PlayerRequestToastVariant;
     dismissReasonCode?: string | null;
     dismissReasonMessage?: string | null;
     refunded?: boolean;
     source: string;
+    skipIdempotency?: boolean;
   }
-) {
-  const dismissed = input.outcome === 'dismissed';
-  const eventType = dismissed
-    ? input.requestType === 'redeem'
-      ? 'redeem_dismiss'
-      : 'recharge_dismiss'
-    : input.requestType === 'redeem'
-      ? 'redeem_completed'
-      : 'recharge_completed';
+): Promise<{ emitted: boolean; duplicate: boolean }> {
+  const message = cleanText(input.message);
+  if (!message) {
+    return { emitted: false, duplicate: false };
+  }
+
+  const operationKey = `player_request_outcome:${input.requestId}:${input.outcomeType}`;
+  if (input.skipIdempotency !== true) {
+    const claim = await claimAuthorityOperation(client, {
+      operationKey,
+      operationType: 'player_request_outcome',
+      userUid: input.playerUid,
+      sourceId: input.requestId,
+      actorUid: input.playerUid,
+      actorRole: 'player',
+      payload: { outcomeType: input.outcomeType },
+    });
+    if (!claim.claimed) {
+      return { emitted: false, duplicate: true };
+    }
+  }
+
   const dismissReasonCode = cleanText(input.dismissReasonCode) || null;
   const dismissReasonMessage = cleanText(input.dismissReasonMessage) || null;
-  const playerMessage = cleanText(input.playerMessage) || null;
-  if (!playerMessage) {
-    return;
-  }
+  const legacyEventType = legacyOutcomeEventType(input.outcomeType);
+  const requestStatus =
+    input.outcomeType.endsWith('_sent')
+      ? 'pending'
+      : input.outcomeType.endsWith('_completed')
+        ? 'completed'
+        : input.outcomeType.endsWith('_dismissed')
+          ? 'dismissed'
+          : cleanText(input.status) || 'pending';
+
+  await client.query(
+    `
+      UPDATE public.player_game_requests_cache
+      SET poke_message = $2, updated_at = $3::timestamptz
+      WHERE firebase_id = $1 AND deleted_at IS NULL
+    `,
+    [input.requestId, message, input.updatedAt]
+  );
+
+  const basePayload = {
+    entityId: input.requestId,
+    playerUid: input.playerUid,
+    requestId: input.requestId,
+    requestType: input.requestType,
+    type: input.requestType,
+    outcomeType: input.outcomeType,
+    status: requestStatus,
+    gameName: input.gameName,
+    amount: input.amount,
+    message,
+    toastVariant: input.toastVariant,
+    dismissReasonCode,
+    dismissReasonMessage,
+    pokeMessage: message,
+    playerMessage: message,
+    refunded: input.refunded === true,
+    createdAt: input.updatedAt,
+    updatedAt: input.updatedAt,
+  };
 
   await writeGameRequestOutboxInTxn(client, {
     playerUid: input.playerUid,
     coadminUid: input.coadminUid,
     requestId: input.requestId,
     type: input.requestType,
-    status: input.outcome,
+    status: requestStatus,
     gameName: input.gameName,
     amount: input.amount,
-    eventType,
+    eventType: input.outcomeType,
     updatedAt: input.updatedAt,
-    pokeMessage: playerMessage,
+    pokeMessage: message,
     dismissReasonCode,
     dismissReasonMessage,
     refunded: input.refunded,
   });
 
-  const basePayload = {
-    entityId: input.requestId,
-    playerUid: input.playerUid,
-    requestId: input.requestId,
-    type: input.requestType,
-    status: input.outcome,
-    gameName: input.gameName,
-    amount: input.amount,
-    dismissReasonCode,
-    dismissReasonMessage,
-    pokeMessage: playerMessage,
-    playerMessage,
-    refunded: input.refunded === true,
-    updatedAt: input.updatedAt,
-  };
+  if (legacyEventType !== input.outcomeType) {
+    await insertLiveOutboxEventWithClient(client, {
+      channel: playerRequestLiveChannel(input.playerUid),
+      eventType: legacyEventType,
+      entityType: 'player_game_request',
+      entityId: input.requestId,
+      source: input.source,
+      mirroredAt: input.updatedAt,
+      payload: basePayload,
+    });
+  }
 
-  if (dismissed) {
+  await insertLiveOutboxEventWithClient(client, {
+    channel: playerRequestLiveChannel(input.playerUid),
+    eventType: 'request.message',
+    entityType: 'player_game_request',
+    entityId: input.requestId,
+    source: input.source,
+    mirroredAt: input.updatedAt,
+    payload: basePayload,
+  });
+
+  if (input.outcomeType.endsWith('_completed')) {
+    await insertLiveOutboxEventWithClient(client, {
+      channel: playerRequestLiveChannel(input.playerUid),
+      eventType: 'request.completed',
+      entityType: 'player_game_request',
+      entityId: input.requestId,
+      source: input.source,
+      mirroredAt: input.updatedAt,
+      payload: basePayload,
+    });
+    await insertLiveOutboxEventWithClient(client, {
+      channel: playerRequestLiveChannel(input.playerUid),
+      eventType: 'player_message',
+      entityType: 'player_game_request',
+      entityId: input.requestId,
+      source: input.source,
+      mirroredAt: input.updatedAt,
+      payload: basePayload,
+    });
+  } else if (input.outcomeType.endsWith('_dismissed')) {
     await insertLiveOutboxEventWithClient(client, {
       channel: playerRequestLiveChannel(input.playerUid),
       eventType: 'player_message',
@@ -648,48 +786,35 @@ export async function emitPlayerRequestOutcomeMessage(
         payload: basePayload,
       });
     }
-  } else {
-    await insertLiveOutboxEventWithClient(client, {
-      channel: playerRequestLiveChannel(input.playerUid),
-      eventType: 'request.completed',
-      entityType: 'player_game_request',
-      entityId: input.requestId,
-      source: input.source,
-      mirroredAt: input.updatedAt,
-      payload: basePayload,
-    });
-    await insertLiveOutboxEventWithClient(client, {
-      channel: playerRequestLiveChannel(input.playerUid),
-      eventType: 'player_message',
-      entityType: 'player_game_request',
-      entityId: input.requestId,
-      source: input.source,
-      mirroredAt: input.updatedAt,
-      payload: basePayload,
-    });
   }
 
-  console.info('[PLAYER_REQUEST_OUTCOME_MESSAGE_CREATED]', {
+  const logDetails = {
     requestId: input.requestId,
     playerUid: input.playerUid,
     requestType: input.requestType,
-    outcome: input.outcome,
-    eventType,
+    outcomeType: input.outcomeType,
+    message,
+    toastVariant: input.toastVariant,
     dismissReasonCode,
-    playerMessage,
-  });
+    refunded: input.refunded === true,
+  };
+  console.info('[PLAYER_REQUEST_OUTCOME_MESSAGE_CREATED]', logDetails);
   console.info('[PLAYER_REQUEST_OUTCOME_OUTBOX_INSERTED]', {
     requestId: input.requestId,
     playerUid: input.playerUid,
-    eventType,
+    outcomeType: input.outcomeType,
+    legacyEventType,
     source: input.source,
   });
-  if (dismissed) {
+  logPlayerOutcomeMessage(input.outcomeType, logDetails);
+  if (input.outcomeType.endsWith('_dismissed')) {
     console.info('[PLAYER_TOAST_EVENT_QUEUED]', {
       requestId: input.requestId,
       playerUid: input.playerUid,
+      outcomeType: input.outcomeType,
       dismissReasonCode,
-      eventType,
     });
   }
+
+  return { emitted: true, duplicate: false };
 }
