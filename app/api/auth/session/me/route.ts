@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 
 
 import { verifyAppSessionFromRequest } from '@/lib/firebase/apiAuth';
+import { logSqlAuthNoFirestore, logSqlAuthProfileRead, logSqlAuthSessionRead } from '@/lib/server/appbegSqlOnlyMode';
 import { readSessionMePlayerExtras } from '@/lib/server/sessionMeExtras';
 
 
@@ -181,6 +182,23 @@ export async function GET(request: Request) {
 
     durationMs: total_ms,
 
+  });
+  logSqlAuthProfileRead({
+    uid: auth.uid,
+    role: auth.role,
+    source: 'sql',
+    route: '/api/auth/session/me',
+  });
+  logSqlAuthSessionRead({
+    uid: auth.uid,
+    sessionId: auth.sessionId,
+    source: 'sql',
+    route: '/api/auth/session/me',
+  });
+  logSqlAuthNoFirestore('/api/auth/session/me', {
+    uid: auth.uid,
+    role: auth.role,
+    app_session_id: auth.sessionId,
   });
 
   console.info('[APP_SESSION_ME_TIMING]', {

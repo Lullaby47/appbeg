@@ -2,6 +2,8 @@ import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 
+import { createGuardedFirestore } from '@/lib/firebase/firestoreRuntimeGuard';
+
 const base64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
 
 if (!base64) {
@@ -20,4 +22,8 @@ const app =
     : getApps()[0];
 
 export const adminAuth = getAuth(app);
-export const adminDb = getFirestore(app);
+
+const rawAdminDb = getFirestore(app);
+const guardedAdminDb = createGuardedFirestore(rawAdminDb);
+
+export const adminDb = guardedAdminDb;

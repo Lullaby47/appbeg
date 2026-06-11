@@ -12,6 +12,14 @@ import {
   authSqlReadEnvLogFields,
   isAuthSqlReadEnabled,
 } from '@/lib/server/authSqlRead';
+import {
+  isAppbegSqlOnlyMode,
+  isAuthFirestoreFallbackAllowed,
+  logFirebaseAuthFallbackDisabled,
+  logSqlAuthNoFirestore,
+  logSqlAuthProfileRead,
+  shouldAuthUseSqlOnly,
+} from '@/lib/server/appbegSqlOnlyMode';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import {
@@ -37,11 +45,12 @@ export async function requireFirebasePlayerUser(request: Request) {
     return { response: apiError('Invalid or expired authorization token.', 401) } as const;
   }
 
-  const sqlReadMode = isAuthSqlReadEnabled();
+  const sqlReadMode = shouldAuthUseSqlOnly();
   logAuthSqlRouteStart('requireFirebasePlayerUser', {
     uid,
     ...authSqlReadEnvLogFields(),
   });
+  logSqlAuthNoFirestore('requireFirebasePlayerUser', { uid, token_only: true });
 
   if (sqlReadMode) {
     const env = authSqlReadEnvLogFields();
@@ -50,6 +59,13 @@ export async function requireFirebasePlayerUser(request: Request) {
     }
 
     const profileLookup = await lookupApiUserProfileFromSqlCache(uid);
+    logSqlAuthProfileRead({
+      uid,
+      role: profileLookup.profile?.role ?? null,
+      source: 'sql',
+      missReason: profileLookup.missReason,
+      route: 'requireFirebasePlayerUser',
+    });
     if (!profileLookup.profile) {
       return {
         response: authSqlProfileErrorResponse(profileLookup, {
@@ -70,7 +86,7 @@ export async function requireFirebasePlayerUser(request: Request) {
   }
 
   let profileLookup = await lookupApiUserProfileFromSqlCache(uid);
-  if (!profileLookup.profile) {
+  if (!profileLookup.profile && !isAppbegSqlOnlyMode()) {
     try {
       await mirrorPlayerById(uid, 'player_session_route_hydrate');
     } catch {
@@ -80,10 +96,29 @@ export async function requireFirebasePlayerUser(request: Request) {
   }
 
   if (profileLookup.profile?.role === 'player') {
+    logSqlAuthProfileRead({
+      uid,
+      role: 'player',
+      source: 'sql',
+      route: 'requireFirebasePlayerUser',
+    });
     return {
       uid,
       username: profileLookup.profile.username,
       profile: profileLookup.profile,
+    } as const;
+  }
+
+  if (!isAuthFirestoreFallbackAllowed()) {
+    logFirebaseAuthFallbackDisabled('requireFirebasePlayerUser', 'auth_firestore_fallback_disabled', {
+      uid,
+      miss_reason: profileLookup.missReason || 'row_missing',
+    });
+    return {
+      response: apiError(
+        'User profile not found in SQL cache. Ensure players_cache is populated for this user.',
+        404
+      ),
     } as const;
   }
 
@@ -93,7 +128,7 @@ export async function requireFirebasePlayerUser(request: Request) {
     operation: 'read',
     collection: 'users',
     document_id: uid,
-    sql_read_mode: false,
+    sql_read_mode: isAuthSqlReadEnabled(),
   });
   const userSnap = await adminDb.collection('users').doc(uid).get();
   if (!userSnap.exists) {
@@ -116,6 +151,10 @@ export async function requireFirebasePlayerUser(request: Request) {
 export async function requirePlayerSessionActor(request: Request) {
   const appSession = await verifyAppSessionFromRequest(request);
   if (appSession.hit && appSession.profile.role === 'player') {
+    logSqlAuthNoFirestore('requirePlayerSessionActor', {
+      uid: appSession.uid,
+      auth_path: 'app_session_sql',
+    });
     return {
       uid: appSession.uid,
       username: appSession.profile.username,

@@ -38,6 +38,9 @@ export async function register() {
   const { assertSqlRuntimeReady, SqlRuntimeMisconfiguredError } = await import(
     '@/lib/server/sqlRuntime'
   );
+  const { logAppbegSqlOnlyModeStartup } = await import('@/lib/server/appbegSqlOnlyMode');
+
+  logAppbegSqlOnlyModeStartup('instrumentation');
 
   try {
     assertSqlRuntimeReady('instrumentation');

@@ -3,6 +3,7 @@ import 'server-only';
 import { createHash } from 'crypto';
 
 import { adminAuth } from '@/lib/firebase/admin';
+import { logSqlAuthNoFirestore } from '@/lib/server/appbegSqlOnlyMode';
 
 const LIVE_TOKEN_CACHE_TTL_MS = 45_000;
 const LIVE_TOKEN_CACHE_MAX_ENTRIES = 256;
@@ -52,6 +53,10 @@ export async function verifyLiveCarerApiToken(
 
   console.info('[LIVE_AUTH_TOKEN_CACHE] miss uid=pending');
   const decoded = await adminAuth.verifyIdToken(cleanToken);
+  logSqlAuthNoFirestore('verifyLiveCarerApiToken', {
+    uid: decoded.uid,
+    token_verify_only: true,
+  });
   liveTokenCache.set(cacheKey, { uid: decoded.uid, verifiedAt: nowMs });
   pruneLiveTokenCache(nowMs);
   return { uid: decoded.uid, cacheHit: false, cacheAgeMs: null };

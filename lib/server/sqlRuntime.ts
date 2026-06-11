@@ -62,6 +62,8 @@ export type SqlRuntimeStatus = {
   player_session_sql_read: boolean;
   app_session_sql_read: boolean;
   authority_sql_write: boolean;
+  appbeg_sql_only_mode: boolean;
+  allow_firebase_fallback: boolean;
   sql_read_mode: boolean;
   sql_authority_mode: boolean;
   firestore_fallback_blocked: boolean;
@@ -73,6 +75,8 @@ export function getSqlRuntimeStatus(): SqlRuntimeStatus {
   const playerSessionSqlRead = resolveServerSqlFlag('PLAYER_SESSION_SQL_READ');
   const appSessionSqlRead = resolveServerSqlFlag('APP_SESSION_SQL_READ');
   const authoritySqlWrite = resolveServerSqlFlag('AUTHORITY_SQL_WRITE');
+  const appbegSqlOnlyMode = resolveServerSqlFlag('APPBEG_SQL_ONLY_MODE');
+  const allowFirebaseFallback = envRaw('ALLOW_FIREBASE_FALLBACK') === '1';
   const sqlReadMode = isAuthSqlReadEnabled();
   const sqlAuthorityMode = isSqlAuthorityMode();
 
@@ -83,9 +87,11 @@ export function getSqlRuntimeStatus(): SqlRuntimeStatus {
     player_session_sql_read: playerSessionSqlRead,
     app_session_sql_read: appSessionSqlRead,
     authority_sql_write: authoritySqlWrite,
+    appbeg_sql_only_mode: appbegSqlOnlyMode,
+    allow_firebase_fallback: allowFirebaseFallback,
     sql_read_mode: sqlReadMode,
     sql_authority_mode: sqlAuthorityMode,
-    firestore_fallback_blocked: shouldBlockFirestoreFallback(),
+    firestore_fallback_blocked: shouldBlockFirestoreFallback() || appbegSqlOnlyMode,
     authority_source: authoritySqlWrite ? 'sql' : 'firestore',
   };
 }

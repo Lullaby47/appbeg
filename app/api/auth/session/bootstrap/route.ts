@@ -2,6 +2,11 @@ import { NextResponse } from 'next/server';
 
 import { apiError } from '@/lib/firebase/apiAuth';
 import { verifyLiveCarerApiToken } from '@/lib/firebase/liveAuthTokenCache';
+import {
+  logSqlAuthNoFirestore,
+  logSqlAuthProfileRead,
+  logSqlAuthSessionRead,
+} from '@/lib/server/appbegSqlOnlyMode';
 import { isPlayerSessionSqlReadEnabled } from '@/lib/server/authSqlRead';
 import { createPlayerLoginSessionsInSql } from '@/lib/server/sqlPlayerLoginSessions';
 import { logSqlLoginNoFirestoreMirror } from '@/lib/server/sqlSessionNoFirestoreMirror';
@@ -81,6 +86,17 @@ export async function POST(request: Request) {
   }
 
   const profile = sqlProfileLookup.profile;
+  logSqlAuthProfileRead({
+    uid: profile.uid,
+    role: profile.role,
+    source: 'sql',
+    route: '/api/auth/session/bootstrap',
+  });
+  logSqlAuthNoFirestore('/api/auth/session/bootstrap', {
+    uid: profile.uid,
+    role: profile.role,
+    phase: 'profile_loaded',
+  });
   const roleHint = cleanText(body.roleHint).toLowerCase();
   if (roleHint && roleHint !== profile.role) {
     console.info('[SQL_AUTH_BOOTSTRAP]', {
@@ -148,6 +164,19 @@ export async function POST(request: Request) {
       const playerSessionId = loginSessions.playerSessionId;
       const sessionCreateMs = Date.now() - sessionCreateStartedAt;
 
+      logSqlAuthSessionRead({
+        uid: profile.uid,
+        sessionId: playerSessionId,
+        source: 'sql',
+        route: '/api/auth/session/bootstrap',
+      });
+      logSqlAuthNoFirestore('/api/auth/session/bootstrap', {
+        uid: profile.uid,
+        role: profile.role,
+        app_session_id: session.sessionId,
+        player_session_id: playerSessionId,
+      });
+
       if (isPlayerSessionSqlReadEnabled()) {
         logSqlLoginNoFirestoreMirror({
           route: '/api/auth/session/bootstrap',
@@ -209,6 +238,18 @@ export async function POST(request: Request) {
       deactivatePreviousForUid: profile.role === 'player',
     });
     const sessionCreateMs = Date.now() - sessionCreateStartedAt;
+
+    logSqlAuthSessionRead({
+      uid: profile.uid,
+      sessionId: session.sessionId,
+      source: 'sql',
+      route: '/api/auth/session/bootstrap',
+    });
+    logSqlAuthNoFirestore('/api/auth/session/bootstrap', {
+      uid: profile.uid,
+      role: profile.role,
+      app_session_id: session.sessionId,
+    });
 
     logRouteSessionValidation('/api/auth/session/bootstrap', {
       ok: true,

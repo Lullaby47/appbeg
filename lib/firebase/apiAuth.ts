@@ -31,7 +31,15 @@ import {
   mirrorPlayerSessionById,
 } from '@/lib/sql/playerSessionsCache';
 import { timedRechargeFirestoreRead } from '@/lib/server/rechargeFirestoreInstrumentation';
-import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
+import {
+  isAppbegSqlOnlyMode,
+  isAuthFirestoreFallbackAllowed,
+  logFirebaseAuthFallbackDisabled,
+  logSqlAuthNoFirestore,
+  logSqlAuthProfileRead,
+  logSqlAuthSessionRead,
+  shouldAuthUseSqlOnly,
+} from '@/lib/server/appbegSqlOnlyMode';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 
 export type ApiRole = 'admin' | 'coadmin' | 'staff' | 'carer' | 'player';
@@ -283,6 +291,13 @@ export async function verifyAppSessionFromRequest(
 
   if (!profileLookup.profile) {
     timing.total_ms = Date.now() - verifyStartedAt;
+    logSqlAuthProfileRead({
+      uid: session.uid,
+      role: session.role,
+      source: 'sql',
+      missReason: profileLookup.missReason || 'profile_missing',
+      route: 'verifyAppSessionFromRequest',
+    });
     console.info(
       '[APP_SESSION_AUTH] hit=false uid=%s role=%s sessionId=%s reason=%s lookup_ms=%s profile_ms=%s pool_acquire_ms=%s session_lookup_ms=%s profile_lookup_ms=%s client_release_ms=%s total_ms=%s',
       session.uid,
@@ -307,6 +322,23 @@ export async function verifyAppSessionFromRequest(
   }
 
   const profile = profileLookup.profile;
+  logSqlAuthProfileRead({
+    uid: profile.uid,
+    role: profile.role,
+    source: 'sql',
+    route: 'verifyAppSessionFromRequest',
+  });
+  logSqlAuthSessionRead({
+    uid: session.uid,
+    sessionId,
+    source: 'sql',
+    route: 'verifyAppSessionFromRequest',
+  });
+  logSqlAuthNoFirestore('verifyAppSessionFromRequest', {
+    uid: session.uid,
+    role: profile.role,
+    session_id: sessionId,
+  });
   if (!isLoginAllowedStatus(profile.status, profile.role)) {
     timing.total_ms = Date.now() - verifyStartedAt;
     console.info(
@@ -613,17 +645,23 @@ async function validatePlayerApiSession(
 
   if (sessionSqlLookup.missReason === null) {
     timing.session_source = 'sql';
+    logSqlAuthSessionRead({
+      uid,
+      sessionId,
+      source: 'sql',
+      route: 'validatePlayerApiSession',
+    });
     writePlayerSessionSqlAuthSuccess(appSessionId, uid, sessionId, 'api_auth_sql_success');
     return { ok: true, sessionSource: 'sql' };
   }
 
   if (
-    options?.sqlOnly &&
+    (options?.sqlOnly || shouldAuthUseSqlOnly()) &&
     (await acceptPlayerSessionBySqlProfile(
       uid,
       sessionId,
       sessionSqlLookup.missReason,
-      options.knownProfile
+      options?.knownProfile ?? null
     ))
   ) {
     timing.session_source = 'sql';
@@ -649,9 +687,21 @@ async function validatePlayerApiSession(
     sessionId
   );
 
-  if (options?.sqlOnly) {
+  if (options?.sqlOnly || shouldAuthUseSqlOnly()) {
     const sessionRow = sessionSqlLookup.session;
     timing.session_source = 'none';
+    logSqlAuthSessionRead({
+      uid,
+      sessionId,
+      source: 'sql',
+      missReason: sessionSqlLookup.missReason || 'sql_session_missing',
+      route: 'validatePlayerApiSession',
+    });
+    logSqlAuthNoFirestore('validatePlayerApiSession', {
+      uid,
+      session_id: sessionId,
+      miss_reason: sessionSqlLookup.missReason || 'sql_session_missing',
+    });
     console.info('[API_AUTH] player request blocked', {
       uid,
       reason: sessionSqlLookup.missReason || 'sql_session_missing',
@@ -664,8 +714,21 @@ async function validatePlayerApiSession(
       sql_row_active: sessionRow?.active ?? null,
       sql_row_expires_at: sessionRow?.expiresAt ?? null,
       sql_row_ended_at: sessionRow?.endedAt ?? null,
-      profile_active_session_id: cleanText(options.knownProfile?.activeSessionId) || null,
+      profile_active_session_id: cleanText(options?.knownProfile?.activeSessionId) || null,
     });
+    return {
+      ok: false,
+      response: apiError('Player session not found in SQL.', 401),
+    };
+  }
+
+  if (!isAuthFirestoreFallbackAllowed()) {
+    logFirebaseAuthFallbackDisabled('validatePlayerApiSession', 'auth_firestore_fallback_disabled', {
+      uid,
+      session_id: sessionId,
+      miss_reason: sessionSqlLookup.missReason,
+    });
+    timing.session_source = 'none';
     return {
       ok: false,
       response: apiError('Player session not found in SQL.', 401),
@@ -813,7 +876,7 @@ async function authenticateApiUserFromAppSession(
       return { response: apiError('X-Player-Session-Id header is required.', 401) };
     }
 
-    const sqlReadMode = isAuthSqlReadEnabled();
+    const sqlReadMode = shouldAuthUseSqlOnly();
     const profileActiveSessionId = String(profile.activeSessionId || '').trim();
     const sessionValidation = await validatePlayerApiSession(session.uid, sessionHeaderId, timing, {
       appSessionId: sessionId,
@@ -870,7 +933,7 @@ export async function requirePlayerOwnedLiveAuth(
 > {
   const authStartedAt = Date.now();
   const expectedUid = String(expectedPlayerUid || '').trim();
-  const sqlReadMode = isAuthSqlReadEnabled();
+  const sqlReadMode = shouldAuthUseSqlOnly();
   const timing: PlayerLiveAuthTiming = {
     auth_path: sqlReadMode
       ? 'player_token_sql_session_sql'
@@ -1075,8 +1138,15 @@ export async function requirePlayerOwnedLiveAuth(
   timing.sql_profile_total_ms = sqlProfileLookup.timing.total_ms;
 
   if (sqlReadMode) {
+    logSqlAuthNoFirestore('requirePlayerOwnedLiveAuth', { uid: identityUid, branch: 'bearer_token' });
     if (!sqlProfileLookup.profile || sqlProfileLookup.missReason) {
       const reason = sqlProfileLookup.missReason || 'row_missing';
+      logSqlAuthProfileRead({
+        uid: identityUid,
+        source: 'sql',
+        missReason: reason,
+        route: 'requirePlayerOwnedLiveAuth',
+      });
       console.info('[LIVE_AUTH_PLAYER_SQL] blocked uid=%s reason=%s', identityUid, reason);
       timing.auth_ms = Date.now() - authStartedAt;
       if (reason === 'postgres_unavailable') {
@@ -1137,6 +1207,22 @@ export async function requirePlayerOwnedLiveAuth(
       console.info('[LIVE_AUTH_PLAYER_FALLBACK] reason=%s uid=%s', sqlProfileLookup.missReason, identityUid);
     }
 
+    if (!isAuthFirestoreFallbackAllowed()) {
+      logFirebaseAuthFallbackDisabled('requirePlayerOwnedLiveAuth', 'auth_firestore_fallback_disabled', {
+        uid: identityUid,
+        miss_reason: sqlProfileLookup.missReason || 'row_missing',
+      });
+      timing.auth_ms = Date.now() - authStartedAt;
+      return {
+        ok: false,
+        response: apiError(
+          'User profile not found in SQL cache. Ensure players_cache is populated for this user.',
+          404
+        ),
+        timing,
+      };
+    }
+
     logFirestoreTouch({
       firestore_touch_type: 'legacy_read_remove_now',
       route: 'lib/firebase/apiAuth.requirePlayerOwnedLiveAuth',
@@ -1172,7 +1258,7 @@ export async function requirePlayerOwnedLiveAuth(
   const sessionValidation = await validatePlayerApiSession(identityUid, sessionId, timing, {
     appSessionId,
     knownProfile: sqlProfileLookup.profile,
-    sqlOnly: sqlReadMode,
+    sqlOnly: shouldAuthUseSqlOnly(),
   });
   timing.session_check_ms = Date.now() - sessionCheckStartedAt;
 
@@ -1286,7 +1372,7 @@ export async function requireCarerOwnedLiveAuth(
 > {
   const authStartedAt = Date.now();
   const expectedUid = String(expectedCarerUid || '').trim();
-  const sqlReadMode = isAuthSqlReadEnabled();
+  const sqlReadMode = shouldAuthUseSqlOnly();
   const timing = emptyCarerLiveAuthTiming();
 
   if (!expectedUid) {
@@ -1380,13 +1466,21 @@ export async function requireCarerOwnedLiveAuth(
   };
 
   if (sqlProfileLookup.profile?.role === 'carer') {
+    logSqlAuthProfileRead({
+      uid: identityUid,
+      role: 'carer',
+      source: 'sql',
+      route: 'requireCarerOwnedLiveAuth',
+    });
     return finishCarerSqlAuth(sqlProfileLookup.profile.coadminUid);
   }
 
   if (sqlReadMode) {
+    logSqlAuthNoFirestore('requireCarerOwnedLiveAuth', { uid: identityUid });
     if (
-      sqlProfileLookup.missReason === 'row_missing' ||
-      sqlProfileLookup.missReason === 'role_mismatch'
+      !isAppbegSqlOnlyMode() &&
+      (sqlProfileLookup.missReason === 'row_missing' ||
+        sqlProfileLookup.missReason === 'role_mismatch')
     ) {
       try {
         await mirrorPlayerById(identityUid, 'carer_live_auth_hydrate');
@@ -1408,6 +1502,12 @@ export async function requireCarerOwnedLiveAuth(
     }
 
     const reason = sqlProfileLookup.missReason || 'row_missing';
+    logSqlAuthProfileRead({
+      uid: identityUid,
+      source: 'sql',
+      missReason: reason,
+      route: 'requireCarerOwnedLiveAuth',
+    });
     timing.source = 'sql';
     timing.firestore_fallback = false;
     timing.auth_ms = Date.now() - authStartedAt;
@@ -1443,6 +1543,22 @@ export async function requireCarerOwnedLiveAuth(
     uid: identityUid,
     firestore_fallback: true,
   });
+
+  if (!isAuthFirestoreFallbackAllowed()) {
+    logFirebaseAuthFallbackDisabled('requireCarerOwnedLiveAuth', 'auth_firestore_fallback_disabled', {
+      uid: identityUid,
+      miss_reason: sqlProfileLookup.missReason || 'row_missing',
+    });
+    timing.auth_ms = Date.now() - authStartedAt;
+    return {
+      ok: false,
+      response: apiError(
+        'Carer profile not found in SQL cache. Ensure players_cache is populated for this user.',
+        404
+      ),
+      timing,
+    };
+  }
 
   logFirestoreTouch({
     firestore_touch_type: 'legacy_read_remove_now',
@@ -1505,7 +1621,7 @@ export async function requireCarerApiUser(
   | { response: NextResponse; timing: CarerLiveAuthTiming }
 > {
   const authStartedAt = Date.now();
-  const sqlReadMode = isAuthSqlReadEnabled();
+  const sqlReadMode = shouldAuthUseSqlOnly();
   const resolved = await resolveCarerRouteAuthUid(request);
   if (!resolved) {
     const timing = emptyCarerLiveAuthTiming();
@@ -1542,7 +1658,7 @@ export async function requireCarerApiUser(
   }
 
   let profileLookup = await lookupApiUserProfileFromSqlCache(auth.uid);
-  if (!profileLookup.profile) {
+  if (!profileLookup.profile && !isAppbegSqlOnlyMode()) {
     try {
       await mirrorPlayerById(auth.uid, 'carer_api_auth_hydrate');
     } catch (error) {
@@ -1556,6 +1672,14 @@ export async function requireCarerApiUser(
 
   if (!profileLookup.profile || profileLookup.profile.role !== 'carer') {
     const reason = profileLookup.missReason || 'row_missing';
+    logSqlAuthProfileRead({
+      uid: auth.uid,
+      role: profileLookup.profile?.role ?? null,
+      source: 'sql',
+      missReason: reason,
+      route: 'requireCarerApiUser',
+    });
+    logSqlAuthNoFirestore('requireCarerApiUser', { uid: auth.uid, reason });
     console.info('[API_AUTH] carer_api_user blocked', {
       branch: resolved.branch,
       uid: auth.uid,
@@ -1701,7 +1825,7 @@ export async function requirePlayerApiUser(
   options?: { rechargeFirestoreInstrumentation?: boolean }
 ): Promise<PlayerApiAuthResult> {
   void options;
-  const sqlReadMode = isAuthSqlReadEnabled();
+  const sqlReadMode = shouldAuthUseSqlOnly();
   const authStartedAt = Date.now();
 
   const resolved = await resolvePlayerRouteAuthUid(request);
@@ -1747,7 +1871,7 @@ export async function requirePlayerApiUser(
   }
 
   let profileLookup = await lookupApiUserProfileFromSqlCache(auth.uid);
-  if (!profileLookup.profile) {
+  if (!profileLookup.profile && !isAppbegSqlOnlyMode()) {
     try {
       await mirrorPlayerById(auth.uid, 'player_api_auth_hydrate');
     } catch (error) {
@@ -1761,6 +1885,14 @@ export async function requirePlayerApiUser(
 
   if (!profileLookup.profile || profileLookup.profile.role !== 'player') {
     const reason = profileLookup.missReason || 'row_missing';
+    logSqlAuthProfileRead({
+      uid: auth.uid,
+      role: profileLookup.profile?.role ?? null,
+      source: 'sql',
+      missReason: reason,
+      route: 'requirePlayerApiUser',
+    });
+    logSqlAuthNoFirestore('requirePlayerApiUser', { uid: auth.uid, reason });
     console.info('[API_AUTH] player_api_user blocked', {
       branch: resolveBranch,
       uid: auth.uid,
@@ -1794,6 +1926,13 @@ export async function requirePlayerApiUser(
     sql_read_mode: sqlReadMode,
     auth_ms: Date.now() - authStartedAt,
   });
+  logSqlAuthProfileRead({
+    uid: auth.uid,
+    role: 'player',
+    source: 'sql',
+    route: 'requirePlayerApiUser',
+  });
+  logSqlAuthNoFirestore('requirePlayerApiUser', { uid: auth.uid, allowed: true });
 
   return {
     user: apiUserFromSqlProfile(profileLookup.profile),
@@ -1948,6 +2087,12 @@ export async function requireApiUser(
 
   if (sqlProfileLookup.profile) {
     const role = sqlProfileLookup.profile.role as ApiRole;
+    logSqlAuthProfileRead({
+      uid: identityUid,
+      role,
+      source: 'sql',
+      route: 'requireApiUser',
+    });
     if (!allowedRoles.includes(role)) {
       timing.auth_ms = Date.now() - authStartedAt;
       console.info('[API_AUTH] request blocked', {
@@ -1979,8 +2124,15 @@ export async function requireApiUser(
   }
 
   if (!usedSqlProfile) {
-    if (isAuthSqlReadEnabled()) {
+    if (shouldAuthUseSqlOnly()) {
       const reason = sqlProfileLookup.missReason || 'row_missing';
+      logSqlAuthProfileRead({
+        uid: identityUid,
+        source: 'sql',
+        missReason: reason,
+        route: 'requireApiUser',
+      });
+      logSqlAuthNoFirestore('requireApiUser', { uid: identityUid, reason });
       timing.auth_ms = Date.now() - authStartedAt;
       console.info('[API_AUTH] request blocked', {
         uid: identityUid,
@@ -2014,6 +2166,21 @@ export async function requireApiUser(
       context: 'api_user_profile',
       firestore_fallback: true,
     });
+
+    if (!isAuthFirestoreFallbackAllowed()) {
+      logFirebaseAuthFallbackDisabled('requireApiUser', 'auth_firestore_fallback_disabled', {
+        uid: identityUid,
+        miss_reason: sqlProfileLookup.missReason || 'row_missing',
+      });
+      timing.auth_ms = Date.now() - authStartedAt;
+      return {
+        response: apiError(
+          'User profile not found in SQL cache. Ensure players_cache is populated for this user.',
+          404
+        ),
+        timing,
+      };
+    }
 
     logFirestoreTouch({
       firestore_touch_type: 'legacy_read_remove_now',
@@ -2081,7 +2248,8 @@ export async function requireApiUser(
     const sessionValidation = await validatePlayerApiSession(identityUid, sessionId, timing, {
       appSessionId,
       knownProfile: sqlProfileLookup.profile,
-      sqlOnly: isAuthSqlReadEnabled(),
+      sqlOnly: shouldAuthUseSqlOnly(),
+      rechargeFirestoreInstrumentation: options?.rechargeFirestoreInstrumentation,
     });
     if (!sessionValidation.ok) {
       console.info('[API_AUTH] player request blocked', {
@@ -2118,6 +2286,11 @@ export async function requireApiUser(
   }
 
   timing.auth_ms = Date.now() - authStartedAt;
+  logSqlAuthNoFirestore('requireApiUser', {
+    uid: user.uid,
+    role: user.role,
+    auth_path: timing.auth_path,
+  });
   console.info('[API_AUTH] request allowed', {
     uid: user.uid,
     role: user.role,

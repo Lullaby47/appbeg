@@ -10,6 +10,15 @@ import {
   type PlayerSessionStatusResult,
 } from '@/lib/server/playerSessionAuthCache';
 import { isPlayerSessionSqlReadEnabled } from '@/lib/server/authSqlRead';
+import {
+  isAppbegSqlOnlyMode,
+  isAuthFirestoreFallbackAllowed,
+  logFirebaseAuthFallbackDisabled,
+  logSqlAuthNoFirestore,
+  logSqlAuthProfileRead,
+  logSqlAuthSessionRead,
+  shouldAuthUseSqlOnly,
+} from '@/lib/server/appbegSqlOnlyMode';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import { requireFirebasePlayerUser } from '@/lib/server/playerSessionRouteAuth';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
@@ -73,7 +82,7 @@ async function readPlayerSessionStatusFromSql(
 
   if (!profile) {
     let profileLookup = await lookupApiUserProfileFromSqlCache(uid);
-    if (!profileLookup.profile) {
+    if (!profileLookup.profile && !isAppbegSqlOnlyMode()) {
       try {
         await mirrorPlayerById(uid, 'player_session_status_hydrate');
       } catch {
@@ -81,6 +90,14 @@ async function readPlayerSessionStatusFromSql(
       }
       profileLookup = await lookupApiUserProfileFromSqlCache(uid);
     }
+
+    logSqlAuthProfileRead({
+      uid,
+      role: profileLookup.profile?.role ?? null,
+      source: 'sql',
+      missReason: profileLookup.missReason,
+      route: 'readPlayerSessionStatusFromSql',
+    });
 
     if (
       profileLookup.missReason === 'postgres_unavailable' ||
@@ -113,6 +130,13 @@ async function readPlayerSessionStatusFromSql(
   }
 
   const sessionLookup = await lookupPlayerSessionFromSqlCache(sessionId, uid);
+  logSqlAuthSessionRead({
+    uid,
+    sessionId,
+    source: 'sql',
+    missReason: sessionLookup.missReason,
+    route: 'readPlayerSessionStatusFromSql',
+  });
   if (
     sessionLookup.missReason === 'postgres_unavailable' ||
     sessionLookup.missReason === 'lookup_failed'
@@ -346,7 +370,8 @@ export async function resolvePlayerSessionStatus(request: Request) {
     });
   }
 
-  if (isPlayerSessionSqlReadEnabled()) {
+  if (shouldAuthUseSqlOnly() || isPlayerSessionSqlReadEnabled()) {
+    logSqlAuthNoFirestore('resolvePlayerSessionStatus', { uid, session_id: sessionId });
     logFirestoreTouch({
       firestore_touch_type: 'legacy_read_remove_now',
       route: '/api/auth/player-session/status',
@@ -375,6 +400,21 @@ export async function resolvePlayerSessionStatus(request: Request) {
       cache_hit: false,
       firestore_fallback_skipped: true,
     });
+    return { status: 200, result };
+  }
+
+  if (!isAuthFirestoreFallbackAllowed()) {
+    logFirebaseAuthFallbackDisabled('resolvePlayerSessionStatus', 'auth_firestore_fallback_disabled', {
+      uid,
+      session_id: sessionId,
+    });
+    const result: PlayerSessionStatusResult = {
+      ok: false,
+      reason: 'session_inactive',
+      uid,
+      sessionId,
+      source: 'sql',
+    };
     return { status: 200, result };
   }
 
