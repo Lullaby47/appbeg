@@ -130,6 +130,15 @@ export async function POST(request: Request) {
         reason: String(body.reason || '').trim() || null,
       });
     }
+    if (action === 'dismiss_player_in_game') {
+      console.info('[AGENT_JOBS_API_DISMISS_ATTEMPT]', {
+        jobId: jobId || null,
+        carerUid,
+        agentId,
+        reason: String(body.reason || '').trim() || null,
+        reasonCode: 'PLAYER_IN_GAME',
+      });
+    }
     if (action === 'complete_recharge_redeem') {
       console.info('[AGENT_JOBS_API_COMPLETE_ATTEMPT]', {
         jobId: jobId || null,

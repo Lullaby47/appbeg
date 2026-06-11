@@ -45,6 +45,8 @@ export const PLAYER_REDEEM_SENT_MESSAGE = 'Redeem request successfully sent.';
 export const PLAYER_RECHARGE_SUCCESS_MESSAGE = 'Your game is recharged. Enjoy!';
 export const PLAYER_REDEEM_SUCCESS_MESSAGE = 'You have successfully redeemed from your game.';
 export const FAKE_REDEEM_REASON_CODE = 'fake_redeem';
+export const PLAYER_IN_GAME_REASON_CODE = 'PLAYER_IN_GAME';
+export const PLAYER_IN_GAME_MESSAGE = 'Player is currently in game.';
 export const PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE =
   'Redeem could not be completed because the game balance is lower than the requested redeem amount.';
 
@@ -94,6 +96,15 @@ function buildAutomationMidnightPartyPlayerMessage(gameToast: string, refunded: 
     ? `Recharge could not be completed: ${toast}`
     : 'Recharge could not be completed: Midnight Party is pending on Game Vault.';
   return refunded ? `${base} Your balance was refunded.` : base;
+}
+
+function readRawBoolean(raw: unknown, ...fields: string[]) {
+  for (const field of fields) {
+    const value = readRawField(raw, field);
+    if (value === true) return true;
+    if (value === false) return false;
+  }
+  return false;
 }
 
 export type AuthorityRechargeCreateInput = {
@@ -174,6 +185,7 @@ export type AuthorityDismissRechargeResult = {
   duplicate: boolean;
   alreadyDismissed: boolean;
   refunded: boolean;
+  refundAmount?: number;
   requestId: string;
   linkedTaskId: string;
   taskDeleted: boolean;
@@ -192,6 +204,7 @@ export type AuthorityDismissRedeemInput = {
   dismissedByAutomation?: boolean;
   pokeMessage?: string | null;
   fakeRedeem?: boolean;
+  refundCashOnDismissal?: boolean;
   skipTaskTombstone?: boolean;
   txnClient?: PoolClient;
 };
@@ -200,6 +213,8 @@ export type AuthorityDismissRedeemResult = {
   success: true;
   duplicate: boolean;
   alreadyDismissed: boolean;
+  refunded: boolean;
+  refundAmount?: number;
   requestId: string;
   linkedTaskId: string;
   taskDeleted: boolean;
@@ -1533,6 +1548,7 @@ function buildDismissRechargeSqlResult(input: {
   duplicate: boolean;
   alreadyDismissed: boolean;
   refunded: boolean;
+  refundAmount?: number;
   taskDeleted: boolean;
 }): AuthorityDismissRechargeResult {
   return {
@@ -1540,6 +1556,7 @@ function buildDismissRechargeSqlResult(input: {
     duplicate: input.duplicate,
     alreadyDismissed: input.alreadyDismissed,
     refunded: input.refunded,
+    refundAmount: input.refundAmount,
     requestId: input.requestId,
     linkedTaskId: input.linkedTaskId,
     taskDeleted: input.taskDeleted,
@@ -1598,6 +1615,7 @@ async function resolveDismissRechargeDuplicate(
       duplicate: true,
       alreadyDismissed: true,
       refunded: payload.refunded === true,
+      refundAmount: Math.max(0, Number(payload.refundAmount || 0)) || undefined,
       taskDeleted: payload.taskDeleted === true,
     });
     logDismissRechargeSqlState({
@@ -1751,6 +1769,7 @@ export async function dismissRechargeRequestInSql(
     const taskExists = taskResult.rows.length > 0;
     const nowIso = new Date().toISOString();
     let refunded = false;
+    let refundAmount = 0;
     const playerUid = cleanText(request.player_uid);
 
     if (alreadyDismissed || beforeStatus === 'completed') {
@@ -1928,6 +1947,7 @@ export async function dismissRechargeRequestInSql(
           sourceFields: { amount: deductedAmount, requestId },
         });
         refunded = true;
+        refundAmount = deductedAmount;
       }
     }
 
@@ -1986,6 +2006,7 @@ export async function dismissRechargeRequestInSql(
         requestId,
         alreadyDismissed: false,
         refunded,
+        refundAmount: refunded ? refundAmount : 0,
         taskDeleted: taskExists,
       }),
     ]);
@@ -2011,6 +2032,7 @@ export async function dismissRechargeRequestInSql(
       duplicate: false,
       alreadyDismissed: false,
       refunded,
+      refundAmount: refunded ? refundAmount : undefined,
       taskDeleted: taskExists,
     });
   } catch (error) {
@@ -2041,6 +2063,8 @@ export async function dismissRedeemRequestInSql(
       success: true,
       duplicate: true,
       alreadyDismissed: existing.alreadyDismissed === true,
+      refunded: existing.refunded === true,
+      refundAmount: Math.max(0, Number(existing.refundAmount || 0)) || undefined,
       requestId,
       linkedTaskId,
       taskDeleted: existing.taskDeleted === true,
@@ -2075,6 +2099,8 @@ export async function dismissRedeemRequestInSql(
           success: true,
           duplicate: true,
           alreadyDismissed: payload.alreadyDismissed === true,
+          refunded: payload.refunded === true,
+          refundAmount: Math.max(0, Number(payload.refundAmount || 0)) || undefined,
           requestId,
           linkedTaskId,
           taskDeleted: payload.taskDeleted === true,
@@ -2151,6 +2177,9 @@ export async function dismissRedeemRequestInSql(
 
     const currentStatus = cleanText(request.status).toLowerCase();
     const alreadyDismissed = currentStatus === 'dismissed';
+    const alreadyCashRefunded =
+      readRawBoolean(request.raw_firestore_data, 'cashRefundedOnDismissal', 'cash_refunded_on_dismissal') ||
+      readRawBoolean(request.raw_firestore_data, 'redeemCashRefundedOnDismissal', 'redeem_cash_refunded_on_dismissal');
     if (!alreadyDismissed && !DISMISSIBLE_REDEEM_STATUSES.has(currentStatus)) {
       throw new Error('Redeem request is not dismissible.');
     }
@@ -2160,6 +2189,17 @@ export async function dismissRedeemRequestInSql(
     const dismissedByAutomation = input.dismissedByAutomation === true;
     const dismissReasonCode = cleanText(input.dismissReasonCode) || null;
     const dismissReasonMessage = cleanText(input.dismissReasonMessage) || null;
+    const cashDeductedOnRequest =
+      readRawBoolean(request.raw_firestore_data, 'cashDeductedOnRequest', 'cash_deducted_on_request') ||
+      readRawBoolean(request.raw_firestore_data, 'redeemCashDeductedOnRequest', 'redeem_cash_deducted_on_request');
+    const deductedAmount = Math.max(0, Number(request.amount || 0));
+    const shouldRefundCash =
+      input.refundCashOnDismissal === true &&
+      cashDeductedOnRequest &&
+      !alreadyCashRefunded &&
+      deductedAmount > 0;
+    let refunded = false;
+    let refundAmount = 0;
     const pokeMessage =
       cleanText(input.pokeMessage) ||
       (dismissedByAutomation && input.fakeRedeem === true
@@ -2181,6 +2221,8 @@ export async function dismissRedeemRequestInSql(
       dismissReason: dismissReasonMessage || dismissReasonCode,
       fakeRedeem: input.fakeRedeem === true,
       fakeRedeemReason: dismissReasonMessage || dismissReasonCode,
+      cashRefundedOnDismissal: shouldRefundCash ? true : alreadyCashRefunded,
+      cashRefundedOnDismissalAt: shouldRefundCash ? nowIso : readRawField(request.raw_firestore_data, 'cashRefundedOnDismissalAt'),
       automationStatus: dismissedByAutomation ? 'dismissed' : cleanText(request.automation_status) || null,
       automationError: dismissedByAutomation ? dismissReasonMessage || dismissReasonCode : null,
       retryPending: false,
@@ -2205,12 +2247,84 @@ export async function dismissRedeemRequestInSql(
       retryPending: false,
       completedAt: nowIso,
       ttlExpiresAt: ttlAfterDaysIso(90),
-      source: dismissedByAutomation ? 'authority_dismiss_fake_redeem' : 'authority_dismiss_redeem',
+      source: dismissedByAutomation && input.fakeRedeem === true ? 'authority_dismiss_fake_redeem' : 'authority_dismiss_redeem',
       rawFirestoreData: requestRaw,
     });
 
     if (taskExists && input.skipTaskTombstone !== true) {
       await tombstoneLinkedCarerTaskInTxn(client, requestId, 'authority_dismiss_redeem');
+    }
+
+    if (shouldRefundCash) {
+      const refundKey = `game_request_redeem_refund:${requestId}:${idempotencyKey}`;
+      const refundClaim = await claimAuthorityOperation(client, {
+        operationKey: refundKey,
+        operationType: 'game_request_redeem_refund',
+        userUid: playerUid,
+        sourceId: requestId,
+        actorUid: input.actorUid,
+        actorRole: input.actorRole,
+        payload: {},
+      });
+      if (refundClaim.claimed) {
+        const balanceResult = await client.query(
+          `
+            SELECT uid, username, cash, raw_firestore_data
+            FROM public.players_cache
+            WHERE uid = $1 AND deleted_at IS NULL
+            FOR UPDATE
+          `,
+          [playerUid]
+        );
+        if (!balanceResult.rows.length) throw new Error('Player not found.');
+        const balancePlayer = balanceResult.rows[0] as Record<string, unknown>;
+        const currentCash = readPlayerCash(balancePlayer);
+        const newCash = currentCash + deductedAmount;
+        await updatePlayerBalancesInTxn(client, playerUid, { cash: newCash });
+        const eventId = randomUUID();
+        const financialRaw = {
+          playerUid,
+          coadminUid: canonicalScope,
+          amountNpr: deductedAmount,
+          type: 'redeem_refund',
+          requestId,
+          createdAt: nowIso,
+        };
+        await insertFinancialEventInTxn(client, {
+          eventId,
+          playerUid,
+          coadminUid: canonicalScope,
+          amountNpr: deductedAmount,
+          type: 'redeem_refund',
+          requestId,
+          beforeCash: currentCash,
+          afterCash: newCash,
+          createdAt: nowIso,
+          source: 'authority_dismiss_redeem',
+        });
+        await insertAuthorityLedgerEvent(client, {
+          eventKey: `financialEvents:${eventId}:${playerUid}:cash:redeem_refund_cash_credit`,
+          userUid: playerUid,
+          username: cleanText(balancePlayer.username) || 'Player',
+          role: 'player',
+          coadminUid: canonicalScope,
+          balanceType: 'cash',
+          direction: 'credit',
+          delta: deductedAmount,
+          absoluteAfter: newCash,
+          eventType: 'redeem_refund_cash_credit',
+          sourceCollection: 'financialEvents',
+          sourceId: eventId,
+          actorUid: input.actorUid,
+          actorRole: input.actorRole,
+          confidence: 'high',
+          sourceCreatedAt: nowIso,
+          rawSourceData: financialRaw,
+          sourceFields: { amount: deductedAmount, requestId },
+        });
+        refunded = true;
+        refundAmount = deductedAmount;
+      }
     }
 
     if (pokeMessage) {
@@ -2232,7 +2346,26 @@ export async function dismissRedeemRequestInSql(
         toastVariant: 'error',
         dismissReasonCode,
         dismissReasonMessage,
+        refunded,
         source: outcomeSource,
+      });
+    }
+    if (refunded) {
+      await insertLiveOutboxEventWithClient(client, {
+        channel: playerRequestLiveChannel(playerUid),
+        eventType: 'balance_update',
+        entityType: 'player_balance',
+        entityId: playerUid,
+        source: 'authority_dismiss_redeem',
+        mirroredAt: nowIso,
+        payload: {
+          entityId: playerUid,
+          playerUid,
+          updatedAt: nowIso,
+          source: 'authority',
+          refunded: true,
+          requestId,
+        },
       });
     }
     if (taskExists && input.skipTaskTombstone !== true) {
@@ -2255,6 +2388,8 @@ export async function dismissRedeemRequestInSql(
       JSON.stringify({
         requestId,
         alreadyDismissed,
+        refunded,
+        refundAmount: refunded ? refundAmount : 0,
         taskDeleted: taskExists,
       }),
     ]);
@@ -2265,6 +2400,8 @@ export async function dismissRedeemRequestInSql(
       success: true,
       duplicate: false,
       alreadyDismissed,
+      refunded,
+      refundAmount: refunded ? refundAmount : undefined,
       requestId,
       linkedTaskId,
       taskDeleted: taskExists,

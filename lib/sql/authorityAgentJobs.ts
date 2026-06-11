@@ -15,6 +15,8 @@ import {
   dismissRechargeRequestInSql,
   dismissRedeemRequestInSql,
   FAKE_REDEEM_REASON_CODE,
+  PLAYER_IN_GAME_MESSAGE,
+  PLAYER_IN_GAME_REASON_CODE,
 } from '@/lib/sql/authorityGameRequests';
 import { ttlAfterDaysIso } from '@/lib/sql/authorityGameRequestHelpers';
 import { lookupAutomationAutoStateFromSqlCache } from '@/lib/sql/automationAutoStateCache';
@@ -42,6 +44,30 @@ function buildMidnightPartyPlayerMessage(gameToast: string, refunded: boolean) {
     ? `Recharge could not be completed: ${toast}`
     : 'Recharge could not be completed: Midnight Party is pending on Game Vault.';
   return refunded ? `${base} Your balance was refunded.` : base;
+}
+
+function readJobPayloadValue(job: SqlJobRow, key: string) {
+  const payload = parseJson(job.payload);
+  const raw = parseJson(job.raw_firestore_data);
+  return payload[key] ?? raw[key];
+}
+
+function readPlayerInGameLogFields(job: SqlJobRow, task?: Record<string, unknown> | null) {
+  const game =
+    cleanText(task?.gameName) ||
+    cleanText(readJobPayloadValue(job, 'gameName')) ||
+    cleanText(readJobPayloadValue(job, 'game')) ||
+    cleanText(job.game);
+  const username =
+    cleanText(task?.playerUsername) ||
+    cleanText(readJobPayloadValue(job, 'currentUsername')) ||
+    cleanText(readJobPayloadValue(job, 'gameAccountUsername')) ||
+    cleanText(readJobPayloadValue(job, 'username')) ||
+    cleanText(readJobPayloadValue(job, 'playerUsername'));
+  const taskType =
+    cleanText(job.type).toUpperCase() ||
+    cleanText(readJobPayloadValue(job, 'taskType')).toUpperCase();
+  return { game, username, taskType };
 }
 
 type SqlJobRow = Record<string, unknown>;
@@ -1567,6 +1593,228 @@ export async function agentDismissMidnightPartyBlockedRecharge(input: {
   };
 }
 
+export async function agentDismissPlayerInGame(input: {
+  carerUid: string;
+  agentId: string;
+  jobId: string;
+  reason: string;
+  details?: Record<string, unknown> | null;
+  scopeUid?: string | null;
+}) {
+  const db = getPlayerMirrorPool();
+  if (!db) throw new Error('SQL pool unavailable.');
+  const details = input.details || {};
+  const reasonCode = PLAYER_IN_GAME_REASON_CODE;
+  const playerMessage = PLAYER_IN_GAME_MESSAGE;
+  const authorityStartedAt = Date.now();
+  console.info('[AGENT_JOBS_API_DISMISS_ATTEMPT]', {
+    jobId: input.jobId,
+    reasonCode,
+    message: playerMessage,
+  });
+
+  const client = await db.connect();
+  let taskId = '';
+  let requestId = '';
+  let coadminUid = '';
+  let playerUid = '';
+  let requestType = '';
+  let gameName = '';
+  let username = '';
+  let refundAmount = 0;
+  let refunded = false;
+  try {
+    await client.query('BEGIN');
+    const jobResult = await client.query(
+      `SELECT * FROM public.automation_jobs_cache WHERE job_id = $1 FOR UPDATE`,
+      [input.jobId]
+    );
+    if (!jobResult.rows.length) {
+      await client.query('COMMIT');
+      return { success: true as const, skipped: true };
+    }
+    const job = jobResult.rows[0] as SqlJobRow;
+    taskId = cleanText(job.task_id);
+    coadminUid = cleanText(job.coadmin_uid);
+    playerUid = cleanText(job.player_uid);
+    requestType = cleanText(job.type).toUpperCase();
+    let task: Record<string, unknown> | null = null;
+    if (taskId) {
+      const taskRow = await client.query(
+        `SELECT * FROM public.carer_tasks_cache WHERE firebase_id = $1 FOR UPDATE`,
+        [taskId]
+      );
+      if (taskRow.rows.length) {
+        task = rowToTask(taskRow.rows[0] as SqlTaskRow) as Record<string, unknown>;
+        requestId = cleanText(task.requestId);
+        playerUid = playerUid || cleanText(task.playerUid);
+        coadminUid = coadminUid || cleanText(task.coadminUid);
+      }
+    }
+    if (!requestId && taskId.startsWith('request__')) {
+      requestId = taskId.slice('request__'.length);
+    }
+    const logFields = readPlayerInGameLogFields(job, task);
+    gameName = logFields.game;
+    username = logFields.username;
+    requestType = requestType || logFields.taskType;
+    console.info('[PLAYER_IN_GAME_TOAST_DETECTED] taskId=%s game=%s taskType=%s username=%s', taskId, gameName, requestType, username);
+    console.info('[PLAYER_IN_GAME_DETECTED] game=%s username=%s taskType=%s', gameName, username, requestType);
+
+    if (requestId && requestType === 'RECHARGE') {
+      const dismissOutcome = await dismissRechargeRequestInSql({
+        requestId,
+        actorUid: input.carerUid,
+        actorRole: 'carer',
+        isAdmin: false,
+        scopeUid: cleanText(input.scopeUid) || coadminUid || null,
+        idempotencyKey: `agent_player_in_game:${input.jobId}`,
+        dismissType: reasonCode,
+        dismissReasonCode: reasonCode,
+        dismissReasonMessage: playerMessage,
+        dismissedByAutomation: true,
+        pokeMessage: playerMessage,
+        skipTaskTombstone: true,
+        txnClient: client,
+      });
+      refunded = dismissOutcome.refunded === true;
+      refundAmount = Number(dismissOutcome.refundAmount || 0);
+      console.info('[PLAYER_IN_GAME_RECHARGE_REFUND] amount=%s', refunded ? refundAmount : 0);
+      console.info('[PLAYER_IN_GAME_REFUND_APPLIED] taskId=%s refundType=coin amount=%s', taskId, refunded ? refundAmount : 0);
+    } else if (requestId && requestType === 'REDEEM') {
+      const dismissOutcome = await dismissRedeemRequestInSql({
+        requestId,
+        actorUid: input.carerUid,
+        actorRole: 'carer',
+        isAdmin: false,
+        scopeUid: cleanText(input.scopeUid) || coadminUid || null,
+        idempotencyKey: `agent_player_in_game:${input.jobId}`,
+        dismissType: reasonCode,
+        dismissReasonCode: reasonCode,
+        dismissReasonMessage: playerMessage,
+        dismissedByAutomation: true,
+        pokeMessage: playerMessage,
+        refundCashOnDismissal: true,
+        skipTaskTombstone: true,
+        txnClient: client,
+      });
+      refunded = dismissOutcome.refunded === true;
+      refundAmount = Number(dismissOutcome.refundAmount || 0);
+      console.info('[PLAYER_IN_GAME_REDEEM_REFUND] amount=%s', refunded ? refundAmount : 0);
+      console.info('[PLAYER_IN_GAME_REFUND_APPLIED] taskId=%s refundType=cash amount=%s', taskId, refunded ? refundAmount : 0);
+    } else if (requestId) {
+      throw new Error(`PLAYER_IN_GAME dismissal is not supported for ${requestType || 'unknown'} tasks.`);
+    }
+
+    const nowIso = new Date().toISOString();
+    const resultDetails = {
+      success: true,
+      dismissed: true,
+      status: 'dismissed',
+      reason: reasonCode,
+      reasonCode,
+      requestType,
+      message: playerMessage,
+      playerMessage,
+      dismissType: reasonCode,
+      dismissReasonCode: reasonCode,
+      dismissReasonMessage: playerMessage,
+      refund: refunded,
+      refundAmount: refunded ? refundAmount : 0,
+      nonRetryable: true,
+      retryPending: false,
+      requestId: requestId || null,
+      ...details,
+    };
+    await patchAutomationJobInTxn(client, input.jobId, {
+      status: 'completed',
+      claimedStatus: 'completed',
+      completedAt: nowIso,
+      updatedAt: nowIso,
+      lastHeartbeatAt: nowIso,
+      ttlExpiresAt: ttlAfterDaysIso(AUTOMATION_JOB_TTL_DAYS),
+      error: null,
+      needsManualReview: false,
+      result: resultDetails,
+    });
+    if (taskId) {
+      await patchCarerTaskAgentInTxn(client, taskId, {
+        status: 'completed',
+        claimedStatus: 'completed',
+        completedByCarerUid: input.carerUid,
+        automationStatus: 'dismissed',
+        automationError: playerMessage,
+        dismissType: reasonCode,
+        dismissReasonCode: reasonCode,
+        dismissReasonMessage: playerMessage,
+        dismissReason: playerMessage,
+        dismissedByAutomation: true,
+        pokeMessage: playerMessage,
+        retryPending: false,
+        completedAt: nowIso,
+        ttlExpiresAt: ttlAfterDaysIso(COMPLETED_CARER_TASK_TTL_DAYS),
+        updatedAt: nowIso,
+      });
+      if (coadminUid) {
+        await writeTaskOutboxInTxn(client, {
+          coadminUid,
+          carerUid: input.carerUid,
+          taskId,
+          status: 'completed',
+          type: requestType.toLowerCase(),
+          gameName,
+          updatedAt: nowIso,
+          eventType: 'task.dismissed',
+        });
+        await writeJobOutboxInTxn(client, {
+          coadminUid,
+          carerUid: input.carerUid,
+          jobId: input.jobId,
+          taskId,
+          status: 'completed',
+          type: requestType,
+          gameName,
+          updatedAt: nowIso,
+          eventType: 'job.dismissed',
+        });
+      }
+    }
+    console.info('[PLAYER_IN_GAME_TASK_DISMISSED] taskId=%s reason=%s', taskId || null, reasonCode);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('[PLAYER_IN_GAME_DISMISS_DONE]', {
+      jobId: input.jobId,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      durationMs: Date.now() - authorityStartedAt,
+    });
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  console.info('[PLAYER_IN_GAME_DISMISS_DONE]', {
+    jobId: input.jobId,
+    requestId: requestId || null,
+    playerUid: playerUid || null,
+    requestType: requestType || null,
+    game: gameName || null,
+    username: username || null,
+    refunded,
+    refundAmount: refunded ? refundAmount : 0,
+    ok: true,
+    durationMs: Date.now() - authorityStartedAt,
+  });
+  console.info('[SQL_FIREBASE_BYPASS_CONFIRMED] operation=dismiss_player_in_game jobId=%s', input.jobId);
+  return {
+    success: true as const,
+    requestId: requestId || null,
+    refunded,
+    refundAmount: refunded ? refundAmount : 0,
+  };
+}
+
 export async function agentDismissFakeRedeem(input: {
   carerUid: string;
   agentId: string;
@@ -2043,6 +2291,15 @@ export async function runAgentJobAction(input: AgentJobActionInput) {
         agentId: input.agentId,
         jobId: cleanText(input.jobId),
         reason: cleanText(input.reason) || 'Game Vault Midnight Party pending.',
+        details: input.details,
+        scopeUid: input.scopeUid,
+      });
+    case 'dismiss_player_in_game':
+      return agentDismissPlayerInGame({
+        carerUid: input.carerUid,
+        agentId: input.agentId,
+        jobId: cleanText(input.jobId),
+        reason: cleanText(input.reason) || PLAYER_IN_GAME_MESSAGE,
         details: input.details,
         scopeUid: input.scopeUid,
       });

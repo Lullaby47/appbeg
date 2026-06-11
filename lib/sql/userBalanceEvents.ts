@@ -354,6 +354,8 @@ export async function buildUserBalanceEventsFromMirrors(options: BuildOptions = 
       add(events, makeEvent({ ...common, eventKey: `financialEvents:${id}:${userUid}:coin:recharge_request_coin_debit`, balanceType: 'coin', delta: -amount, eventType: 'recharge_request_coin_debit', confidence: 'medium', confidenceReason: 'Financial event amount records recharge coin debit.', sourceFields: { amount } }, profiles));
     } else if (type === 'recharge_refund') {
       add(events, makeEvent({ ...common, eventKey: `financialEvents:${id}:${userUid}:coin:recharge_refund_coin_credit`, balanceType: 'coin', delta: amount, eventType: 'recharge_refund_coin_credit', confidence: 'medium', sourceFields: { amount } }, profiles));
+    } else if (type === 'redeem_refund') {
+      add(events, makeEvent({ ...common, eventKey: `financialEvents:${id}:${userUid}:cash:redeem_refund_cash_credit`, balanceType: 'cash', delta: amount, eventType: 'redeem_refund_cash_credit', confidence: 'medium', sourceFields: { amount } }, profiles));
     } else if (type === 'redeem') {
       add(events, makeEvent({ ...common, eventKey: `financialEvents:${id}:${userUid}:cash:redeem_cash_credit`, balanceType: 'cash', delta: amount, eventType: 'redeem_cash_credit', confidence: 'medium', sourceFields: { amount } }, profiles));
     } else if (type === 'cashout_request_deduct') {
