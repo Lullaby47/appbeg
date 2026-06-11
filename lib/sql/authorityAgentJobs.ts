@@ -11,6 +11,7 @@ import {
 import { returnTaskToPendingInSql } from '@/lib/sql/authorityCarerTasks';
 import {
   completeRechargeRedeemTaskInSql,
+  dismissRechargeRequestInSql,
   dismissRedeemRequestInSql,
 } from '@/lib/sql/authorityGameRequests';
 import { ttlAfterDaysIso } from '@/lib/sql/authorityGameRequestHelpers';
@@ -30,6 +31,15 @@ const AUTOMATION_JOB_TTL_DAYS = 14;
 const COMPLETED_CARER_TASK_TTL_DAYS = 90;
 const RUNNING_JOB_STALE_MS = 10 * 60 * 1000;
 const QUEUED_JOB_STALE_MS = 30 * 60 * 1000;
+const GAME_VAULT_MIDNIGHT_PARTY_REASON = 'game_vault_midnight_party_pending';
+
+function buildMidnightPartyPlayerMessage(gameToast: string, refunded: boolean) {
+  const toast = cleanText(gameToast);
+  const base = toast
+    ? `Recharge could not be completed: ${toast}`
+    : 'Recharge could not be completed: Midnight Party is pending on Game Vault.';
+  return refunded ? `${base} Your balance was refunded.` : base;
+}
 
 type SqlJobRow = Record<string, unknown>;
 type SqlTaskRow = Record<string, unknown>;
@@ -1093,6 +1103,190 @@ export async function agentMarkJobPendingReview(input: {
   }
 }
 
+export async function agentDismissMidnightPartyBlockedRecharge(input: {
+  carerUid: string;
+  agentId: string;
+  jobId: string;
+  reason: string;
+  details?: Record<string, unknown> | null;
+  scopeUid?: string | null;
+}) {
+  const db = getPlayerMirrorPool();
+  if (!db) throw new Error('SQL pool unavailable.');
+  const details = input.details || {};
+  const gameToast = cleanText(input.reason) || cleanText(details.message) || '';
+  const reasonCode = GAME_VAULT_MIDNIGHT_PARTY_REASON;
+  console.info('[AGENT_JOBS_API_DISMISS_ATTEMPT]', {
+    jobId: input.jobId,
+    reasonCode,
+    gameToast: gameToast || null,
+  });
+  console.info('[AUTHORITY_RECHARGE_DISMISS_REFUND_START]', {
+    jobId: input.jobId,
+    reasonCode,
+  });
+
+  const client = await db.connect();
+  let taskId = '';
+  let requestId = '';
+  let coadminUid = '';
+  let playerUid = '';
+  try {
+    await client.query('BEGIN');
+    const jobResult = await client.query(
+      `SELECT * FROM public.automation_jobs_cache WHERE job_id = $1 FOR UPDATE`,
+      [input.jobId]
+    );
+    if (!jobResult.rows.length) {
+      await client.query('COMMIT');
+      console.info('[AUTHORITY_RECHARGE_DISMISS_REFUND_RESULT]', {
+        jobId: input.jobId,
+        skipped: true,
+        reason: 'job_not_found',
+      });
+      return { success: true as const, skipped: true };
+    }
+    const job = jobResult.rows[0] as SqlJobRow;
+    taskId = cleanText(job.task_id);
+    coadminUid = cleanText(job.coadmin_uid);
+    playerUid = cleanText(job.player_uid);
+    const nowIso = new Date().toISOString();
+    const resultDetails = {
+      success: true,
+      dismissed: true,
+      status: 'dismissed',
+      reason: reasonCode,
+      reasonCode,
+      message: gameToast,
+      playerMessage: buildMidnightPartyPlayerMessage(gameToast, false),
+      retryPending: false,
+      nonRetryable: true,
+      refund: true,
+      ...details,
+    };
+    await patchAutomationJobInTxn(client, input.jobId, {
+      status: 'completed',
+      claimedStatus: 'completed',
+      completedAt: nowIso,
+      updatedAt: nowIso,
+      lastHeartbeatAt: nowIso,
+      ttlExpiresAt: ttlAfterDaysIso(AUTOMATION_JOB_TTL_DAYS),
+      error: null,
+      needsManualReview: false,
+      result: resultDetails,
+    });
+    if (taskId) {
+      const taskRow = await client.query(
+        `SELECT request_id, player_uid FROM public.carer_tasks_cache WHERE firebase_id = $1 FOR UPDATE`,
+        [taskId]
+      );
+      if (taskRow.rows.length) {
+        requestId = cleanText(taskRow.rows[0]?.request_id);
+        playerUid = playerUid || cleanText(taskRow.rows[0]?.player_uid);
+      }
+      await patchCarerTaskAgentInTxn(client, taskId, {
+        status: 'completed',
+        claimedStatus: 'completed',
+        completedByCarerUid: input.carerUid,
+        automationStatus: 'dismissed',
+        automationError: gameToast || reasonCode,
+        dismissedByAutomation: true,
+        dismissType: reasonCode,
+        dismissReasonCode: reasonCode,
+        dismissReasonMessage: gameToast || reasonCode,
+        dismissReason: gameToast || reasonCode,
+        pokeMessage: buildMidnightPartyPlayerMessage(gameToast, false),
+        retryPending: false,
+        completedAt: nowIso,
+        ttlExpiresAt: ttlAfterDaysIso(COMPLETED_CARER_TASK_TTL_DAYS),
+        updatedAt: nowIso,
+      });
+      if (coadminUid) {
+        await writeTaskOutboxInTxn(client, {
+          coadminUid,
+          carerUid: input.carerUid,
+          taskId,
+          status: 'completed',
+          type: 'recharge',
+          gameName: cleanText(job.game),
+          updatedAt: nowIso,
+          eventType: 'task.dismissed',
+        });
+        await writeJobOutboxInTxn(client, {
+          coadminUid,
+          carerUid: input.carerUid,
+          jobId: input.jobId,
+          taskId,
+          status: 'completed',
+          type: cleanText(job.type),
+          gameName: cleanText(job.game),
+          updatedAt: nowIso,
+          eventType: 'job.dismissed',
+        });
+      }
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('[AUTHORITY_RECHARGE_DISMISS_REFUND_RESULT]', {
+      jobId: input.jobId,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  if (!requestId && taskId.startsWith('request__')) {
+    requestId = taskId.slice('request__'.length);
+  }
+  if (!requestId) {
+    console.warn('[AUTHORITY_RECHARGE_DISMISS_REFUND_RESULT]', {
+      jobId: input.jobId,
+      ok: false,
+      reason: 'request_id_missing',
+    });
+    return { success: true as const, skipped: true, reason: 'request_id_missing' };
+  }
+
+  const dismissOutcome = await dismissRechargeRequestInSql({
+    requestId,
+    actorUid: input.carerUid,
+    actorRole: 'carer',
+    isAdmin: false,
+    scopeUid: cleanText(input.scopeUid) || coadminUid || null,
+    idempotencyKey: `agent_midnight_party:${input.jobId}`,
+    dismissType: reasonCode,
+    dismissReasonCode: reasonCode,
+    dismissReasonMessage: gameToast || reasonCode,
+    dismissedByAutomation: true,
+    skipTaskTombstone: true,
+  });
+  const playerMessage = buildMidnightPartyPlayerMessage(gameToast, dismissOutcome.refunded);
+  console.info('[AUTHORITY_RECHARGE_DISMISS_REFUND_RESULT]', {
+    jobId: input.jobId,
+    requestId,
+    ok: true,
+    refunded: dismissOutcome.refunded,
+    duplicate: dismissOutcome.duplicate,
+    alreadyDismissed: dismissOutcome.alreadyDismissed,
+  });
+  console.info('[PLAYER_RECHARGE_FAILURE_VISIBLE]', {
+    requestId,
+    playerUid: playerUid || null,
+    reasonCode,
+    playerMessage,
+  });
+  console.info('[SQL_FIREBASE_BYPASS_CONFIRMED] operation=dismiss_midnight_party_blocked_recharge jobId=%s', input.jobId);
+  return {
+    success: true as const,
+    requestId,
+    refunded: dismissOutcome.refunded,
+    duplicate: dismissOutcome.duplicate,
+  };
+}
+
 export async function agentDismissFakeRedeem(input: {
   carerUid: string;
   agentId: string;
@@ -1462,6 +1656,15 @@ export async function runAgentJobAction(input: AgentJobActionInput) {
         agentId: input.agentId,
         jobId: cleanText(input.jobId),
         reason: cleanText(input.reason) || 'Fake redeem.',
+        details: input.details,
+        scopeUid: input.scopeUid,
+      });
+    case 'dismiss_midnight_party_blocked_recharge':
+      return agentDismissMidnightPartyBlockedRecharge({
+        carerUid: input.carerUid,
+        agentId: input.agentId,
+        jobId: cleanText(input.jobId),
+        reason: cleanText(input.reason) || 'Game Vault Midnight Party pending.',
         details: input.details,
         scopeUid: input.scopeUid,
       });

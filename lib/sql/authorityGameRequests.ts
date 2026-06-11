@@ -37,6 +37,15 @@ const FIRST_RECHARGE_MATCH_PERCENT = 50;
 
 const DISMISSIBLE_REDEEM_STATUSES = new Set(['pending', 'poked', 'pending_review']);
 const DISMISSIBLE_RECHARGE_STATUSES = new Set(['pending', 'poked', 'pending_review', 'failed']);
+const GAME_VAULT_MIDNIGHT_PARTY_REASON = 'game_vault_midnight_party_pending';
+
+function buildAutomationMidnightPartyPlayerMessage(gameToast: string, refunded: boolean) {
+  const toast = cleanText(gameToast);
+  const base = toast
+    ? `Recharge could not be completed: ${toast}`
+    : 'Recharge could not be completed: Midnight Party is pending on Game Vault.';
+  return refunded ? `${base} Your balance was refunded.` : base;
+}
 
 export type AuthorityRechargeCreateInput = {
   playerUid: string;
@@ -102,6 +111,12 @@ export type AuthorityDismissRechargeInput = {
   isAdmin: boolean;
   scopeUid: string | null;
   idempotencyKey?: string | null;
+  dismissType?: string | null;
+  dismissReasonCode?: string | null;
+  dismissReasonMessage?: string | null;
+  dismissedByAutomation?: boolean;
+  pokeMessage?: string | null;
+  skipTaskTombstone?: boolean;
 };
 
 export type AuthorityDismissRechargeResult = {
@@ -1649,14 +1664,31 @@ export async function dismissRechargeRequestInSql(
       request.coin_refunded_on_dismissal !== true &&
       deductedAmount > 0;
 
+    const dismissType = cleanText(input.dismissType) || 'carer_manual';
+    const dismissReasonCode = cleanText(input.dismissReasonCode) || null;
+    const dismissReasonMessage = cleanText(input.dismissReasonMessage) || null;
+    const dismissedByAutomation = input.dismissedByAutomation === true;
+    const pokeMessage =
+      cleanText(input.pokeMessage) ||
+      (dismissReasonCode === GAME_VAULT_MIDNIGHT_PARTY_REASON
+        ? buildAutomationMidnightPartyPlayerMessage(dismissReasonMessage || '', shouldRefund)
+        : dismissReasonMessage) ||
+      null;
     const requestRaw = {
       ...(request.raw_firestore_data as Record<string, unknown>),
       status: 'dismissed',
       completedAt: nowIso,
       ttlExpiresAt: ttlAfterDaysIso(90),
       pokedAt: null,
-      pokeMessage: null,
-      dismissType: 'carer_manual',
+      pokeMessage,
+      dismissType,
+      dismissedByAutomation,
+      dismissReasonCode,
+      dismissReasonMessage,
+      dismissReason: dismissReasonMessage || dismissReasonCode,
+      automationStatus: dismissedByAutomation ? 'dismissed' : cleanText(request.automation_status) || null,
+      automationError: dismissedByAutomation ? dismissReasonMessage || dismissReasonCode : null,
+      retryPending: false,
       coinRefundedOnDismissal: shouldRefund ? true : request.coin_refunded_on_dismissal,
       coinRefundedOnDismissalAt: shouldRefund ? nowIso : toIsoString(request.coin_refunded_on_dismissal_at),
     };
@@ -1668,7 +1700,15 @@ export async function dismissRechargeRequestInSql(
       gameName: cleanText(request.game_name),
       type: 'recharge',
       status: 'dismissed',
-      dismissType: 'carer_manual',
+      dismissType,
+      dismissedByAutomation,
+      dismissReasonCode,
+      dismissReasonMessage,
+      dismissReason: dismissReasonMessage || dismissReasonCode,
+      pokeMessage,
+      automationStatus: dismissedByAutomation ? 'dismissed' : cleanText(request.automation_status) || null,
+      automationError: dismissedByAutomation ? dismissReasonMessage || dismissReasonCode : cleanText(request.automation_error) || null,
+      retryPending: false,
       coinRefundedOnDismissal: shouldRefund,
       coinRefundedOnDismissalAt: shouldRefund ? nowIso : null,
       completedAt: nowIso,
@@ -1677,7 +1717,7 @@ export async function dismissRechargeRequestInSql(
       rawFirestoreData: requestRaw,
     });
 
-    if (taskExists) {
+    if (taskExists && input.skipTaskTombstone !== true) {
       await tombstoneLinkedCarerTaskInTxn(client, requestId, 'authority_dismiss_recharge');
     }
 
@@ -1763,6 +1803,43 @@ export async function dismissRechargeRequestInSql(
       eventType: 'recharge_dismiss',
       updatedAt: nowIso,
     });
+    if (pokeMessage) {
+      console.info('[PLAYER_RECHARGE_DISMISS_MESSAGE_CREATED]', {
+        requestId,
+        playerUid,
+        dismissReasonCode,
+        pokeMessage,
+      });
+      await insertLiveOutboxEventWithClient(client, {
+        channel: playerRequestLiveChannel(playerUid),
+        eventType: 'player_message',
+        entityType: 'player_game_request',
+        entityId: requestId,
+        source: 'authority_dismiss_recharge',
+        mirroredAt: nowIso,
+        payload: {
+          playerUid,
+          requestId,
+          type: 'recharge',
+          status: 'dismissed',
+          dismissReasonCode,
+          dismissReasonMessage,
+          pokeMessage,
+          refunded,
+          updatedAt: nowIso,
+        },
+      });
+      console.info('[LIVE_OUTBOX_INSERT_PLAYER_MESSAGE]', {
+        requestId,
+        playerUid,
+        eventType: 'player_message',
+      });
+      console.info('[PLAYER_TOAST_EVENT_QUEUED]', {
+        requestId,
+        playerUid,
+        dismissReasonCode,
+      });
+    }
     if (refunded) {
       await insertLiveOutboxEventWithClient(client, {
         channel: playerRequestLiveChannel(playerUid),

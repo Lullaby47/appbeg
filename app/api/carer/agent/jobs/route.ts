@@ -122,6 +122,14 @@ export async function POST(request: Request) {
     if (action === 'claim') {
       console.info('[AGENT_JOBS_API_CLAIM_ATTEMPT]', { carerUid, agentId, jobId: jobId || null });
     }
+    if (action === 'dismiss_midnight_party_blocked_recharge') {
+      console.info('[AGENT_JOBS_API_DISMISS_ATTEMPT]', {
+        jobId: jobId || null,
+        carerUid,
+        agentId,
+        reason: String(body.reason || '').trim() || null,
+      });
+    }
     const result = await runAgentJobAction({
       action,
       carerUid,
