@@ -15,6 +15,8 @@ import {
 import { mirrorCarerCashoutById } from '@/lib/sql/carerCashoutsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+export const runtime = 'nodejs';
+
 type Body = {
   action?: unknown;
   cashoutId?: unknown;

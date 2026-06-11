@@ -5,6 +5,8 @@ import { logSqlAuthNoFirestore, logSqlAuthSessionRead } from '@/lib/server/appbe
 import { revokeAppSession } from '@/lib/sql/appSessions';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 
+export const runtime = 'nodejs';
+
 export const dynamic = 'force-dynamic';
 
 type LogoutBody = {

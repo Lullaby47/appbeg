@@ -13,6 +13,8 @@ import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+export const runtime = 'nodejs';
+
 type Body = { taskId?: unknown; idempotencyKey?: unknown };
 
 function ttlAfterDays(days: number) {

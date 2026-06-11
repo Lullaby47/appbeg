@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 import { requireApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
 import { resolvePlayerStaffList } from '@/lib/server/playerStaffList';
 
+export const runtime = 'nodejs';
+
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {

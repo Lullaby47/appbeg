@@ -4,6 +4,8 @@ import { apiError, requireCarerApiUser, scopedCoadminUid } from '@/lib/firebase/
 import { upsertCarerPaymentDetailsInSql } from '@/lib/sql/carerPaymentDetails';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/carer/payment-details';
 
 export async function POST(request: Request) {

@@ -15,6 +15,8 @@ import {
 } from '@/lib/server/cacheSqlRead';
 import { readPlayersCacheByCoadmin, type CachedPlayer } from '@/lib/sql/playersCache';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/players/cache';
 
 function cleanText(value: unknown) {

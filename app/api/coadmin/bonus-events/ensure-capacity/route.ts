@@ -14,6 +14,8 @@ import {
 } from '@/lib/server/bonusEventsAudit';
 import { ensureBonusCapacityInSql } from '@/lib/sql/authorityBonus';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/coadmin/bonus-events/ensure-capacity';
 const MAX_ACTIVE_BONUS_EVENTS = 20;
 const COADMIN_MIN_PERCENT = 5;

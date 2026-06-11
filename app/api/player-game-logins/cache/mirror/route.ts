@@ -5,9 +5,12 @@ import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
 import { isCacheSqlAuthoritative, mirrorSqlSkipResponse } from '@/lib/server/cacheSqlRead';
 import { routeFromRequest } from '@/lib/server/firestoreTouchAudit';
 import {
+
   mirrorPlayerGameLoginSnapshot,
   tombstonePlayerGameLoginCache,
 } from '@/lib/sql/playerGameLoginsCache';
+
+export const runtime = 'nodejs';
 
 type MirrorBody = {
   loginId?: unknown;

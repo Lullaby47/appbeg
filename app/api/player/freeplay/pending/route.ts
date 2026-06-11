@@ -8,6 +8,8 @@ import {
 import { loadFreeplayPendingGift } from '@/lib/server/playerFreeplayPendingRead';
 import { logPlayerRouteTiming } from '@/lib/server/playerRouteTiming';
 
+export const runtime = 'nodejs';
+
 export async function GET(request: Request) {
   const startedAt = Date.now();
   let authMs = 0;

@@ -4,9 +4,12 @@ import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
 import { isCacheSqlAuthoritative, mirrorSqlSkipResponse } from '@/lib/server/cacheSqlRead';
 import {
+
   mirrorUserBalanceSnapshotSnapshot,
   tombstoneUserBalanceSnapshotCache,
 } from '@/lib/sql/userBalanceSnapshotsCache';
+
+export const runtime = 'nodejs';
 
 type MirrorBody = {
   uid?: unknown;

@@ -5,6 +5,8 @@ import type { GameLoginDetailsInput } from '@/lib/automation/automationClaimPayl
 import { apiError, requireCarerApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
 import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/carer/tasks/claim';
 
 type Body = {

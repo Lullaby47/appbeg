@@ -22,6 +22,8 @@ import {
 } from '@/lib/sql/bonusEventsCache';
 import { readGameLoginsCacheByCoadmin } from '@/lib/sql/gameLoginsCache';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/bonus-events/list';
 
 type BonusEvent = {

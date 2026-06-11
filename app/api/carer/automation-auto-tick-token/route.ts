@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 
 import { createAutoTickBrowserToken } from '@/lib/automation/autoTickBrowserToken';
 
+export const runtime = 'nodejs';
+
 function validateAutomationAgentId(agentId: string) {
   const trimmed = String(agentId || '').trim();
   if (!trimmed || trimmed.length > 64) {

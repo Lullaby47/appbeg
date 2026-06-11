@@ -24,6 +24,8 @@ import { getPlayerMirrorPoolStats } from '@/lib/sql/playerMirrorCommon';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/player/transfer/cash-to-coin';
 
 type Body = {

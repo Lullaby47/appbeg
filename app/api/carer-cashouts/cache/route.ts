@@ -8,10 +8,13 @@ import {
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
 import {
+
   readCarerCashoutsByCarerUid,
   readPendingCarerCashoutsByCoadmin,
   type CachedCarerCashout,
 } from '@/lib/sql/carerCashoutsCache';
+
+export const runtime = 'nodejs';
 
 const ROUTE = '/api/carer-cashouts/cache';
 

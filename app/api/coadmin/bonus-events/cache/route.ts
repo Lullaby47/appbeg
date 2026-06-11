@@ -8,10 +8,13 @@ import {
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
 import {
+
   readActiveBonusEventsByCoadmin,
   readCoadminAutoBonusPercentRangeFromSql,
   type CachedBonusEvent,
 } from '@/lib/sql/bonusEventsCache';
+
+export const runtime = 'nodejs';
 
 const ROUTE = '/api/coadmin/bonus-events/cache';
 

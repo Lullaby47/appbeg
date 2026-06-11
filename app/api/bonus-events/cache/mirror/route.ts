@@ -10,6 +10,8 @@ import {
 import { logFirestoreTouch, routeFromRequest } from '@/lib/server/firestoreTouchAudit';
 import { mirrorBonusEventSnapshot, upsertBonusEventCache } from '@/lib/sql/bonusEventsCache';
 
+export const runtime = 'nodejs';
+
 type MirrorBody = {
   bonusEventId?: unknown;
   bonusEventIds?: unknown;

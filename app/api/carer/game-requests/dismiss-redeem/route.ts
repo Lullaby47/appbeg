@@ -12,6 +12,8 @@ import { mirrorAutomationJobById } from '@/lib/sql/automationJobsCache';
 import { tombstoneCarerTaskCache } from '@/lib/sql/carerTasksCache';
 import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
 
+export const runtime = 'nodejs';
+
 type Body = {
   requestId?: unknown;
   idempotencyKey?: unknown;

@@ -10,6 +10,8 @@ import {
 import { logFirestoreTouch, routeFromRequest } from '@/lib/server/firestoreTouchAudit';
 import { mirrorUserPresenceSnapshot } from '@/lib/sql/userPresenceCache';
 
+export const runtime = 'nodejs';
+
 type MirrorBody = {
   uid?: unknown;
   uids?: unknown;

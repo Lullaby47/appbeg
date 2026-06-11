@@ -12,6 +12,8 @@ import { giveFreeplayGiftInSql } from '@/lib/sql/authorityFreeplay';
 import { getPlayerMirrorPoolStats } from '@/lib/sql/playerMirrorCommon';
 import { mirrorFreeplayPendingGiftByPlayerUid } from '@/lib/sql/freeplayPendingGiftsCache';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/coadmin/freeplay/give';
 
 type PlayerCandidate = {

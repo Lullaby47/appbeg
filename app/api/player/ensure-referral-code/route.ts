@@ -18,6 +18,8 @@ import {
 import { mirrorPlayerById } from '@/lib/sql/playersCache';
 import { mirrorReferralCodeByCode, tombstoneReferralCodeCache } from '@/lib/sql/referralsCache';
 
+export const runtime = 'nodejs';
+
 /**
  * Returns a globally unique `referralCode` for the signed-in player and keeps
  * `referralCodes/{code}` in sync. Uses Admin SDK to avoid client-side assignment races.

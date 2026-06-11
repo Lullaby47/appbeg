@@ -10,6 +10,8 @@ import {
 import { readCarerBaseDataForCoadmin } from '@/lib/sql/carerBaseDataCache';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 
+export const runtime = 'nodejs';
+
 function resolveExplicitCoadminUid(request: Request) {
   const url = new URL(request.url);
   return cleanText(url.searchParams.get('coadminUid'));

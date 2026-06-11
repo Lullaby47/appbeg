@@ -6,12 +6,15 @@ import { adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
 import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
 import {
+
   findUniqueReferralCodeWithQueries,
   generateCandidateReferralCode,
   isReferralCodeGloballyFree,
   isValidReferralCodeString,
   REFERRAL_CODE_INDEX,
 } from '@/lib/referral/referralCodeAdmin';
+
+export const runtime = 'nodejs';
 
 type Row = {
   ref: DocumentReference;

@@ -25,6 +25,8 @@ import { claimReferralRewardInSql } from '@/lib/sql/authorityReferral';
 import { mirrorReferralRewardClaimById } from '@/lib/sql/referralRewardClaimsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+export const runtime = 'nodejs';
+
 function getNumber(value: unknown) {
   const n = Number(value || 0);
   return Number.isFinite(n) ? n : 0;

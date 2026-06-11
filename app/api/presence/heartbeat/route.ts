@@ -4,6 +4,8 @@ import { requireApiUser } from '@/lib/firebase/apiAuth';
 import { isCacheSqlAuthoritative, logCacheSqlRead } from '@/lib/server/cacheSqlRead';
 import { upsertUserPresenceCache } from '@/lib/sql/userPresenceCache';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/presence/heartbeat';
 
 export async function POST(request: Request) {

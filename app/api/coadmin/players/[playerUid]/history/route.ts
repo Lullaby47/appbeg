@@ -9,10 +9,13 @@ import {
 } from '@/lib/server/cacheSqlRead';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import {
+
   acquirePlayerMirrorClient,
   cleanText,
   toDate,
 } from '@/lib/sql/playerMirrorCommon';
+
+export const runtime = 'nodejs';
 
 const ROUTE = '/api/coadmin/players/[playerUid]/history';
 

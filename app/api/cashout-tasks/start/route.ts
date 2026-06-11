@@ -10,6 +10,8 @@ import {
 import { startPlayerCashoutTaskInSql } from '@/lib/sql/authorityCashout';
 import { mirrorPlayerCashoutTaskById } from '@/lib/sql/playerCashoutTasksCache';
 
+export const runtime = 'nodejs';
+
 type Body = {
   taskId?: unknown;
 };

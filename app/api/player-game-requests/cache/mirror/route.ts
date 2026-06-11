@@ -4,9 +4,12 @@ import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
 import { isCacheSqlAuthoritative, mirrorSqlSkipResponse } from '@/lib/server/cacheSqlRead';
 import {
+
   mirrorPlayerGameRequestSnapshot,
   tombstonePlayerGameRequestCache,
 } from '@/lib/sql/playerGameRequestsCache';
+
+export const runtime = 'nodejs';
 
 type MirrorBody = {
   requestId?: unknown;

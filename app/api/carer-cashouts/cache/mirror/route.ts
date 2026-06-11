@@ -4,9 +4,12 @@ import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
 import { isCacheSqlAuthoritative, mirrorSqlSkipResponse } from '@/lib/server/cacheSqlRead';
 import {
+
   mirrorCarerCashoutSnapshot,
   tombstoneCarerCashoutCache,
 } from '@/lib/sql/carerCashoutsCache';
+
+export const runtime = 'nodejs';
 
 type MirrorBody = {
   cashoutId?: unknown;

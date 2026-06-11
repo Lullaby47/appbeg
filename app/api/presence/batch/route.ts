@@ -8,6 +8,8 @@ import {
 } from '@/lib/server/cacheSqlRead';
 import { readUserPresenceCacheByUids } from '@/lib/sql/userPresenceCache';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/presence/batch';
 
 export async function GET(request: Request) {

@@ -3,9 +3,12 @@ import { NextResponse } from 'next/server';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
 import { isCacheSqlAuthoritative, mirrorSqlSkipResponse } from '@/lib/server/cacheSqlRead';
 import {
+
   mirrorAutomationJobById,
   tombstoneAutomationJobCache,
 } from '@/lib/sql/automationJobsCache';
+
+export const runtime = 'nodejs';
 
 type Body = {
   action?: unknown;

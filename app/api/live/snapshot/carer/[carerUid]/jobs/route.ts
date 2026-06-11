@@ -4,11 +4,14 @@ import { apiError, requireCarerOwnedLiveAuth } from '@/lib/firebase/apiAuth';
 import { acquireAutomationJobsClient } from '@/lib/sql/automationJobsCache';
 import { carerJobLiveChannel, getLatestOutboxIdForChannels } from '@/lib/sql/liveOutbox';
 import {
+
   cleanText,
   createPlayerMirrorSqlTiming,
   runMirrorClientQuery,
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
+
+export const runtime = 'nodejs';
 
 export const dynamic = 'force-dynamic';
 

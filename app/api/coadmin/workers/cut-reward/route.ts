@@ -11,6 +11,8 @@ import { cutWorkerRewardInSql } from '@/lib/sql/authorityAdminPlayer';
 import { mirrorRewardCutById } from '@/lib/sql/rewardCutsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+export const runtime = 'nodejs';
+
 type Body = {
   workerUid?: unknown;
   workerRole?: unknown;

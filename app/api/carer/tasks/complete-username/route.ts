@@ -11,6 +11,8 @@ import { completeUsernameTasksInSql } from '@/lib/sql/authorityCarerTasks';
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+export const runtime = 'nodejs';
+
 function normalizeGameName(gameName: string) {
   return gameName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
 }

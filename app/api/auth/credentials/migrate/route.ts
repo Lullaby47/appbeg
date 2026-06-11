@@ -16,6 +16,8 @@ import { lookupApiUserProfileFromSqlCache } from '@/lib/sql/playersCache';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { upsertUserCredentials } from '@/lib/sql/userCredentials';
 
+export const runtime = 'nodejs';
+
 export const dynamic = 'force-dynamic';
 
 type MigrateBody = {

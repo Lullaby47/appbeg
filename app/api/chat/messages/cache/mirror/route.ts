@@ -9,9 +9,12 @@ import {
 } from '@/lib/server/cacheSqlRead';
 import { logFirestoreTouch, routeFromRequest } from '@/lib/server/firestoreTouchAudit';
 import {
+
   mirrorChatMessageSnapshot,
   upsertChatMessageCache,
 } from '@/lib/sql/chatMessagesCache';
+
+export const runtime = 'nodejs';
 
 type MirrorBody = {
   conversationId?: unknown;

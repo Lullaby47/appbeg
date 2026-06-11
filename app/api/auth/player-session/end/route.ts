@@ -7,6 +7,8 @@ import { invalidatePlayerSessionStatusCache } from '@/lib/server/playerSessionSt
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { endPlayerSessionInSql } from '@/lib/sql/playerSessionWrite';
 
+export const runtime = 'nodejs';
+
 export const dynamic = 'force-dynamic';
 
 type EndBody = {

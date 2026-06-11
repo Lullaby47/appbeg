@@ -40,9 +40,12 @@ import {
   type AutoTickPendingTaskCandidate,
 } from '@/lib/sql/carerTasksCache';
 import {
+
   lookupApiUserProfileFromSqlCache,
   mirrorPlayerById,
 } from '@/lib/sql/playersCache';
+
+export const runtime = 'nodejs';
 
 const LEASE_TTL_MS = 70_000;
 const MAX_CLAIMS_PER_TICK = 1;

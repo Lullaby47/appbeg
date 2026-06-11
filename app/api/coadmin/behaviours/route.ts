@@ -9,9 +9,12 @@ import {
 } from '@/lib/server/cacheSqlRead';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import {
+
   loadCoadminBehavioursDataFromSql,
   type BehavioursDataDoc,
 } from '@/lib/sql/coadminBehavioursData';
+
+export const runtime = 'nodejs';
 
 const ROUTE = '/api/coadmin/behaviours';
 

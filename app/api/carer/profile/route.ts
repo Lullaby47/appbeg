@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 import { apiError, requireCarerApiUser } from '@/lib/firebase/apiAuth';
 import { loadCarerDashboardProfileFromSql } from '@/lib/server/carerProfileRead';
 
+export const runtime = 'nodejs';
+
 export async function GET(request: Request) {
   const auth = await requireCarerApiUser(request);
   if ('response' in auth) {

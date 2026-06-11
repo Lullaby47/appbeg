@@ -4,6 +4,8 @@ import { requireApiUser } from '@/lib/firebase/apiAuth';
 import { GAME_USERNAME_RULE_MESSAGE, isValidGameUsername } from '@/lib/games/gameUsernameRule';
 import { usernameExists } from '@/lib/sql/usernameRegistry';
 
+export const runtime = 'nodejs';
+
 type RegistryAction = 'check' | 'record_after_firebase' | 'insert_after_firebase' | 'delete_after_firebase';
 
 export async function POST(request: Request) {

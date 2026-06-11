@@ -10,6 +10,8 @@ import { transferPlayerCoadminInSql } from '@/lib/sql/authorityAdminPlayer';
 import { mirrorPlayerById } from '@/lib/sql/playersCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+export const runtime = 'nodejs';
+
 export async function POST(request: Request) {
   try {
     const auth = await requireApiUser(request, ['admin']);

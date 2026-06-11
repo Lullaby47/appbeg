@@ -10,11 +10,14 @@ import {
 
 const ROUTE = '/api/carer-creation-requests/cache';
 import {
+
   listFirestorePendingCarerCreationRequestsForCoadmin,
   listPendingCarerCreationRequestsForCoadminSql,
   listPendingCarerCreationRequestsSql,
   mapFirestoreCarerCreationRequest,
 } from '@/lib/sql/carerCreationRequestsCache';
+
+export const runtime = 'nodejs';
 
 function cleanText(value: unknown) {
   return String(value || '').trim();

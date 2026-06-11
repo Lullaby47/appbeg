@@ -15,11 +15,14 @@ import {
 import { logPlayerApiAuthOk } from '@/lib/server/playerApiAuthLog';
 import { extractPgErrorDetails } from '@/lib/server/sqlErrorDetails';
 import {
+
   readPlayerCashoutTasksCacheByAssignedHandler,
   readPlayerCashoutTasksCacheByCoadmin,
   readPlayerCashoutTasksCacheByPlayer,
   type CachedPlayerCashoutTask,
 } from '@/lib/sql/playerCashoutTasksCache';
+
+export const runtime = 'nodejs';
 
 const ROUTE = '/api/player-cashout-tasks/cache';
 

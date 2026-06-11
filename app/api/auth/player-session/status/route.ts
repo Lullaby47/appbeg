@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 import { resolvePlayerSessionStatus } from '@/lib/server/playerSessionStatus';
 import { logRouteSessionValidation, sessionIdsFromRequest } from '@/lib/server/sessionAuthLog';
 
+export const runtime = 'nodejs';
+
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {

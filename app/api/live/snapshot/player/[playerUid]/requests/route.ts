@@ -9,6 +9,8 @@ import {
 } from '@/lib/sql/playerMirrorCommon';
 import { getLatestOutboxIdForChannels, playerRequestLiveChannel } from '@/lib/sql/liveOutbox';
 
+export const runtime = 'nodejs';
+
 export const dynamic = 'force-dynamic';
 
 const PLAYER_REQUEST_HISTORY_LIMIT = 40;

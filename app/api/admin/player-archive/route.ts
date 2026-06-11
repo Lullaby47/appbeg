@@ -19,11 +19,14 @@ import { tombstoneDeletedPlayerCache } from '@/lib/sql/deletedPlayersCache';
 import { mirrorPlayerById } from '@/lib/sql/playersCache';
 import { mirrorReferralCodeByCode } from '@/lib/sql/referralsCache';
 import {
+
   findUniqueReferralCodeWithQueries,
   isReferralCodeReusableByPlayer,
   isValidReferralCodeString,
   REFERRAL_CODE_INDEX,
 } from '@/lib/referral/referralCodeAdmin';
+
+export const runtime = 'nodejs';
 
 type DeletedPlayerDoc = {
   uid: string;

@@ -14,6 +14,8 @@ import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { lookupApiUserProfileByUsernameFromSqlCache, mirrorPlayerById } from '@/lib/sql/playersCache';
 import { lookupUserCredentials } from '@/lib/sql/userCredentials';
 
+export const runtime = 'nodejs';
+
 export const dynamic = 'force-dynamic';
 
 // TODO(rate-limit): add per-IP / per-username throttling for SQL login attempts.

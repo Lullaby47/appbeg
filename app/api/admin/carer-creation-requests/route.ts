@@ -20,6 +20,8 @@ import {
 } from '@/lib/sql/userDirectoryWrite';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+export const runtime = 'nodejs';
+
 function makeHiddenEmail(username: string) {
   return `${username}@app.local`;
 }

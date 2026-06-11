@@ -8,9 +8,12 @@ import {
   logAuthoritySqlWrite,
 } from '@/lib/server/authoritySqlWrite';
 import {
+
   linkAutomationAgentInSql,
   unlinkAutomationAgentInSql,
 } from '@/lib/sql/authorityAutomationAgent';
+
+export const runtime = 'nodejs';
 
 const AGENT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 

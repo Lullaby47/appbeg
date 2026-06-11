@@ -14,12 +14,15 @@ import {
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
 import {
+
   readPlayerGameLoginCacheByFirebaseId,
   readPlayerGameLoginsCacheByCoadmin,
   readPlayerGameLoginsCacheFullByPlayer,
   upsertPlayerGameLoginCache,
   type CachedPlayerGameLogin,
 } from '@/lib/sql/playerGameLoginsCache';
+
+export const runtime = 'nodejs';
 
 const ROUTE = '/api/player-game-logins/cache';
 

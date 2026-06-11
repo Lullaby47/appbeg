@@ -6,6 +6,8 @@ import { requirePlayerSessionActor } from '@/lib/server/playerSessionRouteAuth';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { touchPlayerSessionInSql } from '@/lib/sql/playerSessionWrite';
 
+export const runtime = 'nodejs';
+
 export const dynamic = 'force-dynamic';
 
 type TouchBody = {

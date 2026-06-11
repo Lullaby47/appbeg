@@ -5,6 +5,8 @@ import { logPlayerApiAuthOk } from '@/lib/server/playerApiAuthLog';
 import { readCompletedUsernameCarersByPlayer } from '@/lib/sql/completedUsernameCarersRead';
 import { logRouteSessionValidation, sessionIdsFromRequest } from '@/lib/server/sessionAuthLog';
 
+export const runtime = 'nodejs';
+
 export const dynamic = 'force-dynamic';
 
 const ROUTE = '/api/player/completed-username-carers';

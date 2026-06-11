@@ -9,9 +9,12 @@ import {
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
 import {
+
   readCarerRechargeRedeemTotalsFromCache,
   type CachedCarerTotalsTask,
 } from '@/lib/sql/carerTasksCache';
+
+export const runtime = 'nodejs';
 
 const ROUTE = '/api/carer-tasks/cache';
 const CARER_TOTALS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;

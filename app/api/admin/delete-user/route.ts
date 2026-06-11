@@ -17,6 +17,8 @@ import { deactivateGameUsername } from '@/lib/sql/usernameRegistry';
 import { mirrorDeletedPlayerById } from '@/lib/sql/deletedPlayersCache';
 import { deleteUserDirectoryInSql } from '@/lib/sql/userDirectoryWrite';
 
+export const runtime = 'nodejs';
+
 type DeleteUserSource = 'firestore' | 'sql';
 
 type ResolvedDeleteTarget = {

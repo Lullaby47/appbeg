@@ -10,6 +10,8 @@ import {
 import { deletePendingTaskInSql } from '@/lib/sql/authorityCarerTasks';
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 
+export const runtime = 'nodejs';
+
 type Body = {
   taskId?: unknown;
   idempotencyKey?: unknown;

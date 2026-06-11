@@ -19,6 +19,8 @@ import {
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { isDatabaseUrlConfigured } from '@/lib/server/sqlRuntime';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/player/coin-load-sessions';
 const COIN_LOAD_DURATION_MS = 10 * 60 * 1000;
 

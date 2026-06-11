@@ -23,6 +23,8 @@ import { readPlayerGameLoginsCacheByPlayer } from '@/lib/sql/playerGameLoginsCac
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
 
+export const runtime = 'nodejs';
+
 const MIN_REDEEM_AMOUNT = 50;
 const MAX_REDEEM_AMOUNT = 350;
 const PLAYER_GAME_REDEEM_MAX_PER_24H = 350;

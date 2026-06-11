@@ -14,6 +14,8 @@ import {
 import { updateBonusRangeInSql } from '@/lib/sql/authorityBonus';
 import { mirrorCoadminBonusSettingsSnapshot } from '@/lib/sql/coadminBonusSettingsCache';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/coadmin/bonus-events/update-range';
 const COADMIN_MIN_PERCENT = 5;
 const COADMIN_MAX_PERCENT = 10;

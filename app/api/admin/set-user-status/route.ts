@@ -17,6 +17,8 @@ import { mirrorPlayerById } from '@/lib/sql/playersCache';
 import { setUserStatusInSql } from '@/lib/sql/userDirectoryWrite';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+export const runtime = 'nodejs';
+
 type UserStatus = 'active' | 'disabled';
 
 function isValidStatus(status: string): status is UserStatus {

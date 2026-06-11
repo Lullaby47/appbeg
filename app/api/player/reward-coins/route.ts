@@ -16,6 +16,8 @@ import { rewardCoinsInSql } from '@/lib/sql/authorityRewardCoins';
 import { mirrorPlayerCoinRewardById } from '@/lib/sql/playerCoinRewardsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+export const runtime = 'nodejs';
+
 const MAX_REWARD_COINS_PER_TRANSFER = 50;
 
 function parsePositiveWhole(value: unknown) {

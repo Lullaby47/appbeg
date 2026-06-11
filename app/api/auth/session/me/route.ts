@@ -1,16 +1,12 @@
 import { NextResponse } from 'next/server';
 
-
-
 import { verifyAppSessionFromRequest } from '@/lib/firebase/apiAuth';
 import { logSqlAuthNoFirestore, logSqlAuthProfileRead, logSqlAuthSessionRead } from '@/lib/server/appbegSqlOnlyMode';
 import { readSessionMePlayerExtras } from '@/lib/server/sessionMeExtras';
 
-
+export const runtime = 'nodejs';
 
 export const dynamic = 'force-dynamic';
-
-
 
 export async function GET(request: Request) {
 
@@ -21,8 +17,6 @@ export async function GET(request: Request) {
   });
 
   const authTiming = auth.timing;
-
-
 
   if (!auth.hit) {
 
@@ -100,8 +94,6 @@ export async function GET(request: Request) {
 
   }
 
-
-
   const serializationStartedAt = Date.now();
 
   const playerExtras =
@@ -154,8 +146,6 @@ export async function GET(request: Request) {
 
   const serialization_ms = Date.now() - serializationStartedAt;
 
-
-
   const responseStartedAt = Date.now();
 
   const response = NextResponse.json(body);
@@ -163,8 +153,6 @@ export async function GET(request: Request) {
   const response_ms = Date.now() - responseStartedAt;
 
   const total_ms = Date.now() - totalStartedAt;
-
-
 
   console.info('[APP_SESSION_ME]', {
 
@@ -247,10 +235,7 @@ export async function GET(request: Request) {
 
   });
 
-
-
   return response;
 
 }
-
 

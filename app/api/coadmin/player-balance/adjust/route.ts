@@ -12,6 +12,8 @@ import { adjustPlayerBalanceInSql } from '@/lib/sql/authorityBalanceAdjust';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+export const runtime = 'nodejs';
+
 type Body = {
   playerUid?: unknown;
   delta?: unknown;

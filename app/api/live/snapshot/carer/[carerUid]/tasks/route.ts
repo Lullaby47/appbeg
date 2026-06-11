@@ -7,6 +7,7 @@ import {
   getLatestOutboxIdForChannels,
 } from '@/lib/sql/liveOutbox';
 import {
+
   acquirePlayerMirrorClient,
   cleanText,
   createPlayerMirrorSqlTiming,
@@ -14,6 +15,8 @@ import {
   runMirrorClientQuery,
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
+
+export const runtime = 'nodejs';
 
 export const dynamic = 'force-dynamic';
 

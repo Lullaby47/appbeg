@@ -8,6 +8,8 @@ import {
 } from '@/lib/sql/carerEscalationAlertsCache';
 import { isDatabaseUrlConfigured } from '@/lib/server/sqlRuntime';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/carer/escalation-alerts';
 
 function cleanText(value: unknown) {

@@ -18,6 +18,8 @@ import {
 } from '@/lib/sql/userDirectoryWrite';
 import { deactivateGameUsername, recordGameUsername } from '@/lib/sql/usernameRegistry';
 
+export const runtime = 'nodejs';
+
 function makeHiddenEmail(username: string) {
   return `${username}@app.local`;
 }

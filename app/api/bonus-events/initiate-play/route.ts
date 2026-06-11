@@ -30,6 +30,8 @@ import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorPlayerGameRequestById } from '@/lib/sql/playerGameRequestsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+export const runtime = 'nodejs';
+
 function getStaffBonusMultiplier(bonusPercent: number) {
   if (bonusPercent <= 8) return 1.0;
   if (bonusPercent <= 20) return 0.5;

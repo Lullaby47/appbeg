@@ -16,6 +16,8 @@ import {
 } from '@/lib/sql/carerCreationRequestsCache';
 import { isActiveUsernameTakenInSql } from '@/lib/sql/userDirectoryWrite';
 
+export const runtime = 'nodejs';
+
 export async function POST(request: Request) {
   const startedAt = Date.now();
   let requestId = '';

@@ -14,6 +14,8 @@ import { mirrorFreeplayPendingGiftByPlayerUid } from '@/lib/sql/freeplayPendingG
 import { getPlayerMirrorPoolStats } from '@/lib/sql/playerMirrorCommon';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/player/freeplay/claim';
 
 export async function POST(request: Request) {

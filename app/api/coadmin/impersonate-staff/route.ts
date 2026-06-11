@@ -9,6 +9,8 @@ import { insertImpersonationLogInSql } from '@/lib/sql/impersonationLogs';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { lookupApiUserProfileFromSqlCache } from '@/lib/sql/playersCache';
 
+export const runtime = 'nodejs';
+
 const IMPERSONATION_TTL_SECONDS = 60 * 60;
 
 function appSessionIdFromRequest(request: Request) {

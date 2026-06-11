@@ -10,9 +10,12 @@ import {
   logAuthoritySqlWrite,
 } from '@/lib/server/authoritySqlWrite';
 import {
+
   createPlayerCredentialTaskInSql,
   type PlayerCredentialTaskType,
 } from '@/lib/sql/authorityPlayerCredentialTasks';
+
+export const runtime = 'nodejs';
 
 const ROUTE = '/api/player/credential-tasks';
 

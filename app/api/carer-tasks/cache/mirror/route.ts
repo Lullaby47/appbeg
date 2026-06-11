@@ -5,10 +5,13 @@ import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
 import { isCacheSqlAuthoritative, mirrorSqlSkipResponse } from '@/lib/server/cacheSqlRead';
 import { logFirestoreTouch, routeFromRequest } from '@/lib/server/firestoreTouchAudit';
 import {
+
   mirrorCarerTaskIdsBatch,
   mirrorCarerTaskSnapshotsBatch,
   tombstoneCarerTaskIdsBatch,
 } from '@/lib/sql/carerTasksCache';
+
+export const runtime = 'nodejs';
 
 type MirrorBody = {
   taskId?: unknown;

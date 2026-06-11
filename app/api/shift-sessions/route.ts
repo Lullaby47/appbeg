@@ -10,6 +10,8 @@ import {
 } from '@/lib/sql/shiftSessionsCache';
 import { isDatabaseUrlConfigured } from '@/lib/server/sqlRuntime';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/shift-sessions';
 
 function cleanText(value: unknown) {

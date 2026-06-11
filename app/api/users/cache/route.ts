@@ -14,10 +14,13 @@ import {
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
 import {
+
   readUsersCacheByRole,
   type CachedDirectoryUser,
   type DirectoryRole,
 } from '@/lib/sql/usersCache';
+
+export const runtime = 'nodejs';
 
 const ROUTE = '/api/users/cache';
 

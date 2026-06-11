@@ -9,6 +9,8 @@ import {
 import { extractPgErrorDetails } from '@/lib/server/sqlErrorDetails';
 import { logRouteSessionValidation, sessionIdsFromRequest } from '@/lib/server/sessionAuthLog';
 
+export const runtime = 'nodejs';
+
 export const dynamic = 'force-dynamic';
 
 const ROUTE = '/api/player/base-data';

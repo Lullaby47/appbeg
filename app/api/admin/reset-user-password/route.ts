@@ -6,6 +6,8 @@ import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
 import { lookupUserDirectoryFromSql } from '@/lib/sql/authorityLookup';
 import { setUserPasswordInSql } from '@/lib/sql/userDirectoryWrite';
 
+export const runtime = 'nodejs';
+
 type AllowedRole = 'admin' | 'staff' | 'coadmin';
 
 function isAllowedRole(role: string): role is AllowedRole {

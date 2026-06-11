@@ -4,6 +4,8 @@ import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
 import { getAutomationAutoStateSql, postAutomationAutoStateSql } from './sqlRoute';
 import { logAutomationAutoStateRouteVersion } from './routeVersion';
 
+export const runtime = 'nodejs';
+
 export async function GET(request: Request) {
   const startedAt = Date.now();
   const sqlMode = isAuthSqlReadEnabled();

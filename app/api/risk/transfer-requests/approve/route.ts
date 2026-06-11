@@ -12,6 +12,8 @@ import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorTransferRequestById } from '@/lib/sql/transferRequestsCache';
 import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
+export const runtime = 'nodejs';
+
 type Body = { requestId?: unknown };
 
 export async function POST(request: Request) {

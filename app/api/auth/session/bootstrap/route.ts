@@ -15,6 +15,8 @@ import { createAppSessionForUser } from '@/lib/sql/appSessions';
 import { lookupApiUserProfileFromSqlCache } from '@/lib/sql/playersCache';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 
+export const runtime = 'nodejs';
+
 export const dynamic = 'force-dynamic';
 
 type BootstrapBody = {

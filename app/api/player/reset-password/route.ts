@@ -10,6 +10,8 @@ import {
 import { setUserPasswordInSql } from '@/lib/sql/userDirectoryWrite';
 import { mirrorPlayerById } from '@/lib/sql/playersCache';
 
+export const runtime = 'nodejs';
+
 type Body = {
   newPassword?: unknown;
   confirmPassword?: unknown;

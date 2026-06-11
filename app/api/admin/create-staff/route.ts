@@ -29,9 +29,12 @@ import { createPlayerInSql } from '@/lib/sql/authorityAdminPlayer';
 import { lookupReferrerByCodeFromSql } from '@/lib/sql/authorityReferralCodes';
 import { lookupUserDirectoryFromSql } from '@/lib/sql/authorityLookup';
 import {
+
   createUserDirectoryInSql,
   isActiveUsernameTakenInSql,
 } from '@/lib/sql/userDirectoryWrite';
+
+export const runtime = 'nodejs';
 
 type CreatableRole = 'staff' | 'carer' | 'player';
 

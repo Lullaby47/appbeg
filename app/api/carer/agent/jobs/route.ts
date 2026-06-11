@@ -13,6 +13,8 @@ import {
 import { verifyAgentTickSecret } from '@/lib/automation/agentApiAuth';
 import { apiError } from '@/lib/firebase/apiAuth';
 
+export const runtime = 'nodejs';
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const carerUid = String(url.searchParams.get('carerUid') || '').trim();

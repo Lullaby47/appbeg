@@ -16,6 +16,7 @@ import {
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
 import {
+
   CachedGameLogin,
   createGameLoginsSqlTiming,
   deleteGameLoginCache,
@@ -24,6 +25,8 @@ import {
   readGameLoginsCacheByField,
   type GameLoginsSqlTiming,
 } from '@/lib/sql/gameLoginsCache';
+
+export const runtime = 'nodejs';
 
 const ROUTE = '/api/game-logins/cache';
 

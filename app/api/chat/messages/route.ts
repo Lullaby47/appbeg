@@ -10,6 +10,8 @@ import { sendChatMessageInSql } from '@/lib/sql/authorityChat';
 import { readChatMessagesCacheByConversation } from '@/lib/sql/chatMessagesCache';
 import { isDatabaseUrlConfigured } from '@/lib/server/sqlRuntime';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/chat/messages';
 
 function getConversationId(uid1: string, uid2: string) {

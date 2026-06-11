@@ -5,8 +5,9 @@ import { verifyAgentLinkedToCarerInSql } from '@/lib/sql/authorityAgentJobs';
 import { agentJobLiveChannel, getLiveOutboxRowsAfter, type LiveOutboxRow } from '@/lib/sql/liveOutbox';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 
-export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+
+export const dynamic = 'force-dynamic';
 
 const POLL_INTERVAL_MS = 250;
 const HEARTBEAT_INTERVAL_MS = 25_000;

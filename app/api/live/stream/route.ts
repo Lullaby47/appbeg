@@ -9,9 +9,9 @@ import { logRouteSessionValidation, sessionIdsFromRequest } from '@/lib/server/s
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import { getLiveOutboxRowsAfter, type LiveOutboxRow } from '@/lib/sql/liveOutbox';
 
-export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+export const dynamic = 'force-dynamic';
 const MAX_CHANNELS = 3;
 const POLL_INTERVAL_MS = 1_000;
 const HEARTBEAT_INTERVAL_MS = 25_000;

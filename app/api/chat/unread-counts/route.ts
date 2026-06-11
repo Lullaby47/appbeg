@@ -8,6 +8,8 @@ import {
 } from '@/lib/server/cacheSqlRead';
 import { readConversationsCacheForUser } from '@/lib/sql/conversationsCache';
 
+export const runtime = 'nodejs';
+
 const ROUTE = '/api/chat/unread-counts';
 
 export async function GET(request: Request) {
