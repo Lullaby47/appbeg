@@ -12,6 +12,10 @@ import {
   type GameLoginDetailsInput,
 } from '@/lib/automation/automationClaimPayload';
 import {
+  isSingleSessionAutomationGame,
+  normalizeAutomationGameKey,
+} from '@/lib/automation/singleSessionGames';
+import {
   claimAuthorityOperation,
   deleteAuthorityOperationsByPrefixInTxn,
   insertAuthorityLedgerEvent,
@@ -827,6 +831,124 @@ function usernameTaskIds(coadminUid: string, playerUid: string, gameName: string
   ];
 }
 
+async function assertAutomationEnabledInTxn(
+  client: PoolClient,
+  input: { carerUid: string; coadminUid: string; taskId: string }
+) {
+  const state = await client.query<Record<string, unknown>>(
+    `
+      SELECT enabled, coadmin_uid, automation_agent_id
+      FROM public.automation_auto_state_cache
+      WHERE carer_uid = $1
+        AND deleted_at IS NULL
+      FOR UPDATE
+    `,
+    [input.carerUid]
+  );
+  const row = state.rows[0];
+  const rowCoadminUid = cleanText(row?.coadmin_uid);
+  const enabled =
+    row?.enabled === true &&
+    (!rowCoadminUid || rowCoadminUid === input.coadminUid);
+
+  if (enabled) {
+    return;
+  }
+
+  console.info('[AUTO_DISPATCH_SKIPPED_AUTOMATION_OFF]', {
+    taskId: input.taskId,
+    carerUid: input.carerUid,
+    coadminUid: input.coadminUid,
+    stateExists: Boolean(row),
+    stateCoadminUid: rowCoadminUid || null,
+    enabled: row?.enabled === true,
+    reason: row ? 'automation_disabled' : 'automation_state_missing',
+    source: 'claimCarerTaskInSql',
+  });
+  throw new Error('Automation is off. Start Automation before claiming tasks.');
+}
+
+async function assertSingleSessionGameAvailableInTxn(
+  client: PoolClient,
+  input: {
+    taskId: string;
+    coadminUid: string;
+    carerUid: string;
+    gameName: string;
+    mappedType: string;
+  }
+) {
+  if (!isSingleSessionAutomationGame(input.gameName)) {
+    return;
+  }
+
+  const gameKey = normalizeAutomationGameKey(input.gameName);
+  const lockKey = `single_session:${input.coadminUid}:${input.carerUid}:${gameKey}`;
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [lockKey]);
+
+  const active = await client.query<Record<string, unknown>>(
+    `
+      SELECT
+        t.firebase_id AS task_id,
+        t.game_name,
+        t.automation_job_id,
+        j.status AS job_status
+      FROM public.carer_tasks_cache t
+      LEFT JOIN public.automation_jobs_cache j
+        ON j.job_id = t.automation_job_id
+       AND j.deleted_at IS NULL
+      WHERE t.deleted_at IS NULL
+        AND t.coadmin_uid = $1
+        AND t.firebase_id <> $2
+        AND t.status = 'in_progress'
+        AND (
+          t.assigned_carer_uid = $3
+          OR t.claimed_by_uid = $3
+        )
+        AND trim(both '_' from regexp_replace(LOWER(COALESCE(t.game_name, '')), '[^a-z0-9]+', '_', 'g')) = $4
+      ORDER BY t.updated_at DESC NULLS LAST
+      LIMIT 1
+    `,
+    [input.coadminUid, input.taskId, input.carerUid, gameKey]
+  );
+
+  const row = active.rows[0];
+  if (!row) {
+    return;
+  }
+
+  const jobStatus = cleanText(row.job_status).toLowerCase();
+  const jobId = cleanText(row.automation_job_id) || null;
+  const blocksNextClaim = !jobId || ACTIVE_JOB_STATUSES.has(jobStatus);
+  if (!blocksNextClaim) {
+    return;
+  }
+
+  console.info('[SINGLE_SESSION_GAME_BLOCKED]', {
+    taskId: input.taskId,
+    activeTaskId: cleanText(row.task_id) || null,
+    activeJobId: jobId,
+    activeJobStatus: jobStatus || null,
+    coadminUid: input.coadminUid,
+    carerUid: input.carerUid,
+    gameName: input.gameName,
+    gameKey,
+    type: input.mappedType,
+    reason: 'single_session_game_active',
+  });
+  console.info('[AUTO_TICK_SINGLE_SESSION_BLOCKED_GAME]', {
+    message: `skipped ${input.gameName} because ${input.gameName} already active`,
+    taskId: input.taskId,
+    activeTaskId: cleanText(row.task_id) || null,
+    activeJobId: jobId,
+    coadminUid: input.coadminUid,
+    carerUid: input.carerUid,
+    gameName: input.gameName,
+    gameKey,
+  });
+  throw new Error(`${input.gameName} already has an active automation task.`);
+}
+
 function isRequestTask(taskId: string, task: SqlTaskRow) {
   const taskType = cleanText(task.type).toLowerCase();
   return (
@@ -856,6 +978,8 @@ export type ClaimCarerTaskInput = {
   };
   skipLocked?: boolean;
   allowRetryPendingClaim?: boolean;
+  /** When true, claim is rejected unless Start Automation is ON for this carer. */
+  requireAutomationEnabled?: boolean;
 };
 
 export async function claimCarerTaskInTxn(
@@ -888,6 +1012,11 @@ export async function claimCarerTaskInTxn(
     if (!carerCoadminUid || taskCoadminUid !== carerCoadminUid) {
       throw new Error('Forbidden: task is outside the carer coadmin scope.');
     }
+    await assertAutomationEnabledInTxn(client, {
+      taskId,
+      carerUid,
+      coadminUid: taskCoadminUid,
+    });
 
     const createdByName = cleanText(input.carerName) || profile.username || 'Carer';
     const rawTaskStatus = sanitizeStatus(task.status);
@@ -981,6 +1110,13 @@ export async function claimCarerTaskInTxn(
         `Automation is currently supported only for CREATE_USERNAME, RESET_PASSWORD, RECHARGE, and REDEEM. ${mappedType} must be handled manually.`
       );
     }
+    await assertSingleSessionGameAvailableInTxn(client, {
+      taskId,
+      coadminUid: taskCoadminUid,
+      carerUid: currentUserUid,
+      gameName: cleanText(task.game_name) || cleanText(freshTask.gameName) || cleanText(freshTask.game),
+      mappedType,
+    });
 
     const claimedByCurrentCarer =
       assignedCarerUid === currentUserUid ||
@@ -1340,6 +1476,18 @@ export async function claimCarerTaskInSql(input: ClaimCarerTaskInput): Promise<{
 
   const taskId = cleanText(input.taskId);
   const carerUid = cleanText(input.carerUid);
+  if (input.requireAutomationEnabled) {
+    const { assertCarerAutomationDispatchEnabled } = await import(
+      '@/lib/automation/automationDispatchGate'
+    );
+    await assertCarerAutomationDispatchEnabled(carerUid, {
+      route: 'claimCarerTaskInSql',
+      carerUid,
+      coadminUid: input.carerCoadminUid,
+      taskId,
+      source: 'auto_dispatch',
+    });
+  }
   const operationKey = `task_claim:${taskId}:${carerUid}`;
 
   const client = await db.connect();

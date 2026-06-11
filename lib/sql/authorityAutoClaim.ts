@@ -10,10 +10,14 @@ import {
   resolveCurrentUsernameForTask,
   resolveGameLoginDetailsForCoadminGame,
 } from '@/lib/automation/carerClaimTaskAdmin';
+import {
+  isSingleSessionAutomationGame,
+  normalizeAutomationGameKey,
+} from '@/lib/automation/singleSessionGames';
 import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
 import { listEnabledAutomationCarersForCoadmin } from '@/lib/sql/automationAutoStateCache';
 import { isWithinReturnToPendingCooldown } from '@/lib/sql/authorityCarerTasks';
-import { getCarerActiveInProgressTaskFromSql } from '@/lib/sql/carerTasksCache';
+import { getCarerActiveSingleSessionTaskFromSql } from '@/lib/sql/carerTasksCache';
 import { lookupApiUserProfileFromSqlCache } from '@/lib/sql/playersCache';
 import { cleanText, getPlayerMirrorPool, toIsoString } from '@/lib/sql/playerMirrorCommon';
 
@@ -95,6 +99,14 @@ export async function autoClaimPendingTaskOnCreate(
 
   const enabledCarers = await listEnabledAutomationCarersForCoadmin(coadminUid);
   if (!enabledCarers.length) {
+    console.info('[AUTO_DISPATCH_SKIPPED_AUTOMATION_OFF]', {
+      route: 'autoClaimPendingTaskOnCreate',
+      taskId,
+      coadminUid,
+      trigger,
+      enabledCarerCount: 0,
+      reason: 'automation_disabled',
+    });
     console.info('[AUTO_CLAIM_SKIPPED_DISABLED]', { taskId, coadminUid, trigger });
     console.info('[AUTO_CLAIM_PENDING_TASKS_RESULT]', {
       taskId,
@@ -210,17 +222,36 @@ export async function autoClaimPendingTaskOnCreate(
       trigger,
     });
 
-    const activeInProgress = await getCarerActiveInProgressTaskFromSql(coadminUid, carerUid);
-    if (activeInProgress.hit) {
-      console.info('[AUTO_CLAIM_PENDING_TASKS_RESULT]', {
-        taskId,
+    if (isSingleSessionAutomationGame(gameName)) {
+      const gameKey = normalizeAutomationGameKey(gameName);
+      const activeSameGame = await getCarerActiveSingleSessionTaskFromSql(
         coadminUid,
         carerUid,
-        claimed: false,
-        reason: 'in_progress_active',
-        activeTaskId: activeInProgress.taskId,
-      });
-      continue;
+        gameKey
+      );
+      if (activeSameGame.hit) {
+        console.info('[AUTO_TICK_SINGLE_SESSION_BLOCKED]', {
+          route: 'autoClaimPendingTaskOnCreate',
+          taskId,
+          carerUid,
+          coadminUid,
+          gameName,
+          gameKey,
+          activeTaskId: activeSameGame.taskId,
+          activeJobId: activeSameGame.jobId,
+          activeJobStatus: activeSameGame.jobStatus,
+          reason: 'single_session_game_active',
+        });
+        console.info('[AUTO_CLAIM_PENDING_TASKS_RESULT]', {
+          taskId,
+          coadminUid,
+          carerUid,
+          claimed: false,
+          reason: 'single_session_game_active',
+          activeTaskId: activeSameGame.taskId,
+        });
+        continue;
+      }
     }
 
     const profileLookup = await lookupApiUserProfileFromSqlCache(carerUid);
@@ -296,6 +327,7 @@ export async function autoClaimPendingTaskOnCreate(
         },
         skipLocked: true,
         allowRetryPendingClaim: false,
+        requireAutomationEnabled: true,
       });
 
       if (!result.reusedExistingJob) {

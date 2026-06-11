@@ -1029,6 +1029,7 @@ export type CarerActiveInProgressTaskSqlResult = {
   taskId: string | null;
   jobId: string | null;
   jobStatus: string | null;
+  gameName?: string | null;
   timing: PlayerMirrorSqlTiming;
 };
 
@@ -1111,6 +1112,98 @@ export async function getCarerActiveInProgressTaskFromSql(
       jobId: null,
       jobStatus: null,
       timing: createPlayerMirrorSqlTiming({ total_ms: Date.now() - startedAt }),
+    };
+  }
+}
+
+export async function getCarerActiveSingleSessionTaskFromSql(
+  coadminUid: string,
+  carerUid: string,
+  gameKey: string
+): Promise<CarerActiveInProgressTaskSqlResult> {
+  const startedAt = Date.now();
+  const cleanCoadminUid = cleanText(coadminUid);
+  const cleanCarerUid = cleanText(carerUid);
+  const cleanGameKey = cleanText(gameKey);
+  const db = getPlayerMirrorPool();
+  const emptyTiming = createPlayerMirrorSqlTiming({
+    total_ms: Date.now() - startedAt,
+  });
+
+  if (!db || !cleanCoadminUid || !cleanCarerUid || !cleanGameKey) {
+    return { hit: false, taskId: null, jobId: null, jobStatus: null, gameName: null, timing: emptyTiming };
+  }
+
+  try {
+    const { rows, timing } = await runMirrorPoolQuery<Record<string, unknown>>(
+      db,
+      `
+        SELECT
+          t.firebase_id AS task_id,
+          t.game_name,
+          j.job_id,
+          j.status AS job_status
+        FROM public.carer_tasks_cache t
+        LEFT JOIN public.automation_jobs_cache j
+          ON j.job_id = t.automation_job_id
+         AND j.deleted_at IS NULL
+        WHERE t.deleted_at IS NULL
+          AND t.coadmin_uid = $1
+          AND t.status = 'in_progress'
+          AND (
+            t.assigned_carer_uid = $2
+            OR t.claimed_by_uid = $2
+          )
+          AND trim(both '_' from regexp_replace(LOWER(COALESCE(t.game_name, '')), '[^a-z0-9]+', '_', 'g')) = $3
+        ORDER BY t.updated_at DESC NULLS LAST
+        LIMIT 1
+      `,
+      [cleanCoadminUid, cleanCarerUid, cleanGameKey]
+    );
+
+    if (!rows.length) {
+      return { hit: false, taskId: null, jobId: null, jobStatus: null, gameName: null, timing };
+    }
+
+    const row = rows[0];
+    const jobStatus = cleanText(row.job_status).toLowerCase();
+    const activeJobStatuses = new Set([
+      'queued',
+      'waiting',
+      'running',
+      'in_progress',
+      'cancelled_requested',
+      'claimed',
+      'processing',
+      'pending_review',
+    ]);
+    const jobId = cleanText(row.job_id) || null;
+    const blocksNextClaim = !jobId || activeJobStatuses.has(jobStatus);
+
+    return {
+      hit: blocksNextClaim,
+      taskId: cleanText(row.task_id) || null,
+      jobId,
+      jobStatus: jobStatus || null,
+      gameName: cleanText(row.game_name) || null,
+      timing,
+    };
+  } catch (error) {
+    console.warn('[AUTO_TICK_SINGLE_SESSION_SQL] lookup_failed', {
+      coadminUid: cleanCoadminUid,
+      carerUid: cleanCarerUid,
+      gameKey: cleanGameKey,
+      error,
+    });
+    return {
+      hit: false,
+      taskId: null,
+      jobId: null,
+      jobStatus: null,
+      gameName: null,
+      timing: createPlayerMirrorSqlTiming({
+        total_ms: Date.now() - startedAt,
+      }),
     };
   }
 }

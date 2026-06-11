@@ -8,6 +8,10 @@ import {
   resolveTaskTypeLabel,
 } from '@/lib/automation/automationClaimPayload';
 import {
+  isSingleSessionAutomationGame,
+  normalizeAutomationGameKey,
+} from '@/lib/automation/singleSessionGames';
+import {
   claimCarerTaskAsAdmin,
   resolveCurrentUsernameForTask,
   resolveGameLoginDetailsForCoadminGame,
@@ -32,7 +36,7 @@ import {
   mirrorAutomationAutoStateSnapshot,
 } from '@/lib/sql/automationAutoStateCache';
 import {
-  getCarerActiveInProgressTaskFromSql,
+  getCarerActiveSingleSessionTaskFromSql,
   getPendingCarerTaskCandidatesFromSql,
   hasAutoTickTaskRecheckFields,
   lookupAutoTickTaskRecheckFromSql,
@@ -963,15 +967,22 @@ export async function POST(request: Request) {
     firestore_fallback: false,
     agentSecretAuth: hasValidSecret,
   });
-  if (!stateResult.enabled && !hasValidSecret) {
+  if (!stateResult.enabled) {
+    console.info('[AUTO_DISPATCH_SKIPPED_AUTOMATION_OFF]', {
+      route: '/api/carer/automation-auto-tick',
+      carerUid,
+      coadminUid,
+      agentId,
+      instanceId,
+      authMode: hasValidSecret ? 'secret' : hasValidBrowserToken ? 'browser_token' : 'firebase',
+      enabled: false,
+      reason: 'automation_disabled',
+    });
     console.info('[AUTO_TICK] skipped auto tick', {
       carerUid,
       reason: 'automation_disabled',
     });
     return NextResponse.json({ ok: true, claimed: false, reason: 'disabled' });
-  }
-  if (!stateResult.enabled && hasValidSecret) {
-    console.info('[AUTO_TICK] agent secret bypass automation_disabled carerUid=%s agentId=%s', carerUid, agentId);
   }
 
   const leaseStartedAt = Date.now();
@@ -1033,8 +1044,7 @@ export async function POST(request: Request) {
     const sqlLeaseResult = await acquireAutomationAutoTickLeaseSql(
       carerUid,
       instanceId,
-      LEASE_TTL_MS,
-      { allowDisabledLease: hasValidSecret }
+      LEASE_TTL_MS
     );
     stateTiming.lease_sql_ms = sqlLeaseResult.timing.total_ms;
     if (sqlLeaseResult.ok) {
@@ -1155,45 +1165,6 @@ export async function POST(request: Request) {
     if (!firestoreLease.ok) {
       return handleLeaseFailure(firestoreLease.reason);
     }
-  }
-
-  const inProgressStartedAt = Date.now();
-  const activeInProgress = await getCarerActiveInProgressTaskFromSql(coadminUid, carerUid);
-  logAutoTickTiming('in_progress_query', inProgressStartedAt, {
-    carerUid,
-    coadminUid,
-    resultCount: activeInProgress.hit ? 1 : 0,
-    activeTaskId: activeInProgress.taskId,
-    activeJobId: activeInProgress.jobId,
-    activeJobStatus: activeInProgress.jobStatus,
-    in_progress_sql_ms: activeInProgress.timing.total_ms,
-  });
-
-  if (activeInProgress.hit) {
-    console.info('[AUTO_TICK_NO_TASKS]', {
-      carerUid,
-      coadminUid,
-      reason: 'in_progress_active',
-      activeTaskId: activeInProgress.taskId,
-      activeJobId: activeInProgress.jobId,
-      activeJobStatus: activeInProgress.jobStatus,
-    });
-    logAutoTickTiming('total', routeStartedAt, {
-      carerUid,
-      coadminUid,
-      claimed: false,
-      claimedCount: 0,
-      reason: 'in_progress_active',
-    });
-    return NextResponse.json({
-      ok: true,
-      claimed: false,
-      claimedCount: 0,
-      claimedJobs: [],
-      reason: 'in_progress_active',
-      activeTaskId: activeInProgress.taskId,
-      activeJobId: activeInProgress.jobId,
-    });
   }
 
   const pendingStartedAt = Date.now();
@@ -1425,6 +1396,58 @@ export async function POST(request: Request) {
       continue;
     }
 
+    const gameKey = normalizeAutomationGameKey(gameName);
+    if (isSingleSessionAutomationGame(gameName)) {
+      const singleSessionStartedAt = Date.now();
+      const activeSameGame = await getCarerActiveSingleSessionTaskFromSql(
+        coadminUid,
+        carerUid,
+        gameKey
+      );
+      logAutoTickTiming('single_session_in_progress_query', singleSessionStartedAt, {
+        carerUid,
+        coadminUid,
+        gameName,
+        gameKey,
+        resultCount: activeSameGame.hit ? 1 : 0,
+        activeTaskId: activeSameGame.taskId,
+        activeJobId: activeSameGame.jobId,
+        activeJobStatus: activeSameGame.jobStatus,
+        in_progress_sql_ms: activeSameGame.timing.total_ms,
+      });
+      if (activeSameGame.hit) {
+        console.info('[AUTO_TICK_SINGLE_SESSION_BLOCKED]', {
+          taskId,
+          carerUid,
+          coadminUid,
+          gameName,
+          gameKey,
+          activeTaskId: activeSameGame.taskId,
+          activeJobId: activeSameGame.jobId,
+          activeJobStatus: activeSameGame.jobStatus,
+          reason: 'single_session_game_active',
+        });
+        console.info('[AUTO_TICK_SINGLE_SESSION_BLOCKED_GAME]', {
+          message: `skipped ${gameName} because ${gameName} already active`,
+          taskId,
+          carerUid,
+          coadminUid,
+          gameName,
+          gameKey,
+          activeTaskId: activeSameGame.taskId,
+          activeJobId: activeSameGame.jobId,
+          activeJobStatus: activeSameGame.jobStatus,
+        });
+        skippedTasks.push({
+          taskId,
+          reason: 'single_session_game_active',
+          message: `${gameName} already has an active automation task.`,
+          mapped,
+        });
+        continue;
+      }
+    }
+
     const taskAccess = resolveAutomationAccessFields(task);
     const hasEmbeddedGameLoginDetails = Boolean(
       taskAccess.loginUrl &&
@@ -1577,6 +1600,7 @@ export async function POST(request: Request) {
         },
         skipLocked: isAuthoritySqlWriteEnabled(),
         allowRetryPendingClaim,
+        requireAutomationEnabled: true,
       });
       logAutoTickTiming('claimCarerTaskAsAdmin_total', claimStartedAt, {
         taskId,
@@ -1644,7 +1668,9 @@ export async function POST(request: Request) {
         message.includes('not reclaimable') ||
         message.includes('returned to pending') ||
         message.includes('unsupported') ||
-        message.includes('No automation agent')
+        message.includes('No automation agent') ||
+        message.includes('Start Automation is off') ||
+        message.includes('already has an active automation task')
       ) {
         const taskRecheck = await resolveAutoTickTaskRecheck(
           carerUid,
