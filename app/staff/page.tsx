@@ -69,6 +69,7 @@ import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 import { OnlineIndicator } from '@/components/presence/OnlineIndicator';
 import ImageUploadField from '@/components/common/ImageUploadField';
 
+import { giveFreeplayGift } from '@/features/freeplay/coadminFreeplay';
 import { AdminUser, ChatMessage } from '../../components/admin/types';
 
 type StaffView =
@@ -204,6 +205,7 @@ export default function StaffPage() {
   const hasSyncedPlayerChatUnreadRef = useRef(false);
   const shiftSessionIdRef = useRef<string | null>(null);
   const [playerBlockActionUid, setPlayerBlockActionUid] = useState<string | null>(null);
+  const [freeplayGiveTargetUid, setFreeplayGiveTargetUid] = useState<string | null>(null);
 
   const pagedStaffAgentChat = usePaginatedChatMessages(selectedChatUser?.uid ?? null, {
     scrollContainerRef: staffReachOutScrollRef,
@@ -1097,6 +1099,25 @@ export default function StaffPage() {
     markConversationAsRead(user.uid);
   }
 
+  async function handleGiveFreeplayToPlayer(player: PlayerUser) {
+    if (freeplayGiveTargetUid) {
+      return;
+    }
+    setFreeplayGiveTargetUid(player.uid);
+    setMessage('');
+    try {
+      const result = await giveFreeplayGift({
+        targetPlayerUid: player.uid,
+        reason: 'manual_specific_player',
+      });
+      setMessage(`FreePlay gift sent to ${result.playerUsername}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to give FreePlay gift.');
+    } finally {
+      setFreeplayGiveTargetUid(null);
+    }
+  }
+
   async function handleTogglePlayerStatus(player: PlayerUser) {
     const wasDisabled = player.status === 'disabled';
 
@@ -1540,6 +1561,18 @@ export default function StaffPage() {
                         </p>
                       )}
                       <div className="mt-4 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleGiveFreeplayToPlayer(player)}
+                          disabled={
+                            Boolean(freeplayGiveTargetUid) || player.status === 'disabled'
+                          }
+                          className="rounded-lg border border-fuchsia-400/35 bg-fuchsia-500/15 px-3 py-2 text-xs font-semibold text-fuchsia-100 hover:bg-fuchsia-500/25 disabled:opacity-60"
+                        >
+                          {freeplayGiveTargetUid === player.uid
+                            ? 'Sending...'
+                            : 'Give Freeplay'}
+                        </button>
                         <button
                           type="button"
                           onClick={() => void handleOpenRiskPanel(player.uid)}

@@ -2,13 +2,17 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
-import { requireApiUser } from '@/lib/firebase/apiAuth';
+import { apiError, requirePlayerApiUser } from '@/lib/firebase/apiAuth';
 import {
   authoritySqlWriteEnvLogFields,
   isAuthoritySqlWriteEnabled,
+  logAuthorityFirestoreFallbackBlocked,
   logAuthoritySqlWrite,
 } from '@/lib/server/authoritySqlWrite';
-import { claimFreeplayGiftInSql } from '@/lib/sql/authorityFreeplay';
+import { isAppbegSqlOnlyMode } from '@/lib/server/appbegSqlOnlyMode';
+import { logPlayerApiAuthOk } from '@/lib/server/playerApiAuthLog';
+import { logRouteSessionValidation, sessionIdsFromRequest } from '@/lib/server/sessionAuthLog';
+import { claimFreeplayGiftInSql, mapFreeplaySqlError } from '@/lib/sql/authorityFreeplay';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
 import { mirrorFreeplayPendingGiftByPlayerUid } from '@/lib/sql/freeplayPendingGiftsCache';
 import { getPlayerMirrorPoolStats } from '@/lib/sql/playerMirrorCommon';
@@ -16,13 +20,79 @@ import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCac
 
 export const runtime = 'nodejs';
 
+export const dynamic = 'force-dynamic';
+
 const ROUTE = '/api/player/freeplay/claim';
+
+function mapFreeplayClaimRouteError(error: unknown) {
+  const rawMessage = error instanceof Error ? error.message : 'Failed to claim FreePlay gift.';
+  const mapped = mapFreeplaySqlError(error);
+  if (mapped !== rawMessage) {
+    return mapped;
+  }
+  if (/not authenticated|authorization|token|session/i.test(rawMessage)) {
+    return 'Session expired. Please log in again.';
+  }
+  if (/could not determine data type|parameter \$\d+/i.test(rawMessage)) {
+    return 'Could not claim freeplay. Please try again.';
+  }
+  return rawMessage;
+}
 
 export async function POST(request: Request) {
   const startedAt = Date.now();
+  const headerSessions = sessionIdsFromRequest(request);
   try {
-    const auth = await requireApiUser(request, ['player']);
-    if ('response' in auth) return auth.response;
+    console.info('[FREEPLAY_CLAIM_API_START]', {
+      route: ROUTE,
+      ...headerSessions,
+    });
+    console.info('[FREEPLAY_CLAIM_AUTH_BEGIN]', {
+      route: ROUTE,
+      authHelper: 'requirePlayerApiUser',
+      ...headerSessions,
+    });
+
+    const auth = await requirePlayerApiUser(request);
+    if ('response' in auth) {
+      console.info('[FREEPLAY_CLAIM_AUTH_FAILED]', {
+        route: ROUTE,
+        uid: null,
+        ...headerSessions,
+        auth_path: auth.timing.auth_path,
+        reason: 'requirePlayerApiUser_denied',
+        status: auth.response.status,
+      });
+      logRouteSessionValidation(ROUTE, {
+        ok: false,
+        ...headerSessions,
+        auth_path: auth.timing.auth_path,
+        session_source: auth.timing.session_source,
+      });
+      return auth.response;
+    }
+
+    console.info('[FREEPLAY_CLAIM_AUTH_OK]', {
+      route: ROUTE,
+      uid: auth.user.uid,
+      role: auth.user.role,
+      ...headerSessions,
+      auth_path: auth.authPath,
+      session_source: auth.timing.session_source,
+    });
+    logRouteSessionValidation(ROUTE, {
+      ok: true,
+      ...headerSessions,
+      auth_path: auth.authPath,
+      session_source: auth.timing.session_source,
+      uid: auth.user.uid,
+    });
+    logPlayerApiAuthOk(request, {
+      route: ROUTE,
+      uid: auth.user.uid,
+      role: auth.user.role,
+      authPath: auth.authPath,
+    });
 
     const body = (await request.json().catch(() => ({}))) as {
       giftId?: unknown;
@@ -30,7 +100,7 @@ export async function POST(request: Request) {
     };
     const requestedGiftId = String(body.giftId || '').trim();
     if (!requestedGiftId) {
-      return NextResponse.json({ error: 'FreePlay gift id is required.' }, { status: 400 });
+      return apiError('FreePlay gift id is required.', 400);
     }
     const idempotencyKey =
       String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
@@ -38,6 +108,11 @@ export async function POST(request: Request) {
     const playerUid = auth.user.uid;
 
     if (isAuthoritySqlWriteEnabled()) {
+      console.info('[FREEPLAY_CLAIM_SQL_START]', {
+        route: ROUTE,
+        uid: playerUid,
+        giftId: requestedGiftId,
+      });
       const result = await claimFreeplayGiftInSql({
         playerUid,
         giftId: requestedGiftId,
@@ -60,6 +135,13 @@ export async function POST(request: Request) {
         duration_ms: Date.now() - startedAt,
       });
 
+      console.info('[FREEPLAY_CLAIM_SQL_SUCCESS]', {
+        route: ROUTE,
+        uid: playerUid,
+        giftId: requestedGiftId,
+        amount: result.amount,
+      });
+
       return NextResponse.json({
         success: true,
         amount: result.amount,
@@ -68,6 +150,19 @@ export async function POST(request: Request) {
         message: result.message,
         authority: 'sql',
       });
+    }
+
+    if (isAppbegSqlOnlyMode()) {
+      console.info('[SQL_NO_FIRESTORE_FREEPLAY_CLAIM]', {
+        route: ROUTE,
+        uid: playerUid,
+        reason: 'sql_only_authority_required',
+      });
+      logAuthorityFirestoreFallbackBlocked(ROUTE, 'freeplay_claim', {
+        playerUid,
+        giftId: requestedGiftId,
+      });
+      return apiError('SQL freeplay claim authority is not enabled. Set AUTHORITY_SQL_WRITE=1.', 503);
     }
 
     const playerRef = adminDb.collection('users').doc(playerUid);
@@ -169,19 +264,27 @@ export async function POST(request: Request) {
       success: true,
       amount,
       alreadyClaimed,
-      message: `You got ${amount} FreePlay coins!`,
+      message: 'Freeplay claimed successfully.',
       authority: 'firestore',
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to claim FreePlay gift.';
+    const rawMessage = error instanceof Error ? error.message : 'Failed to claim FreePlay gift.';
+    const message = mapFreeplayClaimRouteError(error);
+    console.info('[FREEPLAY_CLAIM_SQL_ERROR]', {
+      route: ROUTE,
+      error: rawMessage,
+      userMessage: message,
+    });
     return NextResponse.json(
       { error: message },
       {
-        status: /authorization|token|logged out/i.test(message)
+        status: /session expired|not authenticated|authorization|token|session/i.test(message)
           ? 401
-          : /only players/i.test(message)
+          : /only players/i.test(rawMessage)
             ? 403
-            : 400,
+            : /no longer|not found|not available|no pending/i.test(message)
+              ? 409
+              : 400,
       }
     );
   }

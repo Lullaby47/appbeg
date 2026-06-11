@@ -25,6 +25,7 @@ import {
   coadminJobLiveChannel,
   coadminTaskLiveChannel,
   insertLiveOutboxEventWithClient,
+  playerRequestLiveChannel,
 } from '@/lib/sql/liveOutbox';
 import { lookupApiUserProfileFromSqlCache } from '@/lib/sql/playersCache';
 import { cleanText, getPlayerMirrorPool, toIsoString } from '@/lib/sql/playerMirrorCommon';
@@ -163,6 +164,60 @@ async function writeJobOutboxInTxn(
     payload,
   });
   console.info('[SQL_OUTBOX_EVENT_INSERTED] entityType=automation_job jobId=%s eventType=%s', input.jobId, eventType);
+}
+
+async function writePlayerGameLoginOutboxInTxn(
+  client: PoolClient,
+  input: {
+    playerUid: string;
+    coadminUid: string;
+    loginId: string;
+    gameName: string;
+    gameUsername: string;
+    taskId?: string | null;
+    jobId?: string | null;
+    updatedAt: string;
+    eventType?: string;
+  }
+) {
+  const payload = {
+    entityId: input.loginId,
+    loginId: input.loginId,
+    playerUid: input.playerUid,
+    coadminUid: input.coadminUid,
+    gameName: input.gameName,
+    gameUsername: input.gameUsername,
+    taskId: cleanText(input.taskId) || null,
+    jobId: cleanText(input.jobId) || null,
+    updatedAt: input.updatedAt,
+    source: 'authority_agent',
+  };
+  const eventType = cleanText(input.eventType) || 'player_game_login.updated';
+  await insertLiveOutboxEventWithClient(client, {
+    channel: playerRequestLiveChannel(input.playerUid),
+    eventType,
+    entityType: 'player_game_login',
+    entityId: input.loginId,
+    source: 'authority_agent_jobs',
+    mirroredAt: input.updatedAt,
+    payload,
+  });
+  await insertLiveOutboxEventWithClient(client, {
+    channel: coadminTaskLiveChannel(input.coadminUid),
+    eventType,
+    entityType: 'player_game_login',
+    entityId: input.loginId,
+    source: 'authority_agent_jobs',
+    mirroredAt: input.updatedAt,
+    payload,
+  });
+  console.info('[LIVE_OUTBOX_INSERT_PLAYER_GAME_LOGIN_UPDATED]', {
+    loginId: input.loginId,
+    playerUid: input.playerUid,
+    coadminUid: input.coadminUid,
+    gameName: input.gameName,
+    eventType,
+  });
 }
 
 async function writeTaskOutboxInTxn(
@@ -309,6 +364,15 @@ async function patchCarerTaskAgentInTxn(
         claimed_at = COALESCE($17::timestamptz, claimed_at),
         last_heartbeat_at = COALESCE($18::timestamptz, last_heartbeat_at),
         ttl_expires_at = COALESCE($19::timestamptz, ttl_expires_at),
+        retry_pending = CASE
+          WHEN COALESCE(NULLIF($2, ''), status) = 'completed' THEN FALSE
+          WHEN $21 IS NOT NULL THEN $21::boolean
+          ELSE retry_pending
+        END,
+        returned_to_pending_at = CASE
+          WHEN COALESCE(NULLIF($2, ''), status) = 'completed' THEN NULL
+          ELSE returned_to_pending_at
+        END,
         raw_firestore_data = $20::jsonb,
         source = 'authority_agent_jobs',
         mirrored_at = now(),
@@ -336,6 +400,7 @@ async function patchCarerTaskAgentInTxn(
       patch.lastHeartbeatAt ? toIsoString(patch.lastHeartbeatAt) : nowIso,
       patch.ttlExpiresAt ? toIsoString(patch.ttlExpiresAt) : null,
       JSON.stringify(raw),
+      patch.retryPending === undefined ? null : patch.retryPending === true,
     ]
   );
 }
@@ -717,8 +782,10 @@ async function upsertPlayerGameLoginInTxn(
         created_at, updated_at, source, mirrored_at, deleted_at, raw_firestore_data
       )
       VALUES (
-        $1, $2, NULLIF($3, ''), $4, $5, $6, $7, $6, $7, $6, $7,
-        NULLIF($8, ''), NULLIF($9, ''), $10, $10, $11, $12,
+        $1::text, $2::text, NULLIF($3::text, ''), $4::text, $5::text,
+        $6::text, $7::text, $6::text, $7::text, $6::text, $7::text,
+        NULLIF($8::text, ''), NULLIF($9::text, ''), $10::text, $10::text,
+        $11::text, $12::text,
         $13::timestamptz, $13::timestamptz, 'authority_agent_jobs', now(), NULL, $14::jsonb
       )
       ON CONFLICT (firebase_id) DO UPDATE SET
@@ -878,12 +945,25 @@ export async function agentCompleteResetPasswordJob(input: {
   evidence?: Record<string, unknown> | null;
   actorUsername?: string | null;
 }) {
+  console.info('[AUTHORITY_RESET_PASSWORD_COMPLETE_START]', {
+    jobId: input.jobId,
+    taskId: input.taskId,
+    carerUid: input.carerUid,
+  });
   console.info('[SQL_JOB_COMPLETE_START] action=complete_reset_password jobId=%s taskId=%s', input.jobId, input.taskId);
   const evidence = input.evidence || {};
   const newPassword = cleanText(evidence.createdPassword || evidence.gamePassword || evidence.newPassword);
   const gameAccountUsername = cleanText(
     evidence.createdUsername || evidence.username || evidence.targetUsername || evidence.gameAccountUsername
   );
+  console.info('[RESET_PASSWORD_JOB_PAYLOAD_RECEIVED]', {
+    jobId: input.jobId,
+    taskId: input.taskId,
+    passwordPresent: Boolean(newPassword),
+    passwordLength: newPassword.length,
+    gameAccountUsername: gameAccountUsername || null,
+    evidenceKeys: Object.keys(evidence),
+  });
 
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL pool unavailable.');
@@ -937,6 +1017,14 @@ export async function agentCompleteResetPasswordJob(input: {
       cleanText(loginLookup.rows[0]?.game_username);
     if (!resolvedUsername) throw new Error('Game account username missing for reset password completion.');
 
+    console.info('[AUTHORITY_RESET_PASSWORD_LOGIN_UPDATE_START]', {
+      jobId: input.jobId,
+      taskId: input.taskId,
+      loginId,
+      playerUid,
+      gameName,
+      gameAccountUsername: resolvedUsername,
+    });
     await upsertPlayerGameLoginInTxn(client, {
       loginId,
       playerUid,
@@ -949,6 +1037,13 @@ export async function agentCompleteResetPasswordJob(input: {
       frontendUrl: cleanText(evidence.frontendUrl),
       jobId: input.jobId,
       carerUid: input.carerUid,
+    });
+    console.info('[AUTHORITY_RESET_PASSWORD_LOGIN_UPDATE_DONE]', {
+      jobId: input.jobId,
+      taskId: input.taskId,
+      loginId,
+      playerUid,
+      gameName,
     });
 
     const nowIso = new Date().toISOString();
@@ -987,12 +1082,62 @@ export async function agentCompleteResetPasswordJob(input: {
       updatedAt: nowIso,
       eventType: 'task.completed',
     });
+    console.info('[LIVE_OUTBOX_INSERT_RESET_PASSWORD_COMPLETED]', {
+      taskId: input.taskId,
+      jobId: input.jobId,
+      playerUid,
+      gameName,
+    });
+    await writePlayerGameLoginOutboxInTxn(client, {
+      playerUid,
+      coadminUid,
+      loginId,
+      gameName,
+      gameUsername: resolvedUsername,
+      taskId: input.taskId,
+      jobId: input.jobId,
+      updatedAt: nowIso,
+    });
+    await insertLiveOutboxEventWithClient(client, {
+      channel: playerRequestLiveChannel(playerUid),
+      eventType: 'player_message',
+      entityType: 'player_credential_task',
+      entityId: input.taskId,
+      source: 'authority_agent_jobs',
+      mirroredAt: nowIso,
+      payload: {
+        entityId: input.taskId,
+        playerUid,
+        taskId: input.taskId,
+        type: 'reset_password',
+        status: 'completed',
+        gameName,
+        pokeMessage: 'Your game password has been reset successfully.',
+        updatedAt: nowIso,
+        source: 'authority',
+      },
+    });
+    console.info('[AUTHORITY_RESET_PASSWORD_TASK_COMPLETED]', {
+      taskId: input.taskId,
+      jobId: input.jobId,
+      playerUid,
+    });
+    console.info('[AUTHORITY_RESET_PASSWORD_JOB_COMPLETED]', {
+      taskId: input.taskId,
+      jobId: input.jobId,
+    });
     await client.query('COMMIT');
     console.info('[SQL_JOB_COMPLETE_SUCCESS] action=complete_reset_password jobId=%s', input.jobId);
     console.info('[SQL_FIREBASE_BYPASS_CONFIRMED] operation=complete_reset_password jobId=%s', input.jobId);
     return { success: true as const, duplicate: false, loginId };
   } catch (error) {
     await client.query('ROLLBACK');
+    const message = error instanceof Error ? error.message : String(error);
+    console.info('[RESET_PASSWORD_COMPLETION_EXCEPTION]', {
+      jobId: input.jobId,
+      taskId: input.taskId,
+      error: message,
+    });
     console.error('[SQL_JOB_COMPLETE_FAILED] action=complete_reset_password jobId=%s error=%s', input.jobId, error);
     throw error;
   } finally {

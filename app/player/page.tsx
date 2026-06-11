@@ -23,6 +23,7 @@ import { resolvePlayerRoleForFetch } from '@/lib/client/playerFetchGuard';
 import { startPlayerRoleGuardedInterval } from '@/lib/client/playerPollGuard';
 import { getGameLoginsByCoadmin } from '@/features/games/gameLogins';
 import {
+  getPlayerGameLoginsByPlayer,
   listenToPlayerGameLoginsByPlayer,
   type PlayerGameLogin,
 } from '@/features/games/playerGameLogins';
@@ -2251,6 +2252,31 @@ export default function PlayerPage() {
               });
             });
           },
+          onPlayerGameLoginUpdated: (reason) => {
+            console.info('[PLAYER_GAME_LOGINS_REFETCH_START]', {
+              playerUid,
+              reason,
+            });
+            setMessage('Your game password has been reset successfully.');
+            void getPlayerGameLoginsByPlayer(playerUid)
+              .then((logins) => {
+                setGameLogins(sortByNewest(logins));
+                void syncCredentialSidecarsForPlayer(playerUid, logins);
+                console.info('[PLAYER_GAME_LOGINS_REFETCH_DONE]', {
+                  playerUid,
+                  count: logins.length,
+                  reason,
+                });
+              })
+              .catch((error) => {
+                console.info('[PLAYER_GAME_LOGINS_REFETCH_DONE]', {
+                  playerUid,
+                  ok: false,
+                  reason,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              });
+          },
         }
       );
       sqlReadDispose = sqlRead.dispose;
@@ -2704,6 +2730,10 @@ export default function PlayerPage() {
     if (!hasPendingFreeplayGift || !pendingFreeplayGiftId || claimingFreeplayGift) {
       return;
     }
+    console.info('[FREEPLAY_CLAIM_CLICK]', {
+      playerUid: playerUid || null,
+      giftId: pendingFreeplayGiftId,
+    });
     const revealStartedAt = Date.now();
     playGiftSound();
     setClaimingFreeplayGift(true);
@@ -2721,12 +2751,24 @@ export default function PlayerPage() {
       setFreeplayClaimSuccessMessage(
         result.message || `You got ${result.amount} FreePlay coins!`
       );
+      void loadPlayerProfileSnapshotOnce().then((profile) => {
+        if (profile) {
+          applyPlayerProfileSnapshot(profile, playerUid || '');
+        }
+      });
     } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Could not claim freeplay. Please try again.';
+      console.info('[FREEPLAY_CLAIM_API_ERROR]', {
+        playerUid: playerUid || null,
+        giftId: pendingFreeplayGiftId,
+        error: errorMessage,
+      });
       reportPlayerUiError(
         'player_freeplay_claim',
         error,
         setMessage,
-        'Failed to claim FreePlay gift.'
+        errorMessage
       );
       await loadFreeplayGift({ force: true });
     } finally {

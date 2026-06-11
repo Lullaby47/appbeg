@@ -45,6 +45,7 @@ interface Props<T extends BaseUser> {
   /** Firestore-based presence: uid → online (overrides `user.isOnline` when set). */
   onlineByUid?: Record<string, boolean>;
   renderSelectedExtras?: (user: T) => React.ReactNode;
+  renderUserRowActions?: (user: T) => React.ReactNode;
   /** Coadmin “View carers” — responsive grid, amber VIP panels, scrollable list. */
   carersVisualTheme?: boolean;
 
@@ -89,6 +90,7 @@ export default function UserManagementView<T extends BaseUser>({
   coadminCredentialsLoading = false,
   onlineByUid,
   renderSelectedExtras,
+  renderUserRowActions,
   carersVisualTheme = false,
 
   onStartChat,
@@ -186,64 +188,68 @@ export default function UserManagementView<T extends BaseUser>({
               const unreadCount = unreadCounts[user.uid] || 0;
 
               return (
-                <button
-                  key={user.id}
-                  onClick={() => {
-                    onSelectUser(user);
-                    onSetDeleteTarget(null);
-                  }}
-                  className={`flex w-full items-center justify-between rounded-xl p-4 text-left transition ${
-                    selectedUser?.id === user.id
-                      ? carersVisualTheme
-                        ? 'bg-gradient-to-r from-amber-400 to-yellow-500 text-black shadow-lg shadow-amber-500/25'
-                        : 'bg-white text-black'
-                      : unreadCount > 0
+                <div key={user.id} className="space-y-2">
+                  <button
+                    onClick={() => {
+                      onSelectUser(user);
+                      onSetDeleteTarget(null);
+                    }}
+                    className={`flex w-full items-center justify-between rounded-xl p-4 text-left transition ${
+                      selectedUser?.id === user.id
                         ? carersVisualTheme
-                          ? 'bg-rose-950/40 text-white ring-1 ring-rose-500/35 hover:bg-rose-950/55'
-                          : 'bg-red-500/10 text-white ring-1 ring-red-500/30 hover:bg-red-500/20'
-                        : carersVisualTheme
-                          ? 'border border-white/10 bg-white/[0.04] text-amber-50/95 hover:border-amber-400/30 hover:bg-amber-500/10'
-                          : 'bg-white/5 text-white hover:bg-white/10'
-                  }`}
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="truncate font-semibold">{getMaskedDisplayName(user)}</p>
+                          ? 'bg-gradient-to-r from-amber-400 to-yellow-500 text-black shadow-lg shadow-amber-500/25'
+                          : 'bg-white text-black'
+                        : unreadCount > 0
+                          ? carersVisualTheme
+                            ? 'bg-rose-950/40 text-white ring-1 ring-rose-500/35 hover:bg-rose-950/55'
+                            : 'bg-red-500/10 text-white ring-1 ring-red-500/30 hover:bg-red-500/20'
+                          : carersVisualTheme
+                            ? 'border border-white/10 bg-white/[0.04] text-amber-50/95 hover:border-amber-400/30 hover:bg-amber-500/10'
+                            : 'bg-white/5 text-white hover:bg-white/10'
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="truncate font-semibold">{getMaskedDisplayName(user)}</p>
 
-                      {unreadCount > 0 && (
-                        <span className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold text-white">
-                          {unreadCount > 9 ? '9+' : unreadCount}
-                        </span>
-                      )}
+                        {unreadCount > 0 && (
+                          <span className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold text-white">
+                            {unreadCount > 9 ? '9+' : unreadCount}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="mt-1 flex items-center gap-2">
+                        <span
+                          className={`h-2 w-2 rounded-full ${
+                            isUserOnline(user) ? 'bg-emerald-500' : 'bg-neutral-500'
+                          }`}
+                        />
+
+                        <p
+                          className={`text-xs ${
+                            selectedUser?.id === user.id
+                              ? 'text-black/60'
+                              : unreadCount > 0
+                                ? 'text-red-200'
+                                : 'text-neutral-500'
+                          }`}
+                        >
+                          {getOnlineLabel(user)}
+                        </p>
+                      </div>
                     </div>
 
-                    <div className="mt-1 flex items-center gap-2">
-                      <span
-                        className={`h-2 w-2 rounded-full ${
-                          isUserOnline(user) ? 'bg-emerald-500' : 'bg-neutral-500'
-                        }`}
-                      />
-
-                      <p
-                        className={`text-xs ${
-                          selectedUser?.id === user.id
-                            ? 'text-black/60'
-                            : unreadCount > 0
-                              ? 'text-red-200'
-                              : 'text-neutral-500'
-                        }`}
-                      >
-                        {getOnlineLabel(user)}
-                      </p>
-                    </div>
-                  </div>
-
-                  {unreadCount > 0 && (
-                    <span className="rounded-full bg-red-500 px-2 py-1 text-xs font-bold text-white">
-                      New
-                    </span>
-                  )}
-                </button>
+                    {unreadCount > 0 && (
+                      <span className="rounded-full bg-red-500 px-2 py-1 text-xs font-bold text-white">
+                        New
+                      </span>
+                    )}
+                  </button>
+                  {renderUserRowActions ? (
+                    <div className="px-1">{renderUserRowActions(user)}</div>
+                  ) : null}
+                </div>
               );
             })}
           </div>

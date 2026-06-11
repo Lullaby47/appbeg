@@ -7,6 +7,7 @@ import {
   readAuthorityOperationPayload,
 } from '@/lib/sql/authorityLedger';
 import { normalizeGameName } from '@/lib/sql/authorityGameRequestHelpers';
+import { scheduleAutoClaimPendingTaskOnCreate } from '@/lib/sql/authorityAutoClaim';
 import {
   coadminTaskLiveChannel,
   insertLiveOutboxEventWithClient,
@@ -70,9 +71,9 @@ function buildPendingCredentialTaskRaw(input: {
     automationError: null,
     error: null,
     failureReason: null,
-    retryPending: true,
-    resetToPendingAt: input.nowIso,
-    returnedToPendingAt: input.nowIso,
+    retryPending: false,
+    resetToPendingAt: null,
+    returnedToPendingAt: null,
     pendingSince: input.nowIso,
     lastHeartbeatAt: null,
     queuedAt: null,
@@ -207,10 +208,11 @@ async function upsertCredentialCarerTaskInTxn(
         mirrored_at, deleted_at, raw_firestore_data
       )
       VALUES (
-        $1, $2, $3, $4, $5, $6, $7, NULL, NULL, 'pending',
-        NULLIF($8, ''), NULLIF($8, ''), TRUE,
-        $9::timestamptz, $9::timestamptz, $9::timestamptz, $9::timestamptz,
-        $9::timestamptz, $9::timestamptz, 'authority_player_credential', now(), NULL,
+        $1::text, $2::text, $3::text, $4::text, $5::text, $6::text, $7::text,
+        NULL, NULL, 'pending',
+        NULLIF($8::text, ''), NULLIF($8::text, ''), FALSE,
+        $9::timestamptz, $9::timestamptz, $9::timestamptz, NULL,
+        NULL, $9::timestamptz, 'authority_player_credential', now(), NULL,
         $10::jsonb
       )
       ON CONFLICT (firebase_id) DO UPDATE SET
@@ -295,6 +297,13 @@ export async function createPlayerCredentialTaskInSql(input: {
   const operationKey =
     cleanText(input.idempotencyKey) ||
     `player_credential_task:${taskType}:${playerUid}:${normalizedGame}`;
+
+  console.info('[RESET_PASSWORD_TASK_CREATE_START]', {
+    playerUid,
+    gameName: gameName.trim(),
+    taskType,
+    gameLoginId: cleanText(input.gameLoginId) || null,
+  });
 
   const client = await db.connect();
   try {
@@ -391,6 +400,12 @@ export async function createPlayerCredentialTaskInSql(input: {
       mirroredAt: nowIso,
       payload: outboxPayload,
     });
+    console.info('[RESET_PASSWORD_TASK_OUTBOX_INSERTED]', {
+      taskId,
+      taskType,
+      coadminUid,
+      channel: outboxChannels[0],
+    });
 
     await client.query(
       `
@@ -410,6 +425,22 @@ export async function createPlayerCredentialTaskInSql(input: {
     );
 
     await client.query('COMMIT');
+
+    console.info('[RESET_PASSWORD_TASK_CREATED]', {
+      taskId,
+      taskType,
+      playerUid,
+      coadminUid,
+      gameName: gameName.trim(),
+      gameLoginId: gameLogin.id,
+      status: 'pending',
+      retryPending: false,
+    });
+    scheduleAutoClaimPendingTaskOnCreate({
+      taskId,
+      coadminUid,
+      trigger: `player_credential_task:${taskType}`,
+    });
 
     console.info('[PLAYER_CREDENTIAL_TASK_FLOW_AUDIT]', {
       taskId,

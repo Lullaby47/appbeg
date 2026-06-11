@@ -498,6 +498,7 @@ export default function CoadminPage() {
   );
   const [maintenanceBusy, setMaintenanceBusy] = useState(false);
   const [freeplayGiveBusy, setFreeplayGiveBusy] = useState(false);
+  const [freeplayGiveTargetUid, setFreeplayGiveTargetUid] = useState<string | null>(null);
 
   const [chatUsers, setChatUsers] = useState<AdminUser[]>([]);
   const [reachOutChatUser, setReachOutChatUser] = useState<AdminUser | null>(null);
@@ -718,18 +719,37 @@ export default function CoadminPage() {
   }
 
   async function handleGiveFreeplay() {
-    if (freeplayGiveBusy) {
+    if (freeplayGiveBusy || freeplayGiveTargetUid) {
       return;
     }
     setFreeplayGiveBusy(true);
     setMessage('');
     try {
-      const playerUsername = await giveFreeplayGift();
-      setMessage(`FreePlay gift sent to ${playerUsername}.`);
+      const result = await giveFreeplayGift();
+      setMessage(`FreePlay gift sent to ${result.playerUsername}.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Failed to give FreePlay gift.');
     } finally {
       setFreeplayGiveBusy(false);
+    }
+  }
+
+  async function handleGiveFreeplayToPlayer(player: PlayerUser) {
+    if (freeplayGiveBusy || freeplayGiveTargetUid) {
+      return;
+    }
+    setFreeplayGiveTargetUid(player.uid);
+    setMessage('');
+    try {
+      const result = await giveFreeplayGift({
+        targetPlayerUid: player.uid,
+        reason: 'manual_specific_player',
+      });
+      setMessage(`FreePlay gift sent to ${result.playerUsername}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to give FreePlay gift.');
+    } finally {
+      setFreeplayGiveTargetUid(null);
     }
   }
 
@@ -4538,6 +4558,20 @@ export default function CoadminPage() {
               coadminCredentialsLoading={workerCredentialsLoading}
               onlineByUid={coadminOnlineByUid}
               nameMode="coadmin"
+              renderUserRowActions={(player) => (
+                <button
+                  type="button"
+                  onClick={() => void handleGiveFreeplayToPlayer(player)}
+                  disabled={
+                    freeplayGiveBusy ||
+                    Boolean(freeplayGiveTargetUid) ||
+                    player.status === 'disabled'
+                  }
+                  className="w-full rounded-lg border border-fuchsia-400/35 bg-fuchsia-500/15 px-3 py-2 text-xs font-semibold text-fuchsia-100 hover:bg-fuchsia-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {freeplayGiveTargetUid === player.uid ? 'Sending...' : 'Give Freeplay'}
+                </button>
+              )}
               renderSelectedExtras={(user) => (
                 <div className="mt-5 w-full max-w-6xl space-y-4">
                   <div className="rounded-2xl border border-emerald-500/20 bg-emerald-950/30 p-4">

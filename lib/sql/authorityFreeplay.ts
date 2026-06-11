@@ -12,7 +12,25 @@ import {
 import {
   insertLiveOutboxEventWithClient,
   playerFreeplayLiveChannel,
+  playerRequestLiveChannel,
 } from '@/lib/sql/liveOutbox';
+
+function isFreeplaySqlParameterError(message: string) {
+  return /could not determine data type of parameter|invalid input syntax for type/i.test(
+    message
+  );
+}
+
+export function mapFreeplaySqlError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (isFreeplaySqlParameterError(message)) {
+    return 'Could not claim freeplay. Please try again.';
+  }
+  if (/no pending|no longer|not found|not available/i.test(message)) {
+    return 'Freeplay gift is no longer available.';
+  }
+  return message;
+}
 
 export type FreeplayPlayerCandidate = {
   uid: string;
@@ -109,8 +127,8 @@ async function upsertFreeplayGiftCache(
         raw_firestore_data
       )
       VALUES (
-        $1, $2, NULLIF($3, ''), 'freeplay', $4, $5,
-        $6::timestamptz, $7::timestamptz, $8::timestamptz, $9, now(), NULL,
+        $1::text, $2::text, NULLIF($3::text, ''), 'freeplay', $4::text, $5::numeric,
+        $6::timestamptz, $7::timestamptz, $8::timestamptz, $9::text, now(), NULL,
         $10::jsonb
       )
       ON CONFLICT (firebase_id) DO UPDATE SET
@@ -174,8 +192,8 @@ async function upsertFreeplayPendingCache(
         raw_firestore_data
       )
       VALUES (
-        $1, NULLIF($2, ''), NULLIF($3, ''), $4, $5, $6,
-        $7::timestamptz, $8::timestamptz, $9::timestamptz, $10, now(), NULL,
+        $1::text, NULLIF($2::text, ''), NULLIF($3::text, ''), $4::boolean, $5::text, $6::numeric,
+        $7::timestamptz, $8::timestamptz, $9::timestamptz, $10::text, now(), NULL,
         $11::jsonb
       )
       ON CONFLICT (player_uid) DO UPDATE SET
@@ -219,6 +237,15 @@ async function writeFreeplayOutbox(
     eventType: string;
   }
 ) {
+  const payload = {
+    entityId: input.giftId,
+    playerUid: input.playerUid,
+    giftId: input.giftId,
+    status: input.status,
+    amount: input.amount ?? null,
+    updatedAt: input.updatedAt,
+    source: 'authority',
+  };
   await insertLiveOutboxEventWithClient(client, {
     channel: playerFreeplayLiveChannel(input.playerUid),
     eventType: input.eventType,
@@ -226,12 +253,40 @@ async function writeFreeplayOutbox(
     entityId: input.giftId,
     source: 'authority_freeplay',
     mirroredAt: input.updatedAt,
+    payload,
+  });
+  console.info('[FREEPLAY_CLAIM_OUTBOX_INSERTED]', {
+    playerUid: input.playerUid,
+    giftId: input.giftId,
+    eventType: input.eventType,
+    channel: playerFreeplayLiveChannel(input.playerUid),
+  });
+}
+
+async function writeFreeplayBalanceOutbox(
+  client: PoolClient,
+  input: {
+    playerUid: string;
+    giftId: string;
+    amount: number;
+    coin: number;
+    updatedAt: string;
+  }
+) {
+  await insertLiveOutboxEventWithClient(client, {
+    channel: playerRequestLiveChannel(input.playerUid),
+    eventType: 'balance_update',
+    entityType: 'player_balance',
+    entityId: input.playerUid,
+    source: 'authority_freeplay',
+    mirroredAt: input.updatedAt,
     payload: {
-      entityId: input.giftId,
+      entityId: input.playerUid,
       playerUid: input.playerUid,
       giftId: input.giftId,
-      status: input.status,
-      amount: input.amount ?? null,
+      coin: input.coin,
+      amount: input.amount,
+      reason: 'freeplay_claim',
       updatedAt: input.updatedAt,
       source: 'authority',
     },
@@ -296,19 +351,89 @@ export async function loadEligibleFreeplayPlayersForCoadmin(
   return players.filter((player) => !pendingUids.has(player.uid));
 }
 
-export async function giveFreeplayGiftInSql(input: {
+async function resolveFreeplayGiveTarget(input: {
   coadminUid: string;
-  idempotencyKey?: string | null;
-}): Promise<AuthorityFreeplayGiveResult> {
+  targetPlayerUid?: string | null;
+  reason?: string | null;
+}): Promise<FreeplayPlayerCandidate> {
   const coadminUid = cleanText(input.coadminUid);
-  if (!coadminUid) {
-    throw new Error('coadminUid is required.');
-  }
+  const targetPlayerUid = cleanText(input.targetPlayerUid);
+  const reason = cleanText(input.reason) || null;
 
   const allPlayers = await loadFreeplayPlayersForCoadmin(coadminUid);
   if (!allPlayers.length) {
     throw new Error('No active players are assigned to your account.');
   }
+
+  if (targetPlayerUid) {
+    console.info('[FREEPLAY_GIVE_TARGET_SELECTED]', {
+      coadminUid,
+      targetPlayerUid,
+      reason,
+    });
+
+    const db = getPlayerMirrorPool();
+    if (db) {
+      const lookup = await db.query(
+        `
+          SELECT uid, username, role, status, coadmin_uid, created_by
+          FROM public.players_cache
+          WHERE uid = $1::text
+            AND deleted_at IS NULL
+          LIMIT 1
+        `,
+        [targetPlayerUid]
+      );
+      if (lookup.rows.length) {
+        const row = lookup.rows[0] as Record<string, unknown>;
+        if (!belongsToCoadmin(row, coadminUid)) {
+          console.info('[FREEPLAY_GIVE_TARGET_SCOPE_DENIED]', {
+            coadminUid,
+            targetPlayerUid,
+            reason: 'outside_coadmin_scope',
+          });
+          throw new Error('Forbidden: this player is outside your scope.');
+        }
+        if (!isEligiblePlayerRow(row)) {
+          console.info('[FREEPLAY_GIVE_TARGET_SCOPE_DENIED]', {
+            coadminUid,
+            targetPlayerUid,
+            reason: 'player_not_eligible',
+          });
+          throw new Error('Selected player is no longer eligible.');
+        }
+      }
+    }
+
+    const scopedPlayer = allPlayers.find((player) => player.uid === targetPlayerUid);
+    if (!scopedPlayer) {
+      console.info('[FREEPLAY_GIVE_TARGET_SCOPE_DENIED]', {
+        coadminUid,
+        targetPlayerUid,
+        reason: 'player_not_in_scope_list',
+      });
+      throw new Error('Selected player is no longer eligible.');
+    }
+
+    const eligiblePlayers = await loadEligibleFreeplayPlayersForCoadmin(coadminUid);
+    const eligibleTarget = eligiblePlayers.find((player) => player.uid === targetPlayerUid);
+    if (!eligibleTarget) {
+      throw new Error('This player already has a pending FreePlay gift.');
+    }
+
+    console.info('[FREEPLAY_GIVE_TARGET_SCOPE_OK]', {
+      coadminUid,
+      targetPlayerUid,
+      playerUsername: eligibleTarget.username,
+    });
+    console.info('[FREEPLAY_GIVE_SPECIFIC_PLAYER]', {
+      coadminUid,
+      targetPlayerUid,
+      reason,
+    });
+    return eligibleTarget;
+  }
+
   const eligiblePlayers = await loadEligibleFreeplayPlayersForCoadmin(coadminUid);
   if (!eligiblePlayers.length) {
     throw new Error('Every eligible player already has a pending FreePlay gift.');
@@ -316,6 +441,34 @@ export async function giveFreeplayGiftInSql(input: {
 
   const selectedPlayer =
     eligiblePlayers[Math.floor(Math.random() * eligiblePlayers.length)];
+  console.info('[FREEPLAY_GIVE_RANDOM_PLAYER]', {
+    coadminUid,
+    playerUid: selectedPlayer.uid,
+    playerUsername: selectedPlayer.username,
+  });
+  return selectedPlayer;
+}
+
+export async function giveFreeplayGiftInSql(input: {
+  coadminUid: string;
+  actorUid?: string | null;
+  actorRole?: string | null;
+  targetPlayerUid?: string | null;
+  reason?: string | null;
+  idempotencyKey?: string | null;
+}): Promise<AuthorityFreeplayGiveResult> {
+  const coadminUid = cleanText(input.coadminUid);
+  if (!coadminUid) {
+    throw new Error('coadminUid is required.');
+  }
+
+  const actorUid = cleanText(input.actorUid) || coadminUid;
+  const actorRole = cleanText(input.actorRole) || 'coadmin';
+  const selectedPlayer = await resolveFreeplayGiveTarget({
+    coadminUid,
+    targetPlayerUid: input.targetPlayerUid,
+    reason: input.reason,
+  });
   const giftId = randomUUID();
   const nowIso = new Date().toISOString();
   const idempotencyKey = cleanText(input.idempotencyKey);
@@ -351,12 +504,14 @@ export async function giveFreeplayGiftInSql(input: {
         operationType: 'freeplay_give',
         userUid: selectedPlayer.uid,
         sourceId: giftId,
-        actorUid: coadminUid,
-        actorRole: 'coadmin',
+        actorUid,
+        actorRole,
         payload: {
           playerUid: selectedPlayer.uid,
           playerUsername: selectedPlayer.username,
           giftId,
+          reason: cleanText(input.reason) || null,
+          targetPlayerUid: cleanText(input.targetPlayerUid) || null,
         },
       });
       if (claim.duplicate) {
@@ -478,6 +633,12 @@ export async function claimFreeplayGiftInSql(input: {
     ? `freeplay_claim:${playerUid}:${cleanText(input.idempotencyKey)}`
     : `freeplay_claim:${playerUid}:${requestedGiftId}`;
 
+  console.info('[FREEPLAY_CLAIM_SQL_START]', {
+    playerUid,
+    giftId: requestedGiftId,
+    operationKey,
+  });
+
   const client = await db.connect();
   try {
     await client.query('BEGIN');
@@ -594,14 +755,28 @@ export async function claimFreeplayGiftInSql(input: {
     const nextCoin = currentCoin + amount;
     const eventId = randomUUID();
 
+    console.info('[FREEPLAY_SQL_INPUT]', {
+      playerUid,
+      giftId: requestedGiftId,
+      amountRaw: amount,
+      amountNumber: amount,
+      reasonType: 'freeplay_claim',
+      metadataType: 'jsonb',
+      param1Type: 'text',
+      param2Type: 'numeric',
+      param3Type: 'timestamptz',
+      operationKey,
+    });
+
     await client.query(
       `
         UPDATE public.players_cache
         SET
-          coin = $2,
+          coin = $2::numeric,
           updated_at = $3::timestamptz,
-          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object('coin', $2)
-        WHERE uid = $1
+          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb)
+            || jsonb_build_object('coin', $2::numeric)
+        WHERE uid = $1::text
           AND deleted_at IS NULL
       `,
       [playerUid, nextCoin, nowIso]
@@ -611,15 +786,23 @@ export async function claimFreeplayGiftInSql(input: {
       `
         UPDATE public.user_balance_snapshots_cache
         SET
-          coin = $2,
+          coin = $2::numeric,
           updated_at = $3::timestamptz,
           mirrored_at = now(),
-          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object('coin', $2)
-        WHERE firebase_id = $1
+          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb)
+            || jsonb_build_object('coin', $2::numeric)
+        WHERE firebase_id = $1::text
           AND deleted_at IS NULL
       `,
       [playerUid, nextCoin, nowIso]
     );
+    console.info('[FREEPLAY_CLAIM_BALANCE_UPDATED]', {
+      playerUid,
+      giftId: requestedGiftId,
+      beforeCoin: currentCoin,
+      afterCoin: nextCoin,
+      amount,
+    });
 
     await upsertFreeplayGiftCache(client, {
       giftId: requestedGiftId,
@@ -662,8 +845,8 @@ export async function claimFreeplayGiftInSql(input: {
           created_at, updated_at, source, mirrored_at, deleted_at, raw_firestore_data
         )
         VALUES (
-          $1, $2, NULLIF($3, ''), 'freeplay', $4, $5,
-          $6, $7, $2, 'player',
+          $1::text, $2::text, NULLIF($3::text, ''), 'freeplay', $4::numeric, $5::text,
+          $6::numeric, $7::numeric, $2::text, 'player',
           $8::timestamptz, $8::timestamptz, 'authority_freeplay_claim', now(), NULL, $9::jsonb
         )
         ON CONFLICT (firebase_id) DO NOTHING
@@ -680,6 +863,13 @@ export async function claimFreeplayGiftInSql(input: {
         JSON.stringify(rawEvent),
       ]
     );
+
+    console.info('[FREEPLAY_CLAIM_LEDGER_WRITTEN]', {
+      playerUid,
+      giftId: requestedGiftId,
+      eventId,
+      amount,
+    });
 
     await insertAuthorityLedgerEvent(client, {
       eventKey: `authority:freeplay_claim:${eventId}`,
@@ -715,6 +905,36 @@ export async function claimFreeplayGiftInSql(input: {
       updatedAt: nowIso,
       eventType: 'freeplay_claim',
     });
+    await writeFreeplayBalanceOutbox(client, {
+      playerUid,
+      giftId: requestedGiftId,
+      amount,
+      coin: nextCoin,
+      updatedAt: nowIso,
+    });
+    await insertLiveOutboxEventWithClient(client, {
+      channel: playerRequestLiveChannel(playerUid),
+      eventType: 'player_message',
+      entityType: 'freeplay_gift',
+      entityId: requestedGiftId,
+      source: 'authority_freeplay',
+      mirroredAt: nowIso,
+      payload: {
+        entityId: requestedGiftId,
+        playerUid,
+        giftId: requestedGiftId,
+        status: 'claimed',
+        amount,
+        pokeMessage: 'Freeplay claimed successfully.',
+        updatedAt: nowIso,
+        source: 'authority',
+      },
+    });
+    console.info('[PLAYER_FREEPLAY_CLAIM_TOAST_QUEUED]', {
+      playerUid,
+      giftId: requestedGiftId,
+      amount,
+    });
 
     await client.query(
       `
@@ -734,6 +954,12 @@ export async function claimFreeplayGiftInSql(input: {
     );
 
     await client.query('COMMIT');
+    console.info('[FREEPLAY_CLAIM_SQL_SUCCESS]', {
+      playerUid,
+      giftId: requestedGiftId,
+      amount,
+      operationKey,
+    });
     return {
       success: true,
       duplicate: false,
@@ -741,10 +967,19 @@ export async function claimFreeplayGiftInSql(input: {
       amount,
       giftId: requestedGiftId,
       playerUid,
-      message: `You got ${amount} FreePlay coins!`,
+      message: 'Freeplay claimed successfully.',
     };
   } catch (error) {
     await client.query('ROLLBACK');
+    const message = error instanceof Error ? error.message : String(error || '');
+    console.info('[FREEPLAY_CLAIM_SQL_ERROR]', {
+      playerUid,
+      giftId: requestedGiftId,
+      error: message,
+    });
+    if (isFreeplaySqlParameterError(message)) {
+      throw new Error('Could not claim freeplay. Please try again.');
+    }
     throw error;
   } finally {
     client.release();

@@ -959,6 +959,22 @@ export async function getPendingCarerTaskCandidatesFromSql(
       };
     }
 
+    console.info('[AUTO_TICK_SQL_PENDING_SCAN]', {
+      coadminUid: cleanCoadminUid,
+      carerUid: cleanCarerUid || null,
+      candidateCount: candidates.length,
+      excludeRetryPending,
+      excludeReturnCooldown,
+    });
+    for (const task of candidates) {
+      console.info('[AUTO_TICK_SQL_PENDING_TASK_ROW]', {
+        taskId: cleanText(task.id),
+        type: cleanText(task.type),
+        gameName: cleanText(task.gameName),
+        playerUid: cleanText(task.playerUid),
+        retryPending: task.retryPending === true,
+      });
+    }
     console.info(
       '[AUTO_TICK_PENDING_SQL] hit=true candidateCount=%s coadminUid=%s carerUid=%s durationMs=%s pool_acquire_ms=%s query_exec_ms=%s',
       candidates.length,

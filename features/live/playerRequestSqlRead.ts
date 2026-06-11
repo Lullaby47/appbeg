@@ -73,6 +73,7 @@ const PLAYER_LIVE_SSE_EVENTS = [
   'game_request_complete',
   'player_message',
   'balance_update',
+  'player_game_login.updated',
   'request.upserted',
   'request.tombstoned',
   'recharge_create',
@@ -536,6 +537,7 @@ export function attachPlayerRequestSqlReadListener(
     onRechargeSuccessEvent?: (event: PlayerRechargeSuccessLiveEvent) => void;
     onRedeemDismissEvent?: (event: PlayerRedeemDismissLiveEvent) => void;
     onBalanceUpdate?: (reason: string) => void;
+    onPlayerGameLoginUpdated?: (reason: string) => void;
   }
 ) {
   const cleanPlayerUid = cleanText(playerUid);
@@ -772,6 +774,21 @@ export function attachPlayerRequestSqlReadListener(
       });
       options?.onBalanceUpdate?.(`sse_event:${eventName}`);
       void refetchSnapshotNow(`sse_event:${eventName}`, true);
+      return;
+    }
+
+    if (eventName === 'player_game_login.updated') {
+      const loginPayload = payload as SqlRequestPayload & {
+        loginId?: unknown;
+        taskId?: unknown;
+      };
+      console.info('[PLAYER_GAME_LOGIN_UPDATED_EVENT]', {
+        playerUid: cleanPlayerUid,
+        loginId: cleanText(loginPayload.loginId) || cleanText(loginPayload.entityId) || null,
+        gameName: cleanText(loginPayload.gameName) || null,
+        taskId: cleanText(loginPayload.taskId) || null,
+      });
+      options?.onPlayerGameLoginUpdated?.(`sse_event:${eventName}`);
       return;
     }
 
