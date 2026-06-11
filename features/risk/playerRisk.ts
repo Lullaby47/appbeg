@@ -597,11 +597,17 @@ export async function createCashToCoinTransferRequest(
   });
 
   if (!response.ok) {
-    throw new Error(
+    const errorMessage =
       payload.message ||
-        (typeof payload.error === 'string' ? payload.error : '') ||
-        'Failed to transfer cash to coin.'
-    );
+      (typeof payload.error === 'string' ? payload.error : '') ||
+      'Failed to transfer cash to coin.';
+    console.info('[PLAYER_TRANSFER_API_ERROR]', {
+      direction: 'cash_to_coin',
+      transferId: transferId || null,
+      status: response.status,
+      error: errorMessage,
+    });
+    throw new Error(errorMessage);
   }
 
   return {
@@ -658,11 +664,17 @@ export async function createCoinToCashTransferRequest(
   });
 
   if (!response.ok) {
-    throw new Error(
+    const errorMessage =
       payload.message ||
-        (typeof payload.error === 'string' ? payload.error : '') ||
-        'Failed to transfer coin to cash.'
-    );
+      (typeof payload.error === 'string' ? payload.error : '') ||
+      'Failed to transfer coin to cash.';
+    console.info('[PLAYER_TRANSFER_API_ERROR]', {
+      direction: 'coin_to_cash',
+      transferId: transferId || null,
+      status: response.status,
+      error: errorMessage,
+    });
+    throw new Error(errorMessage);
   }
 
   return {

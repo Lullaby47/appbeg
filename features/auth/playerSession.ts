@@ -16,8 +16,11 @@ import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
 import { clearCachedSessionUser, getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { logPlayerFetchBlockedRole } from '@/lib/client/playerFetchGuard';
 import {
+  consumePlayerSessionClientContinuation,
+  isClientNavigationReload,
   isPlayerRouteNavigationActive,
   isRealAppUnloadEvent,
+  markPlayerSessionClientContinuation,
 } from '@/lib/client/playerSessionNavigationGuard';
 import {
   isPlayerChatRoute,
@@ -1907,12 +1910,23 @@ export async function endLocalPlayerSessionOnBrowserLeave(
     route?: string;
   }
 ) {
-  const bootWindowMs = context?.bootWindowMs ?? 30_000;
-  const mountedAt = context?.mountedAt ?? 0;
+  const sessionId = getLocalPlayerSessionId();
   const isRouteNavigation = isPlayerRouteNavigationActive();
   const isRealUnload = isRealAppUnloadEvent(event);
-  const withinBootWindow = mountedAt > 0 && Date.now() - mountedAt < bootWindowMs;
-  const willSendEnd = !isRouteNavigation && isRealUnload && !withinBootWindow;
+  if (sessionId) {
+    markPlayerSessionClientContinuation(sessionId);
+    console.info('[PLAYER_SESSION_CONTINUATION_MARKED]', {
+      sessionIdPrefix: sessionId.slice(0, 8),
+      trigger: event.type,
+      isRouteNavigation,
+      isRealUnload,
+      route: context?.route || currentClientPath(),
+    });
+  }
+
+  // Never end the active SQL player session on refresh/navigation/pagehide.
+  // Explicit logout and server-side expiry handle session closure.
+  const willSendEnd = false;
 
   await endLocalPlayerSession('browser_closed', {
     trigger: event.type,
@@ -1924,6 +1938,25 @@ export async function endLocalPlayerSessionOnBrowserLeave(
     function: 'endLocalPlayerSessionOnBrowserLeave',
     userClickedLogout: false,
   });
+}
+
+export async function resumePlayerSessionAfterClientContinuation(user?: User | null) {
+  const sessionId = getLocalPlayerSessionId();
+  if (!sessionId) {
+    return false;
+  }
+  const resumed = consumePlayerSessionClientContinuation(sessionId);
+  const reload = isClientNavigationReload();
+  if (!resumed && !reload) {
+    return false;
+  }
+  console.info('[PLAYER_SESSION_RESUME_AFTER_RELOAD]', {
+    sessionIdPrefix: sessionId.slice(0, 8),
+    resumed,
+    reload,
+  });
+  await touchPlayerSession(user === undefined ? auth.currentUser : user);
+  return true;
 }
 
 export function listenForPlayerSessionReplacement(

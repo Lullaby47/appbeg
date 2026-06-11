@@ -3323,13 +3323,18 @@ export default function PlayerPage() {
       setTransferCoinAmountInput('');
       setCashToCoinTransferId('');
     } catch (error) {
-      setMessage(
+      const errorMessage =
         error instanceof Error
           ? error.message
           : isCashToCoinTransfer
             ? 'Failed to transfer cash to coin.'
-            : 'Failed to transfer coin to cash.'
-      );
+            : 'Failed to transfer coin to cash.';
+      console.info('[PLAYER_TRANSFER_API_ERROR]', {
+        direction: isCashToCoinTransfer ? 'cash_to_coin' : 'coin_to_cash',
+        transferId: cashToCoinTransferId || null,
+        error: errorMessage,
+      });
+      setMessage(errorMessage);
     } finally {
       setCoinLoading(false);
     }

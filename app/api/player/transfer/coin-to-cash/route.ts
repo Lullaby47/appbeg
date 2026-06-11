@@ -40,7 +40,13 @@ export async function POST(request: Request) {
   try {
     console.info('[TRANSFER_API_START]', { route: ROUTE });
     const auth = await requireApiUser(request, ['player']);
-    if ('response' in auth) return auth.response;
+    if ('response' in auth) {
+      console.info('[TRANSFER_AUTH_FAILED]', {
+        route: ROUTE,
+        status: auth.response.status,
+      });
+      return auth.response;
+    }
     console.info('[TRANSFER_AUTH_OK]', {
       route: ROUTE,
       playerUid: auth.user.uid,

@@ -30,6 +30,7 @@ import { isSqlPlayerRuntimeMode } from '@/lib/client/sqlPlayerRuntimeAuth';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import {
   endLocalPlayerSessionOnBrowserLeave,
+  resumePlayerSessionAfterClientContinuation,
   forcePlayerSessionLogout,
   handleDefinitivePlayerSessionFailure,
   getLocalPlayerSessionId,
@@ -662,7 +663,11 @@ export default function ProtectedRoute({
       });
     }
 
-    void touchPlayerSession(currentUser);
+    void resumePlayerSessionAfterClientContinuation(currentUser).then((resumed) => {
+      if (!resumed) {
+        void touchPlayerSession(currentUser);
+      }
+    });
     const heartbeat = window.setInterval(() => {
       if (isPlayerSessionStale()) {
         window.clearInterval(heartbeat);
@@ -671,19 +676,26 @@ export default function ProtectedRoute({
       void touchPlayerSession(sqlRuntime ? null : auth.currentUser);
     }, 45_000);
     const mountedAt = Date.now();
-    const markInactive = (event: Event) => {
+    const markContinuation = (event: Event) => {
       void endLocalPlayerSessionOnBrowserLeave(event, {
         mountedAt,
         route: pathnameRef.current || currentClientPath(),
       });
     };
-    window.addEventListener('pagehide', markInactive);
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        void touchPlayerSession(currentUser);
+      }
+    };
+    window.addEventListener('pagehide', markContinuation);
+    window.addEventListener('pageshow', onPageShow);
 
     return () => {
       stopSessionListener();
       stopPolling();
       window.clearInterval(heartbeat);
-      window.removeEventListener('pagehide', markInactive);
+      window.removeEventListener('pagehide', markContinuation);
+      window.removeEventListener('pageshow', onPageShow);
     };
   }, [currentRole]);
 
