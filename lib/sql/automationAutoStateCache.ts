@@ -1,12 +1,14 @@
 import 'server-only';
 
 import type { DocumentSnapshot } from 'firebase-admin/firestore';
+import type { PoolClient } from 'pg';
 
 import { AUTOMATION_AUTO_STATE_COLLECTION } from '@/features/automation/automationAutoState';
 import { adminDb } from '@/lib/firebase/admin';
 import {
   cleanText,
   getPlayerMirrorPool,
+  isPgPoolExhaustedError,
   normalizeJson,
   runMirrorPoolQuery,
   type PlayerMirrorSqlTiming,
@@ -56,14 +58,20 @@ export type AutomationAutoStateSqlLookup = {
 export type AutomationAutoStateSqlLookupResult = {
   state: AutomationAutoStateSqlLookup | null;
   timing: PlayerMirrorSqlTiming;
-  missReason: 'row_missing' | 'postgres_unavailable' | 'lookup_failed' | null;
+  missReason: 'row_missing' | 'postgres_unavailable' | 'pool_exhausted' | 'lookup_failed' | null;
 };
 
 export type AutomationAutoTickLeaseSqlResult =
   | { ok: true; timing: PlayerMirrorSqlTiming }
   | {
       ok: false;
-      reason: 'STATE_GONE' | 'DISABLED' | 'LEASE_HELD' | 'lookup_failed' | 'postgres_unavailable';
+      reason:
+        | 'STATE_GONE'
+        | 'DISABLED'
+        | 'LEASE_HELD'
+        | 'lookup_failed'
+        | 'pool_exhausted'
+        | 'postgres_unavailable';
       timing: PlayerMirrorSqlTiming;
     };
 
@@ -322,16 +330,17 @@ export async function lookupAutomationAutoStateFromSqlCache(
       query_exec_ms: 0,
       total_ms: Date.now() - startedAt,
     };
+    const missReason = isPgPoolExhaustedError(error) ? 'pool_exhausted' : 'lookup_failed';
     console.info(
       '[AUTO_TICK_STATE_SQL] hit=false carerUid=%s enabled=%s leaseOwner=%s leaseExpired=%s reason=%s error=%s',
       cleanCarerUid,
       null,
       null,
       null,
-      'lookup_failed',
+      missReason,
       error instanceof Error ? error.message : String(error)
     );
-    return { state: null, timing, missReason: 'lookup_failed' };
+    return { state: null, timing, missReason };
   }
 }
 
@@ -358,7 +367,30 @@ export async function acquireAutomationAutoTickLeaseSql(
   }
 
   const acquireStartedAt = Date.now();
-  const client = await db.connect();
+  let client: PoolClient;
+  try {
+    client = await db.connect();
+  } catch (error) {
+    const reason = isPgPoolExhaustedError(error) ? 'pool_exhausted' : 'lookup_failed';
+    console.warn('[AUTOMATION_AUTO_STATE_CACHE] lease connect failed', {
+      carerUid: cleanCarerUid,
+      instanceId: cleanInstanceId,
+      reason,
+      error: error instanceof Error ? error.message : String(error),
+      totalCount: db.totalCount,
+      idleCount: db.idleCount,
+      waitingCount: db.waitingCount,
+    });
+    return {
+      ok: false,
+      reason,
+      timing: {
+        pool_acquire_ms: Date.now() - acquireStartedAt,
+        query_exec_ms: 0,
+        total_ms: Date.now() - startedAt,
+      },
+    };
+  }
   const pool_acquire_ms = Date.now() - acquireStartedAt;
   const queryStartedAt = Date.now();
 

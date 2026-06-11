@@ -2,24 +2,35 @@ import 'server-only';
 
 import { Pool, type PoolClient } from 'pg';
 
-const SQL_TIMEOUT_MS = 5_000;
-/** Keep idle connections longer so remote VPS snapshots avoid repeated TLS handshakes. */
-const PLAYER_MIRROR_IDLE_TIMEOUT_MS = 120_000;
+const SQL_CONNECTION_TIMEOUT_MS = resolvePositiveInt(
+  process.env.PG_CONNECTION_TIMEOUT_MS,
+  5_000
+);
+const SQL_STATEMENT_TIMEOUT_MS = resolvePositiveInt(process.env.PG_STATEMENT_TIMEOUT_MS, 15_000);
+const PLAYER_MIRROR_IDLE_TIMEOUT_MS = resolvePositiveInt(process.env.PG_IDLE_TIMEOUT_MS, 30_000);
+
+function resolvePositiveInt(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.trunc(parsed);
+}
 
 function resolvePlayerMirrorPoolMax() {
-  const fromEnv = Number(process.env.PLAYER_MIRROR_POOL_MAX || 12);
+  const fromEnv = Number(process.env.PG_POOL_MAX || process.env.PLAYER_MIRROR_POOL_MAX || 3);
   if (!Number.isFinite(fromEnv)) {
-    return 12;
+    return 3;
   }
-  return Math.min(32, Math.max(4, Math.trunc(fromEnv)));
+  return Math.min(10, Math.max(1, Math.trunc(fromEnv)));
 }
 
 const PLAYER_MIRROR_POOL_MAX = resolvePlayerMirrorPoolMax();
 
 function resolvePlayerMirrorPoolWarmMin() {
-  const fromEnv = Number(process.env.PLAYER_MIRROR_POOL_WARM_MIN || 2);
+  const fromEnv = Number(process.env.PLAYER_MIRROR_POOL_WARM_MIN || 0);
   if (!Number.isFinite(fromEnv)) {
-    return 2;
+    return 0;
   }
   return Math.min(PLAYER_MIRROR_POOL_MAX, Math.max(0, Math.trunc(fromEnv)));
 }
@@ -354,7 +365,38 @@ export async function acquirePlayerMirrorClient(
     waitingCount: pool.waitingCount,
   };
   const acquireStartedAt = Date.now();
-  const client = await pool.connect();
+  let client: PoolClient;
+  try {
+    client = await pool.connect();
+  } catch (error) {
+    console.warn('[SQL_POOL_CONNECT_FAILED]', {
+      name: 'playerMirror',
+      context: acquireContext?.context ?? 'unspecified',
+      route: acquireContext?.route ?? null,
+      request_id: acquireContext?.request_id ?? null,
+      code: error && typeof error === 'object' ? (error as { code?: string }).code || null : null,
+      message: error instanceof Error ? error.message : String(error),
+      pool_exhausted: isPgPoolExhaustedError(error),
+      totalCount: pool.totalCount,
+      idleCount: pool.idleCount,
+      waitingCount: pool.waitingCount,
+      max: PLAYER_MIRROR_POOL_MAX,
+      idle_before: statsBefore.idleCount,
+      waiting_before: statsBefore.waitingCount,
+    });
+    if (isPgPoolExhaustedError(error)) {
+      console.warn('[SQL_POOL_EXHAUSTED]', {
+        name: 'playerMirror',
+        context: acquireContext?.context ?? 'unspecified',
+        route: acquireContext?.route ?? null,
+        totalCount: pool.totalCount,
+        idleCount: pool.idleCount,
+        waitingCount: pool.waitingCount,
+        max: PLAYER_MIRROR_POOL_MAX,
+      });
+    }
+    throw error;
+  }
   const pool_acquire_ms = Date.now() - acquireStartedAt;
   logSqlPoolAcquire(pool, pool_acquire_ms, statsBefore, acquireContext);
   return {
@@ -384,6 +426,19 @@ export function isPgConnectionTimeoutError(error: unknown) {
     lower.includes('connection timeout') ||
     lower.includes('timeout expired') ||
     lower.includes('etimedout')
+  );
+}
+
+export function isPgPoolExhaustedError(error: unknown) {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const pg = error as { code?: string; message?: string };
+  const lower = String(pg.message || '').toLowerCase();
+  return (
+    pg.code === '53300' ||
+    lower.includes('too many clients') ||
+    lower.includes('remaining connection slots are reserved')
   );
 }
 
@@ -426,8 +481,13 @@ function logSqlPoolAudit() {
       scope: 'carerTasksCache,liveOutbox,playerGameRequestsCache,playersCache,playerSessionsCache,...',
       shared: true,
       max: PLAYER_MIRROR_POOL_MAX,
+      env: 'PG_POOL_MAX',
     },
-    gameLoginsCache: { scope: 'game_logins_cache reads/writes', shared: false, max: 4 },
+    gameLoginsCache: {
+      scope: 'game_logins_cache reads/writes',
+      shared: true,
+      uses: 'playerMirror',
+    },
     automationJobsCache: { scope: 'automation_jobs_cache', shared: true, uses: 'playerMirror' },
     coadminBonusSettingsCache: {
       scope: 'coadmin_bonus_settings_cache',
@@ -509,15 +569,15 @@ export function getPlayerMirrorPool(poolTiming?: PlayerMirrorPoolTiming) {
   const pool = new Pool({
     connectionString,
     max: PLAYER_MIRROR_POOL_MAX,
-    min: 1,
-    connectionTimeoutMillis: SQL_TIMEOUT_MS,
+    min: 0,
+    connectionTimeoutMillis: SQL_CONNECTION_TIMEOUT_MS,
     idleTimeoutMillis: PLAYER_MIRROR_IDLE_TIMEOUT_MS,
-    query_timeout: SQL_TIMEOUT_MS,
-    statement_timeout: SQL_TIMEOUT_MS,
+    query_timeout: SQL_STATEMENT_TIMEOUT_MS,
+    statement_timeout: SQL_STATEMENT_TIMEOUT_MS,
   });
   pool.on('error', (error) => {
     console.warn('[SQL_POOL] idle client error', { name: 'playerMirror', error });
-    if (isPgConnectionTimeoutError(error)) {
+    if (isPgConnectionTimeoutError(error) || isPgPoolExhaustedError(error)) {
       logPlayerMirrorPoolStats('playerMirror_idle_client_error');
     }
   });
@@ -526,7 +586,13 @@ export function getPlayerMirrorPool(poolTiming?: PlayerMirrorPoolTiming) {
     poolTiming.sql_pool_ms = Date.now() - poolStartedAt;
     poolTiming.poolReused = false;
   }
-  console.info('[SQL_POOL] created', { name: 'playerMirror', max: PLAYER_MIRROR_POOL_MAX });
+  console.info('[SQL_POOL] created', {
+    name: 'playerMirror',
+    max: PLAYER_MIRROR_POOL_MAX,
+    idleTimeoutMillis: PLAYER_MIRROR_IDLE_TIMEOUT_MS,
+    connectionTimeoutMillis: SQL_CONNECTION_TIMEOUT_MS,
+    statementTimeoutMillis: SQL_STATEMENT_TIMEOUT_MS,
+  });
   logSqlPoolAudit();
   void warmPlayerMirrorPool('pool_created');
   return pool;

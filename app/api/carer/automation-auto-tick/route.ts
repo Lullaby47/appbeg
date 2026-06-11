@@ -497,6 +497,13 @@ async function resolveAutomationAutoTickState(
       carerUid,
       !isAuthSqlReadEnabled()
     );
+    if (sqlStateLookup.missReason === 'pool_exhausted') {
+      console.warn('[AUTO_TICK_STATE_SQL_BLOCKED_POOL_EXHAUSTED]', {
+        carerUid,
+        state_sql_ms: stateTiming.state_sql_ms,
+        reason: sqlStateLookup.missReason,
+      });
+    }
   }
 
   if (isAuthSqlReadEnabled()) {

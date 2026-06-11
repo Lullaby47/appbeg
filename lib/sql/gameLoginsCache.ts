@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { Pool, type PoolClient, type QueryResult } from 'pg';
+import type { PoolClient } from 'pg';
 
 import {
   getPlayerMirrorPool,
@@ -26,21 +26,9 @@ export type MirrorGameLoginInput = CachedGameLogin & {
   raw?: Record<string, unknown>;
 };
 
-const GAME_LOGINS_CACHE_SQL_TIMEOUT_MS = 1_500;
-const GAME_LOGINS_POOL_CONNECTION_TIMEOUT_MS = 3_000;
-const GAME_LOGINS_POOL_IDLE_TIMEOUT_MS = 30_000;
-const GAME_LOGINS_POOL_MAX = 4;
 const GAME_LOGINS_MEMORY_CACHE_TTL_MS = 30_000;
 
-type GameLoginsPoolCache = {
-  connectionString: string;
-  pool: Pool;
-  unhealthy: boolean;
-  errorHandlerAttached: boolean;
-};
-
 const globalSqlPool = globalThis as typeof globalThis & {
-  __appbegGameLoginsCachePool?: GameLoginsPoolCache;
   __appbegGameLoginsMemoryCache?: Map<string, { expiresAt: number; rows: CachedGameLogin[] }>;
 };
 
@@ -76,55 +64,6 @@ export function createGameLoginsSqlTiming(): GameLoginsSqlTiming {
     poolReused: null,
     pg_connect_error: null,
   };
-}
-
-function getPool(sqlTiming?: Pick<GameLoginsSqlTiming, 'sql_pool_ms' | 'poolReused'>) {
-  const poolStartedAt = Date.now();
-  const connectionString = databaseUrl();
-  if (!connectionString) {
-    return null;
-  }
-  const cached = globalSqlPool.__appbegGameLoginsCachePool;
-  if (cached?.connectionString === connectionString && !cached.unhealthy) {
-    if (sqlTiming) {
-      sqlTiming.sql_pool_ms = Date.now() - poolStartedAt;
-      sqlTiming.poolReused = true;
-    }
-    console.info('[SQL_POOL] reused', { name: 'gameLoginsCache' });
-    return cached.pool;
-  }
-  if (cached) {
-    void cached.pool.end().catch((error) => {
-      console.warn('[SQL_POOL] pool end failed', { name: 'gameLoginsCache', error });
-    });
-    globalSqlPool.__appbegGameLoginsCachePool = undefined;
-  }
-
-  const pool = new Pool({
-    connectionString,
-    max: GAME_LOGINS_POOL_MAX,
-    connectionTimeoutMillis: GAME_LOGINS_POOL_CONNECTION_TIMEOUT_MS,
-    idleTimeoutMillis: GAME_LOGINS_POOL_IDLE_TIMEOUT_MS,
-    query_timeout: GAME_LOGINS_CACHE_SQL_TIMEOUT_MS,
-    statement_timeout: GAME_LOGINS_CACHE_SQL_TIMEOUT_MS,
-  });
-  const nextCache: GameLoginsPoolCache = {
-    connectionString,
-    pool,
-    unhealthy: false,
-    errorHandlerAttached: true,
-  };
-  pool.on('error', (error) => {
-    nextCache.unhealthy = true;
-    console.warn('[SQL_POOL] idle client error', { name: 'gameLoginsCache', error });
-  });
-  globalSqlPool.__appbegGameLoginsCachePool = nextCache;
-  if (sqlTiming) {
-    sqlTiming.sql_pool_ms = Date.now() - poolStartedAt;
-    sqlTiming.poolReused = false;
-  }
-  console.info('[SQL_POOL] created', { name: 'gameLoginsCache' });
-  return pool;
 }
 
 function cleanText(value: unknown) {
@@ -179,43 +118,6 @@ function writeMemoryCache(key: string, rows: CachedGameLogin[]) {
     expiresAt: Date.now() + GAME_LOGINS_MEMORY_CACHE_TTL_MS,
     rows: cloneRows(rows),
   });
-}
-
-function resetPoolAfterError(error: unknown) {
-  const cached = globalSqlPool.__appbegGameLoginsCachePool;
-  if (!cached) return;
-  cached.unhealthy = true;
-  console.warn('[SQL_POOL] reset after error', { name: 'gameLoginsCache', error });
-  void cached.pool.end().catch((endError) => {
-    console.warn('[SQL_POOL] pool end failed', { name: 'gameLoginsCache', error: endError });
-  });
-  globalSqlPool.__appbegGameLoginsCachePool = undefined;
-}
-
-function releaseClientSafely(client: PoolClient | null, destroy = false) {
-  if (!client) return;
-  try {
-    (client.release as (destroy?: boolean) => void)(destroy);
-  } catch (error) {
-    console.warn('[SQL_POOL] client release failed', { name: 'gameLoginsCache', destroy, error });
-  }
-}
-
-function timeoutAfter(ms: number) {
-  return new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error(`game_logins_cache_query_timeout_${ms}ms`)), ms);
-  });
-}
-
-function queryWithTimeout<T extends Record<string, unknown>>(
-  client: PoolClient,
-  text: string,
-  values: unknown[]
-): Promise<QueryResult<T>> {
-  return Promise.race([
-    client.query<T>(text, values),
-    timeoutAfter(GAME_LOGINS_CACHE_SQL_TIMEOUT_MS),
-  ]);
 }
 
 function recordSqlConnectError(sqlTiming: GameLoginsSqlTiming | undefined, error: unknown) {
@@ -428,7 +330,7 @@ export async function readGameLoginsCacheByCoadmin(
 }
 
 export async function mirrorGameLoginCache(input: MirrorGameLoginInput) {
-  const db = getPool();
+  const db = getPlayerMirrorPool();
   if (!db) return false;
 
   const gameName = cleanText(input.gameName);
@@ -499,7 +401,7 @@ export async function mirrorGameLoginCache(input: MirrorGameLoginInput) {
 }
 
 export async function deleteGameLoginCache(id: string) {
-  const db = getPool();
+  const db = getPlayerMirrorPool();
   if (!db) return false;
 
   await db.query('DELETE FROM public.game_logins_cache WHERE id = $1', [id]);

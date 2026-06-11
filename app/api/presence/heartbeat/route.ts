@@ -7,6 +7,24 @@ import { upsertUserPresenceCache } from '@/lib/sql/userPresenceCache';
 export const runtime = 'nodejs';
 
 const ROUTE = '/api/presence/heartbeat';
+const HEARTBEAT_MIN_INTERVAL_MS = 10_000;
+
+const globalPresenceHeartbeat = globalThis as typeof globalThis & {
+  __appbegPresenceHeartbeatLastSeen?: Map<string, number>;
+};
+
+function shouldWritePresenceHeartbeat(uid: string) {
+  if (!globalPresenceHeartbeat.__appbegPresenceHeartbeatLastSeen) {
+    globalPresenceHeartbeat.__appbegPresenceHeartbeatLastSeen = new Map();
+  }
+  const now = Date.now();
+  const lastSeen = globalPresenceHeartbeat.__appbegPresenceHeartbeatLastSeen.get(uid) || 0;
+  if (now - lastSeen < HEARTBEAT_MIN_INTERVAL_MS) {
+    return false;
+  }
+  globalPresenceHeartbeat.__appbegPresenceHeartbeatLastSeen.set(uid, now);
+  return true;
+}
 
 export async function POST(request: Request) {
   const auth = await requireApiUser(request, [
@@ -22,7 +40,8 @@ export async function POST(request: Request) {
 
   const startedAt = Date.now();
   const sqlReadMode = isCacheSqlAuthoritative();
-  const ok = await upsertUserPresenceCache(auth.user.uid);
+  const shouldWrite = shouldWritePresenceHeartbeat(auth.user.uid);
+  const ok = shouldWrite ? await upsertUserPresenceCache(auth.user.uid) : true;
   const durationMs = Date.now() - startedAt;
 
   if (sqlReadMode) {
@@ -32,6 +51,7 @@ export async function POST(request: Request) {
       source: 'sql',
       firestoreAttempted: false,
       durationMs,
+      deduped: !shouldWrite,
     });
     return NextResponse.json({
       ok,
@@ -44,6 +64,7 @@ export async function POST(request: Request) {
     uid: auth.user.uid,
     ok,
     durationMs,
+    deduped: !shouldWrite,
   });
 
   return NextResponse.json({

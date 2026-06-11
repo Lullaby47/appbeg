@@ -4,7 +4,7 @@ import type { DocumentSnapshot } from 'firebase-admin/firestore';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { emitAutomationJobOutboxEvent } from '@/lib/sql/liveOutbox';
-import { getPlayerMirrorPool } from '@/lib/sql/playerMirrorCommon';
+import { getPlayerMirrorPool, getPlayerMirrorPoolStats } from '@/lib/sql/playerMirrorCommon';
 
 type AutomationJobMirrorRow = {
   jobId: string;
@@ -38,8 +38,6 @@ type AutomationJobMirrorRow = {
   ttlExpiresAt: string | null;
   rawFirestoreData: unknown;
 };
-
-const PLAYER_MIRROR_POOL_MAX = 12;
 
 export type AutomationJobsAcquireContext = {
   context: string;
@@ -93,7 +91,7 @@ export async function acquireAutomationJobsClient(
       totalCount: pool.totalCount,
       idleCount: pool.idleCount,
       waitingCount: pool.waitingCount,
-      max: PLAYER_MIRROR_POOL_MAX,
+      max: getPlayerMirrorPoolStats()?.max ?? null,
       request_id: acquireContext?.request_id ?? null,
       route: acquireContext?.route ?? null,
       idle_before: statsBefore.idleCount,
