@@ -1116,6 +1116,7 @@ export async function agentDismissMidnightPartyBlockedRecharge(input: {
   const details = input.details || {};
   const gameToast = cleanText(input.reason) || cleanText(details.message) || '';
   const reasonCode = GAME_VAULT_MIDNIGHT_PARTY_REASON;
+  const authorityStartedAt = Date.now();
   console.info('[AGENT_JOBS_API_DISMISS_ATTEMPT]', {
     jobId: input.jobId,
     reasonCode,
@@ -1131,6 +1132,7 @@ export async function agentDismissMidnightPartyBlockedRecharge(input: {
   let requestId = '';
   let coadminUid = '';
   let playerUid = '';
+  let dismissOutcome: Awaited<ReturnType<typeof dismissRechargeRequestInSql>> | null = null;
   try {
     await client.query('BEGIN');
     const jobResult = await client.query(
@@ -1139,10 +1141,11 @@ export async function agentDismissMidnightPartyBlockedRecharge(input: {
     );
     if (!jobResult.rows.length) {
       await client.query('COMMIT');
-      console.info('[AUTHORITY_RECHARGE_DISMISS_REFUND_RESULT]', {
+      console.info('[AUTHORITY_RECHARGE_DISMISS_REFUND_DONE]', {
         jobId: input.jobId,
         skipped: true,
         reason: 'job_not_found',
+        durationMs: Date.now() - authorityStartedAt,
       });
       return { success: true as const, skipped: true };
     }
@@ -1150,6 +1153,38 @@ export async function agentDismissMidnightPartyBlockedRecharge(input: {
     taskId = cleanText(job.task_id);
     coadminUid = cleanText(job.coadmin_uid);
     playerUid = cleanText(job.player_uid);
+    if (taskId) {
+      const taskRow = await client.query(
+        `SELECT request_id, player_uid FROM public.carer_tasks_cache WHERE firebase_id = $1 FOR UPDATE`,
+        [taskId]
+      );
+      if (taskRow.rows.length) {
+        requestId = cleanText(taskRow.rows[0]?.request_id);
+        playerUid = playerUid || cleanText(taskRow.rows[0]?.player_uid);
+      }
+    }
+    if (!requestId && taskId.startsWith('request__')) {
+      requestId = taskId.slice('request__'.length);
+    }
+
+    if (requestId) {
+      dismissOutcome = await dismissRechargeRequestInSql({
+        requestId,
+        actorUid: input.carerUid,
+        actorRole: 'carer',
+        isAdmin: false,
+        scopeUid: cleanText(input.scopeUid) || coadminUid || null,
+        idempotencyKey: `agent_midnight_party:${input.jobId}`,
+        dismissType: reasonCode,
+        dismissReasonCode: reasonCode,
+        dismissReasonMessage: gameToast || reasonCode,
+        dismissedByAutomation: true,
+        skipTaskTombstone: true,
+        txnClient: client,
+      });
+    }
+
+    const playerMessage = buildMidnightPartyPlayerMessage(gameToast, dismissOutcome?.refunded === true);
     const nowIso = new Date().toISOString();
     const resultDetails = {
       success: true,
@@ -1158,10 +1193,11 @@ export async function agentDismissMidnightPartyBlockedRecharge(input: {
       reason: reasonCode,
       reasonCode,
       message: gameToast,
-      playerMessage: buildMidnightPartyPlayerMessage(gameToast, false),
+      playerMessage,
       retryPending: false,
       nonRetryable: true,
-      refund: true,
+      refund: dismissOutcome?.refunded === true,
+      requestId: requestId || null,
       ...details,
     };
     await patchAutomationJobInTxn(client, input.jobId, {
@@ -1176,14 +1212,6 @@ export async function agentDismissMidnightPartyBlockedRecharge(input: {
       result: resultDetails,
     });
     if (taskId) {
-      const taskRow = await client.query(
-        `SELECT request_id, player_uid FROM public.carer_tasks_cache WHERE firebase_id = $1 FOR UPDATE`,
-        [taskId]
-      );
-      if (taskRow.rows.length) {
-        requestId = cleanText(taskRow.rows[0]?.request_id);
-        playerUid = playerUid || cleanText(taskRow.rows[0]?.player_uid);
-      }
       await patchCarerTaskAgentInTxn(client, taskId, {
         status: 'completed',
         claimedStatus: 'completed',
@@ -1195,7 +1223,7 @@ export async function agentDismissMidnightPartyBlockedRecharge(input: {
         dismissReasonCode: reasonCode,
         dismissReasonMessage: gameToast || reasonCode,
         dismissReason: gameToast || reasonCode,
-        pokeMessage: buildMidnightPartyPlayerMessage(gameToast, false),
+        pokeMessage: playerMessage,
         retryPending: false,
         completedAt: nowIso,
         ttlExpiresAt: ttlAfterDaysIso(COMPLETED_CARER_TASK_TTL_DAYS),
@@ -1228,62 +1256,38 @@ export async function agentDismissMidnightPartyBlockedRecharge(input: {
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('[AUTHORITY_RECHARGE_DISMISS_REFUND_RESULT]', {
+    console.error('[AUTHORITY_RECHARGE_DISMISS_REFUND_DONE]', {
       jobId: input.jobId,
       ok: false,
       error: error instanceof Error ? error.message : String(error),
+      durationMs: Date.now() - authorityStartedAt,
     });
     throw error;
   } finally {
     client.release();
   }
 
-  if (!requestId && taskId.startsWith('request__')) {
-    requestId = taskId.slice('request__'.length);
-  }
-  if (!requestId) {
-    console.warn('[AUTHORITY_RECHARGE_DISMISS_REFUND_RESULT]', {
-      jobId: input.jobId,
-      ok: false,
-      reason: 'request_id_missing',
-    });
-    return { success: true as const, skipped: true, reason: 'request_id_missing' };
-  }
-
-  const dismissOutcome = await dismissRechargeRequestInSql({
-    requestId,
-    actorUid: input.carerUid,
-    actorRole: 'carer',
-    isAdmin: false,
-    scopeUid: cleanText(input.scopeUid) || coadminUid || null,
-    idempotencyKey: `agent_midnight_party:${input.jobId}`,
-    dismissType: reasonCode,
-    dismissReasonCode: reasonCode,
-    dismissReasonMessage: gameToast || reasonCode,
-    dismissedByAutomation: true,
-    skipTaskTombstone: true,
-  });
-  const playerMessage = buildMidnightPartyPlayerMessage(gameToast, dismissOutcome.refunded);
-  console.info('[AUTHORITY_RECHARGE_DISMISS_REFUND_RESULT]', {
+  console.info('[AUTHORITY_RECHARGE_DISMISS_REFUND_DONE]', {
     jobId: input.jobId,
-    requestId,
+    requestId: requestId || null,
     ok: true,
-    refunded: dismissOutcome.refunded,
-    duplicate: dismissOutcome.duplicate,
-    alreadyDismissed: dismissOutcome.alreadyDismissed,
+    refunded: dismissOutcome?.refunded === true,
+    duplicate: dismissOutcome?.duplicate === true,
+    alreadyDismissed: dismissOutcome?.alreadyDismissed === true,
+    durationMs: Date.now() - authorityStartedAt,
   });
   console.info('[PLAYER_RECHARGE_FAILURE_VISIBLE]', {
-    requestId,
+    requestId: requestId || null,
     playerUid: playerUid || null,
     reasonCode,
-    playerMessage,
+    playerMessage: buildMidnightPartyPlayerMessage(gameToast, dismissOutcome?.refunded === true),
   });
   console.info('[SQL_FIREBASE_BYPASS_CONFIRMED] operation=dismiss_midnight_party_blocked_recharge jobId=%s', input.jobId);
   return {
     success: true as const,
-    requestId,
-    refunded: dismissOutcome.refunded,
-    duplicate: dismissOutcome.duplicate,
+    requestId: requestId || null,
+    refunded: dismissOutcome?.refunded === true,
+    duplicate: dismissOutcome?.duplicate === true,
   };
 }
 
@@ -1590,6 +1594,13 @@ export type AgentJobActionInput = {
 
 export async function runAgentJobAction(input: AgentJobActionInput) {
   const action = cleanText(input.action).toLowerCase();
+  const actionStartedAt = Date.now();
+  console.info('[AGENT_JOBS_API_ACTION_START]', {
+    action: action || null,
+    jobId: cleanText(input.jobId) || null,
+    carerUid: cleanText(input.carerUid) || null,
+  });
+  try {
   switch (action) {
     case 'claim':
       return claimQueuedAutomationJobForAgent({
@@ -1708,5 +1719,12 @@ export async function runAgentJobAction(input: AgentJobActionInput) {
       });
     default:
       throw new Error(`Unsupported agent job action: ${action}`);
+  }
+  } finally {
+    console.info('[AGENT_JOBS_API_ACTION_DONE]', {
+      action: action || null,
+      jobId: cleanText(input.jobId) || null,
+      durationMs: Date.now() - actionStartedAt,
+    });
   }
 }

@@ -913,6 +913,15 @@ export async function POST(request: Request) {
   }
 
   const sqlReadMode = isAuthSqlReadEnabled();
+  if (sqlReadMode) {
+    console.info('[AUTO_TICK_SQL_START]', {
+      carerUid,
+      coadminUid,
+      agentId,
+      instanceId,
+      allowRetryPendingClaim,
+    });
+  }
   const stateRef = sqlReadMode
     ? null
     : adminDb.collection(AUTOMATION_AUTO_STATE_COLLECTION).doc(carerUid);
@@ -1193,6 +1202,13 @@ export async function POST(request: Request) {
   });
 
   if (pendingCandidates.length === 0) {
+    if (sqlReadMode) {
+      console.info('[AUTO_TICK_SQL_NO_PENDING]', {
+        carerUid,
+        coadminUid,
+        pending_source: pendingResult.timing.pending_source,
+      });
+    }
     console.info('[AUTO_TICK_NO_TASKS]', {
       carerUid,
       coadminUid,
@@ -1212,6 +1228,16 @@ export async function POST(request: Request) {
       claimedCount: 0,
       claimedJobs: [],
       reason: 'no_pending_tasks',
+    });
+  }
+
+  if (sqlReadMode && pendingCandidates.length > 0) {
+    console.info('[AUTO_TICK_SQL_PENDING_FOUND]', {
+      carerUid,
+      coadminUid,
+      candidateCount: pendingCandidates.length,
+      candidateTaskIds: pendingCandidates.map((task) => task.id),
+      pending_source: pendingResult.timing.pending_source,
     });
   }
 
@@ -1389,6 +1415,16 @@ export async function POST(request: Request) {
       gameName,
       playerUid,
     });
+    if (sqlReadMode) {
+      console.info('[AUTO_TICK_SQL_CLAIM_ATTEMPT]', {
+        taskId,
+        carerUid,
+        coadminUid,
+        agentId: linked.normalized,
+        gameName,
+        playerUid,
+      });
+    }
     console.info('[AUTO_TICK_CLAIM_PENDING_TASK]', {
       taskId,
       carerUid,
@@ -1446,6 +1482,16 @@ export async function POST(request: Request) {
         status: 'in_progress',
         reusedExistingJob: result.reusedExistingJob,
       });
+      if (sqlReadMode) {
+        console.info('[AUTO_TICK_SQL_CLAIMED]', {
+          taskId: result.taskId,
+          jobId: result.jobId,
+          carerUid,
+          coadminUid,
+          agentId: linked.normalized,
+          reusedExistingJob: result.reusedExistingJob,
+        });
+      }
       if (!result.reusedExistingJob) {
         console.info('[AUTO_TICK_JOB_QUEUED]', {
           taskId: result.taskId,

@@ -265,8 +265,9 @@ function buildCarerTaskSqlPayload(input: RequestLinkedCarerTaskInput, nowIso: st
     createdAt: nowIso,
     updatedAt: nowIso,
     pendingSince: nowIso,
-    resetToPendingAt: nowIso,
-    returnedToPendingAt: nowIso,
+    resetToPendingAt: null,
+    returnedToPendingAt: null,
+    retryPending: false,
     automationUpdatedAt: nowIso,
   } as Record<string, unknown>;
 }
@@ -320,9 +321,9 @@ export async function upsertLinkedCarerTaskInTxn(
         $1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''),
         NULLIF($7, ''), $8, NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, ''),
         NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''), NULLIF($17, ''),
-        NULLIF($18, ''), NULLIF($19, ''), FALSE, NULL, TRUE,
-        $20::timestamptz, $20::timestamptz, $20::timestamptz, $20::timestamptz,
-        $20::timestamptz, $20::timestamptz, 'authority', now(), NULL, $21::jsonb
+        NULLIF($18, ''), NULLIF($19, ''), FALSE, NULL, FALSE,
+        $20::timestamptz, $20::timestamptz, $20::timestamptz, NULL, NULL,
+        $20::timestamptz, 'authority', now(), NULL, $21::jsonb
       )
       ON CONFLICT (firebase_id) DO UPDATE SET
         coadmin_uid = EXCLUDED.coadmin_uid,
@@ -343,11 +344,17 @@ export async function upsertLinkedCarerTaskInTxn(
         base_url = EXCLUDED.base_url,
         game_credential_username = EXCLUDED.game_credential_username,
         game_credential_password = EXCLUDED.game_credential_password,
-        retry_pending = EXCLUDED.retry_pending,
+        retry_pending = COALESCE(public.carer_tasks_cache.retry_pending, EXCLUDED.retry_pending),
         updated_at = EXCLUDED.updated_at,
         pending_since = EXCLUDED.pending_since,
-        reset_to_pending_at = EXCLUDED.reset_to_pending_at,
-        returned_to_pending_at = EXCLUDED.returned_to_pending_at,
+        reset_to_pending_at = COALESCE(
+          public.carer_tasks_cache.reset_to_pending_at,
+          EXCLUDED.reset_to_pending_at
+        ),
+        returned_to_pending_at = COALESCE(
+          public.carer_tasks_cache.returned_to_pending_at,
+          EXCLUDED.returned_to_pending_at
+        ),
         automation_updated_at = EXCLUDED.automation_updated_at,
         source = EXCLUDED.source,
         mirrored_at = now(),

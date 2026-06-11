@@ -3,13 +3,17 @@ import 'server-only';
 import { randomUUID } from 'crypto';
 import type { PoolClient } from 'pg';
 
-import type { RequestLinkedGameCredential } from '@/lib/games/requestLinkedCarerTask';
+import {
+  requestLinkedCarerTaskId,
+  type RequestLinkedGameCredential,
+} from '@/lib/games/requestLinkedCarerTask';
 import { getCoadminMaintenanceBreak } from '@/lib/maintenance/admin';
 import {
   claimAuthorityOperation,
   insertAuthorityLedgerEvent,
   readAuthorityOperationPayload,
 } from '@/lib/sql/authorityLedger';
+import { scheduleAutoClaimPendingTaskOnCreate } from '@/lib/sql/authorityAutoClaim';
 import {
   normalizeGameName,
   ttlAfterDaysIso,
@@ -793,6 +797,11 @@ export async function initiateBonusPlayInSql(
       JSON.stringify({ requestId, bonusEventId, playerUid }),
     ]);
     await client.query('COMMIT');
+    scheduleAutoClaimPendingTaskOnCreate({
+      taskId: requestLinkedCarerTaskId(requestId),
+      coadminUid,
+      trigger: 'bonus_initiate_play',
+    });
     return { success: true, duplicate: false, requestId };
   } catch (error) {
     await client.query('ROLLBACK');

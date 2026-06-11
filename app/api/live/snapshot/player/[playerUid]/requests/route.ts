@@ -31,6 +31,8 @@ type SnapshotRequest = {
   amount: number | null;
   baseAmount: number | null;
   pokeMessage: string | null;
+  dismissReasonCode: string | null;
+  dismissReasonMessage: string | null;
   createdAt: string | null;
   updatedAt: string | null;
   completedAt: string | null;
@@ -47,6 +49,8 @@ function mapSnapshotRow(row: Record<string, unknown>): SnapshotRequest {
     amount: Number.isFinite(Number(row.amount)) ? Number(row.amount) : null,
     baseAmount: Number.isFinite(Number(row.base_amount)) ? Number(row.base_amount) : null,
     pokeMessage: cleanText(row.poke_message) || null,
+    dismissReasonCode: cleanText(row.dismiss_reason_code) || null,
+    dismissReasonMessage: cleanText(row.dismiss_reason_message) || null,
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
     completedAt: toIsoString(row.completed_at),

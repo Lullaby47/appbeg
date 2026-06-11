@@ -27,11 +27,20 @@ type SqlSnapshotRequest = {
   amount?: number | null;
   baseAmount?: number | null;
   pokeMessage?: string | null;
+  dismissReasonCode?: string | null;
+  dismissReasonMessage?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
   completedAt?: string | null;
   pokedAt?: string | null;
 };
+
+const PLAYER_IMMEDIATE_REFETCH_EVENTS = new Set([
+  'recharge_dismiss',
+  'player_message',
+  'balance_update',
+  'request.upserted',
+]);
 
 type SqlSnapshotResponse = {
   requests?: SqlSnapshotRequest[];
@@ -103,6 +112,8 @@ function mapSnapshotRowToPlayerGameRequest(row: SqlSnapshotRequest, playerUid: s
         ? Number(row.baseAmount)
         : null,
     pokeMessage: cleanText(row.pokeMessage) || null,
+    dismissReasonCode: cleanText(row.dismissReasonCode) || null,
+    dismissReasonMessage: cleanText(row.dismissReasonMessage) || null,
     createdAt: isoToTimestamp(row.createdAt),
     completedAt: isoToTimestamp(row.completedAt),
     pokedAt: isoToTimestamp(row.pokedAt),
@@ -200,6 +211,7 @@ export function attachPlayerRequestSqlReadListener(
   let abortController: AbortController | null = null;
   let disposed = false;
   let fellBack = false;
+  let refetchInFlight = false;
   const requestsById = new Map<string, PlayerGameRequest>();
 
   const emitRequests = () => {
@@ -207,6 +219,50 @@ export function attachPlayerRequestSqlReadListener(
       return;
     }
     onRequestsChange(sortPlayerGameRequestsByNewest(Array.from(requestsById.values())));
+  };
+
+  const refetchSnapshotNow = async (reason: string) => {
+    if (fellBack || disposed || refetchInFlight) {
+      return false;
+    }
+    refetchInFlight = true;
+    const startedAt = Date.now();
+    try {
+      const headers = await getPlayerApiHeaders(false);
+      const snapshotResponse = await fetch(
+        `/api/live/snapshot/player/${encodeURIComponent(cleanPlayerUid)}/requests`,
+        {
+          headers,
+          cache: 'no-store',
+        }
+      );
+      const snapshot = (await snapshotResponse.json()) as SqlSnapshotResponse;
+      const source = cleanText(snapshot.source);
+      if (
+        !snapshotResponse.ok ||
+        source === 'postgres_snapshot_failed' ||
+        source === 'postgres_snapshot_unavailable'
+      ) {
+        return false;
+      }
+      lastEventId = Math.max(lastEventId, Number(snapshot.latestOutboxId || 0));
+      requestsById.clear();
+      for (const row of Array.isArray(snapshot.requests) ? snapshot.requests : []) {
+        const mapped = mapSnapshotRowToPlayerGameRequest(row, cleanPlayerUid);
+        if (!mapped.id) {
+          continue;
+        }
+        requestsById.set(mapped.id, mapped);
+      }
+      console.info('[PLAYER_REQUESTS_SQL_READ] refetch_done reason=%s count=%s durationMs=%s', reason, requestsById.size, Date.now() - startedAt);
+      emitRequests();
+      return true;
+    } catch (error) {
+      console.info('[PLAYER_REQUESTS_SQL_READ] refetch_failed reason=%s error=%s', reason, error instanceof Error ? error.message : String(error));
+      return false;
+    } finally {
+      refetchInFlight = false;
+    }
   };
 
   const consumeSseChunk = (chunk: string, bufferRef: { value: string }) => {
@@ -229,6 +285,16 @@ export function attachPlayerRequestSqlReadListener(
       }
 
       lastEventId = Math.max(lastEventId, parsed.id);
+
+      if (PLAYER_IMMEDIATE_REFETCH_EVENTS.has(parsed.event)) {
+        console.info(
+          '[PLAYER_REQUESTS_SQL_READ] sse_event type=%s requestId=%s immediateRefetch=true',
+          parsed.event,
+          parsed.entityId
+        );
+        void refetchSnapshotNow(`sse_event:${parsed.event}`);
+        return;
+      }
 
       if (parsed.event === 'request.tombstoned') {
         requestsById.delete(parsed.entityId);

@@ -179,6 +179,62 @@ export async function mirrorAutomationAutoStateById(carerUid: string, source = '
   }
 }
 
+export async function listEnabledAutomationCarersForCoadmin(
+  coadminUid: string
+): Promise<AutomationAutoStateSqlLookup[]> {
+  const cleanCoadminUid = cleanText(coadminUid);
+  const db = getPlayerMirrorPool();
+  if (!db || !cleanCoadminUid) {
+    return [];
+  }
+
+  try {
+    const result = await db.query(
+      `
+        SELECT carer_uid, coadmin_uid, enabled, automation_agent_id, lease_owner, lease_expires_at
+        FROM public.automation_auto_state_cache
+        WHERE deleted_at IS NULL
+          AND enabled = true
+          AND (
+            coadmin_uid = $1
+            OR coadmin_uid IS NULL
+            OR coadmin_uid = ''
+          )
+        ORDER BY updated_at DESC NULLS LAST, carer_uid ASC
+      `,
+      [cleanCoadminUid]
+    );
+
+    const enabledCarers: AutomationAutoStateSqlLookup[] = [];
+    for (const row of result.rows) {
+      const record = row as Record<string, unknown>;
+      const carerUid = cleanText(record.carer_uid);
+      if (!carerUid) {
+        continue;
+      }
+      const rowCoadminUid = cleanText(record.coadmin_uid);
+      if (rowCoadminUid && rowCoadminUid !== cleanCoadminUid) {
+        continue;
+      }
+      enabledCarers.push({
+        carerUid,
+        coadminUid: rowCoadminUid || cleanCoadminUid,
+        enabled: record.enabled === true,
+        automationAgentId: cleanText(record.automation_agent_id) || null,
+        leaseOwner: cleanText(record.lease_owner) || null,
+        leaseExpiresAt: toIsoString(record.lease_expires_at),
+      });
+    }
+    return enabledCarers;
+  } catch (error) {
+    console.error('[AUTOMATION_AUTO_STATE_CACHE] list enabled carers failed', {
+      coadminUid: cleanCoadminUid,
+      error,
+    });
+    return [];
+  }
+}
+
 export async function lookupAutomationAutoStateFromSqlCache(
   carerUid: string
 ): Promise<AutomationAutoStateSqlLookupResult> {

@@ -85,6 +85,14 @@ const CARER_TASK_REMOVE_EVENTS = new Set([
   'redeem_task_dismiss',
 ]);
 
+const CARER_TASK_IMMEDIATE_REFETCH_EVENTS = new Set([
+  'task.dismissed',
+  'job.dismissed',
+  'task.completed',
+  'game_request_task_complete',
+  'recharge_dismiss',
+]);
+
 const ALL_LIVE_TASK_SSE_EVENTS = Array.from(
   new Set([
     ...CARER_TASK_UPSERT_EVENTS,
@@ -591,7 +599,10 @@ export function attachCarerTaskSqlReadListener(
           : 'live_event';
 
     if (shouldRefetchForLiveEvent(eventName, entityType)) {
-      if (eventName === 'task.returned_to_pending') {
+      if (
+        eventName === 'task.returned_to_pending' ||
+        CARER_TASK_IMMEDIATE_REFETCH_EVENTS.has(eventName)
+      ) {
         void refetchSnapshotNow(`live_event:${eventName}`, true);
       } else {
         scheduleLiveRefetch(`live_event:${eventName}`);

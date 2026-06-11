@@ -11,6 +11,7 @@ import {
   readAuthorityOperationExists,
   readAuthorityOperationPayload,
 } from '@/lib/sql/authorityLedger';
+import { scheduleAutoClaimPendingTaskOnCreate } from '@/lib/sql/authorityAutoClaim';
 import {
   normalizeGameName,
   tombstoneLinkedCarerTaskInTxn,
@@ -117,6 +118,7 @@ export type AuthorityDismissRechargeInput = {
   dismissedByAutomation?: boolean;
   pokeMessage?: string | null;
   skipTaskTombstone?: boolean;
+  txnClient?: PoolClient;
 };
 
 export type AuthorityDismissRechargeResult = {
@@ -771,6 +773,11 @@ export async function createRechargeRequestInSql(
       JSON.stringify({ requestId, playerUid, type: 'recharge', amount }),
     ]);
     await client.query('COMMIT');
+    scheduleAutoClaimPendingTaskOnCreate({
+      taskId: linkedRechargeTask.taskId,
+      coadminUid,
+      trigger: 'recharge_create',
+    });
     return { success: true, duplicate: false, requestId };
   } catch (error) {
     await client.query('ROLLBACK');
@@ -987,6 +994,11 @@ export async function createRedeemRequestInSql(
       JSON.stringify({ requestId, playerUid, type: 'redeem', amount }),
     ]);
     await client.query('COMMIT');
+    scheduleAutoClaimPendingTaskOnCreate({
+      taskId: linkedRedeemTask.taskId,
+      coadminUid,
+      trigger: 'redeem_create',
+    });
     return { success: true, duplicate: false, requestId };
   } catch (error) {
     await client.query('ROLLBACK');
@@ -1541,9 +1553,13 @@ export async function dismissRechargeRequestInSql(
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL authority unavailable.');
 
-  const client = await db.connect();
+  const ownsTransaction = !input.txnClient;
+  const client = input.txnClient ?? (await db.connect());
+  const outboxStartedAt = Date.now();
   try {
-    await client.query('BEGIN');
+    if (ownsTransaction) {
+      await client.query('BEGIN');
+    }
     const claim = await claimAuthorityOperation(client, {
       operationKey,
       operationType: 'game_request_dismiss',
@@ -1554,7 +1570,9 @@ export async function dismissRechargeRequestInSql(
       payload: {},
     });
     if (!claim.claimed) {
-      await client.query('ROLLBACK');
+      if (ownsTransaction) {
+        await client.query('ROLLBACK');
+      }
       const payload = await readAuthorityOperationPayload(operationKey);
       const duplicate = await resolveDismissRechargeDuplicate(requestId, linkedTaskId, payload);
       if (duplicate) {
@@ -1575,7 +1593,9 @@ export async function dismissRechargeRequestInSql(
     if (!requestResult.rows.length) {
       const duplicate = await resolveDismissRechargeDuplicate(requestId, linkedTaskId, existing);
       if (duplicate) {
-        await client.query('ROLLBACK');
+        if (ownsTransaction) {
+          await client.query('ROLLBACK');
+        }
         return duplicate;
       }
       throw new Error('Request not found.');
@@ -1629,7 +1649,9 @@ export async function dismissRechargeRequestInSql(
           taskDeleted: taskExists,
         }),
       ]);
-      await client.query('COMMIT');
+      if (ownsTransaction) {
+        await client.query('COMMIT');
+      }
       logDismissRechargeSqlState({
         requestId,
         beforeStatus,
@@ -1838,8 +1860,14 @@ export async function dismissRechargeRequestInSql(
         requestId,
         playerUid,
         dismissReasonCode,
+        durationMs: Date.now() - outboxStartedAt,
       });
     }
+    console.info('[LIVE_OUTBOX_INSERT_DONE]', {
+      requestId,
+      playerUid,
+      durationMs: Date.now() - outboxStartedAt,
+    });
     if (refunded) {
       await insertLiveOutboxEventWithClient(client, {
         channel: playerRequestLiveChannel(playerUid),
@@ -1861,7 +1889,9 @@ export async function dismissRechargeRequestInSql(
         taskDeleted: taskExists,
       }),
     ]);
-    await client.query('COMMIT');
+    if (ownsTransaction) {
+      await client.query('COMMIT');
+    }
     logDismissRechargeSqlState({
       requestId,
       beforeStatus,
@@ -1884,10 +1914,14 @@ export async function dismissRechargeRequestInSql(
       taskDeleted: taskExists,
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    if (ownsTransaction) {
+      await client.query('ROLLBACK');
+    }
     throw error;
   } finally {
-    client.release();
+    if (ownsTransaction) {
+      client.release();
+    }
   }
 }
 

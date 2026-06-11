@@ -73,7 +73,7 @@ function resolveTaskGameAccess(game?: RequestLinkedGameCredential | null) {
   };
 }
 
-function buildPendingTaskResetFields() {
+function buildNewPendingLinkedTaskFields() {
   const now = FieldValue.serverTimestamp();
   return {
     status: 'pending',
@@ -102,9 +102,9 @@ function buildPendingTaskResetFields() {
     automationError: null,
     error: null,
     failureReason: null,
-    retryPending: true,
-    resetToPendingAt: now,
-    returnedToPendingAt: now,
+    retryPending: false,
+    resetToPendingAt: null,
+    returnedToPendingAt: null,
     pendingSince: now,
     lastHeartbeatAt: null,
     queuedAt: null,
@@ -133,6 +133,6 @@ export function buildPendingRequestLinkedCarerTaskPayload(
     currentUsername,
     gameAccountUsername: currentUsername,
     ...resolveTaskGameAccess(input.gameCredential),
-    ...buildPendingTaskResetFields(),
+    ...buildNewPendingLinkedTaskFields(),
   };
 }
