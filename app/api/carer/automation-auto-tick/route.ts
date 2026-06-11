@@ -1461,7 +1461,20 @@ export async function POST(request: Request) {
     const usernameStartedAt = Date.now();
     const fromLogin = embeddedCurrentUsername
       ? null
+      : mapped === 'CREATE_USERNAME'
+        ? null
       : await resolveCurrentUsernameForTask(coadminUid, playerUid, gameName);
+    if (mapped === 'CREATE_USERNAME' && !embeddedCurrentUsername) {
+      console.info('[CLAIM_TASK_SQL_GAME_LOGIN_MISSING_ALLOWED]', {
+        taskId,
+        carerUid,
+        coadminUid,
+        playerUid,
+        gameName,
+        type: mapped,
+        reason: 'create_username_has_no_existing_player_game_login',
+      });
+    }
     if (embeddedCurrentUsername) {
       console.info(
         '[AUTO_TICK_RESOLVER_SQL] type=username hit=true source=task_embedded durationMs=0 coadminUid=%s playerUid=%s gameName=%s taskId=%s',
@@ -1484,6 +1497,23 @@ export async function POST(request: Request) {
       embeddedCurrentUsername ||
       fromLogin ||
       null;
+    if (!currentUsername && mapped !== 'CREATE_USERNAME') {
+      console.info('[AUTO_TICK] skipped task (missing sql player game login)', {
+        taskId,
+        carerUid,
+        coadminUid,
+        playerUid,
+        gameName,
+        mapped,
+        reason: 'player_game_login_missing_sql',
+      });
+      skippedTasks.push({
+        taskId,
+        reason: 'player_game_login_missing_sql',
+        mapped,
+      });
+      continue;
+    }
 
     const carerName = carerProfile.username || 'Carer';
 

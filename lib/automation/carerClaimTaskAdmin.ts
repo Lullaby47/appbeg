@@ -7,6 +7,7 @@ import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { createHash } from 'node:crypto';
 
 import { adminDb } from '@/lib/firebase/admin';
+import { isAppbegSqlOnlyMode } from '@/lib/server/appbegSqlOnlyMode';
 import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
 import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
@@ -226,7 +227,20 @@ export async function claimCarerTaskAsAdmin(input: {
 }): Promise<ClaimCarerTaskAdminResult> {
   const totalStartedAt = Date.now();
   console.info('[START_TIMING] server claim start at=%s taskId=%s source=admin_claimCarerTaskAsAdmin', new Date(totalStartedAt).toISOString(), input.taskId);
-  if (isAuthoritySqlWriteEnabled()) {
+  const sqlOnlyMode = isAppbegSqlOnlyMode();
+  if (isAuthoritySqlWriteEnabled() || sqlOnlyMode) {
+    console.info('[CLAIM_TASK_SQL_ONLY_START]', {
+      taskId: input.taskId,
+      carerUid: input.carerUid,
+      coadminUid: input.carerCoadminUid,
+      appbegSqlOnlyMode: sqlOnlyMode,
+      authoritySqlWrite: isAuthoritySqlWriteEnabled(),
+    });
+    console.info('[SQL_NO_FIRESTORE_CLAIM_TASK]', {
+      taskId: input.taskId,
+      carerUid: input.carerUid,
+      collections: ['carerTasks', 'automation_jobs', 'users', 'playerGameLogins', 'gameLogins'],
+    });
     const result = await claimCarerTaskInSql(input);
     console.info('[AUTHORITY_SQL_WRITE] claimCarerTaskAsAdmin', {
       taskId: input.taskId,
@@ -1086,6 +1100,14 @@ export async function resolveGameLoginDetailsForCoadminGame(
   gameName: string
 ): Promise<GameLoginDetailsInput> {
   const sqlLookup = await lookupGameLoginDetailsForCoadminGameFromSql(coadminUid, gameName);
+  console.info('[CLAIM_TASK_SQL_GAME_LOGIN_READ]', {
+    type: 'game_login_details',
+    coadminUid,
+    gameName,
+    hit: Boolean(sqlLookup.hit && sqlLookup.details),
+    missReason: sqlLookup.missReason,
+    durationMs: sqlLookup.durationMs,
+  });
   if (sqlLookup.hit && sqlLookup.details) {
     logAutoTickResolverSql('game_login', {
       hit: true,
@@ -1099,6 +1121,17 @@ export async function resolveGameLoginDetailsForCoadminGame(
 
   if (sqlLookup.missReason) {
     logAutoTickResolverFallback('game_login', sqlLookup.missReason, { coadminUid, gameName });
+  }
+
+  if (isAppbegSqlOnlyMode()) {
+    console.info('[SQL_NO_FIRESTORE_CLAIM_TASK]', {
+      resolver: 'resolveGameLoginDetailsForCoadminGame',
+      collection: 'gameLogins',
+      coadminUid,
+      gameName,
+      missReason: sqlLookup.missReason,
+    });
+    return null;
   }
 
   const fallbackStartedAt = Date.now();
@@ -1174,6 +1207,15 @@ export async function resolveCurrentUsernameForTask(
   gameName: string
 ): Promise<string | null> {
   const sqlLookup = await lookupCurrentUsernameForTaskFromSql(coadminUid, playerUid, gameName);
+  console.info('[CLAIM_TASK_SQL_GAME_LOGIN_READ]', {
+    type: 'player_game_login_username',
+    coadminUid,
+    playerUid,
+    gameName,
+    hit: Boolean(sqlLookup.hit && sqlLookup.username),
+    missReason: sqlLookup.missReason,
+    durationMs: sqlLookup.durationMs,
+  });
   if (sqlLookup.hit && sqlLookup.username) {
     logAutoTickResolverSql('username', {
       hit: true,
@@ -1192,6 +1234,18 @@ export async function resolveCurrentUsernameForTask(
       playerUid,
       gameName,
     });
+  }
+
+  if (isAppbegSqlOnlyMode()) {
+    console.info('[SQL_NO_FIRESTORE_CLAIM_TASK]', {
+      resolver: 'resolveCurrentUsernameForTask',
+      collection: 'playerGameLogins',
+      coadminUid,
+      playerUid,
+      gameName,
+      missReason: sqlLookup.missReason,
+    });
+    return null;
   }
 
   const fallbackStartedAt = Date.now();

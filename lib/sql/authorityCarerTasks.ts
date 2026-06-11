@@ -1194,48 +1194,58 @@ export async function claimCarerTaskInTxn(
           __setAutomationUpdatedAt: true,
         });
       } else {
-      const payload = buildAutomationPayload({
-        taskId,
-        freshTask: claimedTaskData,
-        currentUserUid,
-        currentCarerName: createdByName,
-        currentUsername: input.currentUsername ?? null,
-      });
-      const jobId = randomUUID();
-      const jobData = {
-        carerUid: currentUserUid,
-        coadminUid: taskCoadminUid,
-        agentId: resolvedAgentId,
-        taskId,
-        type: mappedType,
-        status: 'queued',
-        payload,
-        createdByUid: currentUserUid,
-        createdByName,
-        createdAt: nowIso,
-        updatedAt: nowIso,
-        startedAt: null,
-        completedAt: null,
-        ttlExpiresAt: null,
-        error: null,
-        attempts: 0,
-        lastHeartbeatAt: null,
-        game: cleanText(task.game_name),
-        playerUid: cleanText(task.player_uid),
-      };
-      await upsertAutomationJobInTxn(client, jobId, jobData);
-      console.info('[SQL_AUTOMATION_JOB_QUEUED]', {
-        taskId,
-        jobId,
-        carerUid: currentUserUid,
-        agentId: resolvedAgentId,
-        coadminUid: taskCoadminUid,
-        type: mappedType,
-        status: 'queued',
-        phase: 'claim_create',
-      });
-      result = { jobId, taskId, status: 'queued', reusedExistingJob: false };
-      await patchCarerTaskInTxn(client, taskId, {
+        const payload = buildAutomationPayload({
+          taskId,
+          freshTask: claimedTaskData,
+          currentUserUid,
+          currentCarerName: createdByName,
+          currentUsername: input.currentUsername ?? null,
+        });
+        console.info('[CLAIM_TASK_SQL_PAYLOAD_BUILT]', {
+          taskId,
+          carerUid: currentUserUid,
+          coadminUid: taskCoadminUid,
+          type: mappedType,
+          hasCurrentUsername: Boolean(input.currentUsername ?? claimedTaskData.currentUsername),
+          hasGameCredentialUsername: Boolean(claimedTaskData.gameCredentialUsername),
+          hasGameCredentialPassword: Boolean(claimedTaskData.gameCredentialPassword),
+          hasLoginUrl: Boolean(claimedTaskData.loginUrl || claimedTaskData.gameLoginUrl),
+        });
+        const jobId = randomUUID();
+        const jobData = {
+          carerUid: currentUserUid,
+          coadminUid: taskCoadminUid,
+          agentId: resolvedAgentId,
+          taskId,
+          type: mappedType,
+          status: 'queued',
+          payload,
+          createdByUid: currentUserUid,
+          createdByName,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+          startedAt: null,
+          completedAt: null,
+          ttlExpiresAt: null,
+          error: null,
+          attempts: 0,
+          lastHeartbeatAt: null,
+          game: cleanText(task.game_name),
+          playerUid: cleanText(task.player_uid),
+        };
+        await upsertAutomationJobInTxn(client, jobId, jobData);
+        console.info('[SQL_AUTOMATION_JOB_QUEUED]', {
+          taskId,
+          jobId,
+          carerUid: currentUserUid,
+          agentId: resolvedAgentId,
+          coadminUid: taskCoadminUid,
+          type: mappedType,
+          status: 'queued',
+          phase: 'claim_create',
+        });
+        result = { jobId, taskId, status: 'queued', reusedExistingJob: false };
+        await patchCarerTaskInTxn(client, taskId, {
         ...claimedTaskData,
         claimedStatus: 'running',
         claimedByUid: currentUserUid,
