@@ -906,7 +906,19 @@ export async function getPendingCarerTaskCandidatesFromSql(
       )`
           : ''
       }
-    ORDER BY created_at DESC NULLS LAST
+    ORDER BY
+      CASE
+        WHEN LOWER(COALESCE(type, '')) IN (
+          'create_game_username',
+          'create_username',
+          'createusername',
+          'reset_password',
+          'recharge',
+          'redeem'
+        ) THEN 0
+        ELSE 1
+      END,
+      created_at DESC NULLS LAST
     LIMIT $2
   `;
 

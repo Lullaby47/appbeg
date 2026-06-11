@@ -606,15 +606,32 @@ async function resolveAutoTickPendingCandidates(
   timing: AutoTickPendingTiming;
 }> {
   const sqlStartedAt = Date.now();
+  console.info('[AUTO_TICK_SQL_PENDING_SCAN_START]', {
+    carerUid,
+    coadminUid,
+    limit,
+    excludeRetryPending: options?.excludeRetryPending !== false,
+    excludeReturnCooldown:
+      options?.excludeReturnCooldown ?? (options?.excludeRetryPending !== false),
+  });
   const sqlResult = await getPendingCarerTaskCandidatesFromSql(
     coadminUid,
     limit,
     carerUid,
-    { excludeRetryPending: options?.excludeRetryPending }
+    {
+      excludeRetryPending: options?.excludeRetryPending,
+      excludeReturnCooldown: options?.excludeReturnCooldown,
+    }
   );
   const pending_sql_ms = Date.now() - sqlStartedAt;
 
   if (sqlResult.hit) {
+    console.info('[AUTO_TICK_SQL_PENDING_SCAN_RESULT]', {
+      carerUid,
+      coadminUid,
+      candidateCount: sqlResult.candidates.length,
+      pending_sql_ms,
+    });
     logAutoTickSources({
       carerUid,
       pending_source: 'sql',
@@ -1245,13 +1262,21 @@ export async function POST(request: Request) {
       pending_source: pendingResult.timing.pending_source,
     });
     for (const task of pendingCandidates) {
-      const mapped = mapTaskType(resolveTaskTypeLabel(task));
+      const rawType = String(task['type'] || task['kind'] || '').trim();
+      const taskTypeLabel = resolveTaskTypeLabel(task);
+      const mapped = mapTaskType(taskTypeLabel);
       console.info('[AUTO_TICK_SQL_PENDING_TASK_ROW]', {
         taskId: task.id,
-        type: String(task['type'] || task['kind'] || '').trim() || null,
+        type: rawType || null,
         mappedType: mapped,
         status: String(task['status'] || '').trim() || null,
         retryPending: task['retryPending'] === true,
+      });
+      console.info('[AUTO_TICK_SQL_TASK_TYPE_NORMALIZED]', {
+        taskId: task.id,
+        rawType: rawType || null,
+        typeLabel: taskTypeLabel,
+        normalized: mapped,
       });
       if (mapped === 'CREATE_USERNAME') {
         console.info('[AUTO_TICK_SQL_CREATE_USERNAME_ELIGIBLE]', {
@@ -1307,7 +1332,7 @@ export async function POST(request: Request) {
     const returnedMs = returnedToPendingAt ? Date.parse(returnedToPendingAt) : NaN;
     const withinReturnCooldown =
       Number.isFinite(returnedMs) && Date.now() - returnedMs < 30_000;
-    if ((retryPending || withinReturnCooldown) && !allowRetryPendingClaim) {
+    if (withinReturnCooldown || (retryPending && !allowRetryPendingClaim)) {
       console.info('[AUTO_TICK_RECLAIM_AFTER_RETURN_BLOCKED]', {
         taskId,
         carerUid,
@@ -1333,10 +1358,21 @@ export async function POST(request: Request) {
           returnedToPendingAt,
           cooldownMs: 30_000,
         });
+      } else if (retryPending) {
+        console.info('[AUTO_TICK_SQL_SKIPPED_RETRY_PENDING]', {
+          taskId,
+          carerUid,
+          coadminUid,
+          retryPending,
+          allowRetryPendingClaim,
+          returnedToPendingAt: returnedToPendingAt || null,
+        });
       }
       skippedTasks.push({
         taskId,
-        reason: 'returned_to_pending_requires_manual_or_start_automation',
+        reason: withinReturnCooldown
+          ? 'returned_to_pending_cooldown'
+          : 'retry_pending_requires_start_automation',
       });
       continue;
     }
@@ -1351,6 +1387,12 @@ export async function POST(request: Request) {
       allowRetryPendingClaim,
     });
     const mapped = mapTaskType(resolveTaskTypeLabel(task));
+    console.info('[AUTO_TICK_SQL_TASK_TYPE_NORMALIZED]', {
+      taskId,
+      rawType: String(task['type'] || task['kind'] || '').trim() || null,
+      typeLabel: resolveTaskTypeLabel(task),
+      normalized: mapped,
+    });
     if (!isAgentSupportedAutomationType(mapped)) {
       console.info('[AUTO_TICK_SQL_SKIPPED_TYPE]', {
         taskId,

@@ -1108,6 +1108,13 @@ export default function CarerPage() {
       agentId: body.agentId,
       instanceId: body.instanceId,
     });
+    console.info('[START_AUTOMATION_AUTO_TICK_REQUEST]', {
+      source,
+      carerUid: body.carerUid,
+      agentId: body.agentId,
+      instanceId: body.instanceId,
+      allowRetryPendingClaim: body.allowRetryPendingClaim,
+    });
 
     let payload: Record<string, unknown> | null = null;
     let response: Response;
@@ -1136,8 +1143,22 @@ export default function CarerPage() {
       });
       payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
       console.info('[START_TIMING] auto tick request response status=%s durationMs=%s', response.status, Date.now() - autoTickStartedAt);
+      console.info('[START_AUTOMATION_AUTO_TICK_RESPONSE]', {
+        source,
+        ok: response.ok,
+        status: response.status,
+        payload,
+        durationMs: Date.now() - autoTickStartedAt,
+      });
     } catch (error) {
       console.warn(`${logPrefix} response`, {
+        ok: false,
+        status: null,
+        reason: 'network_error',
+        error: error instanceof Error ? error.message : String(error),
+      });
+      console.info('[START_AUTOMATION_AUTO_TICK_RESPONSE]', {
+        source,
         ok: false,
         status: null,
         reason: 'network_error',
@@ -2411,6 +2432,20 @@ export default function CarerPage() {
       role: 'carer',
       authHeaderMode: 'app_session_sql',
     });
+    if (enabled) {
+      console.info('[START_AUTOMATION_CLICK]', {
+        source,
+        carerUid: carerIdentity.uid,
+        coadminUid,
+        previousEnabled: autoAutomationEnabled,
+      });
+      console.info('[START_AUTOMATION_ENABLE_REQUEST]', {
+        source,
+        carerUid: carerIdentity.uid,
+        coadminUid,
+        enabled: true,
+      });
+    }
 
     setErrorMessage('');
     try {
@@ -2424,6 +2459,12 @@ export default function CarerPage() {
         enabled,
       }));
       if (enabled) {
+        console.info('[START_AUTOMATION_ENABLE_SUCCESS]', {
+          source,
+          carerUid: carerIdentity.uid,
+          coadminUid,
+          enabled: true,
+        });
         setAutoDrainRequestId((current) => current + 1);
       } else {
         window.setTimeout(() => {

@@ -90,7 +90,12 @@ export function sanitizeForFirestore(value: unknown): unknown {
 }
 
 export function mapTaskType(taskType: string): QueuedAutomationType {
-  const normalized = taskType.trim().toUpperCase().replace(/\s+/g, ' ');
+  const normalized = taskType
+    .trim()
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .toUpperCase()
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ');
   if (
     normalized === 'CREATE USERNAME' ||
     normalized === 'CREATE_USERNAME' ||
