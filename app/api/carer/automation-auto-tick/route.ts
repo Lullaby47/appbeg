@@ -1461,9 +1461,9 @@ export async function POST(request: Request) {
     const usernameStartedAt = Date.now();
     const fromLogin = embeddedCurrentUsername
       ? null
-      : mapped === 'CREATE_USERNAME'
-        ? null
-      : await resolveCurrentUsernameForTask(coadminUid, playerUid, gameName);
+      : await resolveCurrentUsernameForTask(coadminUid, playerUid, gameName, {
+          taskType: mapped,
+        });
     if (mapped === 'CREATE_USERNAME' && !embeddedCurrentUsername) {
       console.info('[CLAIM_TASK_SQL_GAME_LOGIN_MISSING_ALLOWED]', {
         taskId,
@@ -1498,6 +1498,7 @@ export async function POST(request: Request) {
       fromLogin ||
       null;
     if (!currentUsername && mapped !== 'CREATE_USERNAME') {
+      const missingLoginMessage = 'Game login not found in SQL cache.';
       console.info('[AUTO_TICK] skipped task (missing sql player game login)', {
         taskId,
         carerUid,
@@ -1506,10 +1507,12 @@ export async function POST(request: Request) {
         gameName,
         mapped,
         reason: 'player_game_login_missing_sql',
+        message: missingLoginMessage,
       });
       skippedTasks.push({
         taskId,
         reason: 'player_game_login_missing_sql',
+        message: missingLoginMessage,
         mapped,
       });
       continue;

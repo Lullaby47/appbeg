@@ -22,14 +22,8 @@ import {
 } from '@/lib/automation/automationClaimPayload';
 import { mirrorAutomationJobById } from '@/lib/sql/automationJobsCache';
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
-import {
-  lookupGameLoginDetailsForCoadminGameFromSql,
-  mirrorGameLoginCache,
-} from '@/lib/sql/gameLoginsCache';
-import {
-  lookupCurrentUsernameForTaskFromSql,
-  mirrorPlayerGameLoginSnapshot,
-} from '@/lib/sql/playerGameLoginsCache';
+import { lookupGameLoginDetailsForCoadminGameFromSql } from '@/lib/sql/gameLoginsCache';
+import { readPlayerGameLoginForClaimFromSql } from '@/lib/sql/playerGameLoginsCache';
 
 const AUTOMATION_JOB_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -1123,6 +1117,14 @@ export async function resolveGameLoginDetailsForCoadminGame(
     logAutoTickResolverFallback('game_login', sqlLookup.missReason, { coadminUid, gameName });
   }
 
+  console.info('[CLAIM_TASK_FIRESTORE_GAME_LOGINS_BRANCH_BLOCKED]', {
+    resolver: 'resolveGameLoginDetailsForCoadminGame',
+    collection: 'gameLogins',
+    coadminUid,
+    gameName,
+    missReason: sqlLookup.missReason,
+    appbegSqlOnlyMode: isAppbegSqlOnlyMode(),
+  });
   if (isAppbegSqlOnlyMode()) {
     console.info('[SQL_NO_FIRESTORE_CLAIM_TASK]', {
       resolver: 'resolveGameLoginDetailsForCoadminGame',
@@ -1131,92 +1133,54 @@ export async function resolveGameLoginDetailsForCoadminGame(
       gameName,
       missReason: sqlLookup.missReason,
     });
-    return null;
   }
-
-  const fallbackStartedAt = Date.now();
-  const target = normalizeGameNameForAutomation(gameName);
-  for (const field of ['coadminUid', 'createdBy'] as const) {
-    const snap = await adminDb
-      .collection('gameLogins')
-      .where(field, '==', coadminUid)
-      .limit(50)
-      .get();
-    for (const docSnap of snap.docs) {
-      const row = docSnap.data() as {
-        gameName?: string;
-        username?: string;
-        password?: string;
-        backendUrl?: string;
-        frontendUrl?: string;
-        siteUrl?: string;
-        createdBy?: string;
-        coadminUid?: string;
-        createdAt?: unknown;
-      };
-      if (normalizeGameNameForAutomation(String(row.gameName || '')) !== target) {
-        continue;
-      }
-      try {
-        await mirrorGameLoginCache({
-          id: docSnap.id,
-          gameName: String(row.gameName || ''),
-          username: String(row.username || ''),
-          password: String(row.password || ''),
-          backendUrl: String(row.backendUrl || ''),
-          frontendUrl: String(row.frontendUrl || ''),
-          siteUrl: String(row.siteUrl || row.backendUrl || ''),
-          createdBy: String(row.createdBy || coadminUid),
-          coadminUid: String(row.coadminUid || coadminUid),
-          raw: row as Record<string, unknown>,
-        });
-      } catch (error) {
-        logAutoTickResolverFallback('game_login', 'hydrate_failed', { coadminUid, gameName });
-        console.info('[AUTO_TICK_RESOLVER_FALLBACK] hydrate_error=%s', error);
-      }
-      logAutoTickResolverSql('game_login', {
-        hit: true,
-        source: 'fallback',
-        durationMs: Date.now() - fallbackStartedAt,
-        coadminUid,
-        gameName,
-      });
-      return {
-        username: row.username || null,
-        password: row.password || null,
-        backendUrl: row.backendUrl || null,
-        frontendUrl: row.frontendUrl || null,
-        siteUrl: row.siteUrl || null,
-      };
-    }
-  }
-
-  logAutoTickResolverSql('game_login', {
-    hit: false,
-    source: 'fallback',
-    durationMs: Date.now() - fallbackStartedAt,
-    coadminUid,
-    gameName,
-  });
   return null;
 }
 
 export async function resolveCurrentUsernameForTask(
   coadminUid: string,
   playerUid: string,
-  gameName: string
+  gameName: string,
+  options?: { taskType?: string | null }
 ): Promise<string | null> {
-  const sqlLookup = await lookupCurrentUsernameForTaskFromSql(coadminUid, playerUid, gameName);
+  const taskType = String(options?.taskType || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '_');
+  if (taskType === 'CREATE_USERNAME') {
+    console.info('[CLAIM_TASK_SQL_GAME_LOGIN_MISSING_ALLOWED]', {
+      type: 'CREATE_USERNAME',
+      coadminUid,
+      playerUid,
+      gameName,
+      reason: 'create_username_has_no_existing_player_game_login',
+    });
+    return null;
+  }
+
+  const sqlLookup = await readPlayerGameLoginForClaimFromSql({
+    playerUid,
+    coadminUid,
+    gameName,
+  });
   console.info('[CLAIM_TASK_SQL_GAME_LOGIN_READ]', {
     type: 'player_game_login_username',
     coadminUid,
     playerUid,
     gameName,
-    hit: Boolean(sqlLookup.hit && sqlLookup.username),
+    taskType: taskType || null,
+    hit: Boolean(sqlLookup.hit && sqlLookup.gameUsername),
     missReason: sqlLookup.missReason,
     durationMs: sqlLookup.durationMs,
   });
-  if (sqlLookup.hit && sqlLookup.username) {
+  if (sqlLookup.hit && sqlLookup.gameUsername) {
+    console.info('[CLAIM_TASK_SQL_GAME_LOGIN_FOUND]', {
+      coadminUid,
+      playerUid,
+      gameName,
+      username: sqlLookup.gameUsername,
+      durationMs: sqlLookup.durationMs,
+    });
     logAutoTickResolverSql('username', {
       hit: true,
       source: 'sql',
@@ -1225,7 +1189,7 @@ export async function resolveCurrentUsernameForTask(
       playerUid,
       gameName,
     });
-    return sqlLookup.username;
+    return sqlLookup.gameUsername;
   }
 
   if (sqlLookup.missReason) {
@@ -1236,6 +1200,16 @@ export async function resolveCurrentUsernameForTask(
     });
   }
 
+  console.info('[CLAIM_TASK_FIRESTORE_PLAYER_GAME_LOGINS_BRANCH_BLOCKED]', {
+    resolver: 'resolveCurrentUsernameForTask',
+    collection: 'playerGameLogins',
+    coadminUid,
+    playerUid,
+    gameName,
+    taskType: taskType || null,
+    missReason: sqlLookup.missReason,
+    appbegSqlOnlyMode: isAppbegSqlOnlyMode(),
+  });
   if (isAppbegSqlOnlyMode()) {
     console.info('[SQL_NO_FIRESTORE_CLAIM_TASK]', {
       resolver: 'resolveCurrentUsernameForTask',
@@ -1245,48 +1219,6 @@ export async function resolveCurrentUsernameForTask(
       gameName,
       missReason: sqlLookup.missReason,
     });
-    return null;
   }
-
-  const fallbackStartedAt = Date.now();
-  const snap = await adminDb
-    .collection('playerGameLogins')
-    .where('playerUid', '==', playerUid)
-    .limit(80)
-    .get();
-  const target = normalizeGameNameForAutomation(gameName);
-  for (const docSnap of snap.docs) {
-    const row = docSnap.data() as {
-      gameName?: string;
-      gameUsername?: string;
-      coadminUid?: string;
-    };
-    if (String(row.coadminUid || '').trim() !== String(coadminUid || '').trim()) {
-      continue;
-    }
-    if (normalizeGameNameForAutomation(String(row.gameName || '')) !== target) {
-      continue;
-    }
-    void mirrorPlayerGameLoginSnapshot(docSnap, 'auto_tick_username_hydrate');
-    const username = String(row.gameUsername || '').trim();
-    logAutoTickResolverSql('username', {
-      hit: Boolean(username),
-      source: 'fallback',
-      durationMs: Date.now() - fallbackStartedAt,
-      coadminUid,
-      playerUid,
-      gameName,
-    });
-    return username || null;
-  }
-
-  logAutoTickResolverSql('username', {
-    hit: false,
-    source: 'fallback',
-    durationMs: Date.now() - fallbackStartedAt,
-    coadminUid,
-    playerUid,
-    gameName,
-  });
   return null;
 }

@@ -251,10 +251,36 @@ export async function autoClaimPendingTaskOnCreate(
 
     const embeddedCurrentUsername =
       cleanText(taskRow.current_username) || cleanText(taskRow.game_account_username) || null;
-    const currentUsername =
-      embeddedCurrentUsername ||
-      (await resolveCurrentUsernameForTask(coadminUid, playerUid, gameName)) ||
-      null;
+    const fromSql =
+      embeddedCurrentUsername || mappedType === 'CREATE_USERNAME'
+        ? null
+        : await resolveCurrentUsernameForTask(coadminUid, playerUid, gameName, {
+            taskType: mappedType,
+          });
+    if (mappedType === 'CREATE_USERNAME' && !embeddedCurrentUsername) {
+      console.info('[CLAIM_TASK_SQL_GAME_LOGIN_MISSING_ALLOWED]', {
+        taskId,
+        coadminUid,
+        carerUid,
+        playerUid,
+        gameName,
+        type: mappedType,
+        reason: 'create_username_has_no_existing_player_game_login',
+      });
+    }
+    const currentUsername = embeddedCurrentUsername || fromSql || null;
+    if (!currentUsername && mappedType !== 'CREATE_USERNAME') {
+      console.info('[AUTO_CLAIM_PENDING_TASKS_RESULT]', {
+        taskId,
+        coadminUid,
+        carerUid,
+        claimed: false,
+        reason: 'player_game_login_missing_sql',
+        message: 'Game login not found in SQL cache.',
+        mappedType,
+      });
+      continue;
+    }
 
     try {
       const result = await claimCarerTaskAsAdmin({

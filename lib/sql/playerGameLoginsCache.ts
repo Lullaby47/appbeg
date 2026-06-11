@@ -501,41 +501,64 @@ export type CurrentUsernameSqlLookupResult = {
   durationMs: number;
 };
 
-export async function lookupCurrentUsernameForTaskFromSql(
-  coadminUid: string,
-  playerUid: string,
-  gameName: string
-): Promise<CurrentUsernameSqlLookupResult> {
+export type PlayerGameLoginForClaimSqlResult = {
+  gameUsername: string | null;
+  gamePassword: string | null;
+  hit: boolean;
+  missReason: 'postgres_unavailable' | 'lookup_failed' | 'row_missing' | 'missing_field' | null;
+  durationMs: number;
+};
+
+export async function readPlayerGameLoginForClaimFromSql(input: {
+  playerUid: string;
+  coadminUid: string;
+  gameName: string;
+  username?: string | null;
+}): Promise<PlayerGameLoginForClaimSqlResult> {
   const startedAt = Date.now();
-  const cleanCoadminUid = cleanText(coadminUid);
-  const cleanPlayerUid = cleanText(playerUid);
-  const target = normalizeGameName(gameName);
+  const cleanPlayerUid = cleanText(input.playerUid);
+  const cleanCoadminUid = cleanText(input.coadminUid);
+  const target = normalizeGameName(input.gameName);
+  const optionalUsername = cleanText(input.username || '');
   const db = getPlayerMirrorPool();
 
-  if (!db || !cleanCoadminUid || !cleanPlayerUid || !target) {
+  if (!db || !cleanPlayerUid || !cleanCoadminUid || !target) {
     return {
-      username: null,
+      gameUsername: null,
+      gamePassword: null,
       hit: false,
       missReason: 'missing_field',
       durationMs: Date.now() - startedAt,
     };
   }
 
-  const usernameSql = `
-    SELECT game_username, coadmin_uid, game_name, normalized_game_name
-    FROM public.player_game_logins_cache
-    WHERE player_uid = $1
-      AND deleted_at IS NULL
-      AND coadmin_uid = $2
-    ORDER BY updated_at DESC NULLS LAST, mirrored_at DESC
-    LIMIT 80
-  `;
+  const usernameSql = optionalUsername
+    ? `
+      SELECT game_username, game_password, coadmin_uid, game_name, normalized_game_name, player_uid
+      FROM public.player_game_logins_cache
+      WHERE deleted_at IS NULL
+        AND player_uid = $1::text
+        AND coadmin_uid = $2::text
+        AND game_username = $4::text
+      ORDER BY updated_at DESC NULLS LAST, mirrored_at DESC
+      LIMIT 80
+    `
+    : `
+      SELECT game_username, game_password, coadmin_uid, game_name, normalized_game_name, player_uid
+      FROM public.player_game_logins_cache
+      WHERE deleted_at IS NULL
+        AND player_uid = $1::text
+        AND coadmin_uid = $2::text
+      ORDER BY updated_at DESC NULLS LAST, mirrored_at DESC
+      LIMIT 80
+    `;
+
+  const params = optionalUsername
+    ? [cleanPlayerUid, cleanCoadminUid, target, optionalUsername]
+    : [cleanPlayerUid, cleanCoadminUid, target];
 
   try {
-    const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(db, usernameSql, [
-      cleanPlayerUid,
-      cleanCoadminUid,
-    ]);
+    const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(db, usernameSql, params);
     const durationMs = Date.now() - startedAt;
 
     for (const row of rows) {
@@ -547,33 +570,55 @@ export async function lookupCurrentUsernameForTaskFromSql(
       if (rowGame !== target) {
         continue;
       }
-      const username = cleanText(row.game_username);
+      const gameUsername = cleanText(row.game_username);
+      const gamePassword = cleanText(row.game_password);
       return {
-        username: username || null,
-        hit: Boolean(username),
-        missReason: username ? null : 'missing_field',
+        gameUsername: gameUsername || null,
+        gamePassword: gamePassword || null,
+        hit: Boolean(gameUsername),
+        missReason: gameUsername ? null : 'missing_field',
         durationMs,
       };
     }
 
     return {
-      username: null,
+      gameUsername: null,
+      gamePassword: null,
       hit: false,
       missReason: 'row_missing',
       durationMs,
     };
   } catch (error) {
-    console.error('[PLAYER_GAME_LOGINS_CACHE] lookup failed', {
+    console.error('[PLAYER_GAME_LOGINS_CACHE] claim lookup failed', {
       coadminUid: cleanCoadminUid,
       playerUid: cleanPlayerUid,
       gameName: target,
       error,
     });
     return {
-      username: null,
+      gameUsername: null,
+      gamePassword: null,
       hit: false,
       missReason: 'lookup_failed',
       durationMs: Date.now() - startedAt,
     };
   }
+}
+
+export async function lookupCurrentUsernameForTaskFromSql(
+  coadminUid: string,
+  playerUid: string,
+  gameName: string
+): Promise<CurrentUsernameSqlLookupResult> {
+  const lookup = await readPlayerGameLoginForClaimFromSql({
+    playerUid,
+    coadminUid,
+    gameName,
+  });
+  return {
+    username: lookup.gameUsername,
+    hit: lookup.hit,
+    missReason: lookup.missReason,
+    durationMs: lookup.durationMs,
+  };
 }
