@@ -39,6 +39,10 @@ type SqlSnapshotRequest = {
 
 const PLAYER_IMMEDIATE_REFETCH_EVENTS = new Set([
   'recharge_dismiss',
+  'recharge_completed',
+  'redeem_completed',
+  'request.completed',
+  'game_request_complete',
   'player_message',
   'balance_update',
   'request.upserted',
@@ -48,6 +52,10 @@ const PLAYER_IMMEDIATE_REFETCH_EVENTS = new Set([
 
 const PLAYER_LIVE_SSE_EVENTS = [
   'recharge_dismiss',
+  'recharge_completed',
+  'redeem_completed',
+  'request.completed',
+  'game_request_complete',
   'player_message',
   'balance_update',
   'request.upserted',
@@ -57,6 +65,8 @@ const PLAYER_LIVE_SSE_EVENTS = [
   'request.dismissed',
   'task.dismissed',
 ] as const;
+
+export const PLAYER_RECHARGE_SUCCESS_MESSAGE = 'Your game is recharged. Enjoy!';
 
 const INITIAL_RECONNECT_MS = 1_000;
 const MAX_RECONNECT_MS = 15_000;
@@ -79,6 +89,7 @@ type SqlRequestPayload = {
   amount?: unknown;
   baseAmount?: unknown;
   pokeMessage?: unknown;
+  playerMessage?: unknown;
   dismissReasonCode?: unknown;
   dismissReasonMessage?: unknown;
   refunded?: unknown;
@@ -94,6 +105,15 @@ export type PlayerRechargeDismissLiveEvent = {
   dismissReasonCode: string | null;
   dismissReasonMessage: string | null;
   refunded: boolean;
+  sourceEvent: string;
+};
+
+export type PlayerRechargeSuccessLiveEvent = {
+  requestId: string;
+  playerUid: string;
+  type: PlayerGameRequestType;
+  status: PlayerGameRequestStatus;
+  message: string;
   sourceEvent: string;
 };
 
@@ -220,6 +240,34 @@ function mergePayloadIntoPlayerGameRequest(
   };
 }
 
+function buildSuccessEventFromPayload(
+  eventName: string,
+  entityId: string,
+  payload: SqlRequestPayload,
+  playerUid: string
+): PlayerRechargeSuccessLiveEvent | null {
+  const status = normalizeRequestStatus(payload.status || 'completed');
+  if (status !== 'completed') {
+    return null;
+  }
+  const type = normalizeRequestType(payload.type);
+  if (type !== 'recharge') {
+    return null;
+  }
+  const message =
+    cleanText(payload.playerMessage) ||
+    cleanText(payload.pokeMessage) ||
+    PLAYER_RECHARGE_SUCCESS_MESSAGE;
+  return {
+    requestId: entityId,
+    playerUid: cleanText(payload.playerUid) || playerUid,
+    type,
+    status,
+    message,
+    sourceEvent: eventName,
+  };
+}
+
 function buildDismissEventFromPayload(
   eventName: string,
   entityId: string,
@@ -249,6 +297,7 @@ export function attachPlayerRequestSqlReadListener(
   onFallback: (reason: string) => void,
   options?: {
     onRechargeDismissEvent?: (event: PlayerRechargeDismissLiveEvent) => void;
+    onRechargeSuccessEvent?: (event: PlayerRechargeSuccessLiveEvent) => void;
     onBalanceUpdate?: (reason: string) => void;
   }
 ) {
@@ -362,8 +411,28 @@ export function attachPlayerRequestSqlReadListener(
     }
   };
 
+  const handleSuccessLiveEvent = (eventName: string, payload: SqlRequestPayload, entityId: string) => {
+    if (
+      eventName !== 'recharge_completed' &&
+      eventName !== 'request.completed' &&
+      eventName !== 'game_request_complete' &&
+      !(eventName === 'player_message' && normalizeRequestStatus(payload.status) === 'completed')
+    ) {
+      return;
+    }
+    const successEvent = buildSuccessEventFromPayload(eventName, entityId, payload, cleanPlayerUid);
+    if (!successEvent || successEvent.type !== 'recharge' || !options?.onRechargeSuccessEvent) {
+      return;
+    }
+    console.info('[PLAYER_RECHARGE_SUCCESS_EVENT]', successEvent);
+    options.onRechargeSuccessEvent(successEvent);
+  };
+
   const handleDismissLiveEvent = (eventName: string, payload: SqlRequestPayload, entityId: string) => {
     if (eventName !== 'recharge_dismiss' && eventName !== 'player_message') {
+      return;
+    }
+    if (normalizeRequestStatus(payload.status) === 'completed') {
       return;
     }
     const dismissEvent = buildDismissEventFromPayload(eventName, entityId, payload, cleanPlayerUid);
@@ -429,6 +498,7 @@ export function attachPlayerRequestSqlReadListener(
     }
 
     if (PLAYER_IMMEDIATE_REFETCH_EVENTS.has(eventName)) {
+      handleSuccessLiveEvent(eventName, payload, entityId);
       handleDismissLiveEvent(eventName, payload, entityId);
       void refetchSnapshotNow(`sse_event:${eventName}`, true);
       return;

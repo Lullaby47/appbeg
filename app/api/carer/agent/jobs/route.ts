@@ -130,6 +130,14 @@ export async function POST(request: Request) {
         reason: String(body.reason || '').trim() || null,
       });
     }
+    if (action === 'complete_recharge_redeem') {
+      console.info('[AGENT_JOBS_API_COMPLETE_ATTEMPT]', {
+        jobId: jobId || null,
+        taskId: String(body.taskId || '').trim() || null,
+        carerUid,
+        agentId,
+      });
+    }
     const result = await runAgentJobAction({
       action,
       carerUid,

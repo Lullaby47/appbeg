@@ -38,8 +38,10 @@ import {
 import { attachPlayerRequestLiveShadowCompare } from '@/features/live/playerRequestShadowCompare';
 import {
   attachPlayerRequestSqlReadListener,
+  PLAYER_RECHARGE_SUCCESS_MESSAGE,
   PLAYER_REQUESTS_SQL_READ_ENABLED,
   type PlayerRechargeDismissLiveEvent,
+  type PlayerRechargeSuccessLiveEvent,
 } from '@/features/live/playerRequestSqlRead';
 import {
   listenToUnreadCounts,
@@ -1141,6 +1143,10 @@ export default function PlayerPage() {
             (previousStatus === undefined && recentlyCompleted));
 
         if (justCompleted && !seenCompletedRechargeSplashIdsRef.current.has(request.id)) {
+          console.info('[PLAYER_RECHARGE_SUCCESS_TOAST_SHOW]', {
+            requestId: request.id,
+            source: 'request_history_transition',
+          });
           showRechargeSuccessToast();
           seenCompletedRechargeSplashIdsRef.current.add(request.id);
         }
@@ -2021,6 +2027,22 @@ export default function PlayerPage() {
     }
 
     if (sqlRequestsRead) {
+      const showRechargeSuccessFromLiveEvent = (event: PlayerRechargeSuccessLiveEvent) => {
+        if (event.type !== 'recharge' || event.status !== 'completed') {
+          return;
+        }
+        if (seenCompletedRechargeSplashIdsRef.current.has(event.requestId)) {
+          return;
+        }
+        console.info('[PLAYER_RECHARGE_SUCCESS_TOAST_SHOW]', {
+          requestId: event.requestId,
+          source: `sse_event:${event.sourceEvent}`,
+          message: event.message,
+        });
+        seenCompletedRechargeSplashIdsRef.current.add(event.requestId);
+        showRechargeSuccessToast();
+      };
+
       const showRechargeDismissFromLiveEvent = (event: PlayerRechargeDismissLiveEvent) => {
         if (event.type !== 'recharge' || event.status !== 'dismissed') {
           return;
@@ -2069,6 +2091,7 @@ export default function PlayerPage() {
         },
         {
           onRechargeDismissEvent: showRechargeDismissFromLiveEvent,
+          onRechargeSuccessEvent: showRechargeSuccessFromLiveEvent,
           onBalanceUpdate: (reason) => {
             void loadPlayerProfileSnapshotOnce().then((profile) => {
               if (profile) {
@@ -4238,10 +4261,7 @@ export default function PlayerPage() {
                 ✓
               </div>
               <p className="mt-3 text-lg font-black leading-tight text-white sm:text-xl">
-                ✅ Recharge Successful
-              </p>
-              <p className="mt-1 text-sm font-semibold text-emerald-50/85">
-                Coins added to your Game
+                {PLAYER_RECHARGE_SUCCESS_MESSAGE}
               </p>
             </motion.div>
           </motion.div>

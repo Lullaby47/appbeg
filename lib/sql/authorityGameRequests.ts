@@ -39,6 +39,7 @@ const FIRST_RECHARGE_MATCH_PERCENT = 50;
 const DISMISSIBLE_REDEEM_STATUSES = new Set(['pending', 'poked', 'pending_review']);
 const DISMISSIBLE_RECHARGE_STATUSES = new Set(['pending', 'poked', 'pending_review', 'failed']);
 const GAME_VAULT_MIDNIGHT_PARTY_REASON = 'game_vault_midnight_party_pending';
+export const PLAYER_RECHARGE_SUCCESS_MESSAGE = 'Your game is recharged. Enjoy!';
 
 function buildAutomationMidnightPartyPlayerMessage(gameToast: string, refunded: boolean) {
   const toast = cleanText(gameToast);
@@ -339,7 +340,6 @@ async function updateCarerTaskCompletedInTxn(
         claimed_status = 'completed',
         is_poked = FALSE,
         poke_message = NULL,
-        poked_at = NULL,
         completed_by_carer_uid = NULLIF($4, ''),
         completed_by_carer_username = NULLIF($5, ''),
         updated_at = $2::timestamptz,
@@ -357,6 +357,11 @@ async function updateCarerTaskCompletedInTxn(
       JSON.stringify(raw),
     ]
   );
+  console.info('[SQL_TASK_COMPLETED]', {
+    taskId,
+    completedByCarerUid: cleanText(input.completedByCarerUid) || null,
+    sourceRequestId: cleanText(input.sourceRequestId) || null,
+  });
 }
 
 async function writeCarerTaskOutboxInTxn(
@@ -430,6 +435,17 @@ async function writeCarerTaskOutboxInTxn(
       source: 'authority_game_request',
       mirroredAt: input.updatedAt,
       payload,
+    });
+  }
+
+  if (input.eventType === 'task.completed') {
+    console.info('[LIVE_OUTBOX_INSERT_TASK_COMPLETED]', {
+      taskId: input.taskId,
+      requestId: input.requestId,
+      coadminUid: input.coadminUid,
+      carerUid: carerUid || null,
+      status: input.status,
+      channels: outboxChannels,
     });
   }
 
@@ -1015,6 +1031,12 @@ export async function completeRechargeRedeemTaskInSql(
   const actorUid = cleanText(input.actorUid);
   const actorRole = cleanText(input.actorRole);
   if (!taskId) throw new Error('taskId is required.');
+  console.info('[AUTHORITY_RECHARGE_COMPLETE_START]', {
+    taskId,
+    actorUid,
+    actorRole,
+    scopeUid: cleanText(input.scopeUid) || null,
+  });
 
   const idempotencyKey = cleanText(input.idempotencyKey) || taskId;
   const operationKey = `game_request_complete:${taskId}:${idempotencyKey}`;
@@ -1350,6 +1372,13 @@ export async function completeRechargeRedeemTaskInSql(
       });
     }
 
+    const playerCompleteEventType =
+      requestType === 'redeem' ? 'redeem_completed' : 'recharge_completed';
+    const playerSuccessMessage =
+      requestType === 'redeem'
+        ? 'Your redeem request was completed successfully.'
+        : PLAYER_RECHARGE_SUCCESS_MESSAGE;
+
     await writeGameRequestOutboxInTxn(client, {
       playerUid,
       coadminUid,
@@ -1358,8 +1387,58 @@ export async function completeRechargeRedeemTaskInSql(
       status: 'completed',
       gameName: cleanText(request.game_name),
       amount,
-      eventType: 'game_request_complete',
+      eventType: playerCompleteEventType,
       updatedAt: nowIso,
+      pokeMessage: playerSuccessMessage,
+    });
+    console.info('[LIVE_OUTBOX_INSERT_PLAYER_RECHARGE_SUCCESS]', {
+      requestId,
+      playerUid,
+      eventType: playerCompleteEventType,
+      requestType,
+    });
+    await insertLiveOutboxEventWithClient(client, {
+      channel: playerRequestLiveChannel(playerUid),
+      eventType: 'request.completed',
+      entityType: 'player_game_request',
+      entityId: requestId,
+      source: 'authority_game_request_complete',
+      mirroredAt: nowIso,
+      payload: {
+        entityId: requestId,
+        playerUid,
+        requestId,
+        type: requestType,
+        status: 'completed',
+        gameName: cleanText(request.game_name),
+        amount,
+        pokeMessage: playerSuccessMessage,
+        updatedAt: nowIso,
+      },
+    });
+    await insertLiveOutboxEventWithClient(client, {
+      channel: playerRequestLiveChannel(playerUid),
+      eventType: 'player_message',
+      entityType: 'player_game_request',
+      entityId: requestId,
+      source: 'authority_game_request_complete',
+      mirroredAt: nowIso,
+      payload: {
+        entityId: requestId,
+        playerUid,
+        requestId,
+        type: requestType,
+        status: 'completed',
+        pokeMessage: playerSuccessMessage,
+        playerMessage: playerSuccessMessage,
+        updatedAt: nowIso,
+      },
+    });
+    console.info('[PLAYER_RECHARGE_SUCCESS_TOAST_QUEUED]', {
+      requestId,
+      playerUid,
+      message: playerSuccessMessage,
+      requestType,
     });
     await writeCarerTaskOutboxInTxn(client, {
       coadminUid: taskScope,
@@ -1372,7 +1451,7 @@ export async function completeRechargeRedeemTaskInSql(
       gameName: cleanText(request.game_name),
       amount,
       assignedCarerUid: assignedCarerUid || actorUid,
-      eventType: 'task.upserted',
+      eventType: 'task.completed',
       updatedAt: nowIso,
     });
     await insertLiveOutboxEventWithClient(client, {
@@ -1382,7 +1461,19 @@ export async function completeRechargeRedeemTaskInSql(
       entityId: playerUid,
       source: 'authority_game_request_complete',
       mirroredAt: nowIso,
-      payload: { playerUid, updatedAt: nowIso, source: 'authority' },
+      payload: {
+        entityId: playerUid,
+        playerUid,
+        requestId,
+        updatedAt: nowIso,
+        source: 'authority',
+      },
+    });
+    console.info('[SQL_PLAYER_REQUEST_COMPLETED]', {
+      requestId,
+      playerUid,
+      requestType,
+      taskId,
     });
 
     await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
@@ -1394,6 +1485,14 @@ export async function completeRechargeRedeemTaskInSql(
       }),
     ]);
     await client.query('COMMIT');
+    console.info('[AUTHORITY_RECHARGE_COMPLETE_DONE]', {
+      taskId,
+      requestId,
+      playerUid,
+      requestType,
+      totalAwardNpr,
+      alreadyCompleted: false,
+    });
     return {
       success: true,
       duplicate: false,

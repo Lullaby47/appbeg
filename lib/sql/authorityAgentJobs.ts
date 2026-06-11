@@ -600,6 +600,12 @@ export async function agentCompleteRechargeRedeemJob(input: {
   scopeUid?: string | null;
   evidence?: Record<string, unknown> | null;
 }) {
+  console.info('[AGENT_JOBS_API_COMPLETE_ATTEMPT]', {
+    jobId: input.jobId,
+    taskId: input.taskId,
+    carerUid: input.carerUid,
+    agentId: input.agentId,
+  });
   console.info('[SQL_JOB_COMPLETE_START] action=complete_recharge_redeem jobId=%s taskId=%s', input.jobId, input.taskId);
   const idempotencyKey = `agent:${cleanText(input.jobId)}`;
   const completeResult = await completeRechargeRedeemTaskInSql({
@@ -642,8 +648,21 @@ export async function agentCompleteRechargeRedeemJob(input: {
       },
     });
     await client.query('COMMIT');
+    console.info('[SQL_JOB_COMPLETED]', {
+      jobId: input.jobId,
+      taskId,
+      requestId: completeResult.requestId,
+      carerUid: input.carerUid,
+    });
     console.info('[SQL_JOB_COMPLETE_SUCCESS] action=complete_recharge_redeem jobId=%s taskId=%s', input.jobId, taskId);
     console.info('[SQL_FIREBASE_BYPASS_CONFIRMED] operation=complete_recharge_redeem jobId=%s', input.jobId);
+    console.info('[TASK_COMPLETION]', {
+      jobId: input.jobId,
+      taskId,
+      requestId: completeResult.requestId,
+      alreadyCompleted: completeResult.alreadyCompleted,
+      duplicate: completeResult.duplicate,
+    });
     return { ...completeResult, success: true as const };
   } catch (error) {
     await client.query('ROLLBACK');

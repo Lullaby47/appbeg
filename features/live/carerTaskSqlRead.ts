@@ -89,7 +89,12 @@ const CARER_TASK_IMMEDIATE_REFETCH_EVENTS = new Set([
   'task.dismissed',
   'job.dismissed',
   'task.completed',
+  'job.completed',
+  'request.completed',
   'game_request_task_complete',
+  'game_request_complete',
+  'recharge_completed',
+  'redeem_completed',
   'recharge_dismiss',
 ]);
 
@@ -98,7 +103,8 @@ const ALL_LIVE_TASK_SSE_EVENTS = Array.from(
     ...CARER_TASK_UPSERT_EVENTS,
     ...CARER_TASK_REMOVE_EVENTS,
     ...GAME_REQUEST_CREATE_EVENTS,
-    'game_request_task_complete',
+    ...CARER_TASK_IMMEDIATE_REFETCH_EVENTS,
+    'task.upserted',
   ])
 );
 
@@ -598,6 +604,15 @@ export function attachCarerTaskSqlReadListener(
           ? 'player_game_request'
           : 'live_event';
 
+    if (eventName === 'task.completed') {
+      console.info('[CARER_TASK_COMPLETED_EVENT]', {
+        taskId: taskId || entityId || null,
+        carerUid: cleanCarerUid,
+        coadminUid: cleanCoadminUid,
+        outboxId,
+      });
+    }
+
     if (shouldRefetchForLiveEvent(eventName, entityType)) {
       if (
         eventName === 'task.returned_to_pending' ||
@@ -607,6 +622,8 @@ export function attachCarerTaskSqlReadListener(
       } else {
         scheduleLiveRefetch(`live_event:${eventName}`);
       }
+    } else if (CARER_TASK_IMMEDIATE_REFETCH_EVENTS.has(eventName)) {
+      void refetchSnapshotNow(`live_event:${eventName}`, true);
     }
 
     if (!entityId || !taskId) {

@@ -532,6 +532,15 @@ export async function writeGameRequestOutboxInTxn(
       refunded: input.refunded === true,
     });
   }
+  if (input.eventType === 'recharge_completed' || input.eventType === 'redeem_completed') {
+    console.info('[LIVE_OUTBOX_INSERT_PLAYER_RECHARGE_SUCCESS]', {
+      requestId: input.requestId,
+      playerUid: input.playerUid,
+      outboxId: playerOutboxId,
+      eventType: input.eventType,
+      status: input.status,
+    });
+  }
   await insertLiveOutboxEventWithClient(client, {
     channel: coadminTaskLiveChannel(input.coadminUid),
     eventType: input.eventType,
