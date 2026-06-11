@@ -1875,54 +1875,221 @@ export default function CoadminPage() {
     }
   }
 
+  function mapReachOutContact(user: {
+    id?: string;
+    uid: string;
+    username?: string;
+    email?: string;
+    role: string;
+    status?: string;
+    createdBy?: string | null;
+    coadminUid?: string | null;
+    createdAt?: unknown;
+  }): AdminUser {
+    return {
+      id: String(user.id || user.uid || ''),
+      uid: String(user.uid || ''),
+      username: String(user.username || ''),
+      email: String(user.email || ''),
+      role: String(user.role || 'staff') as AdminUser['role'],
+      status: (String(user.status || 'active') === 'disabled' ? 'disabled' : 'active') as
+        | 'active'
+        | 'disabled',
+      createdBy: user.createdBy ?? null,
+      coadminUid: user.coadminUid ?? null,
+      createdAt: user.createdAt,
+    } as AdminUser;
+  }
+
+  async function fetchReachOutUsersCache(role: 'staff' | 'admin', coadminUid: string) {
+    const sqlMode = isClientSqlReadMode();
+    const headers = await getSqlApiReadHeaders(false);
+    const params = new URLSearchParams({
+      role,
+      includeDisabled: 'false',
+    });
+    if (role !== 'admin') {
+      params.set('coadminUid', coadminUid);
+    }
+    const route = `/api/users/cache?${params.toString()}`;
+    console.info('[COADMIN_REACH_OUT_CONTACTS_REQUEST]', {
+      coadminUid,
+      route,
+      sqlMode,
+      authSource: sqlMode ? 'app_session_sql' : 'firebase_token',
+      rolesRequested: [role],
+      statusFilter: 'active',
+    });
+    const response = await fetch(route, {
+      method: 'GET',
+      headers,
+      cache: 'no-store',
+    });
+    const payload = (await response.json().catch(() => ({}))) as {
+      users?: Array<Record<string, unknown>>;
+      source?: string;
+      error?: string;
+    };
+    if (!response.ok) {
+      throw new Error(payload.error || `Failed to load ${role} contacts.`);
+    }
+    return {
+      role,
+      source: payload.source || 'unknown',
+      users: payload.users || [],
+    };
+  }
+
   async function loadChatUsers(prefetchedStaff?: StaffUser[]) {
     try {
-      let admins: AdminUser[];
-
-      if (isClientSqlReadMode()) {
-        logClientFirestoreSkipped('load_chat_users_admins', { route: '/coadmin' });
-        const response = await fetch('/api/users/cache?role=admin', {
-          method: 'GET',
-          headers: await getSqlApiReadHeaders(false),
-          cache: 'no-store',
-        });
-        const payload = (await response.json().catch(() => ({}))) as {
-          users?: Array<Record<string, unknown>>;
-          error?: string;
-        };
-        if (!response.ok) {
-          throw new Error(payload.error || 'Failed to load admin users.');
-        }
-        admins = (payload.users || []).map((user) => ({
-          id: String(user.uid || user.id || ''),
-          uid: String(user.uid || user.id || ''),
-          username: String(user.username || ''),
-          email: String(user.email || ''),
-          role: 'admin',
-          ...(user as Record<string, unknown>),
-        })) as AdminUser[];
-      } else {
-        const adminQuery = query(collection(db, 'users'), where('role', '==', 'admin'));
-        const adminSnapshot = await clientGetDocs(adminQuery, {
-          file: 'app/coadmin/page.tsx',
-          hook: 'loadChatUsers',
-          collection: 'users',
-          where: { role: 'admin' },
-        });
-        admins = adminSnapshot.docs.map((docSnap) => ({
-          id: docSnap.id,
-          ...(docSnap.data() as any),
-        })) as AdminUser[];
+      const coadminUid = String(coadminActorUid || (await getCurrentUserCoadminUid()) || '').trim();
+      const actorUid = resolveCoadminActorUid(coadminActorUid);
+      if (!coadminUid) {
+        setChatUsers([]);
+        return;
       }
 
-      const adminUIDs = admins.map((admin: any) => admin.uid);
-      const allStaff = prefetchedStaff ?? (await getStaff());
+      if (isClientSqlReadMode()) {
+        logClientFirestoreSkipped('load_chat_users_contacts', { route: '/coadmin', coadminUid });
 
-      const adminStaff = allStaff.filter((staff) =>
-        adminUIDs.includes(staff.createdBy || '')
+        const [staffResult, adminResult] = await Promise.all([
+          prefetchedStaff
+            ? Promise.resolve({
+                role: 'staff' as const,
+                source: 'prefetched',
+                users: prefetchedStaff as unknown as Array<Record<string, unknown>>,
+              })
+            : fetchReachOutUsersCache('staff', coadminUid),
+          fetchReachOutUsersCache('admin', coadminUid),
+        ]);
+
+        let filteredOut = 0;
+        const contacts: AdminUser[] = [];
+        const seenUids = new Set<string>();
+
+        const considerContact = (
+          raw: Record<string, unknown>,
+          sourceRole: string,
+          online = false
+        ) => {
+          const uid = String(raw.uid || raw.id || '').trim();
+          const role = String(raw.role || sourceRole || '').trim().toLowerCase();
+          const status = String(raw.status || 'active').trim().toLowerCase();
+          const userCoadminUid =
+            String(raw.coadminUid || raw.coadmin_uid || '').trim() ||
+            String(raw.createdBy || raw.created_by || '').trim();
+          let included = Boolean(uid);
+          let reason = 'included';
+
+          if (!uid) {
+            included = false;
+            reason = 'missing_uid';
+          } else if (uid === actorUid) {
+            included = false;
+            reason = 'self_excluded';
+          } else if (seenUids.has(uid)) {
+            included = false;
+            reason = 'duplicate_uid';
+          } else if (status === 'disabled') {
+            included = false;
+            reason = 'disabled';
+          } else if (role === 'carer') {
+            included = false;
+            reason = 'carer_excluded';
+          } else if (
+            role !== 'admin' &&
+            !belongsToCoadmin(
+              {
+                coadminUid: String(raw.coadminUid || raw.coadmin_uid || '').trim() || null,
+                createdBy: String(raw.createdBy || raw.created_by || '').trim() || null,
+              },
+              coadminUid
+            )
+          ) {
+            included = false;
+            reason = 'outside_coadmin_scope';
+          }
+
+          console.info('[COADMIN_REACH_OUT_CONTACT_FILTER]', {
+            uid: uid || null,
+            role,
+            coadminUid: userCoadminUid || null,
+            status,
+            online,
+            included,
+            reason,
+          });
+
+          if (!included) {
+            filteredOut += 1;
+            return;
+          }
+
+          seenUids.add(uid);
+          contacts.push(mapReachOutContact({
+            id: uid,
+            uid,
+            username: String(raw.username || ''),
+            email: String(raw.email || ''),
+            role,
+            status,
+            createdBy: String(raw.createdBy || raw.created_by || '').trim() || null,
+            coadminUid: userCoadminUid || null,
+            createdAt: raw.createdAt,
+          }));
+        };
+
+        for (const raw of staffResult.users) {
+          considerContact(raw, 'staff');
+        }
+        for (const raw of adminResult.users) {
+          considerContact(raw, 'admin');
+        }
+
+        const adminCount = contacts.filter((user) => user.role === 'admin').length;
+        const staffCount = contacts.filter((user) => user.role === 'staff').length;
+
+        console.info('[COADMIN_REACH_OUT_CONTACTS_RESULT]', {
+          coadminUid,
+          source: 'postgres',
+          adminCount,
+          staffCount,
+          totalCount: contacts.length,
+          filteredOut,
+          reason: contacts.length ? 'ok' : 'no_contacts_after_filter',
+        });
+
+        setChatUsers(sortByNewest(contacts));
+        return;
+      }
+
+      const adminQuery = query(collection(db, 'users'), where('role', '==', 'admin'));
+      const adminSnapshot = await clientGetDocs(adminQuery, {
+        file: 'app/coadmin/page.tsx',
+        hook: 'loadChatUsers',
+        collection: 'users',
+        where: { role: 'admin' },
+      });
+      const admins = adminSnapshot.docs.map((docSnap) =>
+        mapReachOutContact({
+          id: docSnap.id,
+          uid: docSnap.id,
+          ...(docSnap.data() as Omit<AdminUser, 'id' | 'uid'>),
+          role: 'admin',
+        })
       );
 
-      setChatUsers([...admins, ...adminStaff]);
+      const allStaff = prefetchedStaff ?? (await getStaff());
+      const scopedStaff = allStaff.filter(
+        (staff) => belongsToCoadmin(staff, coadminUid) && staff.uid !== actorUid
+      );
+
+      setChatUsers(
+        sortByNewest([
+          ...admins.filter((admin) => admin.uid !== actorUid),
+          ...scopedStaff.map((user) => mapReachOutContact(user)),
+        ])
+      );
     } catch (err: any) {
       setMessage(err.message || 'Failed to load users.');
     }
