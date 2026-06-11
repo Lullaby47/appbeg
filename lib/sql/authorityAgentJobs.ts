@@ -46,6 +46,52 @@ function buildMidnightPartyPlayerMessage(gameToast: string, refunded: boolean) {
   return refunded ? `${base} Your balance was refunded.` : base;
 }
 
+function normalizeKnownFinalGameFailureReason(message: unknown, details?: Record<string, unknown> | null) {
+  const detail = details || {};
+  const reasonCode = cleanText(
+    detail.reasonCode ||
+      detail.dismissReasonCode ||
+      detail.reason ||
+      detail.failureCode
+  );
+  if (reasonCode.toUpperCase() === PLAYER_IN_GAME_REASON_CODE || reasonCode === 'GAME_RECHARGE_REDEEM_FAILED_IN_GAME') {
+    return PLAYER_IN_GAME_REASON_CODE;
+  }
+  if (reasonCode === GAME_VAULT_MIDNIGHT_PARTY_REASON) {
+    return GAME_VAULT_MIDNIGHT_PARTY_REASON;
+  }
+  const text = [
+    cleanText(message),
+    cleanText(detail.message),
+    cleanText(detail.toast),
+    cleanText(detail.toastText),
+    cleanText(detail.banner),
+    cleanText(detail.warningText),
+    cleanText(detail.error),
+    cleanText(detail.errorMessage),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .replaceAll('in-game', 'in game');
+  if (text.includes('midnight party')) {
+    return GAME_VAULT_MIDNIGHT_PARTY_REASON;
+  }
+  if (
+    text.includes('recharge or redeem failed in game') ||
+    text.includes('failed in game') ||
+    text.includes('player is in game') ||
+    text.includes('player is currently in game') ||
+    text.includes('user is playing') ||
+    text.includes('currently in game') ||
+    (text.includes('in game') &&
+      (text.includes('recharge') || text.includes('redeem') || text.includes('failed') || text.includes('cannot')))
+  ) {
+    return PLAYER_IN_GAME_REASON_CODE;
+  }
+  return '';
+}
+
 function readJobPayloadValue(job: SqlJobRow, key: string) {
   const payload = parseJson(job.payload);
   const raw = parseJson(job.raw_firestore_data);
@@ -1288,6 +1334,30 @@ export async function agentFailJobReturnPending(input: {
   reason: string;
   details?: Record<string, unknown> | null;
 }) {
+  const knownFinalReason = normalizeKnownFinalGameFailureReason(input.reason, input.details);
+  if (knownFinalReason) {
+    console.info('[KNOWN_GAME_FAILURE_NO_PENDING_RELEASE] taskId/jobId=%s', input.jobId);
+    if (knownFinalReason === GAME_VAULT_MIDNIGHT_PARTY_REASON) {
+      return agentDismissMidnightPartyBlockedRecharge({
+        carerUid: input.carerUid,
+        agentId: input.agentId,
+        jobId: input.jobId,
+        reason: cleanText(input.reason) || 'Game Vault Midnight Party pending.',
+        details: input.details,
+      });
+    }
+    return agentDismissPlayerInGame({
+      carerUid: input.carerUid,
+      agentId: input.agentId,
+      jobId: input.jobId,
+      reason: PLAYER_IN_GAME_MESSAGE,
+      details: {
+        ...(input.details || {}),
+        reasonCode: knownFinalReason,
+        originalFailureReason: input.reason,
+      },
+    });
+  }
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL pool unavailable.');
   const client = await db.connect();
@@ -1660,6 +1730,15 @@ export async function agentDismissPlayerInGame(input: {
     requestType = requestType || logFields.taskType;
     console.info('[PLAYER_IN_GAME_TOAST_DETECTED] taskId=%s game=%s taskType=%s username=%s', taskId, gameName, requestType, username);
     console.info('[PLAYER_IN_GAME_DETECTED] game=%s username=%s taskType=%s', gameName, username, requestType);
+    console.info(
+      '[KNOWN_GAME_FAILURE_DETECTED] game=%s taskId/jobId=%s taskType=%s username=%s reason=%s toastText=%s',
+      gameName,
+      taskId || input.jobId,
+      requestType,
+      username,
+      reasonCode,
+      cleanText(input.reason || details.toastText || details.message) || playerMessage
+    );
 
     if (requestId && requestType === 'RECHARGE') {
       const dismissOutcome = await dismissRechargeRequestInSql({
@@ -1681,6 +1760,7 @@ export async function agentDismissPlayerInGame(input: {
       refundAmount = Number(dismissOutcome.refundAmount || 0);
       console.info('[PLAYER_IN_GAME_RECHARGE_REFUND] amount=%s', refunded ? refundAmount : 0);
       console.info('[PLAYER_IN_GAME_REFUND_APPLIED] taskId=%s refundType=coin amount=%s', taskId, refunded ? refundAmount : 0);
+      console.info('[KNOWN_GAME_FAILURE_REFUND_APPLIED] game=%s taskId/jobId=%s refundType=coin amount=%s', gameName, taskId || input.jobId, refunded ? refundAmount : 0);
     } else if (requestId && requestType === 'REDEEM') {
       const dismissOutcome = await dismissRedeemRequestInSql({
         requestId,
@@ -1702,6 +1782,7 @@ export async function agentDismissPlayerInGame(input: {
       refundAmount = Number(dismissOutcome.refundAmount || 0);
       console.info('[PLAYER_IN_GAME_REDEEM_REFUND] amount=%s', refunded ? refundAmount : 0);
       console.info('[PLAYER_IN_GAME_REFUND_APPLIED] taskId=%s refundType=cash amount=%s', taskId, refunded ? refundAmount : 0);
+      console.info('[KNOWN_GAME_FAILURE_REFUND_APPLIED] game=%s taskId/jobId=%s refundType=cash amount=%s', gameName, taskId || input.jobId, refunded ? refundAmount : 0);
     } else if (requestId) {
       throw new Error(`PLAYER_IN_GAME dismissal is not supported for ${requestType || 'unknown'} tasks.`);
     }
@@ -1780,6 +1861,7 @@ export async function agentDismissPlayerInGame(input: {
       }
     }
     console.info('[PLAYER_IN_GAME_TASK_DISMISSED] taskId=%s reason=%s', taskId || null, reasonCode);
+    console.info('[KNOWN_GAME_FAILURE_FINAL_DISMISS] game=%s taskId/jobId=%s reason=%s', gameName, taskId || input.jobId, reasonCode);
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
