@@ -145,6 +145,14 @@ export async function postAutomationAutoStateSql(input: {
       durationMs,
       ok: true,
     });
+    if (input.enabled) {
+      console.info('[AUTOMATION_AUTO_STATE_SET]', {
+        carerUid: input.carerUid,
+        coadminUid: input.coadminUid,
+        enabled: true,
+        source: 'carer_sql_write',
+      });
+    }
 
     return NextResponse.json({
       ok: true,

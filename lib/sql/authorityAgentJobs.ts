@@ -341,72 +341,89 @@ async function patchCarerTaskAgentInTxn(
   patch: Record<string, unknown>
 ) {
   const nowIso = cleanText(patch.updatedAt) || new Date().toISOString();
+  const retryPendingProvided = patch.retryPending !== undefined;
+  const retryPendingParam = retryPendingProvided ? patch.retryPending === true : null;
+  console.info('[PATCH_CARER_TASK_AGENT_INPUT]', {
+    taskId,
+    status: cleanText(patch.status) || null,
+    retryPending: retryPendingParam,
+    retryPendingProvided,
+  });
   const current = await client.query(
     `SELECT raw_firestore_data FROM public.carer_tasks_cache WHERE firebase_id = $1 FOR UPDATE`,
     [taskId]
   );
   if (!current.rows.length) throw new Error('Task not found.');
   const raw = { ...parseJson(current.rows[0]?.raw_firestore_data), ...patch, updatedAt: nowIso };
-  await client.query(
-    `
-      UPDATE public.carer_tasks_cache SET
-        status = COALESCE(NULLIF($2, ''), status),
-        claimed_status = COALESCE(NULLIF($3, ''), claimed_status),
-        claimed_by_uid = COALESCE(NULLIF($4, ''), claimed_by_uid),
-        claimed_by_username = COALESCE(NULLIF($5, ''), claimed_by_username),
-        automation_status = COALESCE(NULLIF($6, ''), automation_status),
-        automation_job_id = COALESCE(NULLIF($7, ''), automation_job_id),
-        automation_error = $8,
-        assigned_carer_uid = COALESCE(NULLIF($9, ''), assigned_carer_uid),
-        assigned_carer_username = COALESCE(NULLIF($10, ''), assigned_carer_username),
-        completed_by_carer_uid = COALESCE(NULLIF($11, ''), completed_by_carer_uid),
-        completed_by_carer_username = COALESCE(NULLIF($12, ''), completed_by_carer_username),
-        amount = COALESCE($13, amount),
-        updated_at = $14::timestamptz,
-        started_at = COALESCE($15::timestamptz, started_at),
-        completed_at = COALESCE($16::timestamptz, completed_at),
-        claimed_at = COALESCE($17::timestamptz, claimed_at),
-        last_heartbeat_at = COALESCE($18::timestamptz, last_heartbeat_at),
-        ttl_expires_at = COALESCE($19::timestamptz, ttl_expires_at),
-        retry_pending = CASE
-          WHEN COALESCE(NULLIF($2, ''), status) = 'completed' THEN FALSE
-          WHEN $21 IS NOT NULL THEN $21::boolean
-          ELSE retry_pending
-        END,
-        returned_to_pending_at = CASE
-          WHEN COALESCE(NULLIF($2, ''), status) = 'completed' THEN NULL
-          ELSE returned_to_pending_at
-        END,
-        raw_firestore_data = $20::jsonb,
-        source = 'authority_agent_jobs',
-        mirrored_at = now(),
-        deleted_at = NULL
-      WHERE firebase_id = $1
-    `,
-    [
+  console.info('[PATCH_CARER_TASK_AGENT_SQL_START]', { taskId });
+  try {
+    await client.query(
+      `
+        UPDATE public.carer_tasks_cache SET
+          status = COALESCE(NULLIF($2::text, ''), status),
+          claimed_status = COALESCE(NULLIF($3::text, ''), claimed_status),
+          claimed_by_uid = COALESCE(NULLIF($4::text, ''), claimed_by_uid),
+          claimed_by_username = COALESCE(NULLIF($5::text, ''), claimed_by_username),
+          automation_status = COALESCE(NULLIF($6::text, ''), automation_status),
+          automation_job_id = COALESCE(NULLIF($7::text, ''), automation_job_id),
+          automation_error = $8::text,
+          assigned_carer_uid = COALESCE(NULLIF($9::text, ''), assigned_carer_uid),
+          assigned_carer_username = COALESCE(NULLIF($10::text, ''), assigned_carer_username),
+          completed_by_carer_uid = COALESCE(NULLIF($11::text, ''), completed_by_carer_uid),
+          completed_by_carer_username = COALESCE(NULLIF($12::text, ''), completed_by_carer_username),
+          amount = COALESCE($13::numeric, amount),
+          updated_at = $14::timestamptz,
+          started_at = COALESCE($15::timestamptz, started_at),
+          completed_at = COALESCE($16::timestamptz, completed_at),
+          claimed_at = COALESCE($17::timestamptz, claimed_at),
+          last_heartbeat_at = COALESCE($18::timestamptz, last_heartbeat_at),
+          ttl_expires_at = COALESCE($19::timestamptz, ttl_expires_at),
+          retry_pending = CASE
+            WHEN COALESCE(NULLIF($2::text, ''), status) = 'completed' THEN FALSE
+            ELSE COALESCE($21::boolean, retry_pending)
+          END,
+          returned_to_pending_at = CASE
+            WHEN COALESCE(NULLIF($2::text, ''), status) = 'completed' THEN NULL
+            ELSE returned_to_pending_at
+          END,
+          raw_firestore_data = $20::jsonb,
+          source = 'authority_agent_jobs',
+          mirrored_at = now(),
+          deleted_at = NULL
+        WHERE firebase_id = $1
+      `,
+      [
+        taskId,
+        cleanText(patch.status),
+        cleanText(patch.claimedStatus),
+        cleanText(patch.claimedByUid),
+        cleanText(patch.claimedByUsername),
+        cleanText(patch.automationStatus),
+        cleanText(patch.automationJobId),
+        patch.automationError === undefined ? null : cleanText(patch.automationError) || null,
+        cleanText(patch.assignedCarerUid),
+        cleanText(patch.assignedCarerUsername),
+        cleanText(patch.completedByCarerUid),
+        cleanText(patch.completedByCarerUsername),
+        patch.amount === undefined ? null : Number(patch.amount),
+        nowIso,
+        patch.startedAt === undefined ? null : patch.startedAt ? toIsoString(patch.startedAt) : null,
+        patch.completedAt === undefined ? null : patch.completedAt ? toIsoString(patch.completedAt) : null,
+        patch.claimedAt === undefined ? null : patch.claimedAt ? toIsoString(patch.claimedAt) : null,
+        patch.lastHeartbeatAt ? toIsoString(patch.lastHeartbeatAt) : nowIso,
+        patch.ttlExpiresAt ? toIsoString(patch.ttlExpiresAt) : null,
+        JSON.stringify(raw),
+        retryPendingParam,
+      ]
+    );
+    console.info('[PATCH_CARER_TASK_AGENT_SQL_SUCCESS]', { taskId });
+  } catch (error) {
+    console.error('[PATCH_CARER_TASK_AGENT_SQL_ERROR]', {
       taskId,
-      cleanText(patch.status),
-      cleanText(patch.claimedStatus),
-      cleanText(patch.claimedByUid),
-      cleanText(patch.claimedByUsername),
-      cleanText(patch.automationStatus),
-      cleanText(patch.automationJobId),
-      patch.automationError === undefined ? null : cleanText(patch.automationError) || null,
-      cleanText(patch.assignedCarerUid),
-      cleanText(patch.assignedCarerUsername),
-      cleanText(patch.completedByCarerUid),
-      cleanText(patch.completedByCarerUsername),
-      patch.amount === undefined ? null : Number(patch.amount),
-      nowIso,
-      patch.startedAt === undefined ? null : patch.startedAt ? toIsoString(patch.startedAt) : null,
-      patch.completedAt === undefined ? null : patch.completedAt ? toIsoString(patch.completedAt) : null,
-      patch.claimedAt === undefined ? null : patch.claimedAt ? toIsoString(patch.claimedAt) : null,
-      patch.lastHeartbeatAt ? toIsoString(patch.lastHeartbeatAt) : nowIso,
-      patch.ttlExpiresAt ? toIsoString(patch.ttlExpiresAt) : null,
-      JSON.stringify(raw),
-      patch.retryPending === undefined ? null : patch.retryPending === true,
-    ]
-  );
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
 }
 
 export async function listQueuedAutomationJobsForAgent(input: {

@@ -107,8 +107,8 @@ export async function upsertAutomationAutoStateCache(
           lease_expires_at, updated_at, raw_firestore_data, source, mirrored_at, deleted_at
         )
         VALUES (
-          $1, NULLIF($2, ''), $3, NULLIF($4, ''), NULLIF($5, ''),
-          $6::timestamptz, $7::timestamptz, $8::jsonb, $9, now(), NULL
+          $1, NULLIF($2::text, ''), $3::boolean, NULLIF($4::text, ''), NULLIF($5::text, ''),
+          $6::timestamptz, $7::timestamptz, $8::jsonb, $9::text, now(), NULL
         )
         ON CONFLICT (carer_uid) DO UPDATE SET
           coadmin_uid = EXCLUDED.coadmin_uid,
@@ -135,6 +135,13 @@ export async function upsertAutomationAutoStateCache(
       ]
     );
     console.info('[AUTOMATION_AUTO_STATE_CACHE] mirror upsert ok', { carerUid: cleanCarerUid });
+    console.info('[AUTOMATION_AUTO_STATE_SET]', {
+      carerUid: cleanCarerUid,
+      coadminUid: resolvedCoadminUid,
+      enabled,
+      automationAgentId: automationAgentId || null,
+      source,
+    });
     return true;
   } catch (error) {
     console.error('[AUTOMATION_AUTO_STATE_CACHE] mirror failed', {
@@ -331,7 +338,8 @@ export async function lookupAutomationAutoStateFromSqlCache(
 export async function acquireAutomationAutoTickLeaseSql(
   carerUid: string,
   instanceId: string,
-  leaseTtlMs: number
+  leaseTtlMs: number,
+  options?: { allowDisabledLease?: boolean }
 ): Promise<AutomationAutoTickLeaseSqlResult> {
   const startedAt = Date.now();
   const cleanCarerUid = cleanText(carerUid);
@@ -379,7 +387,7 @@ export async function acquireAutomationAutoTickLeaseSql(
     }
 
     const row = locked.rows[0] as Record<string, unknown>;
-    if (row.enabled !== true) {
+    if (row.enabled !== true && options?.allowDisabledLease !== true) {
       await client.query('ROLLBACK');
       return { ok: false, reason: 'DISABLED', timing };
     }

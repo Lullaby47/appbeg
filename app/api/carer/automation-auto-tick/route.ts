@@ -472,6 +472,11 @@ async function resolveAutomationAutoTickState(
       enabled: sqlStateLookup.state.enabled,
       firestore_fallback: false,
     });
+    console.info('[AUTO_TICK_STATE_SQL]', {
+      carerUid,
+      enabled: sqlStateLookup.state.enabled,
+      coadminUid: sqlStateLookup.state.coadminUid,
+    });
     return {
       ok: true,
       enabled: sqlStateLookup.state.enabled,
@@ -1011,7 +1016,8 @@ export async function POST(request: Request) {
     const sqlLeaseResult = await acquireAutomationAutoTickLeaseSql(
       carerUid,
       instanceId,
-      LEASE_TTL_MS
+      LEASE_TTL_MS,
+      { allowDisabledLease: hasValidSecret }
     );
     stateTiming.lease_sql_ms = sqlLeaseResult.timing.total_ms;
     if (sqlLeaseResult.ok) {
@@ -1312,6 +1318,14 @@ export async function POST(request: Request) {
         allowRetryPendingClaim,
       });
       if (withinReturnCooldown) {
+        console.info('[AUTO_TICK_SQL_SKIPPED_COOLDOWN]', {
+          taskId,
+          carerUid,
+          coadminUid,
+          returnedToPendingAt,
+          cooldownMs: 30_000,
+          retryPending,
+        });
         console.info('[AUTO_TICK_SKIP_RECENTLY_RETURNED_TASK]', {
           taskId,
           carerUid,

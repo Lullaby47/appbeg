@@ -3554,6 +3554,17 @@ export default function CarerPage() {
           normalizeGameName(game.gameName || '') === normalizeGameName(task.gameName || '')
       ) || null;
     try {
+      if (carerIdentity?.uid && coadminUid) {
+        await setCarerAutomationAutoEnabled({
+          carerUid: carerIdentity.uid,
+          coadminUid,
+          enabled: true,
+        });
+        setAutomationAutoStateDoc((previous) => ({
+          ...(previous || {}),
+          enabled: true,
+        }));
+      }
       const claimResult = await claimTaskAndCreateJob({
         taskId: task.id,
         currentUsername: resolvedCurrentUsername,

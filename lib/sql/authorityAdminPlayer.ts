@@ -117,6 +117,8 @@ async function upsertCreateUsernameTaskInTxn(
       )
       ON CONFLICT (firebase_id) DO UPDATE SET
         status = EXCLUDED.status,
+        retry_pending = FALSE,
+        returned_to_pending_at = NULL,
         updated_at = EXCLUDED.updated_at,
         source = EXCLUDED.source,
         mirrored_at = now(),
@@ -142,6 +144,12 @@ async function upsertCreateUsernameTaskInTxn(
       JSON.stringify(raw),
     ]
   );
+  console.info('[CREATE_USERNAME_RETRY_PENDING_DEFAULTED_FALSE]', {
+    taskId: input.taskId,
+    coadminUid: input.coadminUid,
+    playerUid: input.playerUid,
+    gameName: input.game.gameName,
+  });
   await insertLiveOutboxEventWithClient(client, {
     channel: coadminTaskLiveChannel(input.coadminUid),
     eventType: 'task.created',
