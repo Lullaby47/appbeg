@@ -1,16 +1,6 @@
-import { auth } from '@/lib/firebase/client';
+import { getApiAuthHeaders } from '@/lib/firebase/apiClient';
 
-async function getAuthHeaders() {
-  const currentUser = auth.currentUser;
-  if (!currentUser) {
-    throw new Error('Not authenticated.');
-  }
-  const token = await currentUser.getIdToken();
-  return {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${token}`,
-  };
-}
+const BALANCE_ADJUST_ROUTE = '/api/coadmin/player-balance/adjust';
 
 function readApiError(messageFallback: string, payload: unknown) {
   if (
@@ -22,6 +12,58 @@ function readApiError(messageFallback: string, payload: unknown) {
     return String((payload as { error: string }).error || messageFallback);
   }
   return messageFallback;
+}
+
+async function postPlayerBalanceAdjust({
+  playerUid,
+  delta,
+  balanceType,
+}: {
+  playerUid: string;
+  delta: number;
+  balanceType: 'coin' | 'cash';
+}) {
+  let headers: Record<string, string>;
+  try {
+    headers = await getApiAuthHeaders(true, { action: 'update' });
+  } catch (error) {
+    console.info('[COADMIN_VIEW_PLAYERS_BALANCE_ADJUST_FAIL]', {
+      route: BALANCE_ADJUST_ROUTE,
+      status: 0,
+      playerUid,
+      balanceType,
+      message: error instanceof Error ? error.message : String(error),
+      phase: 'auth_headers',
+    });
+    throw error;
+  }
+
+  const response = await fetch(BALANCE_ADJUST_ROUTE, {
+    method: 'POST',
+    headers,
+    credentials: 'include',
+    body: JSON.stringify({
+      playerUid,
+      delta,
+      balanceType,
+    }),
+  });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    console.info('[COADMIN_VIEW_PLAYERS_BALANCE_ADJUST_FAIL]', {
+      route: BALANCE_ADJUST_ROUTE,
+      status: response.status,
+      playerUid,
+      balanceType,
+      message: payload.error || `api_status_${response.status}`,
+    });
+    throw new Error(
+      readApiError(
+        balanceType === 'coin' ? 'Failed to adjust coin.' : 'Failed to adjust cash.',
+        payload
+      )
+    );
+  }
 }
 
 /**
@@ -44,19 +86,7 @@ export async function adjustPlayerCoin({
     throw new Error('Use whole numbers only (no decimals).');
   }
 
-  const response = await fetch('/api/coadmin/player-balance/adjust', {
-    method: 'POST',
-    headers: await getAuthHeaders(),
-    body: JSON.stringify({
-      playerUid,
-      delta,
-      balanceType: 'coin',
-    }),
-  });
-  const payload = (await response.json().catch(() => ({}))) as { error?: string };
-  if (!response.ok) {
-    throw new Error(readApiError('Failed to adjust coin.', payload));
-  }
+  await postPlayerBalanceAdjust({ playerUid, delta, balanceType: 'coin' });
 }
 
 /**
@@ -78,19 +108,7 @@ export async function adjustPlayerCash({
     throw new Error('Use whole numbers only (no decimals).');
   }
 
-  const response = await fetch('/api/coadmin/player-balance/adjust', {
-    method: 'POST',
-    headers: await getAuthHeaders(),
-    body: JSON.stringify({
-      playerUid,
-      delta,
-      balanceType: 'cash',
-    }),
-  });
-  const payload = (await response.json().catch(() => ({}))) as { error?: string };
-  if (!response.ok) {
-    throw new Error(readApiError('Failed to adjust cash.', payload));
-  }
+  await postPlayerBalanceAdjust({ playerUid, delta, balanceType: 'cash' });
 }
 
 /** @deprecated Use `adjustPlayerCoin` — same behavior, kept for older imports. */

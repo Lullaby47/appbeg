@@ -25,7 +25,39 @@ export async function POST(request: Request) {
   const route = '/api/coadmin/player-balance/adjust';
   try {
     const auth = await requireApiUser(request, ['coadmin', 'staff', 'admin']);
-    if ('response' in auth) return auth.response;
+    if ('response' in auth) {
+      const appSessionId = String(request.headers.get('X-App-Session-Id') || '').trim();
+      const hasAuthorization = Boolean(String(request.headers.get('Authorization') || '').trim());
+      console.warn('[PLAYER_BALANCE_ADJUST_AUTH_FAIL]', {
+        route,
+        reason: `auth_response_${auth.response.status}`,
+        status: auth.response.status,
+        authSource: appSessionId ? 'app_session_sql' : hasAuthorization ? 'bearer_token' : 'missing',
+        uid: null,
+        role: null,
+        sqlUserCacheHit: false,
+        hasAppSessionId: Boolean(appSessionId),
+        appSessionIdPrefix: appSessionId ? appSessionId.slice(0, 8) : null,
+        hasAuthorization,
+        authPath: auth.timing.auth_path,
+        sessionSource: auth.timing.session_source,
+        tokenCacheHit: auth.timing.token_cache_hit,
+        sqlProfileMs: auth.timing.sql_profile_ms,
+        sqlSessionMs: auth.timing.sql_session_ms,
+        userDocMs: auth.timing.user_doc_ms,
+        sessionDocMs: auth.timing.session_doc_ms,
+        authMs: auth.timing.auth_ms,
+      });
+      return auth.response;
+    }
+    console.info('[PLAYER_BALANCE_ADJUST_AUTH_OK]', {
+      route,
+      uid: auth.user.uid,
+      role: auth.user.role,
+      authSource: auth.authPath.startsWith('app_session') ? 'app_session_sql' : 'bearer_token',
+      authPath: auth.authPath,
+      sqlUserCacheHit: auth.authPath.includes('_sql') || auth.authPath.startsWith('app_session'),
+    });
     const body = (await request.json()) as Body;
     const playerUid = String(body.playerUid || '').trim();
     const delta = Number(body.delta);
@@ -127,6 +159,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, authority: 'firestore' });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to adjust player balance.';
+    if (/not authenticated|authorization|token/i.test(message)) {
+      const appSessionId = String(request.headers.get('X-App-Session-Id') || '').trim();
+      const hasAuthorization = Boolean(String(request.headers.get('Authorization') || '').trim());
+      console.warn('[PLAYER_BALANCE_ADJUST_AUTH_FAIL]', {
+        route,
+        reason: message,
+        authSource: appSessionId ? 'app_session_sql' : hasAuthorization ? 'bearer_token' : 'missing',
+        uid: null,
+        role: null,
+        sqlUserCacheHit: false,
+        hasAppSessionId: Boolean(appSessionId),
+        appSessionIdPrefix: appSessionId ? appSessionId.slice(0, 8) : null,
+        hasAuthorization,
+      });
+    }
     const status = /not authenticated|authorization|token/i.test(message)
       ? 401
       : /forbidden|scope/i.test(message)
