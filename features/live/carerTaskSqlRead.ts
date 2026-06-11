@@ -279,11 +279,22 @@ export function attachCarerTaskSqlReadListener(
     coadminTaskLiveChannel(cleanCoadminUid),
   ];
 
-  const emitTasks = () => {
+  const emitTasks = (reason = 'live_merge') => {
     if (fellBack || disposed) {
       return;
     }
-    onTasksChange(sortTasksByNewest(Array.from(tasksById.values())));
+    const nextTasks = sortTasksByNewest(Array.from(tasksById.values()));
+    console.info('[CARER_TASKS_STATE_UPDATED]', {
+      reason,
+      count: nextTasks.length,
+      latestOutboxId: lastEventId,
+      pendingCount: nextTasks.filter((task) => cleanText(task.status).toLowerCase() === 'pending')
+        .length,
+      inProgressCount: nextTasks.filter(
+        (task) => cleanText(task.status).toLowerCase() === 'in_progress'
+      ).length,
+    });
+    onTasksChange(nextTasks);
   };
 
   const shouldRefetchForLiveEvent = (event: string, entityType: string) => {
@@ -348,12 +359,7 @@ export function attachCarerTaskSqlReadListener(
       }
       applyVisibleTask(mapped, reason);
     }
-    emitTasks();
-    console.info('[CARER_TASKS_STATE_UPDATED]', {
-      reason,
-      count: tasksById.size,
-      latestOutboxId: lastEventId,
-    });
+    emitTasks(reason);
     return true;
   };
 
@@ -585,7 +591,11 @@ export function attachCarerTaskSqlReadListener(
           : 'live_event';
 
     if (shouldRefetchForLiveEvent(eventName, entityType)) {
-      scheduleLiveRefetch(`live_event:${eventName}`);
+      if (eventName === 'task.returned_to_pending') {
+        void refetchSnapshotNow(`live_event:${eventName}`, true);
+      } else {
+        scheduleLiveRefetch(`live_event:${eventName}`);
+      }
     }
 
     if (!entityId || !taskId) {
@@ -604,7 +614,7 @@ export function attachCarerTaskSqlReadListener(
 
     if (removeLike) {
       tasksById.delete(taskId);
-      emitTasks();
+      emitTasks(`live_event:${eventName}`);
     }
   };
 

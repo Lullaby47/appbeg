@@ -591,13 +591,19 @@ type AutoTickPendingTiming = {
 async function resolveAutoTickPendingCandidates(
   coadminUid: string,
   carerUid: string,
-  limit: number
+  limit: number,
+  options?: { excludeRetryPending?: boolean }
 ): Promise<{
   candidates: AutoTickPendingTaskCandidate[];
   timing: AutoTickPendingTiming;
 }> {
   const sqlStartedAt = Date.now();
-  const sqlResult = await getPendingCarerTaskCandidatesFromSql(coadminUid, limit, carerUid);
+  const sqlResult = await getPendingCarerTaskCandidatesFromSql(
+    coadminUid,
+    limit,
+    carerUid,
+    { excludeRetryPending: options?.excludeRetryPending }
+  );
   const pending_sql_ms = Date.now() - sqlStartedAt;
 
   if (sqlResult.hit) {
@@ -822,7 +828,12 @@ export async function POST(request: Request) {
     hasAuthorization: Boolean(String(request.headers.get('Authorization') || '').trim()),
   });
 
-  let body: { carerUid?: unknown; agentId?: unknown; instanceId?: unknown };
+  let body: {
+    carerUid?: unknown;
+    agentId?: unknown;
+    instanceId?: unknown;
+    allowRetryPendingClaim?: unknown;
+  };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -832,6 +843,7 @@ export async function POST(request: Request) {
   const carerUid = String(body.carerUid || '').trim();
   const agentId = String(body.agentId || '').trim();
   const instanceId = String(body.instanceId || '').trim();
+  const allowRetryPendingClaim = body.allowRetryPendingClaim === true;
   if (!carerUid || !agentId || !instanceId) {
     return apiError('carerUid, agentId, and instanceId are required.', 400);
   }
@@ -1153,7 +1165,8 @@ export async function POST(request: Request) {
   const pendingResult = await resolveAutoTickPendingCandidates(
     coadminUid,
     carerUid,
-    PENDING_QUERY_LIMIT
+    PENDING_QUERY_LIMIT,
+    { excludeRetryPending: !allowRetryPendingClaim }
   );
   const pendingCandidates = pendingResult.candidates;
   logAutoTickTiming('pending_query', pendingStartedAt, {
@@ -1225,12 +1238,31 @@ export async function POST(request: Request) {
       fields: taskDebugFields(task),
       pending_source: pendingResult.timing.pending_source,
     });
+    const retryPending = task['retryPending'] === true;
+    if (retryPending && !allowRetryPendingClaim) {
+      console.info('[AUTO_TICK_RECLAIM_AFTER_RETURN_BLOCKED]', {
+        taskId,
+        carerUid,
+        coadminUid,
+        retryPending,
+        returnedToPendingAt: task['returnedToPendingAt'] || null,
+        allowRetryPendingClaim,
+      });
+      skippedTasks.push({
+        taskId,
+        reason: 'returned_to_pending_requires_manual_or_start_automation',
+      });
+      continue;
+    }
+
     console.info('[AUTO_TICK_PENDING_TASK_FOUND]', {
       taskId,
       carerUid,
       coadminUid,
       mappedTypePreview: mapTaskType(resolveTaskTypeLabel(task)),
       pending_source: pendingResult.timing.pending_source,
+      retryPending,
+      allowRetryPendingClaim,
     });
     const mapped = mapTaskType(resolveTaskTypeLabel(task));
     if (!isAgentSupportedAutomationType(mapped)) {
@@ -1337,6 +1369,13 @@ export async function POST(request: Request) {
       gameName,
       playerUid,
     });
+    console.info('[AUTO_TICK_CLAIM_PENDING_TASK]', {
+      taskId,
+      carerUid,
+      coadminUid,
+      allowRetryPendingClaim,
+      retryPending,
+    });
 
     if (isAuthoritySqlWriteEnabled()) {
       await logAuthorityAutoTickDb({
@@ -1359,6 +1398,7 @@ export async function POST(request: Request) {
           automationAgentId: linked.normalized,
         },
         skipLocked: isAuthoritySqlWriteEnabled(),
+        allowRetryPendingClaim,
       });
       logAutoTickTiming('claimCarerTaskAsAdmin_total', claimStartedAt, {
         taskId,
@@ -1414,6 +1454,7 @@ export async function POST(request: Request) {
         message.includes('Automation job already exists') ||
         message.includes('Task already claimed') ||
         message.includes('not reclaimable') ||
+        message.includes('returned to pending') ||
         message.includes('unsupported') ||
         message.includes('No automation agent')
       ) {

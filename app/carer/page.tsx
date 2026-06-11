@@ -1081,6 +1081,7 @@ export default function CarerPage() {
       carerUid: carerIdentity.uid,
       agentId: linkedAgentId,
       instanceId: BROWSER_AUTO_TICK_INSTANCE_ID,
+      allowRetryPendingClaim: source === 'immediate',
     };
 
     console.info(`${logPrefix} request`, {

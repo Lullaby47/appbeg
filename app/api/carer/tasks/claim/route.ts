@@ -44,6 +44,7 @@ export async function POST(request: Request) {
         automationAgentId: auth.user.automationAgentId ?? null,
       },
       skipLocked: isAuthoritySqlWriteEnabled(),
+      allowRetryPendingClaim: true,
     });
 
     console.info('[CARER_START_TASK_SQL_ONLY]', {

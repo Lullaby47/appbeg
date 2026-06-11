@@ -222,6 +222,7 @@ export async function claimCarerTaskAsAdmin(input: {
     automationAgentId?: string | null;
   };
   skipLocked?: boolean;
+  allowRetryPendingClaim?: boolean;
 }): Promise<ClaimCarerTaskAdminResult> {
   const totalStartedAt = Date.now();
   console.info('[START_TIMING] server claim start at=%s taskId=%s source=admin_claimCarerTaskAsAdmin', new Date(totalStartedAt).toISOString(), input.taskId);

@@ -582,6 +582,8 @@ function mapSqlRowToAutoTickPendingTask(row: Record<string, unknown>): AutoTickP
     assignedCarer: cleanText(row.assigned_carer) || cleanText(raw.assignedCarer),
     claimedByUid: cleanText(row.claimed_by_uid) || cleanText(raw.claimedByUid),
     automationJobId: cleanText(row.automation_job_id) || cleanText(raw.automationJobId),
+    retryPending: row.retry_pending === true || raw.retryPending === true,
+    returnedToPendingAt: row.returned_to_pending_at || raw.returnedToPendingAt,
     createdAt: row.created_at || raw.createdAt,
     updatedAt: row.updated_at || raw.updatedAt,
   };
@@ -795,7 +797,8 @@ export async function readCarerRechargeRedeemTotalsFromCache(
 export async function getPendingCarerTaskCandidatesFromSql(
   coadminUid: string,
   limit: number,
-  carerUid?: string
+  carerUid?: string,
+  options?: { excludeRetryPending?: boolean }
 ): Promise<PendingCarerTaskCandidatesSqlResult> {
   const startedAt = Date.now();
   const cleanCoadminUid = cleanText(coadminUid);
@@ -823,6 +826,7 @@ export async function getPendingCarerTaskCandidatesFromSql(
     };
   }
 
+  const excludeRetryPending = options?.excludeRetryPending !== false;
   const pendingSql = `
     SELECT
       firebase_id,
@@ -846,6 +850,8 @@ export async function getPendingCarerTaskCandidatesFromSql(
       assigned_carer,
       claimed_by_uid,
       automation_job_id,
+      retry_pending,
+      returned_to_pending_at,
       created_at,
       updated_at,
       raw_firestore_data
@@ -853,6 +859,7 @@ export async function getPendingCarerTaskCandidatesFromSql(
     WHERE coadmin_uid = $1
       AND status = 'pending'
       AND deleted_at IS NULL
+      ${excludeRetryPending ? 'AND COALESCE(retry_pending, false) = false' : ''}
     ORDER BY created_at DESC NULLS LAST
     LIMIT $2
   `;

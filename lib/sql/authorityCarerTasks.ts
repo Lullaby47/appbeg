@@ -13,6 +13,7 @@ import {
 } from '@/lib/automation/automationClaimPayload';
 import {
   claimAuthorityOperation,
+  deleteAuthorityOperationsByPrefixInTxn,
   insertAuthorityLedgerEvent,
   readAuthorityOperationExists,
   readAuthorityOperationPayload,
@@ -24,6 +25,7 @@ import {
   upsertGameRequestCacheInTxn,
 } from '@/lib/sql/authorityGameRequestHelpers';
 import {
+  agentJobLiveChannel,
   carerJobLiveChannel,
   carerTaskLiveChannel,
   coadminJobLiveChannel,
@@ -90,6 +92,8 @@ type SqlTaskRow = {
   automation_status: string | null;
   automation_job_id: string | null;
   automation_error: string | null;
+  retry_pending: boolean | null;
+  returned_to_pending_at: string | null;
   raw_firestore_data: Record<string, unknown>;
 };
 
@@ -203,8 +207,17 @@ function taskFromRow(row: Record<string, unknown>): SqlTaskRow {
     automation_status: cleanText(row.automation_status) || null,
     automation_job_id: cleanText(row.automation_job_id) || null,
     automation_error: cleanText(row.automation_error) || null,
+    retry_pending: row.retry_pending === true ? true : row.retry_pending === false ? false : null,
+    returned_to_pending_at: toIsoString(row.returned_to_pending_at),
     raw_firestore_data: raw,
   };
+}
+
+function taskHasRetryPending(task: SqlTaskRow): boolean {
+  if (task.retry_pending === true) {
+    return true;
+  }
+  return task.raw_firestore_data?.retryPending === true;
 }
 
 function jobFromRow(row: Record<string, unknown>): SqlJobRow {
@@ -628,6 +641,48 @@ async function writeJobOutboxInTxn(
   });
 }
 
+async function writeAgentJobAvailableOutboxInTxn(
+  client: PoolClient,
+  input: {
+    carerUid: string;
+    agentId: string;
+    jobId: string;
+    taskId: string;
+    type: string;
+    gameName: string;
+    updatedAt: string;
+  }
+) {
+  const carerUid = cleanText(input.carerUid);
+  const agentId = cleanText(input.agentId);
+  const jobId = cleanText(input.jobId);
+  const taskId = cleanText(input.taskId);
+  if (!carerUid || !agentId || !jobId || !taskId) {
+    return;
+  }
+
+  const payload = {
+    jobId,
+    taskId,
+    carerUid,
+    agentId,
+    type: cleanText(input.type),
+    game: cleanText(input.gameName),
+  };
+
+  console.info('[AGENT_STREAM_JOB_AVAILABLE]', payload);
+
+  await insertLiveOutboxEventWithClient(client, {
+    channel: agentJobLiveChannel(carerUid, agentId),
+    eventType: 'job_available',
+    entityType: 'automation_job',
+    entityId: jobId,
+    source: 'authority_carer_task',
+    mirroredAt: input.updatedAt,
+    payload,
+  });
+}
+
 async function cancelAutomationJobInTxn(
   client: PoolClient,
   job: SqlJobRow,
@@ -706,6 +761,7 @@ export type ClaimCarerTaskInput = {
     automationAgentId?: string | null;
   };
   skipLocked?: boolean;
+  allowRetryPendingClaim?: boolean;
 };
 
 export async function claimCarerTaskInTxn(
@@ -748,6 +804,10 @@ export async function claimCarerTaskInTxn(
     const assignedCarerUid = cleanText(task.assigned_carer_uid);
     const linkedJobId = cleanText(task.automation_job_id);
     const currentUserUid = carerUid;
+
+    if (taskHasRetryPending(task) && input.allowRetryPendingClaim !== true) {
+      throw new Error('Task was returned to pending and is not reclaimable by automation yet.');
+    }
 
     const isPendingCleanTask =
       rawTaskStatus === 'pending' && !claimedByUid && !assignedCarerUid && !linkedJobId;
@@ -1089,6 +1149,17 @@ export async function claimCarerTaskInTxn(
       updatedAt: nowIso,
       eventType: reusedExistingJob ? 'job.reused' : 'job.created',
     });
+    if (normalizeAutomationStatus(result.status) === 'queued') {
+      await writeAgentJobAvailableOutboxInTxn(client, {
+        carerUid: currentUserUid,
+        agentId: resolvedAgentId,
+        jobId: result.jobId,
+        taskId,
+        type: mappedType,
+        gameName: cleanText(task.game_name),
+        updatedAt: nowIso,
+      });
+    }
     for (const cancelledJobId of cancelledJobIds) {
       await writeJobOutboxInTxn(client, {
         coadminUid: taskCoadminUid,
@@ -1189,7 +1260,11 @@ export async function claimCarerTaskInSql(input: ClaimCarerTaskInput): Promise<{
             staleJobId,
             priorJobStatus: jobStatus || null,
           });
-        } else if (REUSABLE_CLAIM_DUPLICATE_JOB_STATUSES.has(jobStatus)) {
+        } else if (
+          REUSABLE_CLAIM_DUPLICATE_JOB_STATUSES.has(jobStatus) &&
+          taskStatus === 'in_progress' &&
+          taskAutomationJobId === staleJobId
+        ) {
           console.info('[SQL_TASK_CLAIM_REUSE_ACTIVE_JOB]', {
             taskId,
             carerUid,
@@ -1205,6 +1280,16 @@ export async function claimCarerTaskInSql(input: ClaimCarerTaskInput): Promise<{
             reusedExistingJob: Boolean(payload?.reusedExistingJob),
             duplicate: true,
           };
+        } else if (REUSABLE_CLAIM_DUPLICATE_JOB_STATUSES.has(jobStatus)) {
+          console.info('[SQL_TASK_CLAIM_STALE_JOB_IGNORED]', {
+            taskId,
+            carerUid,
+            staleJobId,
+            jobStatus,
+            taskStatus,
+            taskAutomationJobId: taskAutomationJobId || null,
+            reason: 'active_job_not_linked_to_in_progress_task',
+          });
         } else if (
           !jobSnap.rows.length ||
           FINAL_CLAIM_DUPLICATE_JOB_STATUSES.has(jobStatus) ||
@@ -1288,6 +1373,14 @@ export async function returnTaskToPendingInSql(input: {
       await client.query('COMMIT');
       return { success: true as const, duplicate: true, ...(payload || {}) };
     }
+
+    console.info('[SQL_TASK_RETURN_TO_PENDING]', {
+      taskId,
+      actorUid: input.actorUid,
+      actorRole: input.actorRole,
+      idempotencyKey,
+      operationKey,
+    });
 
     const task = await loadTaskForUpdate(client, taskId);
     if (!task) throw new Error('Task not found.');
@@ -1431,6 +1524,10 @@ export async function returnTaskToPendingInSql(input: {
       __setAutomationUpdatedAt: true,
     }, 'authority_task_return');
 
+    const deletedClaimOps = await deleteAuthorityOperationsByPrefixInTxn(
+      client,
+      `task_claim:${taskId}:`
+    );
     console.info('[SQL_TASK_RETURN_CLEARED_CLAIM_FIELDS]', {
       taskId,
       actorUid: input.actorUid,
@@ -1442,8 +1539,43 @@ export async function returnTaskToPendingInSql(input: {
         'started_at',
         'last_heartbeat_at',
       ],
+      deletedTaskClaimOps: deletedClaimOps,
       resetToPendingAt: nowIso,
       returnedToPendingAt: nowIso,
+    });
+
+    const finalStateResult = await client.query(
+      `
+        SELECT
+          status,
+          assigned_carer_uid,
+          claimed_by_uid,
+          automation_job_id,
+          claimed_at,
+          started_at,
+          last_heartbeat_at,
+          retry_pending,
+          returned_to_pending_at
+        FROM public.carer_tasks_cache
+        WHERE firebase_id = $1 AND deleted_at IS NULL
+        LIMIT 1
+      `,
+      [taskId]
+    );
+    const finalState = finalStateResult.rows[0] as Record<string, unknown> | undefined;
+    console.info('[SQL_TASK_RETURN_FINAL_STATE]', {
+      taskId,
+      actorUid: input.actorUid,
+      status: cleanText(finalState?.status) || null,
+      assignedCarerUid: cleanText(finalState?.assigned_carer_uid) || null,
+      claimedByUid: cleanText(finalState?.claimed_by_uid) || null,
+      automationJobId: cleanText(finalState?.automation_job_id) || null,
+      claimedAt: toIsoString(finalState?.claimed_at),
+      startedAt: toIsoString(finalState?.started_at),
+      lastHeartbeatAt: toIsoString(finalState?.last_heartbeat_at),
+      retryPending: finalState?.retry_pending === true,
+      returnedToPendingAt: toIsoString(finalState?.returned_to_pending_at),
+      cancelledJobs,
     });
 
     const returnCarerUid = beforeAssignedCarerUid || input.actorUid;

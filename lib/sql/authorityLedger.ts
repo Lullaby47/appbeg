@@ -197,3 +197,39 @@ export async function readAuthorityOperationPayload(
   }
   return payload as Record<string, unknown>;
 }
+
+export async function deleteAuthorityOperationInTxn(
+  client: import('pg').PoolClient,
+  operationKey: string
+): Promise<boolean> {
+  const key = cleanText(operationKey);
+  if (!key) {
+    return false;
+  }
+  const result = await client.query(
+    `
+      DELETE FROM public.authority_operations
+      WHERE operation_key = $1
+    `,
+    [key]
+  );
+  return (result.rowCount || 0) > 0;
+}
+
+export async function deleteAuthorityOperationsByPrefixInTxn(
+  client: import('pg').PoolClient,
+  prefix: string
+): Promise<number> {
+  const cleanPrefix = cleanText(prefix);
+  if (!cleanPrefix) {
+    return 0;
+  }
+  const result = await client.query(
+    `
+      DELETE FROM public.authority_operations
+      WHERE operation_key LIKE $1
+    `,
+    [`${cleanPrefix}%`]
+  );
+  return result.rowCount || 0;
+}

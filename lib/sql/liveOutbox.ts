@@ -83,6 +83,10 @@ export function coadminJobLiveChannel(coadminUid: string) {
   return `coadmin:${cleanText(coadminUid)}:jobs`;
 }
 
+export function agentJobLiveChannel(carerUid: string, agentId: string) {
+  return `agent:${cleanText(carerUid)}:${cleanText(agentId)}:jobs`;
+}
+
 export function userChatLiveChannel(uid: string) {
   return `user:${cleanText(uid)}:chat`;
 }
