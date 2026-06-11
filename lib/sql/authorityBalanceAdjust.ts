@@ -35,6 +35,22 @@ function resolveEventType(balanceType: 'coin' | 'cash', delta: number) {
   return delta > 0 ? 'coadmin_cash_add' : 'coadmin_cash_deduct';
 }
 
+function describeSqlParamType(value: unknown) {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  if (value instanceof Date) return 'Date';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+
+function logPlayerBalanceAdjustSql(query: string, values: unknown[]) {
+  console.info('[PLAYER_BALANCE_ADJUST_SQL]', {
+    query,
+    values,
+    paramTypes: values.map(describeSqlParamType),
+  });
+}
+
 export async function adjustPlayerBalanceInSql(
   input: AuthorityBalanceAdjustInput
 ): Promise<AuthorityBalanceAdjustResult> {
@@ -105,8 +121,7 @@ export async function adjustPlayerBalanceInSql(
       };
     }
 
-    const locked = await client.query(
-      `
+    const lockPlayerSql = `
         SELECT
           uid,
           username,
@@ -117,12 +132,13 @@ export async function adjustPlayerBalanceInSql(
           cash,
           raw_firestore_data
         FROM public.players_cache
-        WHERE uid = $1
+        WHERE uid = $1::text
           AND deleted_at IS NULL
         FOR UPDATE
-      `,
-      [playerUid]
-    );
+      `;
+    const lockPlayerValues = [playerUid];
+    logPlayerBalanceAdjustSql(lockPlayerSql, lockPlayerValues);
+    const locked = await client.query(lockPlayerSql, lockPlayerValues);
     if (!locked.rows.length) {
       throw new Error('Player not found.');
     }
@@ -166,32 +182,32 @@ export async function adjustPlayerBalanceInSql(
     }
 
     const balanceColumn = balanceType === 'coin' ? 'coin' : 'cash';
-    await client.query(
-      `
+    const updatePlayerSql = `
         UPDATE public.players_cache
         SET
-          ${balanceColumn} = $2,
+          ${balanceColumn} = $2::numeric,
           updated_at = $3::timestamptz,
-          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object($4, $2)
-        WHERE uid = $1
+          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object($4::text, $2::numeric)
+        WHERE uid = $1::text
           AND deleted_at IS NULL
-      `,
-      [playerUid, next, nowIso, balanceColumn]
-    );
+      `;
+    const updatePlayerValues = [playerUid, next, nowIso, balanceColumn];
+    logPlayerBalanceAdjustSql(updatePlayerSql, updatePlayerValues);
+    await client.query(updatePlayerSql, updatePlayerValues);
 
-    await client.query(
-      `
+    const updateSnapshotSql = `
         UPDATE public.user_balance_snapshots_cache
         SET
-          ${balanceColumn} = $2,
+          ${balanceColumn} = $2::numeric,
           updated_at = $3::timestamptz,
           mirrored_at = now(),
-          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object($4, $2)
-        WHERE firebase_id = $1
+          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object($4::text, $2::numeric)
+        WHERE firebase_id = $1::text
           AND deleted_at IS NULL
-      `,
-      [playerUid, next, nowIso, balanceColumn]
-    );
+      `;
+    const updateSnapshotValues = [playerUid, next, nowIso, balanceColumn];
+    logPlayerBalanceAdjustSql(updateSnapshotSql, updateSnapshotValues);
+    await client.query(updateSnapshotSql, updateSnapshotValues);
 
     const rawEvent = {
       playerUid,
@@ -201,8 +217,7 @@ export async function adjustPlayerBalanceInSql(
       createdAt: nowIso,
     };
 
-    await client.query(
-      `
+    const insertFinancialEventSql = `
         INSERT INTO public.financial_events_cache (
           firebase_id,
           player_uid,
@@ -223,31 +238,32 @@ export async function adjustPlayerBalanceInSql(
           raw_firestore_data
         )
         VALUES (
-          $1, $2, NULLIF($3, ''), $4, $5,
-          $6, $7, $8, $9,
-          NULLIF($10, ''), NULLIF($11, ''),
+          $1::text, $2::text, NULLIF($3::text, ''), $4::text, $5::numeric,
+          $6::numeric, $7::numeric, $8::numeric, $9::numeric,
+          NULLIF($10::text, ''), NULLIF($11::text, ''),
           $12::timestamptz, $12::timestamptz,
           'authority_balance_adjust', now(), NULL,
           $13::jsonb
         )
         ON CONFLICT (firebase_id) DO NOTHING
-      `,
-      [
-        eventId,
-        playerUid,
-        playerScope,
-        eventType,
-        amountNpr,
-        balanceType === 'coin' ? current : mapped.coin,
-        balanceType === 'coin' ? next : mapped.coin,
-        balanceType === 'cash' ? current : mapped.cash,
-        balanceType === 'cash' ? next : mapped.cash,
-        actorUid,
-        actorRole,
-        nowIso,
-        JSON.stringify(rawEvent),
-      ]
-    );
+      `;
+    const insertFinancialEventValues = [
+      eventId,
+      playerUid,
+      playerScope,
+      eventType,
+      amountNpr,
+      balanceType === 'coin' ? current : mapped.coin,
+      balanceType === 'coin' ? next : mapped.coin,
+      balanceType === 'cash' ? current : mapped.cash,
+      balanceType === 'cash' ? next : mapped.cash,
+      actorUid,
+      actorRole,
+      nowIso,
+      JSON.stringify(rawEvent),
+    ];
+    logPlayerBalanceAdjustSql(insertFinancialEventSql, insertFinancialEventValues);
+    await client.query(insertFinancialEventSql, insertFinancialEventValues);
 
     await insertAuthorityLedgerEvent(client, {
       eventKey: `authority:balance_adjust:${eventId}`,
