@@ -240,6 +240,11 @@ function getCashToCoinFee(amount: number) {
   return Number((amount * 0.02).toFixed(2));
 }
 
+function getCashToCoinCashoutLimitFee(amount: number) {
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  return Number((amount * 0.05).toFixed(2));
+}
+
 type PlayerTransferDirection = 'cash_to_coin' | 'coin_to_cash';
 
 // Legacy helper retained only to avoid a broad page rewrite in this pass.
@@ -1016,6 +1021,8 @@ export default function PlayerPage() {
     0,
     PLAYER_CASHOUT_MAX_NPR_PER_24_H - rollingCashoutUsedNpr
   );
+  const cashoutLimitHitForCashToCoin =
+    rollingCashoutUsedNpr >= PLAYER_CASHOUT_MAX_NPR_PER_24_H;
 
   const cashoutThisRequestNpr = Math.min(Number(wallet.cash || 0), cashoutRemainingQuotaNpr);
   const transferCoinAmount = Number(transferCoinAmountInput);
@@ -1024,7 +1031,9 @@ export default function PlayerPage() {
     ? getCoinToCashTip(transferCoinAmount)
     : 0;
   const transferCashToCoinFee = isCashToCoinTransfer && Number.isFinite(transferCoinAmount)
-    ? getCashToCoinFee(transferCoinAmount)
+    ? cashoutLimitHitForCashToCoin
+      ? getCashToCoinCashoutLimitFee(transferCoinAmount)
+      : getCashToCoinFee(transferCoinAmount)
     : 0;
   const transferCoinReceived = isCashToCoinTransfer && Number.isFinite(transferCoinAmount)
     ? Math.max(0, transferCoinAmount - transferCashToCoinFee)
@@ -1043,7 +1052,9 @@ export default function PlayerPage() {
     ? ''
     : !isTransferCoinWholeNumber
       ? 'Amount must be a whole number.'
-      : isCashToCoinTransfer && transferCoinAmount > CASH_TO_COIN_MAX_TRANSFER_AMOUNT
+      : isCashToCoinTransfer &&
+          !cashoutLimitHitForCashToCoin &&
+          transferCoinAmount > CASH_TO_COIN_MAX_TRANSFER_AMOUNT
         ? 'Maximum transfer amount is $25.'
       : !isCashToCoinTransfer && transferCoinAmount < 10
         ? 'Minimum Coin to Cash amount is 10.'
@@ -1056,7 +1067,9 @@ export default function PlayerPage() {
             : '';
   const canConfirmCashToCoinTransfer =
     isTransferCoinWholeNumber &&
-    (!isCashToCoinTransfer || transferCoinAmount <= CASH_TO_COIN_MAX_TRANSFER_AMOUNT) &&
+    (!isCashToCoinTransfer ||
+      cashoutLimitHitForCashToCoin ||
+      transferCoinAmount <= CASH_TO_COIN_MAX_TRANSFER_AMOUNT) &&
     (isCashToCoinTransfer || transferCoinAmount >= 10) &&
     transferCoinAmount <= transferSourceBalance &&
     (isCashToCoinTransfer ? transferCoinReceived > 0 : transferCashReceived > 0) &&
@@ -3528,7 +3541,11 @@ export default function PlayerPage() {
     }
 
     const parsedAmount = Number(transferCoinAmountInput);
-    const parsedCashToCoinFee = isCashToCoinTransfer ? getCashToCoinFee(parsedAmount) : 0;
+    const parsedCashToCoinFee = isCashToCoinTransfer
+      ? cashoutLimitHitForCashToCoin
+        ? getCashToCoinCashoutLimitFee(parsedAmount)
+        : getCashToCoinFee(parsedAmount)
+      : 0;
     const parsedTipAmount = isCashToCoinTransfer ? 0 : getCoinToCashTip(parsedAmount);
     const parsedCoinsReceived = isCashToCoinTransfer ? parsedAmount - parsedCashToCoinFee : 0;
     const parsedCashReceived = isCashToCoinTransfer ? 0 : parsedAmount - parsedTipAmount;
@@ -3536,7 +3553,11 @@ export default function PlayerPage() {
       setMessage('Amount must be a whole number.');
       return;
     }
-    if (isCashToCoinTransfer && parsedAmount > CASH_TO_COIN_MAX_TRANSFER_AMOUNT) {
+    if (
+      isCashToCoinTransfer &&
+      !cashoutLimitHitForCashToCoin &&
+      parsedAmount > CASH_TO_COIN_MAX_TRANSFER_AMOUNT
+    ) {
       setMessage('Maximum transfer amount is $25.');
       return;
     }
@@ -5215,7 +5236,11 @@ export default function PlayerPage() {
               <input
                 type="number"
                 min={1}
-                max={isCashToCoinTransfer ? CASH_TO_COIN_MAX_TRANSFER_AMOUNT : undefined}
+                max={
+                  isCashToCoinTransfer && !cashoutLimitHitForCashToCoin
+                    ? CASH_TO_COIN_MAX_TRANSFER_AMOUNT
+                    : undefined
+                }
                 step={1}
                 inputMode="numeric"
                 value={transferCoinAmountInput}
@@ -5251,6 +5276,11 @@ export default function PlayerPage() {
             {!isCashToCoinTransfer && transferCoinToCashTip > 0 ? (
               <p className="mt-3 rounded-xl border border-amber-300/25 bg-black/25 px-3 py-2 text-sm font-bold text-amber-100">
                 Tip: {formatWalletAmount(transferCoinToCashTip)}
+              </p>
+            ) : isCashToCoinTransfer && cashoutLimitHitForCashToCoin ? (
+              <p className="mt-3 rounded-xl border border-amber-300/25 bg-black/25 px-3 py-2 text-sm font-bold text-amber-100">
+                Your 24-hour cashout limit is reached. You can still transfer cash to coin with a
+                5% fee.
               </p>
             ) : null}
             {transferCoinValidationMessage ? (

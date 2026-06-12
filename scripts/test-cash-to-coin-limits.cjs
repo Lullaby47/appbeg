@@ -1,5 +1,6 @@
 const CASH_TO_COIN_MAX_TRANSFER_AMOUNT = 25;
 const CASH_TO_COIN_FEE_RATE = 0.02;
+const CASH_TO_COIN_CASHOUT_LIMIT_FEE_RATE = 0.05;
 const CASH_TO_COIN_COOLDOWN_MINUTES = 10;
 const CASH_TO_COIN_DAILY_LIMIT = 300;
 
@@ -7,7 +8,20 @@ function fee(amount) {
   return Number((amount * CASH_TO_COIN_FEE_RATE).toFixed(2));
 }
 
+function cashoutLimitFee(amount) {
+  return Number((amount * CASH_TO_COIN_CASHOUT_LIMIT_FEE_RATE).toFixed(2));
+}
+
 function validate(input) {
+  if (input.cashoutLimitHit) {
+    return {
+      ok: true,
+      transferAmount: input.amount,
+      feeAmount: cashoutLimitFee(input.amount),
+      coinsReceived: input.amount - cashoutLimitFee(input.amount),
+      cashoutLimitHit: true,
+    };
+  }
   if (input.amount > CASH_TO_COIN_MAX_TRANSFER_AMOUNT) {
     return { ok: false, error: 'Maximum transfer amount is $25.' };
   }
@@ -55,6 +69,16 @@ const tests = [
     name: '24 hour total exceeds $300 rejected',
     actual: validate({ amount: 25, minutesSinceLastSuccessfulTransfer: 10, existing24hTotal: 290 }),
     expect: { ok: false, error: 'Daily transfer limit reached.' },
+  },
+  {
+    name: 'cashout limit hit allows $100 transfer with 5% fee',
+    actual: validate({
+      amount: 100,
+      minutesSinceLastSuccessfulTransfer: 0,
+      existing24hTotal: 300,
+      cashoutLimitHit: true,
+    }),
+    expect: { ok: true, feeAmount: 5, coinsReceived: 95, cashoutLimitHit: true },
   },
 ];
 

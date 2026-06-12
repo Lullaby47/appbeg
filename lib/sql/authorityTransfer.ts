@@ -3,11 +3,13 @@ import 'server-only';
 import type { PoolClient } from 'pg';
 
 import {
+  getCashToCoinCashoutLimitFee,
   getCashToCoinFee,
   getCoinToCashTip,
   parsePositiveInteger,
   parseTransferId,
 } from '@/lib/server/playerTransferRules';
+import { isPlayerCashoutRollingLimitHit } from '@/lib/sql/authorityCashout';
 import { cleanText, getPlayerMirrorPool, toIsoString } from '@/lib/sql/playerMirrorCommon';
 import {
   claimAuthorityOperation,
@@ -492,15 +494,15 @@ export async function transferPlayerBalancesInSql(input: {
   if (!amount) {
     throw new Error('Amount must be a positive whole number.');
   }
-  if (direction === 'cash_to_coin' && amount > CASH_TO_COIN_MAX_TRANSFER_AMOUNT) {
-    throw new Error('Maximum transfer amount is $25.');
-  }
   if (direction === 'coin_to_cash' && amount < 10) {
     throw new Error('Minimum Coin to Cash amount is 10.');
   }
 
-  const rawFee =
-    direction === 'cash_to_coin' ? getCashToCoinFee(amount) : getCoinToCashTip(amount);
+  let cashoutLimitHitForCashToCoin = false;
+  let rawFee =
+    direction === 'cash_to_coin'
+      ? getCashToCoinFee(amount)
+      : getCoinToCashTip(amount);
   const { feeRaw, feeNumber: feeAmount, feeReason } = normalizeTransferFeeAmount(
     direction,
     rawFee
@@ -649,10 +651,15 @@ export async function transferPlayerBalancesInSql(input: {
     }
 
     if (direction === 'cash_to_coin') {
-      await enforceCashToCoinTransferLimitsInTxn(client, {
-        playerUid,
-        amount,
-      });
+      cashoutLimitHitForCashToCoin = await isPlayerCashoutRollingLimitHit(client, playerUid);
+      if (cashoutLimitHitForCashToCoin) {
+        rawFee = getCashToCoinCashoutLimitFee(amount);
+      } else {
+        await enforceCashToCoinTransferLimitsInTxn(client, {
+          playerUid,
+          amount,
+        });
+      }
     } else {
       await enforceCoinToCashTransferLimitsInTxn(client, {
         playerUid,
@@ -681,10 +688,36 @@ export async function transferPlayerBalancesInSql(input: {
     const coadminUid =
       cleanText(player.coadmin_uid) || cleanText(player.created_by) || null;
 
+    const effectiveFee = direction === 'cash_to_coin' ? normalizeTransferFeeAmount(
+      direction,
+      rawFee
+    ).feeNumber : feeAmount;
+    const effectiveTipAmount = direction === 'coin_to_cash' ? feeAmount : 0;
+    const effectiveCoinsReceived =
+      direction === 'cash_to_coin' ? amount - effectiveFee : undefined;
+    const effectiveCashReceived =
+      direction === 'coin_to_cash' ? amount - effectiveTipAmount : undefined;
+
+    if (direction === 'cash_to_coin' && (effectiveCoinsReceived ?? 0) <= 0) {
+      throw new Error('Transfer amount is too low after fee.');
+    }
+    if (direction === 'coin_to_cash' && (effectiveCashReceived ?? 0) <= 0) {
+      throw new Error('Transfer amount is too low after tip.');
+    }
+    if (cashoutLimitHitForCashToCoin) {
+      console.info('[CASH_TO_COIN_CASHOUT_LIMIT_EXCEPTION_USED]', {
+        uid: playerUid,
+        amount,
+        fee: effectiveFee,
+        netCoinAmount: effectiveCoinsReceived ?? 0,
+        cashoutLimitHit: true,
+      });
+    }
+
     const newCash =
-      direction === 'cash_to_coin' ? currentCash - amount : currentCash + (cashReceived ?? 0);
+      direction === 'cash_to_coin' ? currentCash - amount : currentCash + (effectiveCashReceived ?? 0);
     const newCoin =
-      direction === 'cash_to_coin' ? currentCoin + (coinsReceived ?? 0) : currentCoin - amount;
+      direction === 'cash_to_coin' ? currentCoin + (effectiveCoinsReceived ?? 0) : currentCoin - amount;
 
     await client.query(
       `
@@ -725,13 +758,14 @@ export async function transferPlayerBalancesInSql(input: {
       grossAmount: amount,
       amountNpr: direction === 'cash_to_coin' ? amount : undefined,
       amountCoins: direction === 'coin_to_cash' ? amount : undefined,
-      feeAmount,
-      netCoinAmount: direction === 'cash_to_coin' ? coinsReceived ?? 0 : undefined,
-      netCashAmount: direction === 'coin_to_cash' ? cashReceived ?? 0 : undefined,
-      tipAmount,
-      tipNpr: tipAmount,
-      coinsReceived: coinsReceived ?? null,
-      cashReceived: cashReceived ?? null,
+      feeAmount: effectiveFee,
+      netCoinAmount: direction === 'cash_to_coin' ? effectiveCoinsReceived ?? 0 : undefined,
+      netCashAmount: direction === 'coin_to_cash' ? effectiveCashReceived ?? 0 : undefined,
+      tipAmount: effectiveTipAmount,
+      tipNpr: effectiveTipAmount,
+      coinsReceived: effectiveCoinsReceived ?? null,
+      cashReceived: effectiveCashReceived ?? null,
+      cashoutLimitHit: cashoutLimitHitForCashToCoin || undefined,
       beforeCash: currentCash,
       afterCash: newCash,
       beforeCoins: currentCoin,
@@ -752,10 +786,10 @@ export async function transferPlayerBalancesInSql(input: {
       coadminUid,
       direction,
       transferAmount: amount,
-      feeAmount,
-      tipAmount,
-      coinsReceived,
-      cashReceived,
+      feeAmount: effectiveFee,
+      tipAmount: effectiveTipAmount,
+      coinsReceived: effectiveCoinsReceived,
+      cashReceived: effectiveCashReceived,
       transferId,
       beforeCash: currentCash,
       afterCash: newCash,
@@ -807,10 +841,10 @@ export async function transferPlayerBalancesInSql(input: {
       cash: newCash,
       coin: newCoin,
       transferAmount: amount,
-      feeAmount,
-      tipAmount,
-      coinsReceived: coinsReceived ?? null,
-      cashReceived: cashReceived ?? null,
+      feeAmount: effectiveFee,
+      tipAmount: effectiveTipAmount,
+      coinsReceived: effectiveCoinsReceived ?? null,
+      cashReceived: effectiveCashReceived ?? null,
       transferId,
       eventId,
     };
@@ -845,10 +879,10 @@ export async function transferPlayerBalancesInSql(input: {
       cash: newCash,
       coin: newCoin,
       transferAmount: amount,
-      feeAmount,
-      tipAmount,
-      coinsReceived,
-      cashReceived,
+      feeAmount: effectiveFee,
+      tipAmount: effectiveTipAmount,
+      coinsReceived: effectiveCoinsReceived,
+      cashReceived: effectiveCashReceived,
       transferId,
       eventId,
     };

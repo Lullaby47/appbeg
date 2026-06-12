@@ -17,7 +17,7 @@ import {
   playerCashoutLiveChannel,
 } from '@/lib/sql/liveOutbox';
 
-const PLAYER_CASHOUT_MAX_NPR_PER_24_H = 1000;
+export const PLAYER_CASHOUT_MAX_NPR_PER_24_H = 1000;
 const PLAYER_CASHOUT_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export type AuthorityCashoutCreateInput = {
@@ -130,6 +130,11 @@ async function fetchRolling24hCashoutUsageNpr(client: PoolClient, playerUid: str
     total += Math.max(0, Number((row as Record<string, unknown>).amount_npr || 0));
   }
   return total;
+}
+
+export async function isPlayerCashoutRollingLimitHit(client: PoolClient, playerUid: string) {
+  const rollingUsed = await fetchRolling24hCashoutUsageNpr(client, playerUid);
+  return rollingUsed >= PLAYER_CASHOUT_MAX_NPR_PER_24_H;
 }
 
 async function fetchCompletedCashoutCount(client: PoolClient, playerUid: string) {

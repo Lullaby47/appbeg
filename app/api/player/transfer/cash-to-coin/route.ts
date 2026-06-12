@@ -19,6 +19,7 @@ import {
 } from '@/lib/server/authoritySqlWrite';
 import { isAppbegSqlOnlyMode } from '@/lib/server/appbegSqlOnlyMode';
 import {
+  getCashToCoinCashoutLimitFee,
   getCashToCoinFee,
   parsePositiveInteger,
   parseTransferId,
@@ -36,6 +37,8 @@ const ROUTE = '/api/player/transfer/cash-to-coin';
 const CASH_TO_COIN_MAX_TRANSFER_AMOUNT = 25;
 const CASH_TO_COIN_COOLDOWN_MINUTES = 10;
 const CASH_TO_COIN_DAILY_LIMIT = 300;
+const PLAYER_CASHOUT_MAX_NPR_PER_24_H = 1000;
+const PLAYER_CASHOUT_ROLLING_WINDOW_MS = 24 * 60 * 60_000;
 
 function firestoreMillis(value: unknown) {
   if (value && typeof value === 'object' && 'toMillis' in value) {
@@ -51,6 +54,22 @@ type Body = {
   transferId?: unknown;
   idempotencyKey?: unknown;
 };
+
+async function fetchCashoutLimitHitForPlayer(playerUid: string) {
+  const since = new Date(Date.now() - PLAYER_CASHOUT_ROLLING_WINDOW_MS);
+  const snapshot = await adminDb
+    .collection('playerCashoutTasks')
+    .where('playerUid', '==', playerUid)
+    .where('createdAt', '>=', since)
+    .get();
+  let total = 0;
+  snapshot.forEach((docSnap) => {
+    const row = docSnap.data() as { status?: string; amountNpr?: number };
+    if (String(row.status || '').toLowerCase() === 'declined') return;
+    total += Math.max(0, Number(row.amountNpr || 0));
+  });
+  return total >= PLAYER_CASHOUT_MAX_NPR_PER_24_H;
+}
 
 export async function POST(request: Request) {
   const headerSessions = sessionIdsFromRequest(request);
@@ -127,15 +146,6 @@ export async function POST(request: Request) {
     if (!transferId) {
       return apiError('Transfer id is required.', 400);
     }
-    if (amountNpr > CASH_TO_COIN_MAX_TRANSFER_AMOUNT) {
-      return apiError('Maximum transfer amount is $25.', 400);
-    }
-
-    const feeAmount = getCashToCoinFee(amountNpr);
-    const coinsReceived = amountNpr - feeAmount;
-    if (coinsReceived <= 0) {
-      return apiError('Transfer amount is too low after fee.', 400);
-    }
 
     if (isAuthoritySqlWriteEnabled()) {
       await rejectIfPlayerMaintenanceBreakFromUser(auth.user, 'cash_to_coin');
@@ -210,6 +220,18 @@ export async function POST(request: Request) {
     const eventRef = adminDb.collection('financialEvents').doc(`cashToCoin_${playerUid}_${transferId}`);
     let newCash = 0;
     let newCoin = 0;
+    const cashoutLimitHit = await fetchCashoutLimitHitForPlayer(playerUid);
+    if (!cashoutLimitHit && amountNpr > CASH_TO_COIN_MAX_TRANSFER_AMOUNT) {
+      return apiError('Maximum transfer amount is $25.', 400);
+    }
+
+    const feeAmount = cashoutLimitHit
+      ? getCashToCoinCashoutLimitFee(amountNpr)
+      : getCashToCoinFee(amountNpr);
+    const coinsReceived = amountNpr - feeAmount;
+    if (coinsReceived <= 0) {
+      return apiError('Transfer amount is too low after fee.', 400);
+    }
 
     const nowMs = Date.now();
     const cooldownWindowStartMs = nowMs - CASH_TO_COIN_COOLDOWN_MINUTES * 60_000;
@@ -232,7 +254,7 @@ export async function POST(request: Request) {
     const recentTransfers = cashToCoinHistory
       .filter((event) => event.createdAtMs > cooldownWindowStartMs)
       .sort((left, right) => right.createdAtMs - left.createdAtMs);
-    if (recentTransfers.length) {
+    if (!cashoutLimitHit && recentTransfers.length) {
       const elapsedMs = nowMs - recentTransfers[0].createdAtMs;
       const remainingMs = CASH_TO_COIN_COOLDOWN_MINUTES * 60_000 - elapsedMs;
       const minutes = Math.max(1, Math.ceil(remainingMs / 60_000));
@@ -245,7 +267,7 @@ export async function POST(request: Request) {
       (sum, event) => sum + Math.max(0, Number(event.transferAmount || event.amountNpr || 0)),
       0
     );
-    if (dailyTotal + amountNpr > CASH_TO_COIN_DAILY_LIMIT) {
+    if (!cashoutLimitHit && dailyTotal + amountNpr > CASH_TO_COIN_DAILY_LIMIT) {
       return apiError('Daily transfer limit reached.', 400);
     }
 
@@ -302,6 +324,15 @@ export async function POST(request: Request) {
 
       newCash = currentCash - amountNpr;
       newCoin = currentCoin + coinsReceived;
+      if (cashoutLimitHit) {
+        console.info('[CASH_TO_COIN_CASHOUT_LIMIT_EXCEPTION_USED]', {
+          uid: playerUid,
+          amount: amountNpr,
+          fee: feeAmount,
+          netCoinAmount: coinsReceived,
+          cashoutLimitHit: true,
+        });
+      }
 
       transaction.update(playerRef, {
         cash: newCash,
@@ -319,6 +350,7 @@ export async function POST(request: Request) {
         tipAmount: 0,
         tipNpr: 0,
         coinsReceived,
+        cashoutLimitHit: cashoutLimitHit || undefined,
         beforeCash: currentCash,
         afterCash: newCash,
         beforeCoins: currentCoin,

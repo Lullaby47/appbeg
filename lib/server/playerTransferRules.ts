@@ -21,6 +21,11 @@ export function getCashToCoinFee(amountNpr: number) {
   return Number((amountNpr * 0.02).toFixed(2));
 }
 
+export function getCashToCoinCashoutLimitFee(amountNpr: number) {
+  if (!Number.isFinite(amountNpr) || amountNpr <= 0) return 0;
+  return Number((amountNpr * 0.05).toFixed(2));
+}
+
 export function getCoinToCashTip(amountCoins: number) {
   if (!Number.isFinite(amountCoins) || amountCoins <= 0) return 0;
   if (amountCoins <= 20) return 1;
