@@ -2,7 +2,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase/admin';
-import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { apiError, requirePlayerApiUser } from '@/lib/firebase/apiAuth';
 import {
   getCoadminMaintenanceBreak,
   maintenanceBreakApiResponse,
@@ -47,11 +47,63 @@ function normalizeGameName(value: string) {
 
 const ROUTE = '/api/bonus-events/initiate-play';
 
+function cleanText(value: unknown) {
+  return String(value || '').trim();
+}
+
+function readBonusClaimSessionDebug(request: Request) {
+  const appSessionId = cleanText(request.headers.get('X-App-Session-Id'));
+  const playerSessionId = cleanText(request.headers.get('X-Player-Session-Id'));
+  const cookieHeader = cleanText(request.headers.get('cookie'));
+
+  return {
+    cookiePresent: Boolean(cookieHeader),
+    appSessionId: appSessionId || null,
+    appSessionIdPrefix: appSessionId ? appSessionId.slice(0, 8) : null,
+    playerSessionId: playerSessionId || null,
+    playerSessionIdPrefix: playerSessionId ? playerSessionId.slice(0, 8) : null,
+  };
+}
+
 export async function POST(request: Request) {
+  let bonusEventId: string | null = null;
+  const sessionDebug = readBonusClaimSessionDebug(request);
   try {
-    const auth = await requireApiUser(request, ['player']);
+    console.info('[BONUS_CLAIM_REQUEST]', {
+      route: ROUTE,
+      method: 'POST',
+      ...sessionDebug,
+    });
+    console.info('[BONUS_CLAIM_AUTH_START]', {
+      route: ROUTE,
+      method: 'POST',
+      authHelper: 'requirePlayerApiUser',
+      expectedAuthPath: 'app_session_sql_session_sql',
+      ...sessionDebug,
+    });
+
+    const auth = await requirePlayerApiUser(request);
     if ('response' in auth) {
       const headerFlags = bonusEventsRequestHeaderFlags(request);
+      console.info('[BONUS_CLAIM_AUTH_RESULT]', {
+        route: ROUTE,
+        ok: false,
+        uid: null,
+        role: null,
+        auth_path: auth.timing.auth_path,
+        session_source: auth.timing.session_source,
+        status: auth.response.status,
+        ...sessionDebug,
+      });
+      console.info('[BONUS_CLAIM_SESSION_SOURCE]', {
+        route: ROUTE,
+        ok: false,
+        uid: null,
+        role: null,
+        auth_path: auth.timing.auth_path,
+        session_source: auth.timing.session_source,
+        ...sessionDebug,
+      });
       logPlayerBonusSessionHeaderCheck(request, {
         route: ROUTE,
         method: 'POST',
@@ -72,12 +124,31 @@ export async function POST(request: Request) {
     }
     await rejectIfPlayerMaintenanceBreak(auth.user.uid, 'bonus_event');
     const body = (await request.json()) as Body;
-    const bonusEventId = String(body.bonusEventId || '').trim();
+    bonusEventId = String(body.bonusEventId || '').trim();
     if (!bonusEventId) return apiError('bonusEventId is required.', 400);
 
     const playerUid = auth.user.uid;
     const coadminUid =
       String(auth.user.coadminUid || auth.user.createdBy || '').trim() || null;
+
+    console.info('[BONUS_CLAIM_AUTH_RESULT]', {
+      route: ROUTE,
+      ok: true,
+      uid: playerUid,
+      role: auth.user.role,
+      auth_path: auth.authPath,
+      session_source: auth.timing.session_source,
+      ...sessionDebug,
+    });
+    console.info('[BONUS_CLAIM_SESSION_SOURCE]', {
+      route: ROUTE,
+      ok: true,
+      uid: playerUid,
+      role: auth.user.role,
+      auth_path: auth.authPath,
+      session_source: auth.timing.session_source,
+      ...sessionDebug,
+    });
 
     logBonusEventsInitiateAuth(request, {
       route: ROUTE,
@@ -358,6 +429,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, requestId: requestRef.id });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to initiate bonus play.';
+    console.info('[BONUS_CLAIM_ERROR]', {
+      route: ROUTE,
+      bonusEventId,
+      error: message,
+      ...sessionDebug,
+    });
     if (message.startsWith('MAINTENANCE_BREAK:')) {
       return maintenanceBreakApiResponse(message.replace(/^MAINTENANCE_BREAK:/, ''));
     }
@@ -365,4 +442,3 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status });
   }
 }
-

@@ -1294,14 +1294,26 @@ export async function initiateBonusEventPlay(values: {
   playerUid: string;
   bonusEventId: string;
 }) {
-  const currentUser = auth.currentUser;
-
-  if (!currentUser || currentUser.uid !== values.playerUid) {
-    throw new Error('Not authenticated as current player.');
-  }
-
   const url = '/api/bonus-events/initiate-play';
   const requestContext = await resolvePlayerBonusRequestContext();
+
+  if (requestContext.role !== 'player' || requestContext.uid !== values.playerUid) {
+    logPlayerBonusRequestHeaders({
+      action: 'initiate_bonus_play',
+      url,
+      method: 'POST',
+      role: requestContext.role,
+      uid: requestContext.uid,
+      hasAppSessionId: Boolean(getLocalAppSessionId()),
+      hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+      appSessionIdPrefix: sessionIdPrefix(getLocalAppSessionId()),
+      playerSessionIdPrefix: sessionIdPrefix(getLocalPlayerSessionId()),
+      headersSent: [],
+      blocked: true,
+      reason: 'app_session_player_context_mismatch',
+    });
+    throw new Error('Not authenticated as current player.');
+  }
 
   const gate = await ensurePlayerSessionGateReady({
     source: 'initiateBonusEventPlay',
