@@ -30,17 +30,23 @@ function resolveCoadminUid(authUser: ApiUser, requestedCoadminUid: string) {
 function paymentListenerTestErrorDetails(error: unknown) {
   const details = error as {
     rawImapResponse?: unknown;
+    rawResponse?: unknown;
     failureKind?: unknown;
+    status?: unknown;
   };
+  const rawResponse =
+    typeof details.rawImapResponse === 'string' && details.rawImapResponse.trim()
+      ? details.rawImapResponse
+      : typeof details.rawResponse === 'string' && details.rawResponse.trim()
+        ? details.rawResponse
+        : null;
   return {
-    rawImapAuthResponse:
-      typeof details.rawImapResponse === 'string' && details.rawImapResponse.trim()
-        ? details.rawImapResponse
-        : null,
+    rawImapAuthResponse: rawResponse,
     failureKind:
       typeof details.failureKind === 'string' && details.failureKind.trim()
         ? details.failureKind
         : null,
+    upstreamStatus: typeof details.status === 'number' ? details.status : null,
   };
 }
 
@@ -81,6 +87,7 @@ export async function POST(
       coadminUid,
       listenerId,
       provider: listener.provider,
+      authType: listener.authType,
       host: listener.imapHost,
       port: listener.imapPort,
       ssl: listener.useSsl,
@@ -109,6 +116,7 @@ export async function POST(
       coadminUid,
       listenerId,
       provider: listener.provider,
+      authType: listener.authType,
       host: listener.imapHost,
       port: listener.imapPort,
       ssl: listener.useSsl,
@@ -127,7 +135,9 @@ export async function POST(
         debug: IS_DEVELOPMENT
           ? {
               rawImapAuthResponse: errorDetails.rawImapAuthResponse,
+              rawMicrosoftResponse: errorDetails.rawImapAuthResponse,
               failureKind: errorDetails.failureKind,
+              upstreamStatus: errorDetails.upstreamStatus,
               host: listener.imapHost,
               port: listener.imapPort,
               ssl: listener.useSsl,

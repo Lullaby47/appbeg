@@ -155,6 +155,7 @@ import {
 import { normalizeMaintenanceBreak, type MaintenanceBreak } from '@/lib/maintenance/config';
 import { giveFreeplayGift } from '@/features/freeplay/coadminFreeplay';
 import {
+  connectOutlookPaymentListener,
   createPaymentListener,
   deletePaymentListener,
   listPaymentListeners,
@@ -584,6 +585,19 @@ export default function CoadminPage() {
   const [loadingList, setLoadingList] = useState(false);
   const [latestCarerEscalation, setLatestCarerEscalation] =
     useState<CarerEscalationAlert | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('view') === 'listener-details') {
+      setActiveView('listener-details');
+    }
+    const oauthStatus = params.get('paymentListenerOAuth');
+    if (oauthStatus === 'connected') {
+      setMessage('Outlook connected');
+    } else if (oauthStatus === 'error') {
+      setMessage('Outlook connection failed');
+    }
+  }, []);
   const [showCarerEscalationSplash, setShowCarerEscalationSplash] = useState(false);
   const [recentCarerEscalations, setRecentCarerEscalations] = useState<
     CarerEscalationAlert[]
@@ -3499,6 +3513,10 @@ export default function CoadminPage() {
       setMessage('Not authenticated.');
       return;
     }
+    if (paymentListenerForm.provider === 'outlook') {
+      await handleConnectOutlookPaymentListener();
+      return;
+    }
     setPaymentListenerSaving(true);
     setMessage('');
     try {
@@ -3524,6 +3542,28 @@ export default function CoadminPage() {
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Failed to save listener.');
     } finally {
+      setPaymentListenerSaving(false);
+    }
+  }
+
+  async function handleConnectOutlookPaymentListener() {
+    const uid = resolveCoadminActorUid(coadminActorUid);
+    if (!uid) {
+      setMessage('Not authenticated.');
+      return;
+    }
+    setPaymentListenerSaving(true);
+    setMessage('');
+    try {
+      const authUrl = await connectOutlookPaymentListener({
+        coadminUid: uid,
+        listenerId: paymentListenerForm.id,
+        label: paymentListenerForm.label,
+        autoLoad: paymentListenerForm.autoLoad,
+      });
+      window.location.href = authUrl;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to start Outlook connection.');
       setPaymentListenerSaving(false);
     }
   }
@@ -5512,60 +5552,67 @@ export default function CoadminPage() {
                         className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white"
                       />
                     </label>
-                    <label className="block">
-                      <span className="text-xs font-semibold uppercase text-neutral-400">
-                        {paymentListenerForm.provider === 'gmail'
-                          ? 'App password'
-                          : 'App password/password'}
-                      </span>
-                      <input
-                        type="password"
-                        value={paymentListenerForm.password}
-                        placeholder={
-                          paymentListenerForm.id ? 'Leave blank to keep existing password' : ''
-                        }
-                        onChange={(event) =>
-                          setPaymentListenerForm((current) => ({
-                            ...current,
-                            password: event.target.value,
-                          }))
-                        }
-                        className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white"
-                      />
-                    </label>
-                    <label className="block">
-                      <span className="text-xs font-semibold uppercase text-neutral-400">
-                        IMAP host
-                      </span>
-                      <input
-                        value={paymentListenerForm.imapHost}
-                        onChange={(event) =>
-                          setPaymentListenerForm((current) => ({
-                            ...current,
-                            imapHost: event.target.value,
-                          }))
-                        }
-                        className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white"
-                      />
-                    </label>
-                    <label className="block">
-                      <span className="text-xs font-semibold uppercase text-neutral-400">
-                        IMAP port
-                      </span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={65535}
-                        value={paymentListenerForm.imapPort}
-                        onChange={(event) =>
-                          setPaymentListenerForm((current) => ({
-                            ...current,
-                            imapPort: event.target.value,
-                          }))
-                        }
-                        className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white"
-                      />
-                    </label>
+                    {paymentListenerForm.provider === 'gmail' ? (
+                      <>
+                        <label className="block">
+                          <span className="text-xs font-semibold uppercase text-neutral-400">
+                            App password
+                          </span>
+                          <input
+                            type="password"
+                            value={paymentListenerForm.password}
+                            placeholder={
+                              paymentListenerForm.id ? 'Leave blank to keep existing password' : ''
+                            }
+                            onChange={(event) =>
+                              setPaymentListenerForm((current) => ({
+                                ...current,
+                                password: event.target.value,
+                              }))
+                            }
+                            className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-xs font-semibold uppercase text-neutral-400">
+                            IMAP host
+                          </span>
+                          <input
+                            value={paymentListenerForm.imapHost}
+                            onChange={(event) =>
+                              setPaymentListenerForm((current) => ({
+                                ...current,
+                                imapHost: event.target.value,
+                              }))
+                            }
+                            className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-xs font-semibold uppercase text-neutral-400">
+                            IMAP port
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={65535}
+                            value={paymentListenerForm.imapPort}
+                            onChange={(event) =>
+                              setPaymentListenerForm((current) => ({
+                                ...current,
+                                imapPort: event.target.value,
+                              }))
+                            }
+                            className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white"
+                          />
+                        </label>
+                      </>
+                    ) : (
+                      <div className="md:col-span-2 rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100">
+                        Outlook listeners use Microsoft OAuth and Graph Mail. Connect Outlook to
+                        grant offline mailbox access; no Outlook password is stored.
+                      </div>
+                    )}
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                       {[
                         ['useSsl', 'Use SSL'],
@@ -5601,7 +5648,13 @@ export default function CoadminPage() {
                       onClick={() => void handleSavePaymentListener()}
                       className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-bold text-black hover:bg-emerald-400 disabled:opacity-60"
                     >
-                      {paymentListenerSaving ? 'Saving...' : 'Save Listener'}
+                      {paymentListenerSaving
+                        ? paymentListenerForm.provider === 'outlook'
+                          ? 'Connecting...'
+                          : 'Saving...'
+                        : paymentListenerForm.provider === 'outlook'
+                          ? 'Connect Outlook'
+                          : 'Save Listener'}
                     </button>
                     <button
                       type="button"
@@ -5650,6 +5703,11 @@ export default function CoadminPage() {
                           <td className="px-3 py-3 font-semibold text-white">{listener.label}</td>
                           <td className="px-3 py-3 capitalize text-neutral-200">
                             {listener.provider}
+                            {listener.provider === 'outlook' && listener.authType === 'oauth' && (
+                              <span className="ml-2 rounded-full bg-cyan-500/15 px-2 py-0.5 text-[11px] font-semibold uppercase text-cyan-100">
+                                OAuth
+                              </span>
+                            )}
                           </td>
                           <td className="px-3 py-3 text-neutral-200">{listener.email}</td>
                           <td className="px-3 py-3">

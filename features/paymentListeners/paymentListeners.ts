@@ -9,10 +9,13 @@ export type PaymentListener = {
   coadminUid: string;
   label: string;
   provider: PaymentListenerProvider;
+  authType: 'password' | 'oauth';
   email: string;
   imapHost: string;
   imapPort: number;
   useSsl: boolean;
+  microsoftUserId: string | null;
+  tokenExpiresAt: string | null;
   autoLoad: boolean;
   enabled: boolean;
   lastCheckedAt: string | null;
@@ -121,4 +124,31 @@ export async function testPaymentListener(id: string, coadminUid?: string) {
     listener: payload.listener,
     message: payload.message || 'Connection successful',
   };
+}
+
+export async function connectOutlookPaymentListener(input: {
+  coadminUid?: string;
+  listenerId?: string | null;
+  label?: string;
+  autoLoad?: boolean;
+}) {
+  const query = new URLSearchParams();
+  if (input.coadminUid) query.set('coadminUid', input.coadminUid);
+  if (input.listenerId) query.set('listenerId', input.listenerId);
+  if (input.label) query.set('label', input.label);
+  if (input.autoLoad) query.set('autoLoad', 'true');
+  query.set('response', 'json');
+  const response = await fetch(
+    `/api/coadmin/payment-listeners/outlook/oauth/start?${query.toString()}`,
+    {
+      method: 'GET',
+      headers: await getSqlApiReadHeaders(false),
+      cache: 'no-store',
+    }
+  );
+  const payload = (await response.json().catch(() => ({}))) as { url?: string; error?: string };
+  if (!response.ok || !payload.url) {
+    throw new Error(payload.error || 'Failed to start Outlook connection.');
+  }
+  return payload.url;
 }

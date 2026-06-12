@@ -73,6 +73,9 @@ export async function POST(request: Request) {
   if (!provider) {
     return apiError('Provider must be gmail or outlook.', 400);
   }
+  if (provider === 'outlook') {
+    return apiError('Use Connect Outlook to authorize Outlook listeners.', 400);
+  }
   const defaults = defaultPaymentListenerValues(provider);
   const label = cleanText(body.label);
   const email = cleanText(body.email).toLowerCase();
