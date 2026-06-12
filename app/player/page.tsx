@@ -365,6 +365,8 @@ export default function PlayerPage() {
   const [activeCoinLoad, setActiveCoinLoad] = useState<CoinLoadSession | null>(null);
   const [loadCoinTimeLeftSec, setLoadCoinTimeLeftSec] = useState(0);
   const [coinLoadBusy, setCoinLoadBusy] = useState(false);
+  const [showPaymentImageDownloadConfirm, setShowPaymentImageDownloadConfirm] = useState(false);
+  const [paymentImageDownloadBusy, setPaymentImageDownloadBusy] = useState(false);
   const [cashoutPayoutMethod, setCashoutPayoutMethod] = useState<'qr' | 'app'>('qr');
   const [cashoutQrUrl, setCashoutQrUrl] = useState('');
   const [cashoutAppName, setCashoutAppName] = useState('');
@@ -880,6 +882,10 @@ export default function PlayerPage() {
         setShowLoadCoinPanel(false);
         return true;
       }
+      if (showPaymentImageDownloadConfirm && !paymentImageDownloadBusy) {
+        setShowPaymentImageDownloadConfirm(false);
+        return true;
+      }
       if (showPlayerPasswordResetModal) {
         setShowPlayerPasswordResetModal(false);
         return true;
@@ -968,8 +974,10 @@ export default function PlayerPage() {
     showIosGuide,
     showLoadCoinPanel,
     showLogoutConfirmSplash,
+    showPaymentImageDownloadConfirm,
     showPlayerPasswordResetModal,
     showPwaExitConfirm,
+    paymentImageDownloadBusy,
   ]);
 
   useEffect(() => {
@@ -4128,6 +4136,52 @@ export default function PlayerPage() {
     return `${m}:${String(s).padStart(2, '0')}`;
   }
 
+  function openPaymentImageFallback(url: string) {
+    const opened = window.open(url, '_blank', 'noopener,noreferrer');
+    if (!opened) {
+      window.location.href = url;
+    }
+  }
+
+  async function handleDownloadPaymentDetailsImage() {
+    const imageUrl = String(activeCoinLoad?.paymentPhotoUrl || '').trim();
+    if (!imageUrl || paymentImageDownloadBusy) {
+      return;
+    }
+
+    setPaymentImageDownloadBusy(true);
+    try {
+      const response = await fetch(imageUrl, { mode: 'cors' });
+      if (!response.ok) {
+        throw new Error('Image download request failed.');
+      }
+
+      const blob = await response.blob();
+      const objectUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = 'royal-vip-payment-details.png';
+      link.rel = 'noopener';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 1000);
+      setShowPaymentImageDownloadConfirm(false);
+    } catch (error) {
+      console.info('[PAYMENT_DETAILS_IMAGE_DOWNLOAD_FALLBACK]', {
+        error: error instanceof Error ? error.message : String(error || ''),
+      });
+      try {
+        openPaymentImageFallback(imageUrl);
+        setShowPaymentImageDownloadConfirm(false);
+      } catch {
+        setMessage('Could not download payment details image. Please try again.');
+      }
+    } finally {
+      setPaymentImageDownloadBusy(false);
+    }
+  }
+
   const shouldShowPaymentDetailsNotice =
     paymentDetailsNoticeVersion > 0 &&
     paymentDetailsNoticeVersion > dismissedPaymentDetailsNoticeVersion;
@@ -5325,14 +5379,19 @@ export default function PlayerPage() {
               </div>
             ) : (
               <div className="mt-6 space-y-4">
-                <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/40">
+                <button
+                  type="button"
+                  onClick={() => setShowPaymentImageDownloadConfirm(true)}
+                  className="group block w-full overflow-hidden rounded-2xl border border-white/10 bg-black/40 outline-none transition hover:border-violet-300/40 focus:border-violet-200 focus:ring-2 focus:ring-violet-300/35"
+                  aria-label="Download payment details picture"
+                >
                   <img
                     src={activeCoinLoad.paymentPhotoUrl}
                     alt="Payment reference"
                     loading="lazy"
-                    className="max-h-64 w-full object-contain"
+                    className="max-h-64 w-full object-contain transition group-active:scale-[0.99]"
                   />
-                </div>
+                </button>
                 <div>
                   <p className="text-xs font-bold uppercase tracking-wider text-violet-200/80">
                     YOUR ROYAL VIP USERNAME
@@ -5384,6 +5443,47 @@ export default function PlayerPage() {
           </div>
         </div>
       )}
+
+      {showPaymentImageDownloadConfirm && activeCoinLoad?.paymentPhotoUrl ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="payment-image-download-title"
+          onClick={() => {
+            if (!paymentImageDownloadBusy) {
+              setShowPaymentImageDownloadConfirm(false);
+            }
+          }}
+          className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[126] bg-black/88 px-4 backdrop-blur-2xl`}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            className="fire-panel fire-purple w-full max-w-sm rounded-3xl border border-violet-300/45 bg-gradient-to-br from-violet-950/95 via-zinc-950 to-black/95 p-6 text-center text-white shadow-2xl shadow-violet-900/30"
+          >
+            <h3 id="payment-image-download-title" className="text-2xl font-black">
+              Do you want to download this picture?
+            </h3>
+            <div className="mt-6 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setShowPaymentImageDownloadConfirm(false)}
+                disabled={paymentImageDownloadBusy}
+                className="flex-1 rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-sm font-bold text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDownloadPaymentDetailsImage()}
+                disabled={paymentImageDownloadBusy}
+                className="fire-button fire-purple flex-1 rounded-xl bg-violet-300 px-4 py-3 text-sm font-black text-violet-950 hover:bg-violet-200 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {paymentImageDownloadBusy ? 'Preparing...' : 'Download'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showCoinConfirmSplash && (
         <div
