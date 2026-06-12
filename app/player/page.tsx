@@ -160,6 +160,10 @@ import {
   UNKNOWN_CREATOR_FILTER_KEY,
 } from './constants';
 
+import InstallAppButton from './components/InstallAppButton';
+import PwaIosInstallGuide from './components/PwaIosInstallGuide';
+import { usePwaInstall } from './hooks/usePwaInstall';
+
 import {
   buildCreatorDisplayLabel,
   clampClipboardToastX,
@@ -427,6 +431,12 @@ export default function PlayerPage() {
   const [message, setMessage] = useState('');
   const [loadingList, setLoadingList] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const {
+    canShowInstallButton,
+    showIosGuide,
+    closeIosGuide,
+    handleInstallClick,
+  } = usePwaInstall();
   const [showPlayerHelpHint, setShowPlayerHelpHint] = useState(false);
   const [musicEnabled, setMusicEnabled] = useState(() => {
     if (typeof window === 'undefined') {
@@ -4283,6 +4293,13 @@ export default function PlayerPage() {
                         })}
                         {item.view === 'usernames' ? (
                           <>
+                            <InstallAppButton
+                              canShowInstallButton={canShowInstallButton}
+                              onInstallClick={() => {
+                                void handleInstallClick();
+                                setMobileMenuOpen(false);
+                              }}
+                            />
                             <button
                               type="button"
                               onClick={() => {
@@ -4683,6 +4700,8 @@ export default function PlayerPage() {
           💬
         </Link>
       </main>
+
+      <PwaIosInstallGuide open={showIosGuide} onClose={closeIosGuide} />
 
       {clipboardToast ? (
         <motion.div
