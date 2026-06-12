@@ -18,7 +18,7 @@ export function parseTransferId(value: unknown) {
 
 export function getCashToCoinFee(amountNpr: number) {
   if (!Number.isFinite(amountNpr) || amountNpr <= 0) return 0;
-  return Number((amountNpr * 0.04).toFixed(2));
+  return Number((amountNpr * 0.02).toFixed(2));
 }
 
 export function getCoinToCashTip(amountCoins: number) {

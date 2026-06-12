@@ -45,7 +45,7 @@ async function readBalances(pool, playerUid) {
 }
 
 function getCashToCoinFee(amountNpr) {
-  return Number((amountNpr * 0.04).toFixed(2));
+  return Number((amountNpr * 0.02).toFixed(2));
 }
 
 async function testDoubleCashToCoinIdempotency(pool, playerUid) {
@@ -132,7 +132,7 @@ async function testFeeRule() {
     amount,
     fee,
     coinsReceived: amount - fee,
-    ok: fee === 4 && amount - fee === 96,
+    ok: fee === 2 && amount - fee === 98,
   };
 }
 

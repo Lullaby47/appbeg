@@ -220,6 +220,7 @@ const PLAYER_BONUS_DEBUG =
   process.env.NODE_ENV !== 'production' &&
   process.env.NEXT_PUBLIC_DEBUG_PLAYER_BONUS_EVENTS === '1';
 const MIN_PLAYER_PASSWORD_LENGTH = 6;
+const CASH_TO_COIN_MAX_TRANSFER_AMOUNT = 25;
 
 function getCoinToCashTip(amount: number) {
   if (amount >= 150) return 10;
@@ -233,7 +234,7 @@ function getCoinToCashTip(amount: number) {
 
 function getCashToCoinFee(amount: number) {
   if (!Number.isFinite(amount) || amount <= 0) return 0;
-  return Number((amount * 0.04).toFixed(2));
+  return Number((amount * 0.02).toFixed(2));
 }
 
 type PlayerTransferDirection = 'cash_to_coin' | 'coin_to_cash';
@@ -1039,6 +1040,8 @@ export default function PlayerPage() {
     ? ''
     : !isTransferCoinWholeNumber
       ? 'Amount must be a whole number.'
+      : isCashToCoinTransfer && transferCoinAmount > CASH_TO_COIN_MAX_TRANSFER_AMOUNT
+        ? 'Maximum transfer amount is $25.'
       : !isCashToCoinTransfer && transferCoinAmount < 10
         ? 'Minimum Coin to Cash amount is 10.'
       : transferCoinAmount > transferSourceBalance
@@ -1050,6 +1053,7 @@ export default function PlayerPage() {
             : '';
   const canConfirmCashToCoinTransfer =
     isTransferCoinWholeNumber &&
+    (!isCashToCoinTransfer || transferCoinAmount <= CASH_TO_COIN_MAX_TRANSFER_AMOUNT) &&
     (isCashToCoinTransfer || transferCoinAmount >= 10) &&
     transferCoinAmount <= transferSourceBalance &&
     (isCashToCoinTransfer ? transferCoinReceived > 0 : transferCashReceived > 0) &&
@@ -3529,6 +3533,10 @@ export default function PlayerPage() {
       setMessage('Amount must be a whole number.');
       return;
     }
+    if (isCashToCoinTransfer && parsedAmount > CASH_TO_COIN_MAX_TRANSFER_AMOUNT) {
+      setMessage('Maximum transfer amount is $25.');
+      return;
+    }
     if (!isCashToCoinTransfer && parsedAmount < 10) {
       setMessage('Minimum Coin to Cash amount is 10.');
       return;
@@ -5204,6 +5212,7 @@ export default function PlayerPage() {
               <input
                 type="number"
                 min={1}
+                max={isCashToCoinTransfer ? CASH_TO_COIN_MAX_TRANSFER_AMOUNT : undefined}
                 step={1}
                 inputMode="numeric"
                 value={transferCoinAmountInput}
@@ -5226,7 +5235,7 @@ export default function PlayerPage() {
               </div>
               <div className="rounded-xl border border-emerald-300/20 bg-emerald-500/10 px-3 py-2">
                 <p className="text-xs font-black uppercase tracking-wide text-emerald-100/70">
-                  {isCashToCoinTransfer ? 'Coins You Receive' : 'Cash You Receive'}
+                  {isCashToCoinTransfer ? 'Coins To Receive' : 'Cash You Receive'}
                 </p>
                 <p className="mt-1 text-lg font-black text-white">
                   {isCashToCoinTransfer ? '' : '$'}
@@ -5236,10 +5245,9 @@ export default function PlayerPage() {
                 </p>
               </div>
             </div>
-            {isCashToCoinTransfer || transferCoinToCashTip > 0 ? (
+            {!isCashToCoinTransfer && transferCoinToCashTip > 0 ? (
               <p className="mt-3 rounded-xl border border-amber-300/25 bg-black/25 px-3 py-2 text-sm font-bold text-amber-100">
-                {isCashToCoinTransfer ? 'Fee' : 'Tip'}:{' '}
-                {formatWalletAmount(isCashToCoinTransfer ? transferCashToCoinFee : transferCoinToCashTip)}
+                Tip: {formatWalletAmount(transferCoinToCashTip)}
               </p>
             ) : null}
             {transferCoinValidationMessage ? (

@@ -33,6 +33,18 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const ROUTE = '/api/player/transfer/cash-to-coin';
+const CASH_TO_COIN_MAX_TRANSFER_AMOUNT = 25;
+const CASH_TO_COIN_COOLDOWN_MINUTES = 10;
+const CASH_TO_COIN_DAILY_LIMIT = 300;
+
+function firestoreMillis(value: unknown) {
+  if (value && typeof value === 'object' && 'toMillis' in value) {
+    const millis = (value as { toMillis?: () => number }).toMillis?.();
+    return Number.isFinite(millis) ? Number(millis) : 0;
+  }
+  const parsed = new Date(String(value || '')).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
 
 type Body = {
   amountNpr?: unknown;
@@ -115,6 +127,9 @@ export async function POST(request: Request) {
     if (!transferId) {
       return apiError('Transfer id is required.', 400);
     }
+    if (amountNpr > CASH_TO_COIN_MAX_TRANSFER_AMOUNT) {
+      return apiError('Maximum transfer amount is $25.', 400);
+    }
 
     const feeAmount = getCashToCoinFee(amountNpr);
     const coinsReceived = amountNpr - feeAmount;
@@ -196,6 +211,44 @@ export async function POST(request: Request) {
     let newCash = 0;
     let newCoin = 0;
 
+    const nowMs = Date.now();
+    const cooldownWindowStartMs = nowMs - CASH_TO_COIN_COOLDOWN_MINUTES * 60_000;
+    const dailyWindowStartMs = nowMs - 24 * 60 * 60_000;
+    const transferHistory = await adminDb
+      .collection('financialEvents')
+      .where('playerUid', '==', playerUid)
+      .get();
+    const cashToCoinHistory = transferHistory.docs
+      .map((docSnap) => {
+        const data = docSnap.data();
+        return {
+          type: String(data.type || ''),
+          transferAmount: data.transferAmount,
+          amountNpr: data.amountNpr,
+          createdAtMs: firestoreMillis(data.createdAt || data.timestamp),
+        };
+      })
+      .filter((event) => event.type === 'cash_to_coin_transfer');
+    const recentTransfers = cashToCoinHistory
+      .filter((event) => event.createdAtMs > cooldownWindowStartMs)
+      .sort((left, right) => right.createdAtMs - left.createdAtMs);
+    if (recentTransfers.length) {
+      const elapsedMs = nowMs - recentTransfers[0].createdAtMs;
+      const remainingMs = CASH_TO_COIN_COOLDOWN_MINUTES * 60_000 - elapsedMs;
+      const minutes = Math.max(1, Math.ceil(remainingMs / 60_000));
+      return apiError(`Another transfer is available in ${minutes} minutes.`, 400);
+    }
+
+    const dailyTotal = cashToCoinHistory
+      .filter((event) => event.createdAtMs > dailyWindowStartMs)
+      .reduce(
+      (sum, event) => sum + Math.max(0, Number(event.transferAmount || event.amountNpr || 0)),
+      0
+    );
+    if (dailyTotal + amountNpr > CASH_TO_COIN_DAILY_LIMIT) {
+      return apiError('Daily transfer limit reached.', 400);
+    }
+
     await adminDb.runTransaction(async (transaction) => {
       const existingEventSnap = await transaction.get(eventRef);
       if (existingEventSnap.exists) {
@@ -262,6 +315,7 @@ export async function POST(request: Request) {
         transferAmount: amountNpr,
         amountNpr,
         feeAmount,
+        netCoinAmount: coinsReceived,
         tipAmount: 0,
         tipNpr: 0,
         coinsReceived,
@@ -324,7 +378,7 @@ export async function POST(request: Request) {
         ? 403
         : /duplicate|already/i.test(rawMessage)
           ? 409
-          : /required|valid|not found|only|amount|cash|transfer/i.test(rawMessage)
+          : /required|valid|not found|only|amount|cash|transfer|limit|available/i.test(rawMessage)
             ? 400
             : 500;
 

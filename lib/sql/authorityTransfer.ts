@@ -36,6 +36,10 @@ export type AuthorityTransferResult = {
   eventId: string;
 };
 
+const CASH_TO_COIN_MAX_TRANSFER_AMOUNT = 25;
+const CASH_TO_COIN_COOLDOWN_MINUTES = 10;
+const CASH_TO_COIN_DAILY_LIMIT = 300;
+
 function resolveEventId(direction: TransferDirection, playerUid: string, transferId: string) {
   const prefix = direction === 'cash_to_coin' ? 'cashToCoin' : 'coinToCash';
   return `${prefix}_${playerUid}_${transferId}`;
@@ -112,6 +116,65 @@ function readTransferBlockedUntilMs(row: Record<string, unknown>) {
   return 0;
 }
 
+function numberValue(value: unknown) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+}
+
+function minutesUntilAvailable(lastTransferAt: unknown) {
+  const iso = toIsoString(lastTransferAt);
+  if (!iso) return CASH_TO_COIN_COOLDOWN_MINUTES;
+  const elapsedMs = Date.now() - new Date(iso).getTime();
+  const remainingMs = CASH_TO_COIN_COOLDOWN_MINUTES * 60_000 - elapsedMs;
+  return Math.max(1, Math.ceil(remainingMs / 60_000));
+}
+
+async function enforceCashToCoinTransferLimitsInTxn(
+  client: PoolClient,
+  input: {
+    playerUid: string;
+    amount: number;
+  }
+) {
+  if (input.amount > CASH_TO_COIN_MAX_TRANSFER_AMOUNT) {
+    throw new Error('Maximum transfer amount is $25.');
+  }
+
+  const recentTransfer = await client.query(
+    `
+      SELECT created_at
+      FROM public.financial_events_cache
+      WHERE player_uid = $1::text
+        AND type = 'cash_to_coin_transfer'
+        AND deleted_at IS NULL
+        AND created_at > now() - interval '10 minutes'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    [input.playerUid]
+  );
+  if (recentTransfer.rows.length) {
+    const minutes = minutesUntilAvailable((recentTransfer.rows[0] as Record<string, unknown>).created_at);
+    throw new Error(`Another transfer is available in ${minutes} minutes.`);
+  }
+
+  const dailyTotal = await client.query(
+    `
+      SELECT COALESCE(SUM(COALESCE(amount_npr, (raw_firestore_data->>'transferAmount')::numeric)), 0) AS total
+      FROM public.financial_events_cache
+      WHERE player_uid = $1::text
+        AND type = 'cash_to_coin_transfer'
+        AND deleted_at IS NULL
+        AND created_at > now() - interval '24 hours'
+    `,
+    [input.playerUid]
+  );
+  const existingTotal = numberValue((dailyTotal.rows[0] as Record<string, unknown> | undefined)?.total);
+  if (existingTotal + input.amount > CASH_TO_COIN_DAILY_LIMIT) {
+    throw new Error('Daily transfer limit reached.');
+  }
+}
+
 function storedTransferResult(
   payload: Record<string, unknown>,
   transferId: string,
@@ -120,8 +183,8 @@ function storedTransferResult(
   return {
     success: true,
     duplicate: true,
-    cash: Math.max(0, Math.floor(Number(payload.cash || 0))),
-    coin: Math.max(0, Math.floor(Number(payload.coin || 0))),
+    cash: numberValue(payload.cash),
+    coin: numberValue(payload.coin),
     transferAmount: Math.max(0, Number(payload.transferAmount || 0)),
     feeAmount: Number(payload.feeAmount || 0),
     tipAmount: Number(payload.tipAmount || 0),
@@ -210,9 +273,12 @@ async function insertTransferFinancialEvent(
     playerId: input.playerUid,
     coadminUid: input.coadminUid,
     transferAmount: input.transferAmount,
+    grossAmount: input.transferAmount,
     amountNpr: input.direction === 'cash_to_coin' ? input.transferAmount : undefined,
     amountCoins: input.direction === 'coin_to_cash' ? input.transferAmount : undefined,
     feeAmount: input.feeAmount,
+    netCoinAmount: input.direction === 'cash_to_coin' ? input.coinsReceived ?? 0 : undefined,
+    netCashAmount: input.direction === 'coin_to_cash' ? input.cashReceived ?? 0 : undefined,
     tipAmount: input.tipAmount,
     tipNpr: input.tipAmount,
     coinsReceived: input.coinsReceived ?? null,
@@ -321,6 +387,9 @@ async function insertTransferLedgerEvents(
     sourceFields: {
       beforeCash: input.beforeCash,
       afterCash: input.afterCash,
+      grossAmount: input.rawEvent.transferAmount,
+      feeAmount: input.rawEvent.feeAmount,
+      netAmount: input.direction === 'cash_to_coin' ? input.rawEvent.coinsReceived : input.rawEvent.cashReceived,
     },
   });
 
@@ -345,6 +414,9 @@ async function insertTransferLedgerEvents(
     sourceFields: {
       beforeCoin: input.beforeCoin,
       afterCoin: input.afterCoin,
+      grossAmount: input.rawEvent.transferAmount,
+      feeAmount: input.rawEvent.feeAmount,
+      netAmount: input.direction === 'cash_to_coin' ? input.rawEvent.coinsReceived : input.rawEvent.cashReceived,
     },
   });
 }
@@ -377,6 +449,9 @@ export async function transferPlayerBalancesInSql(input: {
 
   if (!amount) {
     throw new Error('Amount must be a positive whole number.');
+  }
+  if (direction === 'cash_to_coin' && amount > CASH_TO_COIN_MAX_TRANSFER_AMOUNT) {
+    throw new Error('Maximum transfer amount is $25.');
   }
   if (direction === 'coin_to_cash' && amount < 10) {
     throw new Error('Minimum Coin to Cash amount is 10.');
@@ -531,8 +606,15 @@ export async function transferPlayerBalancesInSql(input: {
       throw new Error('Transfer is temporarily blocked. Contact staff.');
     }
 
-    const currentCash = Math.max(0, Math.floor(Number(player.cash || 0)));
-    const currentCoin = Math.max(0, Math.floor(Number(player.coin || 0)));
+    if (direction === 'cash_to_coin') {
+      await enforceCashToCoinTransferLimitsInTxn(client, {
+        playerUid,
+        amount,
+      });
+    }
+
+    const currentCash = numberValue(player.cash);
+    const currentCoin = numberValue(player.coin);
     console.info('[AUTHORITY_TRANSFER_BALANCE_BEFORE]', {
       playerUid,
       direction,
@@ -593,9 +675,12 @@ export async function transferPlayerBalancesInSql(input: {
       playerId: playerUid,
       coadminUid,
       transferAmount: amount,
+      grossAmount: amount,
       amountNpr: direction === 'cash_to_coin' ? amount : undefined,
       amountCoins: direction === 'coin_to_cash' ? amount : undefined,
       feeAmount,
+      netCoinAmount: direction === 'cash_to_coin' ? coinsReceived ?? 0 : undefined,
+      netCashAmount: direction === 'coin_to_cash' ? cashReceived ?? 0 : undefined,
       tipAmount,
       tipNpr: tipAmount,
       coinsReceived: coinsReceived ?? null,
