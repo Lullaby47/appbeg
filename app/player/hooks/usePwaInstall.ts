@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
@@ -35,11 +35,34 @@ function isIosDevice(): boolean {
   return platform === 'MacIntel' && maxTouchPoints > 1;
 }
 
+function isAndroidChrome(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  const ua = window.navigator.userAgent;
+
+  if (!/Android/i.test(ua)) {
+    return false;
+  }
+
+  if (
+    /Firefox|FxiOS|OPR|Opera|EdgA|SamsungBrowser|UCBrowser|MiuiBrowser/i.test(
+      ua
+    )
+  ) {
+    return false;
+  }
+
+  return /Chrome/i.test(ua);
+}
+
 export function usePwaInstall() {
   const [deferredPrompt, setDeferredPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState(false);
   const [showIosGuide, setShowIosGuide] = useState(false);
+  const [showAndroidPreparing, setShowAndroidPreparing] = useState(false);
   const [showAndroidFallback, setShowAndroidFallback] = useState(false);
 
   useEffect(() => {
@@ -50,6 +73,7 @@ export function usePwaInstall() {
     const handleBeforeInstallPrompt = (event: Event) => {
       event.preventDefault();
       setDeferredPrompt(event as BeforeInstallPromptEvent);
+      setShowAndroidPreparing(false);
     };
 
     const handleAppInstalled = () => {
@@ -67,6 +91,18 @@ export function usePwaInstall() {
   }, []);
 
   const canShowInstallButton = !isInstalled;
+
+  const installButtonLabel = useMemo(() => {
+    if (isIosDevice()) {
+      return 'Install App';
+    }
+
+    if (isAndroidChrome() && !deferredPrompt) {
+      return 'Preparing Install…';
+    }
+
+    return 'Install App';
+  }, [deferredPrompt]);
 
   const handleInstallClick = useCallback(async () => {
     if (isIosDevice()) {
@@ -86,11 +122,20 @@ export function usePwaInstall() {
       return;
     }
 
+    if (isAndroidChrome()) {
+      setShowAndroidPreparing(true);
+      return;
+    }
+
     setShowAndroidFallback(true);
   }, [deferredPrompt]);
 
   const closeIosGuide = useCallback(() => {
     setShowIosGuide(false);
+  }, []);
+
+  const closeAndroidPreparing = useCallback(() => {
+    setShowAndroidPreparing(false);
   }, []);
 
   const closeAndroidFallback = useCallback(() => {
@@ -99,9 +144,12 @@ export function usePwaInstall() {
 
   return {
     canShowInstallButton,
+    installButtonLabel,
     showIosGuide,
+    showAndroidPreparing,
     showAndroidFallback,
     closeIosGuide,
+    closeAndroidPreparing,
     closeAndroidFallback,
     handleInstallClick,
   };
