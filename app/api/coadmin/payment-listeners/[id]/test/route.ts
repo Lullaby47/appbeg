@@ -15,6 +15,7 @@ import { cleanText } from '@/lib/sql/playerMirrorCommon';
 export const runtime = 'nodejs';
 
 const ROUTE = '/api/coadmin/payment-listeners/[id]/test';
+const IS_DEVELOPMENT = process.env.NODE_ENV !== 'production';
 
 function resolveCoadminUid(authUser: ApiUser, requestedCoadminUid: string) {
   if (authUser.role === 'coadmin') {
@@ -82,7 +83,7 @@ export async function POST(
       provider: listener.provider,
       host: listener.imapHost,
       port: listener.imapPort,
-      useSsl: listener.useSsl,
+      ssl: listener.useSsl,
       username: listener.email,
       ok: true,
     });
@@ -110,7 +111,7 @@ export async function POST(
       provider: listener.provider,
       host: listener.imapHost,
       port: listener.imapPort,
-      useSsl: listener.useSsl,
+      ssl: listener.useSsl,
       username: listener.email,
       ok: false,
       ...errorDetails,
@@ -123,6 +124,16 @@ export async function POST(
         error: message,
         message,
         listener: updated ? publicPaymentListener(updated) : publicPaymentListener(listener),
+        debug: IS_DEVELOPMENT
+          ? {
+              rawImapAuthResponse: errorDetails.rawImapAuthResponse,
+              failureKind: errorDetails.failureKind,
+              host: listener.imapHost,
+              port: listener.imapPort,
+              ssl: listener.useSsl,
+              username: listener.email,
+            }
+          : undefined,
         source: 'postgres',
         firestore_fallback: false,
       },

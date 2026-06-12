@@ -55,6 +55,10 @@ class ImapLoginError extends Error {
   }
 }
 
+function hasOuterWhitespace(value: string) {
+  return value.length > 0 && value !== value.trim();
+}
+
 export const PAYMENT_LISTENER_PROVIDER_DEFAULTS: Record<
   PaymentListenerProvider,
   { imapHost: string; imapPort: number; useSsl: boolean }
@@ -447,6 +451,18 @@ export async function notifyPaymentListenerConfigChanged(input: {
 
 export async function testPaymentListenerConnection(listener: PaymentListenerSecret) {
   const password = decryptPaymentListenerPassword(listener.encryptedPassword);
+  console.info('[PAYMENT_LISTENER_TEST]', {
+    listenerId: listener.id,
+    provider: listener.provider,
+    host: listener.imapHost,
+    port: listener.imapPort,
+    ssl: listener.useSsl,
+    username: listener.email,
+    passwordSource: 'stored_encrypted_password_decrypted_for_imap_login',
+    decryptedPasswordPresent: Boolean(password),
+    decryptedPasswordLength: password.length,
+    decryptedPasswordHasOuterWhitespace: hasOuterWhitespace(password),
+  });
   await testImapLogin({
     host: listener.imapHost,
     port: listener.imapPort,
@@ -506,11 +522,17 @@ async function testImapLogin(input: {
   }
 
   return await new Promise<void>((resolve, reject) => {
-    console.info('[PAYMENT_LISTENER_TEST_IMAP_AUTH_START]', {
+    console.info('[PAYMENT_LISTENER_TEST]', {
       host,
       port: input.port,
-      useSsl: input.useSsl,
+      ssl: input.useSsl,
       username: email,
+      passwordSource: 'decrypted_stored_password',
+      fullEmailUsername: email,
+      outlookDefaultConfig:
+        host === PAYMENT_LISTENER_PROVIDER_DEFAULTS.outlook.imapHost &&
+        input.port === PAYMENT_LISTENER_PROVIDER_DEFAULTS.outlook.imapPort &&
+        input.useSsl === PAYMENT_LISTENER_PROVIDER_DEFAULTS.outlook.useSsl,
     });
     const socket = input.useSsl
       ? tls.connect({ host, port: input.port, servername: host, timeout: TEST_TIMEOUT_MS })
@@ -530,10 +552,10 @@ async function testImapLogin(input: {
       if (error) {
         reject(error instanceof ImapLoginError ? error : new Error(classifyImapError(error.message)));
       } else {
-        console.info('[PAYMENT_LISTENER_TEST_IMAP_AUTH_RESULT]', {
+        console.info('[PAYMENT_LISTENER_IMAP_SUCCESS]', {
           host,
           port: input.port,
-          useSsl: input.useSsl,
+          ssl: input.useSsl,
           username: email,
           ok: true,
         });
@@ -544,10 +566,10 @@ async function testImapLogin(input: {
     const failWithLoggedError = (rawResponse: string, fallbackMessage?: string) => {
       const failureKind = classifyImapFailureKind(rawResponse || fallbackMessage || '');
       const frontendMessage = classifyImapError(rawResponse || fallbackMessage || '');
-      console.info('[PAYMENT_LISTENER_TEST_IMAP_AUTH_RESULT]', {
+      console.info('[PAYMENT_LISTENER_IMAP_ERROR]', {
         host,
         port: input.port,
-        useSsl: input.useSsl,
+        ssl: input.useSsl,
         username: email,
         ok: false,
         failureKind,
