@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { apiError, requireApiUser, scopedCoadminUid, type ApiUser } from '@/lib/firebase/apiAuth';
 import { encodePaymentListenerMicrosoftOAuthState } from '@/lib/server/paymentListenerMicrosoftOAuth';
 import { isDatabaseUrlConfigured } from '@/lib/server/sqlRuntime';
+import { isOutlookOAuthPaymentListenerEnabled } from '@/lib/sql/paymentListeners';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 
 export const runtime = 'nodejs';
@@ -21,6 +22,9 @@ function resolveCoadminUid(authUser: ApiUser, requestedCoadminUid: string) {
 }
 
 export async function GET(request: Request) {
+  if (!isOutlookOAuthPaymentListenerEnabled()) {
+    return apiError('Outlook OAuth listeners are disabled.', 404);
+  }
   const auth = await requireApiUser(request, ['admin', 'coadmin']);
   if ('response' in auth) {
     return auth.response;

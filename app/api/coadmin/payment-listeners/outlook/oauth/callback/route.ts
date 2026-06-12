@@ -5,6 +5,7 @@ import { isDatabaseUrlConfigured } from '@/lib/server/sqlRuntime';
 import {
   exchangeMicrosoftAuthorizationCode,
   fetchMicrosoftProfile,
+  isOutlookOAuthPaymentListenerEnabled,
   notifyPaymentListenerConfigChanged,
   upsertOutlookOAuthPaymentListener,
 } from '@/lib/sql/paymentListeners';
@@ -23,6 +24,9 @@ function coadminRedirect(request: Request, status: string, detail?: string) {
 }
 
 export async function GET(request: Request) {
+  if (!isOutlookOAuthPaymentListenerEnabled()) {
+    return coadminRedirect(request, 'error', 'oauth_disabled');
+  }
   if (!isDatabaseUrlConfigured()) {
     return coadminRedirect(request, 'error', 'database_unavailable');
   }

@@ -184,6 +184,10 @@ function microsoftOAuthConfig() {
   return { clientId, clientSecret, redirectUri };
 }
 
+export function isOutlookOAuthPaymentListenerEnabled() {
+  return cleanText(process.env.PAYMENT_LISTENER_OUTLOOK_OAUTH_ENABLED) === '1';
+}
+
 function mapRow(row: Record<string, unknown>, includeSecret = false): PaymentListener | PaymentListenerSecret {
   const provider = normalizePaymentListenerProvider(row.provider) || 'gmail';
   const mapped: PaymentListener = {
@@ -381,7 +385,8 @@ export async function updatePaymentListener(input: {
     throw new Error('Label and email are required.');
   }
 
-  const encryptedPassword = cleanText(input.password)
+  const passwordProvided = Boolean(cleanText(input.password));
+  const encryptedPassword = passwordProvided
     ? encryptPaymentListenerPassword(String(input.password))
     : existing.encryptedPassword;
 
@@ -394,8 +399,11 @@ export async function updatePaymentListener(input: {
           imap_host = $6,
           imap_port = $7,
           use_ssl = $8,
-          auth_type = CASE WHEN $4 = 'outlook' AND auth_type = 'oauth' THEN 'oauth' ELSE 'password' END,
+          auth_type = CASE WHEN $12::boolean THEN 'password' ELSE auth_type END,
           encrypted_password = $9,
+          encrypted_refresh_token = CASE WHEN $12::boolean THEN NULL ELSE encrypted_refresh_token END,
+          microsoft_user_id = CASE WHEN $12::boolean THEN NULL ELSE microsoft_user_id END,
+          token_expires_at = CASE WHEN $12::boolean THEN NULL ELSE token_expires_at END,
           auto_load = $10,
           enabled = $11,
           updated_at = now()
@@ -416,6 +424,7 @@ export async function updatePaymentListener(input: {
       encryptedPassword,
       input.autoLoad ?? existing.autoLoad,
       input.enabled ?? existing.enabled,
+      passwordProvided,
     ]
   );
   if (!result.rows[0]) {
@@ -780,7 +789,11 @@ async function testMicrosoftGraphMail(listener: PaymentListenerSecret) {
 }
 
 export async function testPaymentListenerConnection(listener: PaymentListenerSecret) {
-  if (listener.provider === 'outlook' && listener.authType === 'oauth') {
+  if (
+    listener.provider === 'outlook' &&
+    listener.authType === 'oauth' &&
+    isOutlookOAuthPaymentListenerEnabled()
+  ) {
     console.info('[PAYMENT_LISTENER_TEST]', {
       listenerId: listener.id,
       provider: listener.provider,
@@ -792,6 +805,9 @@ export async function testPaymentListenerConnection(listener: PaymentListenerSec
     });
     await testMicrosoftGraphMail(listener);
     return;
+  }
+  if (listener.provider === 'outlook' && listener.authType === 'oauth') {
+    throw new Error('Outlook OAuth listeners are disabled. Reconnect this listener with IMAP password mode.');
   }
 
   const password = decryptPaymentListenerPassword(listener.encryptedPassword);
@@ -852,6 +868,33 @@ function classifyImapFailureKind(rawResponse: string): ImapFailureKind {
   return 'connection_failed';
 }
 
+function readTlsDiagnostics(socket: net.Socket, useSsl: boolean) {
+  if (!useSsl || !(socket instanceof tls.TLSSocket)) {
+    return null;
+  }
+  const cipher = socket.getCipher();
+  return {
+    authorized: socket.authorized,
+    authorizationError: socket.authorizationError || null,
+    protocol: socket.getProtocol(),
+    cipher: cipher?.name || null,
+    cipherVersion: cipher?.version || null,
+  };
+}
+
+function parseImapCapability(lines: string[]) {
+  const capabilityLine = lines.find((line) => /^\* CAPABILITY\s+/i.test(line)) || '';
+  const capabilities = capabilityLine.replace(/^\* CAPABILITY\s+/i, '').split(/\s+/).filter(Boolean);
+  return {
+    capabilities,
+    authMechanisms: capabilities
+      .filter((capability) => /^AUTH=/i.test(capability))
+      .map((capability) => capability.replace(/^AUTH=/i, '')),
+    loginDisabled: capabilities.some((capability) => /^LOGINDISABLED$/i.test(capability)),
+    hasPlainLogin: !capabilities.some((capability) => /^LOGINDISABLED$/i.test(capability)),
+  };
+}
+
 async function testImapLogin(input: {
   host: string;
   port: number;
@@ -883,8 +926,26 @@ async function testImapLogin(input: {
       : net.connect({ host, port: input.port, timeout: TEST_TIMEOUT_MS });
     let buffer = '';
     let settled = false;
+    let capabilityRequested = false;
     let loginSent = false;
-    const loginTag = 'a001';
+    const capabilityTag = 'a001';
+    const loginTag = 'a002';
+    const logoutTag = 'a003';
+    const serverLines: string[] = [];
+    const capabilityLines: string[] = [];
+
+    const logDiagnostic = (stage: string, extra: Record<string, unknown> = {}) => {
+      console.info('[PAYMENT_LISTENER_IMAP_DIAGNOSTIC]', {
+        stage,
+        host,
+        port: input.port,
+        ssl: input.useSsl,
+        username: email,
+        tls: readTlsDiagnostics(socket, input.useSsl),
+        ...parseImapCapability(capabilityLines),
+        ...extra,
+      });
+    };
 
     const finish = (error?: Error) => {
       if (settled) {
@@ -902,6 +963,7 @@ async function testImapLogin(input: {
           ssl: input.useSsl,
           username: email,
           ok: true,
+          ...parseImapCapability(capabilityLines),
         });
         resolve();
       }
@@ -918,7 +980,14 @@ async function testImapLogin(input: {
         ok: false,
         failureKind,
         rawImapAuthResponse: rawResponse || null,
+        recentServerLines: serverLines.slice(-8),
+        ...parseImapCapability(capabilityLines),
         error: fallbackMessage || frontendMessage,
+      });
+      logDiagnostic('auth_failed', {
+        rawImapAuthResponse: rawResponse || null,
+        recentServerLines: serverLines.slice(-8),
+        failureKind,
       });
       finish(new ImapLoginError(frontendMessage, rawResponse, failureKind));
     };
@@ -931,18 +1000,42 @@ async function testImapLogin(input: {
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() || '';
       for (const line of lines) {
-        if (!loginSent && /^\* OK/i.test(line)) {
+        const cleanLine = line.trim();
+        if (!cleanLine) {
+          continue;
+        }
+        serverLines.push(cleanLine);
+        if (serverLines.length > 20) {
+          serverLines.shift();
+        }
+        if (/^\* CAPABILITY\s+/i.test(cleanLine)) {
+          capabilityLines.push(cleanLine);
+        }
+        if (!capabilityRequested && /^\* OK/i.test(cleanLine)) {
+          capabilityRequested = true;
+          logDiagnostic('greeting_received', { greeting: cleanLine });
+          socket.write(`${capabilityTag} CAPABILITY\r\n`);
+          continue;
+        }
+        if (cleanLine.startsWith(`${capabilityTag} OK`)) {
+          logDiagnostic('capability_received', { rawCapabilityResponse: capabilityLines });
           loginSent = true;
           socket.write(`${loginTag} LOGIN ${imapQuoted(email)} ${imapQuoted(input.password)}\r\n`);
           continue;
         }
-        if (line.startsWith(`${loginTag} OK`)) {
-          socket.write('a002 LOGOUT\r\n');
+        if (cleanLine.startsWith(`${capabilityTag} NO`) || cleanLine.startsWith(`${capabilityTag} BAD`)) {
+          logDiagnostic('capability_failed', { rawCapabilityResponse: cleanLine });
+          loginSent = true;
+          socket.write(`${loginTag} LOGIN ${imapQuoted(email)} ${imapQuoted(input.password)}\r\n`);
+          continue;
+        }
+        if (cleanLine.startsWith(`${loginTag} OK`)) {
+          socket.write(`${logoutTag} LOGOUT\r\n`);
           finish();
           return;
         }
-        if (line.startsWith(`${loginTag} NO`) || line.startsWith(`${loginTag} BAD`)) {
-          failWithLoggedError(line);
+        if (cleanLine.startsWith(`${loginTag} NO`) || cleanLine.startsWith(`${loginTag} BAD`)) {
+          failWithLoggedError(cleanLine);
           return;
         }
       }
