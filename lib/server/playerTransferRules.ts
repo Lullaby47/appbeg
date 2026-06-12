@@ -22,6 +22,9 @@ export function getCashToCoinFee(amountNpr: number) {
 }
 
 export function getCoinToCashTip(amountCoins: number) {
+  if (!Number.isFinite(amountCoins) || amountCoins <= 0) return 0;
+  if (amountCoins <= 20) return 1;
+  if (amountCoins > 200) return Number((amountCoins * 0.1).toFixed(2));
   if (amountCoins >= 150) return 10;
   if (amountCoins >= 100) return 8;
   if (amountCoins >= 40) return 4;

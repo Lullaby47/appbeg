@@ -175,6 +175,48 @@ async function enforceCashToCoinTransferLimitsInTxn(
   }
 }
 
+async function enforceCoinToCashTransferLimitsInTxn(
+  client: PoolClient,
+  input: {
+    playerUid: string;
+    amount: number;
+  }
+) {
+  const recentTransfer = await client.query(
+    `
+      SELECT
+        created_at,
+        GREATEST(
+          0,
+          CEIL(EXTRACT(EPOCH FROM (created_at + interval '30 minutes' - now())) * 1000)
+        )::bigint AS remaining_wait_ms
+      FROM public.financial_events_cache
+      WHERE player_uid = $1::text
+        AND type = 'coin_to_cash_transfer'
+        AND deleted_at IS NULL
+        AND created_at > now() - interval '30 minutes'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    [input.playerUid]
+  );
+
+  if (!recentTransfer.rows.length) {
+    return;
+  }
+
+  const lastTransfer = recentTransfer.rows[0] as Record<string, unknown>;
+  const lastTransferAt = toIsoString(lastTransfer.created_at) || null;
+  const remainingWaitMs = Math.max(0, Number(lastTransfer.remaining_wait_ms || 0));
+  console.info('[COIN_TO_CASH_TRANSFER_BLOCKED]', {
+    uid: input.playerUid,
+    amount: input.amount,
+    lastTransferAt,
+    remainingWaitMs,
+  });
+  throw new Error('You can transfer again 30 minutes after your last coin-to-cash transfer.');
+}
+
 function storedTransferResult(
   payload: Record<string, unknown>,
   transferId: string,
@@ -608,6 +650,11 @@ export async function transferPlayerBalancesInSql(input: {
 
     if (direction === 'cash_to_coin') {
       await enforceCashToCoinTransferLimitsInTxn(client, {
+        playerUid,
+        amount,
+      });
+    } else {
+      await enforceCoinToCashTransferLimitsInTxn(client, {
         playerUid,
         amount,
       });

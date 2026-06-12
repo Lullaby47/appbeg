@@ -48,6 +48,19 @@ function getCashToCoinFee(amountNpr) {
   return Number((amountNpr * 0.02).toFixed(2));
 }
 
+function getCoinToCashTip(amountCoins) {
+  if (!Number.isFinite(amountCoins) || amountCoins <= 0) return 0;
+  if (amountCoins <= 20) return 1;
+  if (amountCoins > 200) return Number((amountCoins * 0.1).toFixed(2));
+  if (amountCoins >= 150) return 10;
+  if (amountCoins >= 100) return 8;
+  if (amountCoins >= 40) return 4;
+  if (amountCoins >= 30) return 3;
+  if (amountCoins >= 20) return 2;
+  if (amountCoins >= 10) return 1;
+  return 0;
+}
+
 async function testDoubleCashToCoinIdempotency(pool, playerUid) {
   const transferId = `test-${randomUUID().replace(/-/g, '').slice(0, 16)}`;
   const operationKey = `transfer:${playerUid}:cash_to_coin:${transferId}`;
@@ -136,6 +149,19 @@ async function testFeeRule() {
   };
 }
 
+async function testCoinToCashTipRule() {
+  return {
+    test: 'coin_to_cash_tip_rule',
+    amount20Tip: getCoinToCashTip(20),
+    amount100Tip: getCoinToCashTip(100),
+    amount250Tip: getCoinToCashTip(250),
+    ok:
+      getCoinToCashTip(20) === 1 &&
+      getCoinToCashTip(100) === 8 &&
+      getCoinToCashTip(250) === 25,
+  };
+}
+
 async function main() {
   const playerUid = req('TEST_PLAYER_UID');
   const pool = new Pool({
@@ -149,6 +175,7 @@ async function main() {
     await testInsufficientCoin(pool, playerUid),
     await testInvalidAmount(),
     await testFeeRule(),
+    await testCoinToCashTipRule(),
   ];
 
   await pool.end();

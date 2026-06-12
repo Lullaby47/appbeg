@@ -33,12 +33,29 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const ROUTE = '/api/player/transfer/coin-to-cash';
+const COIN_TO_CASH_COOLDOWN_MS = 30 * 60_000;
 
 type Body = {
   amountCoins?: unknown;
   transferId?: unknown;
   idempotencyKey?: unknown;
 };
+
+function firestoreMillis(value: unknown) {
+  if (!value) return 0;
+  if (typeof value === 'object' && 'toMillis' in value) {
+    const millis = (value as { toMillis?: () => number }).toMillis?.();
+    return Number.isFinite(millis) ? Number(millis) : 0;
+  }
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof value === 'string') {
+    const millis = Date.parse(value);
+    return Number.isNaN(millis) ? 0 : millis;
+  }
+  return 0;
+}
 
 export async function POST(request: Request) {
   const headerSessions = sessionIdsFromRequest(request);
@@ -231,6 +248,45 @@ export async function POST(request: Request) {
       const blockedUntilMs = playerData.transferBlockedUntil?.toMillis?.() || 0;
       if (blockedUntilMs > Date.now()) {
         throw new Error('Transfer is temporarily blocked. Contact staff.');
+      }
+
+      const transferHistorySnap = await transaction.get(
+        adminDb.collection('financialEvents').where('playerUid', '==', playerUid)
+      );
+      let lastTransferAtMs = 0;
+      transferHistorySnap.forEach((eventDoc) => {
+        const event = eventDoc.data() as {
+          type?: string;
+          deletedAt?: unknown;
+          deleted_at?: unknown;
+          createdAt?: unknown;
+          timestamp?: unknown;
+        };
+        if (
+          event.type !== 'coin_to_cash_transfer' ||
+          event.deletedAt ||
+          event.deleted_at
+        ) {
+          return;
+        }
+        const createdAtMs =
+          firestoreMillis(event.createdAt) || firestoreMillis(event.timestamp);
+        if (createdAtMs > lastTransferAtMs) {
+          lastTransferAtMs = createdAtMs;
+        }
+      });
+
+      const remainingWaitMs = COIN_TO_CASH_COOLDOWN_MS - (Date.now() - lastTransferAtMs);
+      if (lastTransferAtMs > 0 && remainingWaitMs > 0) {
+        console.info('[COIN_TO_CASH_TRANSFER_BLOCKED]', {
+          uid: playerUid,
+          amount: amountCoins,
+          lastTransferAt: new Date(lastTransferAtMs).toISOString(),
+          remainingWaitMs,
+        });
+        throw new Error(
+          'You can transfer again 30 minutes after your last coin-to-cash transfer.'
+        );
       }
 
       const currentCash = Math.max(0, Number(playerData.cash || 0));

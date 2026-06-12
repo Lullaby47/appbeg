@@ -223,6 +223,9 @@ const MIN_PLAYER_PASSWORD_LENGTH = 6;
 const CASH_TO_COIN_MAX_TRANSFER_AMOUNT = 25;
 
 function getCoinToCashTip(amount: number) {
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  if (amount <= 20) return 1;
+  if (amount > 200) return Number((amount * 0.1).toFixed(2));
   if (amount >= 150) return 10;
   if (amount >= 100) return 8;
   if (amount >= 40) return 4;
