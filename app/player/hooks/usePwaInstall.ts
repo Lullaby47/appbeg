@@ -1,11 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 };
+
+/** Max wait for beforeinstallprompt on Android Chrome before manual instructions. */
+const ANDROID_PROMPT_WAIT_MS = 6000;
 
 function isStandaloneMode(): boolean {
   if (typeof window === 'undefined') {
@@ -61,17 +64,29 @@ export function usePwaInstall() {
   const [deferredPrompt, setDeferredPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState(false);
+  const [isAndroidChromeClient, setIsAndroidChromeClient] = useState(false);
+  const [androidPromptTimedOut, setAndroidPromptTimedOut] = useState(false);
   const [showIosGuide, setShowIosGuide] = useState(false);
   const [showAndroidPreparing, setShowAndroidPreparing] = useState(false);
   const [showAndroidFallback, setShowAndroidFallback] = useState(false);
+  const androidPromptWaitTimerRef = useRef<number | null>(null);
+
+  const clearAndroidPromptWaitTimer = useCallback(() => {
+    if (androidPromptWaitTimerRef.current !== null) {
+      window.clearTimeout(androidPromptWaitTimerRef.current);
+      androidPromptWaitTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     setIsInstalled(isStandaloneMode());
+    setIsAndroidChromeClient(isAndroidChrome());
   }, []);
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (event: Event) => {
       event.preventDefault();
+      clearAndroidPromptWaitTimer();
       setDeferredPrompt(event as BeforeInstallPromptEvent);
       setShowAndroidPreparing(false);
     };
@@ -79,6 +94,7 @@ export function usePwaInstall() {
     const handleAppInstalled = () => {
       setIsInstalled(true);
       setDeferredPrompt(null);
+      clearAndroidPromptWaitTimer();
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
@@ -87,8 +103,34 @@ export function usePwaInstall() {
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
       window.removeEventListener('appinstalled', handleAppInstalled);
+      clearAndroidPromptWaitTimer();
     };
-  }, []);
+  }, [clearAndroidPromptWaitTimer]);
+
+  useEffect(() => {
+    clearAndroidPromptWaitTimer();
+
+    if (!isAndroidChromeClient || isInstalled || deferredPrompt) {
+      return;
+    }
+
+    setAndroidPromptTimedOut(false);
+
+    androidPromptWaitTimerRef.current = window.setTimeout(() => {
+      androidPromptWaitTimerRef.current = null;
+      setAndroidPromptTimedOut(true);
+      setShowAndroidPreparing(false);
+    }, ANDROID_PROMPT_WAIT_MS);
+
+    return () => {
+      clearAndroidPromptWaitTimer();
+    };
+  }, [
+    clearAndroidPromptWaitTimer,
+    deferredPrompt,
+    isAndroidChromeClient,
+    isInstalled,
+  ]);
 
   const canShowInstallButton = !isInstalled;
 
@@ -97,12 +139,16 @@ export function usePwaInstall() {
       return 'Install App';
     }
 
-    if (isAndroidChrome() && !deferredPrompt) {
+    if (deferredPrompt) {
+      return 'Install App';
+    }
+
+    if (isAndroidChromeClient && !androidPromptTimedOut) {
       return 'Preparing Install…';
     }
 
     return 'Install App';
-  }, [deferredPrompt]);
+  }, [androidPromptTimedOut, deferredPrompt, isAndroidChromeClient]);
 
   const handleInstallClick = useCallback(async () => {
     if (isIosDevice()) {
@@ -123,12 +169,16 @@ export function usePwaInstall() {
     }
 
     if (isAndroidChrome()) {
-      setShowAndroidPreparing(true);
+      if (androidPromptTimedOut) {
+        setShowAndroidFallback(true);
+      } else {
+        setShowAndroidPreparing(true);
+      }
       return;
     }
 
     setShowAndroidFallback(true);
-  }, [deferredPrompt]);
+  }, [androidPromptTimedOut, deferredPrompt]);
 
   const closeIosGuide = useCallback(() => {
     setShowIosGuide(false);

@@ -45,9 +45,23 @@ export default function PwaAndroidInstallHint({
             >
               Install Royal VIP
             </h2>
-            <p className="mt-4 text-center text-sm leading-relaxed text-amber-50/90">
-              Use your browser menu and choose Install App.
+            <p className="mt-2 text-center text-sm text-amber-100/70">
+              Add this app to your home screen for quick access.
             </p>
+            <ol className="mt-5 space-y-4 text-sm text-amber-50/90">
+              <li className="rounded-2xl border border-amber-400/20 bg-black/35 px-4 py-3">
+                <span className="font-black text-amber-300">Step 1:</span> Tap
+                the Chrome menu ⋮
+              </li>
+              <li className="rounded-2xl border border-amber-400/20 bg-black/35 px-4 py-3">
+                <span className="font-black text-amber-300">Step 2:</span> Tap
+                &quot;Add to Home screen&quot; or &quot;Install app&quot;
+              </li>
+              <li className="rounded-2xl border border-amber-400/20 bg-black/35 px-4 py-3">
+                <span className="font-black text-amber-300">Step 3:</span> Tap
+                &quot;Install&quot; or &quot;Add&quot;
+              </li>
+            </ol>
             <button
               type="button"
               onClick={onClose}
