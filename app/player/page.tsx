@@ -197,7 +197,7 @@ const GAME_VAULT_MIDNIGHT_PARTY_WARNING_MARKER =
   'players can only deposit again after selecting whether or not to participate in the midnight party program';
 const GAME_VAULT_MIDNIGHT_PARTY_PLAYER_MESSAGE =
   'Recharge blocked: Please open Game Vault and choose whether to participate in the Midnight Party program for your previous deposit before depositing again.';
-const PLAYER_PWA_EXIT_GUARD_HISTORY_KEY = '__royalVipPlayerPwaExitGuard';
+const PLAYER_PWA_EXIT_GUARD_HISTORY_KEY = 'royalVipBackGuard';
 
 function requestMatchesMidnightPartyDismiss(input: {
   dismissReasonCode?: string | null;
@@ -841,22 +841,23 @@ export default function PlayerPage() {
       return undefined;
     }
 
+    console.info('[PWA_BACK] standalone detected');
+
     const hasExitGuardState = () => {
       const state = window.history.state as Record<string, unknown> | null;
       return Boolean(state?.[PLAYER_PWA_EXIT_GUARD_HISTORY_KEY]);
     };
 
     const pushExitGuardState = () => {
-      if (pwaExitConfirmedRef.current || hasExitGuardState()) {
+      if (pwaExitConfirmedRef.current) {
         return;
       }
       window.history.pushState(
-        {
-          ...(window.history.state || {}),
-          [PLAYER_PWA_EXIT_GUARD_HISTORY_KEY]: true,
-        },
-        ''
+        { [PLAYER_PWA_EXIT_GUARD_HISTORY_KEY]: true },
+        '',
+        window.location.href
       );
+      console.info('[PWA_BACK] guard pushed');
     };
 
     const closeTopPlayerOverlay = () => {
@@ -912,15 +913,23 @@ export default function PlayerPage() {
       return false;
     };
 
-    pushExitGuardState();
+    if (!hasExitGuardState()) {
+      pushExitGuardState();
+    }
 
     const onPlayerPwaBack = () => {
+      console.info('[PWA_BACK] popstate', {
+        hasGuardState: hasExitGuardState(),
+        pathname: window.location.pathname,
+      });
+
       if (pwaExitConfirmedRef.current) {
         return;
       }
 
       if (pwaBackHandledByOverlayRef.current) {
         pwaBackHandledByOverlayRef.current = false;
+        console.info('[PWA_BACK] modal/menu open close-first');
         pushExitGuardState();
         return;
       }
@@ -930,12 +939,14 @@ export default function PlayerPage() {
       }
 
       if (closeTopPlayerOverlay()) {
+        console.info('[PWA_BACK] modal/menu open close-first');
         pushExitGuardState();
         return;
       }
 
-      setShowPwaExitConfirm(true);
       pushExitGuardState();
+      setShowPwaExitConfirm(true);
+      console.info('[PWA_BACK] exit confirm shown');
     };
 
     window.addEventListener('popstate', onPlayerPwaBack);
@@ -5966,9 +5977,13 @@ export default function PlayerPage() {
               <button
                 type="button"
                 onClick={() => {
+                  console.info('[PWA_BACK] exit confirmed');
                   pwaExitConfirmedRef.current = true;
                   setShowPwaExitConfirm(false);
                   window.history.back();
+                  window.setTimeout(() => {
+                    window.history.back();
+                  }, 80);
                 }}
                 className="fire-button fire-orange flex-1 rounded-xl bg-amber-400 px-4 py-3 text-sm font-black text-black hover:bg-amber-300"
               >
