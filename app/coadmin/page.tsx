@@ -154,6 +154,16 @@ import {
 } from '@/features/maintenance/maintenanceBreak';
 import { normalizeMaintenanceBreak, type MaintenanceBreak } from '@/lib/maintenance/config';
 import { giveFreeplayGift } from '@/features/freeplay/coadminFreeplay';
+import {
+  createPaymentListener,
+  deletePaymentListener,
+  listPaymentListeners,
+  paymentListenerDefaults,
+  testPaymentListener,
+  updatePaymentListener,
+  type PaymentListener,
+  type PaymentListenerProvider,
+} from '@/features/paymentListeners/paymentListeners';
 
 type CoadminView =
   | 'dashboard'
@@ -169,6 +179,7 @@ type CoadminView =
   | 'add-games'
   | 'game-list'
   | 'payment-details'
+  | 'listener-details'
   | 'shifts'
   | 'reach-out'
   | 'behaviours';
@@ -235,6 +246,38 @@ type StaffBehaviourRow = {
     }>;
   };
 };
+
+type PaymentListenerForm = {
+  id: string | null;
+  label: string;
+  provider: PaymentListenerProvider;
+  email: string;
+  password: string;
+  imapHost: string;
+  imapPort: string;
+  useSsl: boolean;
+  autoLoad: boolean;
+  enabled: boolean;
+};
+
+function buildPaymentListenerForm(
+  provider: PaymentListenerProvider = 'gmail',
+  listener?: PaymentListener
+): PaymentListenerForm {
+  const defaults = paymentListenerDefaults(listener?.provider || provider);
+  return {
+    id: listener?.id || null,
+    label: listener?.label || '',
+    provider: listener?.provider || provider,
+    email: listener?.email || '',
+    password: '',
+    imapHost: listener?.imapHost || defaults.imapHost,
+    imapPort: String(listener?.imapPort || defaults.imapPort),
+    useSsl: listener?.useSsl ?? defaults.useSsl,
+    autoLoad: listener?.autoLoad ?? false,
+    enabled: listener?.enabled ?? true,
+  };
+}
 
 type PlayerRecordTab = 'coin-recharge' | 'cashout' | 'coin-recharge-ingame' | 'redeem';
 
@@ -515,6 +558,15 @@ export default function CoadminPage() {
   const [paymentDetailPhotos, setPaymentDetailPhotos] = useState<PaymentDetailPhoto[]>([]);
   const [loadingPaymentDetailPhotos, setLoadingPaymentDetailPhotos] = useState(false);
   const [paymentDetailUploading, setPaymentDetailUploading] = useState(false);
+  const [paymentListeners, setPaymentListeners] = useState<PaymentListener[]>([]);
+  const [paymentListenersLoading, setPaymentListenersLoading] = useState(false);
+  const [paymentListenerSaving, setPaymentListenerSaving] = useState(false);
+  const [paymentListenerTestingId, setPaymentListenerTestingId] = useState<string | null>(null);
+  const [paymentListenerDeletingId, setPaymentListenerDeletingId] = useState<string | null>(null);
+  const [showPaymentListenerForm, setShowPaymentListenerForm] = useState(false);
+  const [paymentListenerForm, setPaymentListenerForm] = useState<PaymentListenerForm>(
+    buildPaymentListenerForm('gmail')
+  );
   const [shiftSessions, setShiftSessions] = useState<ShiftSession[]>([]);
   const [rewardCutAmountByUid, setRewardCutAmountByUid] = useState<Record<string, string>>({});
   const [rewardCutReasonByUid, setRewardCutReasonByUid] = useState<Record<string, string>>({});
@@ -1244,6 +1296,38 @@ export default function CoadminPage() {
         }
       }
     })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeView, coadminActorUid]);
+
+  useEffect(() => {
+    if (activeView !== 'listener-details') {
+      return;
+    }
+    const uid = resolveCoadminActorUid(coadminActorUid);
+    if (!uid) {
+      return;
+    }
+    let cancelled = false;
+    setPaymentListenersLoading(true);
+    setMessage('');
+    void listPaymentListeners(uid)
+      .then((listeners) => {
+        if (!cancelled) {
+          setPaymentListeners(listeners);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setMessage(error instanceof Error ? error.message : 'Failed to load listeners.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setPaymentListenersLoading(false);
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -3376,6 +3460,135 @@ export default function CoadminPage() {
     }
   }
 
+  function refreshPaymentListenerRow(listener: PaymentListener) {
+    setPaymentListeners((current) => {
+      const exists = current.some((row) => row.id === listener.id);
+      if (!exists) {
+        return [listener, ...current];
+      }
+      return current.map((row) => (row.id === listener.id ? listener : row));
+    });
+  }
+
+  function handleAddPaymentListener() {
+    setPaymentListenerForm(buildPaymentListenerForm('gmail'));
+    setShowPaymentListenerForm(true);
+    setMessage('');
+  }
+
+  function handleEditPaymentListener(listener: PaymentListener) {
+    setPaymentListenerForm(buildPaymentListenerForm(listener.provider, listener));
+    setShowPaymentListenerForm(true);
+    setMessage('');
+  }
+
+  function handlePaymentListenerProviderChange(provider: PaymentListenerProvider) {
+    const defaults = paymentListenerDefaults(provider);
+    setPaymentListenerForm((current) => ({
+      ...current,
+      provider,
+      imapHost: defaults.imapHost,
+      imapPort: String(defaults.imapPort),
+      useSsl: defaults.useSsl,
+    }));
+  }
+
+  async function handleSavePaymentListener() {
+    const uid = resolveCoadminActorUid(coadminActorUid);
+    if (!uid) {
+      setMessage('Not authenticated.');
+      return;
+    }
+    setPaymentListenerSaving(true);
+    setMessage('');
+    try {
+      const payload = {
+        coadminUid: uid,
+        label: paymentListenerForm.label,
+        provider: paymentListenerForm.provider,
+        email: paymentListenerForm.email,
+        password: paymentListenerForm.password,
+        imapHost: paymentListenerForm.imapHost,
+        imapPort: Number(paymentListenerForm.imapPort),
+        useSsl: paymentListenerForm.useSsl,
+        autoLoad: paymentListenerForm.autoLoad,
+        enabled: paymentListenerForm.enabled,
+      };
+      const result = paymentListenerForm.id
+        ? await updatePaymentListener(paymentListenerForm.id, payload)
+        : await createPaymentListener(payload);
+      refreshPaymentListenerRow(result.listener);
+      setShowPaymentListenerForm(false);
+      setPaymentListenerForm(buildPaymentListenerForm('gmail'));
+      setMessage(result.message || 'Listener saved');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to save listener.');
+    } finally {
+      setPaymentListenerSaving(false);
+    }
+  }
+
+  async function handleTogglePaymentListener(listener: PaymentListener) {
+    const uid = resolveCoadminActorUid(coadminActorUid);
+    if (!uid) {
+      setMessage('Not authenticated.');
+      return;
+    }
+    setMessage('');
+    try {
+      const result = await updatePaymentListener(listener.id, {
+        coadminUid: uid,
+        enabled: !listener.enabled,
+      });
+      refreshPaymentListenerRow(result.listener);
+      setMessage(result.listener.enabled ? 'Listener saved' : 'Listener disabled');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to update listener.');
+    }
+  }
+
+  async function handleDeletePaymentListener(listener: PaymentListener) {
+    const uid = resolveCoadminActorUid(coadminActorUid);
+    if (!uid) {
+      setMessage('Not authenticated.');
+      return;
+    }
+    setPaymentListenerDeletingId(listener.id);
+    setMessage('');
+    try {
+      await deletePaymentListener(listener.id, uid);
+      setPaymentListeners((current) => current.filter((row) => row.id !== listener.id));
+      setMessage('Listener deleted');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to delete listener.');
+    } finally {
+      setPaymentListenerDeletingId(null);
+    }
+  }
+
+  async function handleTestPaymentListener(listener: PaymentListener) {
+    const uid = resolveCoadminActorUid(coadminActorUid);
+    if (!uid) {
+      setMessage('Not authenticated.');
+      return;
+    }
+    setPaymentListenerTestingId(listener.id);
+    setMessage('');
+    try {
+      const result = await testPaymentListener(listener.id, uid);
+      refreshPaymentListenerRow(result.listener);
+      setMessage(result.message || 'Connection successful');
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : 'Connection failed';
+      setMessage(messageText || 'Invalid credentials');
+      void listPaymentListeners(uid)
+        .then(setPaymentListeners)
+        .catch(() => undefined);
+    } finally {
+      setPaymentListenerTestingId(null);
+    }
+  }
+
   function sortByNewest<T extends { createdAt?: any }>(list: T[]) {
     return [...list].sort((a: any, b: any) => {
       const aTime =
@@ -3511,6 +3724,7 @@ export default function CoadminPage() {
     { label: 'Add Games', view: 'add-games' },
     { label: 'Game List', view: 'game-list' },
     { label: 'Payment details (photos)', view: 'payment-details' },
+    { label: 'Listener Details', view: 'listener-details' },
     { label: 'Shifts', view: 'shifts' },
     { label: 'Behaviours', view: 'behaviours' },
     {
@@ -5223,6 +5437,284 @@ export default function CoadminPage() {
                     ))}
                   </ul>
                 )}
+              </div>
+            </div>
+          )}
+
+          {activeView === 'listener-details' && (
+            <div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold">Listener Details</h2>
+                  <p className="mt-2 max-w-2xl text-sm text-neutral-400">
+                    Mailbox listeners saved for the payment agent runtime.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAddPaymentListener}
+                  className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-bold text-black hover:bg-cyan-400"
+                >
+                  Add Listener
+                </button>
+              </div>
+
+              {showPaymentListenerForm && (
+                <div className="mt-6 rounded-2xl border border-cyan-500/25 bg-black/30 p-5">
+                  <div className="flex flex-wrap gap-2">
+                    {(['gmail', 'outlook'] as PaymentListenerProvider[]).map((provider) => (
+                      <button
+                        key={provider}
+                        type="button"
+                        onClick={() => handlePaymentListenerProviderChange(provider)}
+                        className={`rounded-lg px-4 py-2 text-sm font-semibold ${
+                          paymentListenerForm.provider === provider
+                            ? 'bg-cyan-500 text-black'
+                            : 'bg-white/10 text-neutral-200 hover:bg-white/15'
+                        }`}
+                      >
+                        {provider === 'gmail' ? 'Gmail' : 'Outlook'}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="mt-5 grid gap-4 md:grid-cols-2">
+                    <label className="block">
+                      <span className="text-xs font-semibold uppercase text-neutral-400">
+                        Listener label
+                      </span>
+                      <input
+                        value={paymentListenerForm.label}
+                        onChange={(event) =>
+                          setPaymentListenerForm((current) => ({
+                            ...current,
+                            label: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs font-semibold uppercase text-neutral-400">
+                        {paymentListenerForm.provider === 'gmail'
+                          ? 'Gmail address'
+                          : 'Outlook email'}
+                      </span>
+                      <input
+                        type="email"
+                        value={paymentListenerForm.email}
+                        onChange={(event) =>
+                          setPaymentListenerForm((current) => ({
+                            ...current,
+                            email: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs font-semibold uppercase text-neutral-400">
+                        {paymentListenerForm.provider === 'gmail'
+                          ? 'App password'
+                          : 'App password/password'}
+                      </span>
+                      <input
+                        type="password"
+                        value={paymentListenerForm.password}
+                        placeholder={
+                          paymentListenerForm.id ? 'Leave blank to keep existing password' : ''
+                        }
+                        onChange={(event) =>
+                          setPaymentListenerForm((current) => ({
+                            ...current,
+                            password: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs font-semibold uppercase text-neutral-400">
+                        IMAP host
+                      </span>
+                      <input
+                        value={paymentListenerForm.imapHost}
+                        onChange={(event) =>
+                          setPaymentListenerForm((current) => ({
+                            ...current,
+                            imapHost: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs font-semibold uppercase text-neutral-400">
+                        IMAP port
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={65535}
+                        value={paymentListenerForm.imapPort}
+                        onChange={(event) =>
+                          setPaymentListenerForm((current) => ({
+                            ...current,
+                            imapPort: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white"
+                      />
+                    </label>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                      {[
+                        ['useSsl', 'Use SSL'],
+                        ['autoLoad', 'Auto-load'],
+                        ['enabled', 'Enabled'],
+                      ].map(([key, label]) => (
+                        <label
+                          key={key}
+                          className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-neutral-200"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={Boolean(
+                              paymentListenerForm[key as 'useSsl' | 'autoLoad' | 'enabled']
+                            )}
+                            onChange={(event) =>
+                              setPaymentListenerForm((current) => ({
+                                ...current,
+                                [key]: event.target.checked,
+                              }))
+                            }
+                          />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="mt-5 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={paymentListenerSaving}
+                      onClick={() => void handleSavePaymentListener()}
+                      className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-bold text-black hover:bg-emerald-400 disabled:opacity-60"
+                    >
+                      {paymentListenerSaving ? 'Saving...' : 'Save Listener'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowPaymentListenerForm(false);
+                        setPaymentListenerForm(buildPaymentListenerForm('gmail'));
+                      }}
+                      className="rounded-lg bg-white/10 px-4 py-2 text-sm font-semibold text-neutral-200 hover:bg-white/15"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-6 overflow-x-auto rounded-2xl border border-white/10 bg-black/30">
+                <table className="min-w-full divide-y divide-white/10 text-sm">
+                  <thead className="bg-white/5 text-left text-xs uppercase text-neutral-400">
+                    <tr>
+                      <th className="px-3 py-3">Label</th>
+                      <th className="px-3 py-3">Provider</th>
+                      <th className="px-3 py-3">Email</th>
+                      <th className="px-3 py-3">Enabled</th>
+                      <th className="px-3 py-3">Auto-load</th>
+                      <th className="px-3 py-3">Last checked</th>
+                      <th className="px-3 py-3">Last error</th>
+                      <th className="px-3 py-3">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/10">
+                    {paymentListenersLoading ? (
+                      <tr>
+                        <td className="px-3 py-4 text-neutral-400" colSpan={8}>
+                          Loading...
+                        </td>
+                      </tr>
+                    ) : paymentListeners.length === 0 ? (
+                      <tr>
+                        <td className="px-3 py-4 text-neutral-400" colSpan={8}>
+                          No listeners saved yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      paymentListeners.map((listener) => (
+                        <tr key={listener.id} className="align-top">
+                          <td className="px-3 py-3 font-semibold text-white">{listener.label}</td>
+                          <td className="px-3 py-3 capitalize text-neutral-200">
+                            {listener.provider}
+                          </td>
+                          <td className="px-3 py-3 text-neutral-200">{listener.email}</td>
+                          <td className="px-3 py-3">
+                            <span
+                              className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                                listener.enabled
+                                  ? 'bg-emerald-500/15 text-emerald-200'
+                                  : 'bg-neutral-500/15 text-neutral-300'
+                              }`}
+                            >
+                              {listener.enabled ? 'Enabled' : 'Disabled'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3 text-neutral-200">
+                            {listener.autoLoad ? 'On' : 'Off'}
+                          </td>
+                          <td className="px-3 py-3 text-neutral-300">
+                            {listener.lastCheckedAt
+                              ? new Date(listener.lastCheckedAt).toLocaleString()
+                              : 'Never'}
+                          </td>
+                          <td className="max-w-xs px-3 py-3 text-rose-200">
+                            {listener.lastError || '-'}
+                          </td>
+                          <td className="px-3 py-3">
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                disabled={paymentListenerTestingId === listener.id}
+                                onClick={() => void handleTestPaymentListener(listener)}
+                                className="rounded-lg bg-cyan-500/20 px-3 py-1.5 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/30 disabled:opacity-50"
+                              >
+                                {paymentListenerTestingId === listener.id
+                                  ? 'Testing...'
+                                  : 'Test Connection'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleTogglePaymentListener(listener)}
+                                className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-neutral-200 hover:bg-white/15"
+                              >
+                                {listener.enabled ? 'Disable' : 'Enable'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleEditPaymentListener(listener)}
+                                className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-neutral-200 hover:bg-white/15"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                disabled={paymentListenerDeletingId === listener.id}
+                                onClick={() => void handleDeletePaymentListener(listener)}
+                                className="rounded-lg bg-rose-500/20 px-3 py-1.5 text-xs font-semibold text-rose-200 hover:bg-rose-500/30 disabled:opacity-50"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}

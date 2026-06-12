@@ -1312,7 +1312,7 @@ export async function initiateBonusEventPlay(values: {
       blocked: true,
       reason: 'app_session_player_context_mismatch',
     });
-    throw new Error('Not authenticated as current player.');
+    throw new Error('Player session required.');
   }
 
   const gate = await ensurePlayerSessionGateReady({

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { apiError, requireApiUser, requirePlayerApiUser } from '@/lib/firebase/apiAuth';
 import {
   isCacheSqlAuthoritative,
   logCacheFirestoreFallbackBlocked,
@@ -8,6 +8,7 @@ import {
 } from '@/lib/server/cacheSqlRead';
 import { sendChatMessageInSql } from '@/lib/sql/authorityChat';
 import { readChatMessagesCacheByConversation } from '@/lib/sql/chatMessagesCache';
+import { cleanText, getPlayerMirrorPool } from '@/lib/sql/playerMirrorCommon';
 import { isDatabaseUrlConfigured } from '@/lib/server/sqlRuntime';
 
 export const runtime = 'nodejs';
@@ -16,6 +17,78 @@ const ROUTE = '/api/chat/messages';
 
 function getConversationId(uid1: string, uid2: string) {
   return [uid1, uid2].sort().join('_');
+}
+
+function getDirectConversationId(uid1: string, uid2: string) {
+  return [uid1, uid2].sort().join('__');
+}
+
+function hasPlayerSessionHeaders(request: Request) {
+  return Boolean(
+    cleanText(request.headers.get('X-App-Session-Id')) ||
+      cleanText(request.headers.get('X-Player-Session-Id'))
+  );
+}
+
+async function requireChatPostUser(request: Request) {
+  if (hasPlayerSessionHeaders(request)) {
+    const playerAuth = await requirePlayerApiUser(request);
+    if (!('response' in playerAuth)) {
+      return playerAuth;
+    }
+    if (cleanText(request.headers.get('X-Player-Session-Id'))) {
+      return playerAuth;
+    }
+  }
+  return await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer', 'player']);
+}
+
+async function readChatParticipant(uid: string) {
+  const db = getPlayerMirrorPool();
+  const cleanUid = cleanText(uid);
+  if (!db || !cleanUid) {
+    return null;
+  }
+  const result = await db.query(
+    `
+      SELECT uid, role, coadmin_uid, created_by
+      FROM public.players_cache
+      WHERE uid = $1 AND deleted_at IS NULL
+      LIMIT 1
+    `,
+    [cleanUid]
+  );
+  const row = result.rows[0] as
+    | { uid?: unknown; role?: unknown; coadmin_uid?: unknown; created_by?: unknown }
+    | undefined;
+  if (!row) {
+    return null;
+  }
+  return {
+    uid: cleanText(row.uid),
+    role: cleanText(row.role).toLowerCase(),
+    coadminUid: cleanText(row.coadmin_uid) || cleanText(row.created_by) || null,
+  };
+}
+
+async function validatePlayerMessageScope(senderUid: string, receiverUid: string) {
+  const [sender, receiver] = await Promise.all([
+    readChatParticipant(senderUid),
+    readChatParticipant(receiverUid),
+  ]);
+  if (!sender || sender.role !== 'player' || !sender.coadminUid) {
+    return { ok: false as const, reason: 'sender_scope_not_found' };
+  }
+  if (!receiver || !receiver.role) {
+    return { ok: false as const, reason: 'receiver_not_found' };
+  }
+  if (receiver.uid === sender.coadminUid) {
+    return { ok: true as const };
+  }
+  if (receiver.coadminUid && receiver.coadminUid === sender.coadminUid) {
+    return { ok: true as const };
+  }
+  return { ok: false as const, reason: 'receiver_outside_player_coadmin_scope' };
 }
 
 export async function GET(request: Request) {
@@ -69,21 +142,6 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const auth = await requireApiUser(request, [
-    'admin',
-    'coadmin',
-    'staff',
-    'carer',
-    'player',
-  ]);
-  if ('response' in auth) {
-    return auth.response;
-  }
-
-  if (!isDatabaseUrlConfigured()) {
-    return apiError('Chat is unavailable in SQL mode right now.', 503);
-  }
-
   const body = (await request.json().catch(() => ({}))) as {
     peerUid?: string;
     conversationId?: string;
@@ -92,8 +150,30 @@ export async function POST(request: Request) {
     imageUrl?: string;
     imagePublicId?: string;
   };
+  const receiverUid = cleanText(body.peerUid);
+  console.info('[PLAYER_MESSAGE_SEND_ATTEMPT]', {
+    route: ROUTE,
+    peerUid: receiverUid || null,
+    hasAppSessionId: Boolean(cleanText(request.headers.get('X-App-Session-Id'))),
+    hasPlayerSessionId: Boolean(cleanText(request.headers.get('X-Player-Session-Id'))),
+  });
 
-  const receiverUid = String(body.peerUid || '').trim();
+  const auth = await requireChatPostUser(request);
+  if ('response' in auth) {
+    console.info('[PLAYER_MESSAGE_AUTH_FAIL]', {
+      route: ROUTE,
+      peerUid: receiverUid || null,
+      auth_path: auth.timing?.auth_path || null,
+      session_source: auth.timing?.session_source || null,
+      status: auth.response.status,
+    });
+    return auth.response;
+  }
+
+  if (!isDatabaseUrlConfigured()) {
+    return apiError('Chat is unavailable in SQL mode right now.', 503);
+  }
+
   if (!receiverUid) {
     return apiError('peerUid is required.', 400);
   }
@@ -103,13 +183,33 @@ export async function POST(request: Request) {
     return apiError('Image chat not ready.', 501);
   }
 
-  const text = String(body.text || '').trim();
+  const text = cleanText(body.text);
   if (!text) {
     return apiError('Message text is required.', 400);
   }
 
-  const conversationId =
-    String(body.conversationId || '').trim() || getConversationId(auth.user.uid, receiverUid);
+  const conversationId = cleanText(body.conversationId) || getConversationId(auth.user.uid, receiverUid);
+  const allowedConversationIds = new Set([
+    getConversationId(auth.user.uid, receiverUid),
+    getDirectConversationId(auth.user.uid, receiverUid),
+  ]);
+  if (!allowedConversationIds.has(conversationId)) {
+    return apiError('Conversation does not match sender and receiver.', 403);
+  }
+
+  if (auth.user.role === 'player') {
+    const scope = await validatePlayerMessageScope(auth.user.uid, receiverUid);
+    if (!scope.ok) {
+      console.info('[PLAYER_MESSAGE_AUTH_FAIL]', {
+        route: ROUTE,
+        senderUid: auth.user.uid,
+        receiverUid,
+        reason: scope.reason,
+        auth_path: auth.authPath,
+      });
+      return apiError('Forbidden.', 403);
+    }
+  }
 
   const result = await sendChatMessageInSql({
     senderUid: auth.user.uid,
@@ -122,6 +222,16 @@ export async function POST(request: Request) {
   if (!result.ok) {
     return apiError('Failed to send chat message.', 500);
   }
+
+  console.info('[PLAYER_MESSAGE_SENT]', {
+    route: ROUTE,
+    senderUid: auth.user.uid,
+    receiverUid,
+    conversationId: result.conversationId,
+    messageId: result.messageId,
+    auth_path: auth.authPath,
+    role: auth.user.role,
+  });
 
   return NextResponse.json({
     success: true,
