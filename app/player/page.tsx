@@ -161,8 +161,7 @@ import {
 } from './constants';
 
 import InstallAppButton from './components/InstallAppButton';
-import PwaAndroidInstallHint from './components/PwaAndroidInstallHint';
-import PwaAndroidPreparingHint from './components/PwaAndroidPreparingHint';
+import PwaInstallNotReadyToast from './components/PwaInstallNotReadyToast';
 import PwaIosInstallGuide from './components/PwaIosInstallGuide';
 import { usePwaInstall } from './hooks/usePwaInstall';
 
@@ -435,13 +434,10 @@ export default function PlayerPage() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const {
     canShowInstallButton,
-    installButtonLabel,
     showIosGuide,
-    showAndroidPreparing,
-    showAndroidFallback,
+    showInstallNotReadyToast,
     closeIosGuide,
-    closeAndroidPreparing,
-    closeAndroidFallback,
+    dismissInstallNotReadyToast,
     handleInstallClick,
   } = usePwaInstall();
   const [showPlayerHelpHint, setShowPlayerHelpHint] = useState(false);
@@ -4302,7 +4298,6 @@ export default function PlayerPage() {
                           <>
                             <InstallAppButton
                               canShowInstallButton={canShowInstallButton}
-                              label={installButtonLabel}
                               onInstallClick={() => {
                                 void handleInstallClick();
                                 setMobileMenuOpen(false);
@@ -4710,13 +4705,9 @@ export default function PlayerPage() {
       </main>
 
       <PwaIosInstallGuide open={showIosGuide} onClose={closeIosGuide} />
-      <PwaAndroidPreparingHint
-        open={showAndroidPreparing}
-        onClose={closeAndroidPreparing}
-      />
-      <PwaAndroidInstallHint
-        open={showAndroidFallback}
-        onClose={closeAndroidFallback}
+      <PwaInstallNotReadyToast
+        open={showInstallNotReadyToast}
+        onDismiss={dismissInstallNotReadyToast}
       />
 
       {clipboardToast ? (
