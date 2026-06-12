@@ -12,7 +12,6 @@ import {
 } from '@/lib/pwa/installPromptStore';
 
 const INSTALL_NOT_READY_TOAST_MS = 4000;
-const PWA_DEBUG = process.env.NEXT_PUBLIC_PWA_DEBUG === '1';
 
 export const PWA_INSTALL_NOT_READY_MESSAGE =
   'Install is not ready yet. Please try again in a few seconds.';
@@ -29,11 +28,6 @@ function isIosDevice(): boolean {
   }
 
   return platform === 'MacIntel' && maxTouchPoints > 1;
-}
-
-function debugLog(message: string, data?: Record<string, unknown>) {
-  if (!PWA_DEBUG) return;
-  console.info(`[PWA_INSTALL] ${message}`, data || {});
 }
 
 export function usePwaInstall() {
@@ -75,7 +69,7 @@ export function usePwaInstall() {
   const canShowInstallButton = !installSnapshot.isInstalled;
 
   const handleInstallClick = useCallback(async () => {
-    debugLog('install button clicked');
+    console.info('[PWA] install clicked');
 
     if (isIosDevice()) {
       setShowIosGuide(true);
@@ -84,7 +78,7 @@ export function usePwaInstall() {
 
     const { deferredPrompt } = getPwaInstallSnapshot();
     if (deferredPrompt) {
-      debugLog('prompt called');
+      console.info('[PWA] prompt called');
       await deferredPrompt.prompt();
       const choice = await deferredPrompt.userChoice;
 

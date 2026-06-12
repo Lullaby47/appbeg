@@ -13,22 +13,34 @@ type PwaInstallSnapshot = {
 declare global {
   interface Window {
     __royalVipDeferredInstallPrompt?: BeforeInstallPromptEvent | null;
+    __royalVipNotifyPwaInstallSubscribers?: () => void;
+    __royalVipPwaInstalled?: boolean;
+    __royalVipPwaInstallBootstrapAttached?: boolean;
+    __royalVipPwaInstallModuleListenerAttached?: boolean;
+    __royalVipPwaInstallSubscribers?: Array<() => void>;
   }
 }
 
-const PWA_DEBUG = process.env.NEXT_PUBLIC_PWA_DEBUG === '1';
 const subscribers = new Set<() => void>();
 
 let deferredPrompt: BeforeInstallPromptEvent | null = null;
 let isInstalled = false;
-let listenerAttached = false;
 
-function debugLog(message: string, data?: Record<string, unknown>) {
-  if (!PWA_DEBUG) return;
-  console.info(`[PWA_INSTALL] ${message}`, data || {});
+function pwaLog(message: string, data?: Record<string, unknown>) {
+  console.info(`[PWA] ${message}`, data || {});
+}
+
+function syncFromWindow() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  deferredPrompt = window.__royalVipDeferredInstallPrompt || null;
+  isInstalled = window.__royalVipPwaInstalled === true || isStandaloneMode();
 }
 
 function notifySubscribers() {
+  syncFromWindow();
   subscribers.forEach((subscriber) => subscriber());
 }
 
@@ -47,6 +59,7 @@ export function isStandaloneMode(): boolean {
 }
 
 export function getPwaInstallSnapshot(): PwaInstallSnapshot {
+  syncFromWindow();
   return {
     deferredPrompt,
     isInstalled,
@@ -54,9 +67,21 @@ export function getPwaInstallSnapshot(): PwaInstallSnapshot {
 }
 
 export function subscribeToPwaInstallPrompt(listener: () => void) {
+  syncFromWindow();
   subscribers.add(listener);
+  if (typeof window !== 'undefined') {
+    window.__royalVipPwaInstallSubscribers =
+      window.__royalVipPwaInstallSubscribers || [];
+    window.__royalVipPwaInstallSubscribers.push(listener);
+  }
   return () => {
     subscribers.delete(listener);
+    if (typeof window !== 'undefined' && window.__royalVipPwaInstallSubscribers) {
+      window.__royalVipPwaInstallSubscribers =
+        window.__royalVipPwaInstallSubscribers.filter(
+          (subscriber) => subscriber !== listener
+        );
+    }
   };
 }
 
@@ -65,23 +90,36 @@ export function clearDeferredInstallPrompt(reason: string) {
   if (typeof window !== 'undefined') {
     window.__royalVipDeferredInstallPrompt = null;
   }
-  debugLog('prompt cleared', { reason });
+  pwaLog('prompt cleared', { reason });
   notifySubscribers();
 }
 
 export function markPwaInstalled(reason: string) {
   isInstalled = true;
+  if (typeof window !== 'undefined') {
+    window.__royalVipPwaInstalled = true;
+  }
   clearDeferredInstallPrompt(reason);
   notifySubscribers();
 }
 
 export function attachGlobalPwaInstallPromptListener() {
-  if (typeof window === 'undefined' || listenerAttached) {
+  if (typeof window === 'undefined') {
     return;
   }
 
-  listenerAttached = true;
-  debugLog('listener attached');
+  syncFromWindow();
+
+  if (window.__royalVipPwaInstallBootstrapAttached) {
+    return;
+  }
+
+  if (window.__royalVipPwaInstallModuleListenerAttached) {
+    return;
+  }
+
+  window.__royalVipPwaInstallModuleListenerAttached = true;
+  pwaLog('listener attached');
 
   if (isStandaloneMode()) {
     markPwaInstalled('standalone_detected');
@@ -92,13 +130,13 @@ export function attachGlobalPwaInstallPromptListener() {
     event.preventDefault();
     deferredPrompt = event as BeforeInstallPromptEvent;
     window.__royalVipDeferredInstallPrompt = deferredPrompt;
-    debugLog('beforeinstallprompt captured');
-    debugLog('prompt stored');
+    pwaLog('beforeinstallprompt fired');
+    pwaLog('prompt stored');
     notifySubscribers();
   };
 
   const handleAppInstalled = () => {
-    debugLog('appinstalled');
+    pwaLog('appinstalled');
     markPwaInstalled('appinstalled');
   };
 
