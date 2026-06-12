@@ -36,6 +36,25 @@ const NOTIFY_CHANNEL = 'payment_listener_config_changed';
 const ENCRYPTION_PREFIX = 'v1';
 const TEST_TIMEOUT_MS = 12_000;
 
+type ImapFailureKind =
+  | 'wrong_credentials_or_app_password_required'
+  | 'basic_auth_blocked'
+  | 'incorrect_imap_configuration'
+  | 'connection_failed'
+  | 'code_bug_or_unexpected_response';
+
+class ImapLoginError extends Error {
+  rawImapResponse: string;
+  failureKind: ImapFailureKind;
+
+  constructor(message: string, rawImapResponse: string, failureKind: ImapFailureKind) {
+    super(message);
+    this.name = 'ImapLoginError';
+    this.rawImapResponse = rawImapResponse;
+    this.failureKind = failureKind;
+  }
+}
+
 export const PAYMENT_LISTENER_PROVIDER_DEFAULTS: Record<
   PaymentListenerProvider,
   { imapHost: string; imapPort: number; useSsl: boolean }
@@ -456,6 +475,23 @@ function classifyImapError(message: string) {
   return message || 'Connection failed';
 }
 
+function classifyImapFailureKind(rawResponse: string): ImapFailureKind {
+  const response = cleanText(rawResponse);
+  if (/LOGINDISABLED|basic auth|basic authentication|disabled/i.test(response)) {
+    return 'basic_auth_blocked';
+  }
+  if (/AUTHENTICATIONFAILED|authentication failed|login failed|invalid credentials|\bNO\b/i.test(response)) {
+    return 'wrong_credentials_or_app_password_required';
+  }
+  if (/certificate|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|timeout|wrong version number|socket disconnected/i.test(response)) {
+    return 'incorrect_imap_configuration';
+  }
+  if (response) {
+    return 'code_bug_or_unexpected_response';
+  }
+  return 'connection_failed';
+}
+
 async function testImapLogin(input: {
   host: string;
   port: number;
@@ -470,6 +506,12 @@ async function testImapLogin(input: {
   }
 
   return await new Promise<void>((resolve, reject) => {
+    console.info('[PAYMENT_LISTENER_TEST_IMAP_AUTH_START]', {
+      host,
+      port: input.port,
+      useSsl: input.useSsl,
+      username: email,
+    });
     const socket = input.useSsl
       ? tls.connect({ host, port: input.port, servername: host, timeout: TEST_TIMEOUT_MS })
       : net.connect({ host, port: input.port, timeout: TEST_TIMEOUT_MS });
@@ -486,15 +528,38 @@ async function testImapLogin(input: {
       socket.removeAllListeners();
       socket.end();
       if (error) {
-        reject(new Error(classifyImapError(error.message)));
+        reject(error instanceof ImapLoginError ? error : new Error(classifyImapError(error.message)));
       } else {
+        console.info('[PAYMENT_LISTENER_TEST_IMAP_AUTH_RESULT]', {
+          host,
+          port: input.port,
+          useSsl: input.useSsl,
+          username: email,
+          ok: true,
+        });
         resolve();
       }
     };
 
+    const failWithLoggedError = (rawResponse: string, fallbackMessage?: string) => {
+      const failureKind = classifyImapFailureKind(rawResponse || fallbackMessage || '');
+      const frontendMessage = classifyImapError(rawResponse || fallbackMessage || '');
+      console.info('[PAYMENT_LISTENER_TEST_IMAP_AUTH_RESULT]', {
+        host,
+        port: input.port,
+        useSsl: input.useSsl,
+        username: email,
+        ok: false,
+        failureKind,
+        rawImapAuthResponse: rawResponse || null,
+        error: fallbackMessage || frontendMessage,
+      });
+      finish(new ImapLoginError(frontendMessage, rawResponse, failureKind));
+    };
+
     socket.setTimeout(TEST_TIMEOUT_MS);
-    socket.on('timeout', () => finish(new Error('Connection timed out')));
-    socket.on('error', (error) => finish(error));
+    socket.on('timeout', () => failWithLoggedError(buffer, 'Connection timed out'));
+    socket.on('error', (error) => failWithLoggedError(buffer, error.message));
     socket.on('data', (chunk) => {
       buffer += chunk.toString('utf8');
       const lines = buffer.split(/\r?\n/);
@@ -511,7 +576,7 @@ async function testImapLogin(input: {
           return;
         }
         if (line.startsWith(`${loginTag} NO`) || line.startsWith(`${loginTag} BAD`)) {
-          finish(new Error(line));
+          failWithLoggedError(line);
           return;
         }
       }

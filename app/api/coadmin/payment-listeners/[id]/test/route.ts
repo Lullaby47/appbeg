@@ -26,6 +26,23 @@ function resolveCoadminUid(authUser: ApiUser, requestedCoadminUid: string) {
   return '';
 }
 
+function paymentListenerTestErrorDetails(error: unknown) {
+  const details = error as {
+    rawImapResponse?: unknown;
+    failureKind?: unknown;
+  };
+  return {
+    rawImapAuthResponse:
+      typeof details.rawImapResponse === 'string' && details.rawImapResponse.trim()
+        ? details.rawImapResponse
+        : null,
+    failureKind:
+      typeof details.failureKind === 'string' && details.failureKind.trim()
+        ? details.failureKind
+        : null,
+  };
+}
+
 export async function POST(
   request: Request,
   context: { params: Promise<{ id: string }> }
@@ -63,6 +80,10 @@ export async function POST(
       coadminUid,
       listenerId,
       provider: listener.provider,
+      host: listener.imapHost,
+      port: listener.imapPort,
+      useSsl: listener.useSsl,
+      username: listener.email,
       ok: true,
     });
     void notifyPaymentListenerConfigChanged({ coadminUid, listenerId, action: 'tested' });
@@ -75,6 +96,7 @@ export async function POST(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Connection failed';
+    const errorDetails = paymentListenerTestErrorDetails(error);
     const updated = await updatePaymentListenerTestResult({
       coadminUid,
       listenerId,
@@ -86,7 +108,12 @@ export async function POST(
       coadminUid,
       listenerId,
       provider: listener.provider,
+      host: listener.imapHost,
+      port: listener.imapPort,
+      useSsl: listener.useSsl,
+      username: listener.email,
       ok: false,
+      ...errorDetails,
       error: message,
     });
     void notifyPaymentListenerConfigChanged({ coadminUid, listenerId, action: 'tested' });
