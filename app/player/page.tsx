@@ -105,6 +105,7 @@ import {
   loadPlayerProfileSnapshotOnce,
   type PlayerProfileSqlSnapshot,
 } from '@/features/player/playerProfileSqlPoll';
+import { isStandaloneMode } from '@/lib/pwa/installPromptStore';
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { reportPlayerUiError } from '@/lib/client/sqlFirestoreError';
 import { performSqlClientLogoutCleanup } from '@/lib/client/sqlLogoutCleanup';
@@ -196,6 +197,7 @@ const GAME_VAULT_MIDNIGHT_PARTY_WARNING_MARKER =
   'players can only deposit again after selecting whether or not to participate in the midnight party program';
 const GAME_VAULT_MIDNIGHT_PARTY_PLAYER_MESSAGE =
   'Recharge blocked: Please open Game Vault and choose whether to participate in the Midnight Party program for your previous deposit before depositing again.';
+const PLAYER_PWA_EXIT_GUARD_HISTORY_KEY = '__royalVipPlayerPwaExitGuard';
 
 function requestMatchesMidnightPartyDismiss(input: {
   dismissReasonCode?: string | null;
@@ -226,6 +228,13 @@ const PLAYER_BONUS_DEBUG =
   process.env.NEXT_PUBLIC_DEBUG_PLAYER_BONUS_EVENTS === '1';
 const MIN_PLAYER_PASSWORD_LENGTH = 6;
 const CASH_TO_COIN_MAX_TRANSFER_AMOUNT = 25;
+
+function isAndroidDevice() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  return /Android/i.test(window.navigator.userAgent);
+}
 
 function getCoinToCashTip(amount: number) {
   if (!Number.isFinite(amount) || amount <= 0) return 0;
@@ -432,6 +441,7 @@ export default function PlayerPage() {
   const [message, setMessage] = useState('');
   const [loadingList, setLoadingList] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [showPwaExitConfirm, setShowPwaExitConfirm] = useState(false);
   const {
     canShowInstallButton,
     showIosGuide,
@@ -469,6 +479,8 @@ export default function PlayerPage() {
   const bonusSwipeStartXRef = useRef<number | null>(null);
   const activeTableHistoryOpenRef = useRef(false);
   const showActiveTableSplashRef = useRef(false);
+  const pwaBackHandledByOverlayRef = useRef(false);
+  const pwaExitConfirmedRef = useRef(false);
   const activeTableSplashContentRef = useRef<HTMLDivElement | null>(null);
   const activeTableAmountInputRef = useRef<HTMLInputElement | null>(null);
   const giftSoundRef = useRef<HTMLAudioElement | null>(null);
@@ -813,12 +825,141 @@ export default function PlayerPage() {
       if (!showActiveTableSplashRef.current && !activeTableHistoryOpenRef.current) {
         return;
       }
+      pwaBackHandledByOverlayRef.current = true;
       activeTableHistoryOpenRef.current = false;
       closeActiveTableSplash({ fromPopState: true });
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !isStandaloneMode() || !isAndroidDevice()) {
+      return undefined;
+    }
+    if (window.location.pathname !== '/player') {
+      return undefined;
+    }
+
+    const hasExitGuardState = () => {
+      const state = window.history.state as Record<string, unknown> | null;
+      return Boolean(state?.[PLAYER_PWA_EXIT_GUARD_HISTORY_KEY]);
+    };
+
+    const pushExitGuardState = () => {
+      if (pwaExitConfirmedRef.current || hasExitGuardState()) {
+        return;
+      }
+      window.history.pushState(
+        {
+          ...(window.history.state || {}),
+          [PLAYER_PWA_EXIT_GUARD_HISTORY_KEY]: true,
+        },
+        ''
+      );
+    };
+
+    const closeTopPlayerOverlay = () => {
+      if (showPwaExitConfirm) {
+        return true;
+      }
+      if (mobileMenuOpen) {
+        setMobileMenuOpen(false);
+        return true;
+      }
+      if (showCoinConfirmSplash && !coinLoading) {
+        setShowCoinConfirmSplash(false);
+        return true;
+      }
+      if (showCashoutModal) {
+        setShowCashoutModal(false);
+        return true;
+      }
+      if (showLoadCoinPanel) {
+        setShowLoadCoinPanel(false);
+        return true;
+      }
+      if (showPlayerPasswordResetModal) {
+        setShowPlayerPasswordResetModal(false);
+        return true;
+      }
+      if (showLogoutConfirmSplash && !logoutLoading) {
+        setShowLogoutConfirmSplash(false);
+        setLogoutConfirmSource(null);
+        return true;
+      }
+      if (bonusErrorSplashMessage) {
+        setBonusErrorSplashMessage('');
+        return true;
+      }
+      if (earnedRewardSplashCoins !== null) {
+        setEarnedRewardSplashCoins(null);
+        return true;
+      }
+      if (redeemDismissSplashRequest && !dismissRedeemLoadingId) {
+        setRedeemDismissSplashRequest(null);
+        return true;
+      }
+      if (showCashoutSuccessSplash) {
+        setShowCashoutSuccessSplash(false);
+        setShowCashoutInquiryPanel(false);
+        return true;
+      }
+      if (showIosGuide) {
+        closeIosGuide();
+        return true;
+      }
+      return false;
+    };
+
+    pushExitGuardState();
+
+    const onPlayerPwaBack = () => {
+      if (pwaExitConfirmedRef.current) {
+        return;
+      }
+
+      if (pwaBackHandledByOverlayRef.current) {
+        pwaBackHandledByOverlayRef.current = false;
+        pushExitGuardState();
+        return;
+      }
+
+      if (window.location.pathname !== '/player') {
+        return;
+      }
+
+      if (closeTopPlayerOverlay()) {
+        pushExitGuardState();
+        return;
+      }
+
+      setShowPwaExitConfirm(true);
+      pushExitGuardState();
+    };
+
+    window.addEventListener('popstate', onPlayerPwaBack);
+    return () => {
+      window.removeEventListener('popstate', onPlayerPwaBack);
+    };
+  }, [
+    bonusErrorSplashMessage,
+    closeIosGuide,
+    coinLoading,
+    dismissRedeemLoadingId,
+    earnedRewardSplashCoins,
+    logoutLoading,
+    mobileMenuOpen,
+    redeemDismissSplashRequest,
+    showCashoutModal,
+    showCashoutSuccessSplash,
+    showCoinConfirmSplash,
+    showIosGuide,
+    showLoadCoinPanel,
+    showLogoutConfirmSplash,
+    showPlayerPasswordResetModal,
+    showPwaExitConfirm,
+  ]);
 
   useEffect(() => {
     if (!showActiveTableSplash) {
@@ -5795,6 +5936,45 @@ export default function PlayerPage() {
             </div>
               </>
             )}
+          </div>
+        </div>
+      ) : null}
+
+      {showPwaExitConfirm ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="player-pwa-exit-title"
+          className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[128] bg-black/88 px-4 backdrop-blur-2xl`}
+          onClick={() => setShowPwaExitConfirm(false)}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            className="fire-panel fire-orange w-full max-w-sm rounded-3xl border border-amber-300/45 bg-gradient-to-br from-amber-950/95 via-zinc-950 to-black/95 p-6 text-center text-white shadow-2xl shadow-amber-900/30"
+          >
+            <h3 id="player-pwa-exit-title" className="text-2xl font-black">
+              Do you want to exit the app?
+            </h3>
+            <div className="mt-6 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setShowPwaExitConfirm(false)}
+                className="flex-1 rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-sm font-bold text-white hover:bg-white/15"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  pwaExitConfirmedRef.current = true;
+                  setShowPwaExitConfirm(false);
+                  window.history.back();
+                }}
+                className="fire-button fire-orange flex-1 rounded-xl bg-amber-400 px-4 py-3 text-sm font-black text-black hover:bg-amber-300"
+              >
+                Exit
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
