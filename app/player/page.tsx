@@ -4361,6 +4361,13 @@ export default function PlayerPage() {
                   })}
                   {item.view === 'usernames' ? (
                     <>
+                      <InstallAppButton
+                        canShowInstallButton={canShowInstallButton}
+                        onInstallClick={() => {
+                          void handleInstallClick();
+                        }}
+                        className="w-full rounded-2xl border border-amber-400/35 bg-amber-500/10 py-3.5 text-sm font-bold text-amber-100 transition hover:bg-amber-500/20"
+                      />
                       <button
                         type="button"
                         onClick={openPlayerPasswordResetModal}

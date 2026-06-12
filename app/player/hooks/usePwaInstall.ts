@@ -2,29 +2,20 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-type BeforeInstallPromptEvent = Event & {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
-};
+import {
+  attachGlobalPwaInstallPromptListener,
+  clearDeferredInstallPrompt,
+  getPwaInstallSnapshot,
+  isStandaloneMode,
+  markPwaInstalled,
+  subscribeToPwaInstallPrompt,
+} from '@/lib/pwa/installPromptStore';
 
 const INSTALL_NOT_READY_TOAST_MS = 4000;
+const PWA_DEBUG = process.env.NEXT_PUBLIC_PWA_DEBUG === '1';
 
 export const PWA_INSTALL_NOT_READY_MESSAGE =
   'Install is not ready yet. Please try again in a few seconds.';
-
-function isStandaloneMode(): boolean {
-  if (typeof window === 'undefined') {
-    return false;
-  }
-
-  if (window.matchMedia('(display-mode: standalone)').matches) {
-    return true;
-  }
-
-  return Boolean(
-    (window.navigator as Navigator & { standalone?: boolean }).standalone
-  );
-}
 
 function isIosDevice(): boolean {
   if (typeof window === 'undefined') {
@@ -40,36 +31,31 @@ function isIosDevice(): boolean {
   return platform === 'MacIntel' && maxTouchPoints > 1;
 }
 
+function debugLog(message: string, data?: Record<string, unknown>) {
+  if (!PWA_DEBUG) return;
+  console.info(`[PWA_INSTALL] ${message}`, data || {});
+}
+
 export function usePwaInstall() {
-  const [deferredPrompt, setDeferredPrompt] =
-    useState<BeforeInstallPromptEvent | null>(null);
-  const [isInstalled, setIsInstalled] = useState(false);
+  const [installSnapshot, setInstallSnapshot] = useState(() =>
+    getPwaInstallSnapshot()
+  );
   const [showIosGuide, setShowIosGuide] = useState(false);
   const [showInstallNotReadyToast, setShowInstallNotReadyToast] =
     useState(false);
 
   useEffect(() => {
-    setIsInstalled(isStandaloneMode());
-  }, []);
+    const unsubscribe = subscribeToPwaInstallPrompt(() => {
+      setInstallSnapshot(getPwaInstallSnapshot());
+    });
 
-  useEffect(() => {
-    const handleBeforeInstallPrompt = (event: Event) => {
-      event.preventDefault();
-      setDeferredPrompt(event as BeforeInstallPromptEvent);
-    };
+    attachGlobalPwaInstallPromptListener();
 
-    const handleAppInstalled = () => {
-      setIsInstalled(true);
-      setDeferredPrompt(null);
-    };
+    if (isStandaloneMode()) {
+      markPwaInstalled('standalone_detected_by_player_hook');
+    }
 
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    window.addEventListener('appinstalled', handleAppInstalled);
-
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-      window.removeEventListener('appinstalled', handleAppInstalled);
-    };
+    return unsubscribe;
   }, []);
 
   useEffect(() => {
@@ -86,28 +72,32 @@ export function usePwaInstall() {
     };
   }, [showInstallNotReadyToast]);
 
-  const canShowInstallButton = !isInstalled;
+  const canShowInstallButton = !installSnapshot.isInstalled;
 
   const handleInstallClick = useCallback(async () => {
+    debugLog('install button clicked');
+
     if (isIosDevice()) {
       setShowIosGuide(true);
       return;
     }
 
+    const { deferredPrompt } = getPwaInstallSnapshot();
     if (deferredPrompt) {
+      debugLog('prompt called');
       await deferredPrompt.prompt();
       const choice = await deferredPrompt.userChoice;
 
       if (choice.outcome === 'accepted') {
-        setIsInstalled(true);
+        markPwaInstalled('prompt_accepted');
+      } else {
+        clearDeferredInstallPrompt('prompt_dismissed');
       }
-
-      setDeferredPrompt(null);
       return;
     }
 
     setShowInstallNotReadyToast(true);
-  }, [deferredPrompt]);
+  }, []);
 
   const closeIosGuide = useCallback(() => {
     setShowIosGuide(false);
