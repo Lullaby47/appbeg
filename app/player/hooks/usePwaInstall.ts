@@ -35,19 +35,12 @@ function isIosDevice(): boolean {
   return platform === 'MacIntel' && maxTouchPoints > 1;
 }
 
-function isSafariOnIos(): boolean {
-  if (!isIosDevice()) {
-    return false;
-  }
-
-  return !/CriOS|FxiOS|EdgiOS|OPiOS/.test(window.navigator.userAgent);
-}
-
 export function usePwaInstall() {
   const [deferredPrompt, setDeferredPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState(false);
   const [showIosGuide, setShowIosGuide] = useState(false);
+  const [showAndroidFallback, setShowAndroidFallback] = useState(false);
 
   useEffect(() => {
     setIsInstalled(isStandaloneMode());
@@ -73,37 +66,43 @@ export function usePwaInstall() {
     };
   }, []);
 
-  const canShowInstallButton =
-    !isInstalled && (Boolean(deferredPrompt) || isSafariOnIos());
+  const canShowInstallButton = !isInstalled;
 
   const handleInstallClick = useCallback(async () => {
-    if (isSafariOnIos()) {
+    if (isIosDevice()) {
       setShowIosGuide(true);
       return;
     }
 
-    if (!deferredPrompt) {
+    if (deferredPrompt) {
+      await deferredPrompt.prompt();
+      const choice = await deferredPrompt.userChoice;
+
+      if (choice.outcome === 'accepted') {
+        setIsInstalled(true);
+      }
+
+      setDeferredPrompt(null);
       return;
     }
 
-    await deferredPrompt.prompt();
-    const choice = await deferredPrompt.userChoice;
-
-    if (choice.outcome === 'accepted') {
-      setIsInstalled(true);
-    }
-
-    setDeferredPrompt(null);
+    setShowAndroidFallback(true);
   }, [deferredPrompt]);
 
   const closeIosGuide = useCallback(() => {
     setShowIosGuide(false);
   }, []);
 
+  const closeAndroidFallback = useCallback(() => {
+    setShowAndroidFallback(false);
+  }, []);
+
   return {
     canShowInstallButton,
     showIosGuide,
+    showAndroidFallback,
     closeIosGuide,
+    closeAndroidFallback,
     handleInstallClick,
   };
 }

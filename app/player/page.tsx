@@ -161,6 +161,7 @@ import {
 } from './constants';
 
 import InstallAppButton from './components/InstallAppButton';
+import PwaAndroidInstallHint from './components/PwaAndroidInstallHint';
 import PwaIosInstallGuide from './components/PwaIosInstallGuide';
 import { usePwaInstall } from './hooks/usePwaInstall';
 
@@ -434,7 +435,9 @@ export default function PlayerPage() {
   const {
     canShowInstallButton,
     showIosGuide,
+    showAndroidFallback,
     closeIosGuide,
+    closeAndroidFallback,
     handleInstallClick,
   } = usePwaInstall();
   const [showPlayerHelpHint, setShowPlayerHelpHint] = useState(false);
@@ -4702,6 +4705,10 @@ export default function PlayerPage() {
       </main>
 
       <PwaIosInstallGuide open={showIosGuide} onClose={closeIosGuide} />
+      <PwaAndroidInstallHint
+        open={showAndroidFallback}
+        onClose={closeAndroidFallback}
+      />
 
       {clipboardToast ? (
         <motion.div
