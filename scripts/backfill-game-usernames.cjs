@@ -50,9 +50,15 @@ async function ensurePg(pool) {
     'ALTER TABLE game_usernames ADD COLUMN IF NOT EXISTS source TEXT NULL',
     "ALTER TABLE game_usernames ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'",
     'ALTER TABLE game_usernames ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()',
+    "ALTER TABLE game_usernames ADD COLUMN IF NOT EXISTS raw_json JSONB NOT NULL DEFAULT '{}'::jsonb",
+    'ALTER TABLE game_usernames ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ NULL',
+    'ALTER TABLE game_usernames ADD COLUMN IF NOT EXISTS deactivate_reason TEXT NULL',
+    'ALTER TABLE game_usernames ADD COLUMN IF NOT EXISTS mirrored_at TIMESTAMPTZ NOT NULL DEFAULT NOW()',
     'ALTER TABLE game_usernames DROP CONSTRAINT IF EXISTS game_usernames_username_key',
     'DROP INDEX IF EXISTS game_usernames_username_idx',
-    "CREATE UNIQUE INDEX IF NOT EXISTS game_usernames_active_username_unique ON game_usernames (lower(username)) WHERE status = 'active'",
+    'DROP INDEX IF EXISTS game_usernames_active_username_unique',
+    "CREATE UNIQUE INDEX IF NOT EXISTS game_usernames_active_coadmin_username_unique ON game_usernames (coadmin_uid, lower(username)) WHERE status = 'active' AND coadmin_uid IS NOT NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS game_usernames_active_global_username_unique ON game_usernames (lower(username)) WHERE status = 'active' AND coadmin_uid IS NULL",
     'CREATE INDEX IF NOT EXISTS game_usernames_game_idx ON game_usernames (game)',
     'CREATE INDEX IF NOT EXISTS game_usernames_coadmin_uid_idx ON game_usernames (coadmin_uid)',
   ];
@@ -97,13 +103,17 @@ async function main() {
           UPDATE game_usernames
           SET game = $2,
               player_uid = COALESCE($3, player_uid),
-              coadmin_uid = COALESCE($4, coadmin_uid),
+              coadmin_uid = $4,
               source = COALESCE(source, 'firebase_backfill'),
               status = 'active',
-              updated_at = NOW()
+              updated_at = NOW(),
+              mirrored_at = NOW()
           WHERE lower(username) = lower($1)
             AND status = 'active'
-            AND ($3::text IS NULL OR player_uid IS NULL OR player_uid = $3)
+            AND (
+              (coadmin_uid = $4)
+              OR (coadmin_uid IS NULL AND $4::text IS NULL)
+            )
         `,
         [username, game, playerUid, coadminUid]
       );

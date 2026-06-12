@@ -26,6 +26,7 @@ import { scheduleAutoClaimPendingTaskOnCreate } from '@/lib/sql/authorityAutoCla
 import { readGameLoginsCacheByCoadminWithClient } from '@/lib/sql/gameLoginsCache';
 import { cleanText, getPlayerMirrorPool, toIsoString } from '@/lib/sql/playerMirrorCommon';
 import { updatePlayerBalancesInTxn } from '@/lib/sql/authorityGameRequestHelpers';
+import { upsertGameUsernameForPlayerInTxn } from '@/lib/sql/gameUsernameRegistrySql';
 
 type GameLoginSeed = {
   id: string;
@@ -372,6 +373,13 @@ export async function createPlayerInSql(input: CreatePlayerInSqlInput): Promise<
       `,
       [uid, username, email, ownerCoadminUid, nowIso, JSON.stringify(rawPlayer)]
     );
+
+    await upsertGameUsernameForPlayerInTxn(client, {
+      username,
+      playerUid: uid,
+      coadminUid: ownerCoadminUid,
+      source: 'authority_create_player',
+    });
 
     await upsertReferralCodeInTxn(client, nextReferralCode, uid, nowIso, 'authority_create_player');
 
@@ -774,6 +782,13 @@ export async function restorePlayerFromArchiveInSql(input: {
         JSON.stringify(rawPlayer),
       ]
     );
+
+    await upsertGameUsernameForPlayerInTxn(client, {
+      username,
+      playerUid: uid,
+      coadminUid: cleanText(deleted.coadmin_uid) || cleanText(deleted.created_by),
+      source: 'authority_player_restore',
+    });
 
     await upsertReferralCodeInTxn(client, referralCode, uid, nowIso, 'authority_player_restore');
 

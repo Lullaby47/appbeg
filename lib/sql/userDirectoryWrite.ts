@@ -1,6 +1,10 @@
 import 'server-only';
 
 import { hashPassword } from '@/lib/auth/passwordHash';
+import {
+  deactivateGameUsernameForPlayerInTxn,
+  upsertGameUsernameForPlayerInTxn,
+} from '@/lib/sql/gameUsernameRegistrySql';
 import { cleanText, getPlayerMirrorPool, normalizeJson } from '@/lib/sql/playerMirrorCommon';
 
 const SQL_CREATE_SOURCE = 'sql_create';
@@ -317,6 +321,7 @@ export async function deleteUserDirectoryInSql(
             'deletedByRole', $5::text
           )
         WHERE uid = $1::text
+        RETURNING uid, username, role, coadmin_uid, created_by
       `,
       [uid, nowIso, actorUid, SQL_DELETE_SOURCE, actorRole]
     );
@@ -346,6 +351,17 @@ export async function deleteUserDirectoryInSql(
         [uid, nowIso, actorUid, actorRole, SQL_DELETE_SOURCE]
       );
       directoryTombstoned = (insertDirectoryResult.rowCount || 0) > 0;
+    }
+
+    const directoryRow = directoryResult.rows[0] as Record<string, unknown> | undefined;
+    if (cleanText(directoryRow?.role).toLowerCase() === 'player') {
+      await deactivateGameUsernameForPlayerInTxn(client, {
+        username: cleanText(directoryRow?.username),
+        playerUid: uid,
+        coadminUid: cleanText(directoryRow?.coadmin_uid) || cleanText(directoryRow?.created_by),
+        reason: revokeReason,
+        source: SQL_DELETE_SOURCE,
+      });
     }
 
     let credentialsDeleted = 0;
@@ -619,10 +635,10 @@ export async function updateUserUsernameInSql(input: {
   actorRole: string;
 }) {
   const uid = cleanText(input.uid);
-  const username = cleanText(input.username).toLowerCase();
+  const usernameInput = cleanText(input.username);
   const actorUid = cleanText(input.actorUid);
   const actorRole = cleanText(input.actorRole);
-  if (!uid || !username) {
+  if (!uid || !usernameInput) {
     throw new Error('uid and username are required.');
   }
   if (!actorUid || !actorRole) {
@@ -634,11 +650,23 @@ export async function updateUserUsernameInSql(input: {
     throw new Error('Postgres is unavailable.');
   }
 
-  const email = `${username}@app.local`;
   const nowIso = new Date().toISOString();
   const client = await db.connect();
   try {
     await client.query('BEGIN');
+    const existing = await client.query<Record<string, unknown>>(
+      `
+        SELECT username, role, coadmin_uid, created_by
+        FROM public.players_cache
+        WHERE uid = $1 AND deleted_at IS NULL
+        FOR UPDATE
+      `,
+      [uid]
+    );
+    const existingRow = existing.rows[0];
+    const isPlayer = cleanText(existingRow?.role).toLowerCase() === 'player';
+    const username = isPlayer ? usernameInput : usernameInput.toLowerCase();
+    const email = `${username}@app.local`;
     await client.query(
       `
         UPDATE public.players_cache
@@ -676,6 +704,22 @@ export async function updateUserUsernameInSql(input: {
       `,
       [uid, username, email, nowIso, actorUid, actorRole]
     );
+    if (isPlayer) {
+      const coadminUid = cleanText(existingRow?.coadmin_uid) || cleanText(existingRow?.created_by);
+      await deactivateGameUsernameForPlayerInTxn(client, {
+        username: cleanText(existingRow?.username),
+        playerUid: uid,
+        coadminUid,
+        reason: 'replaced',
+        source: 'sql_username_update',
+      });
+      await upsertGameUsernameForPlayerInTxn(client, {
+        username,
+        playerUid: uid,
+        coadminUid,
+        source: 'sql_username_update',
+      });
+    }
     await client.query('COMMIT');
     return { username, email };
   } catch (error) {

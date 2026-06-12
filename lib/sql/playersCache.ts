@@ -14,6 +14,10 @@ import {
   type PlayerMirrorSqlTiming,
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
+import {
+  deactivateGameUsernameForPlayerInTxn,
+  upsertGameUsernameForPlayer,
+} from '@/lib/sql/gameUsernameRegistrySql';
 
 export async function mirrorPlayerCache(uid: string, data: Record<string, unknown>, source = 'appbeg') {
   const db = getPlayerMirrorPool();
@@ -99,6 +103,18 @@ export async function mirrorPlayerCache(uid: string, data: Record<string, unknow
         source,
       ]
     );
+    if (cleanText(data.role).toLowerCase() === 'player') {
+      const username = cleanText(data.username);
+      const coadminUid = cleanText(data.coadminUid) || cleanText(data.createdBy);
+      if (username && coadminUid) {
+        await upsertGameUsernameForPlayer({
+          username,
+          playerUid: cleanUid,
+          coadminUid,
+          source,
+        });
+      }
+    }
     console.info('[PLAYERS_CACHE] mirror upsert ok', { uid: cleanUid });
     return true;
   } catch (error) {
@@ -127,8 +143,20 @@ export async function tombstonePlayerCache(uid: string, source = 'appbeg') {
   const db = getPlayerMirrorPool();
   const cleanUid = cleanText(uid);
   if (!db || !cleanUid) return false;
+  const client = await db.connect();
   try {
-    await db.query(
+    await client.query('BEGIN');
+    const existing = await client.query<Record<string, unknown>>(
+      `
+        SELECT username, role, coadmin_uid, created_by
+        FROM public.players_cache
+        WHERE uid = $1
+        LIMIT 1
+      `,
+      [cleanUid]
+    );
+    const existingRow = existing.rows[0];
+    await client.query(
       `
         INSERT INTO public.players_cache (uid, username, role, raw_firestore_data, source, mirrored_at, deleted_at)
         VALUES ($1, $1, 'player', '{}'::jsonb, $2, now(), now())
@@ -139,11 +167,24 @@ export async function tombstonePlayerCache(uid: string, source = 'appbeg') {
       `,
       [cleanUid, source]
     );
+    if (cleanText(existingRow?.role).toLowerCase() === 'player') {
+      await deactivateGameUsernameForPlayerInTxn(client, {
+        username: cleanText(existingRow?.username),
+        playerUid: cleanUid,
+        coadminUid: cleanText(existingRow?.coadmin_uid) || cleanText(existingRow?.created_by),
+        reason: 'deleted',
+        source,
+      });
+    }
+    await client.query('COMMIT');
     console.info('[PLAYERS_CACHE] tombstone ok', { uid: cleanUid });
     return true;
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
     console.error('[PLAYERS_CACHE] tombstone failed', { uid: cleanUid, error });
     return false;
+  } finally {
+    client.release();
   }
 }
 
