@@ -326,24 +326,28 @@ export async function POST(request: Request) {
     imagePublicId?: string;
   };
   const receiverUid = cleanText(body.peerUid);
-  console.info('[PLAYER_MESSAGE_SEND_ATTEMPT]', {
+  console.info('[MESSAGE_CREATE_START]', {
     route: ROUTE,
     peerUid: receiverUid || null,
-    hasAppSessionId: Boolean(cleanText(request.headers.get('X-App-Session-Id'))),
-    hasPlayerSessionId: Boolean(cleanText(request.headers.get('X-Player-Session-Id'))),
   });
 
   const auth = await requireChatPostUser(request);
   if ('response' in auth) {
-    console.info('[PLAYER_MESSAGE_AUTH_FAIL]', {
+    console.info('[MESSAGE_CREATE_ERROR]', {
       route: ROUTE,
       peerUid: receiverUid || null,
-      auth_path: auth.timing?.auth_path || null,
-      session_source: auth.timing?.session_source || null,
+      reason: 'auth_failed',
       status: auth.response.status,
     });
     return auth.response;
   }
+
+  console.info('[MESSAGE_CREATE_AUTH]', {
+    senderUid: auth.user.uid,
+    role: auth.user.role,
+    coadminUid: auth.user.coadminUid || null,
+    peerUid: receiverUid || null,
+  });
 
   if (!isDatabaseUrlConfigured()) {
     return apiError('Chat is unavailable in SQL mode right now.', 503);
@@ -375,12 +379,11 @@ export async function POST(request: Request) {
   if (auth.user.role === 'player') {
     const scope = await validatePlayerMessageScope(auth.user.uid, receiverUid);
     if (!scope.ok) {
-      console.info('[PLAYER_MESSAGE_AUTH_FAIL]', {
+      console.info('[MESSAGE_CREATE_ERROR]', {
         route: ROUTE,
         senderUid: auth.user.uid,
         receiverUid,
         reason: scope.reason,
-        auth_path: auth.authPath,
       });
       return apiError('Forbidden.', 403);
     }
@@ -395,6 +398,12 @@ export async function POST(request: Request) {
   });
 
   if (!result.ok) {
+    console.error('[MESSAGE_CREATE_ERROR]', {
+      route: ROUTE,
+      senderUid: auth.user.uid,
+      receiverUid,
+      reason: result.reason,
+    });
     return apiError('Failed to send chat message.', 500);
   }
 

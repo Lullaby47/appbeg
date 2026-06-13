@@ -10,11 +10,14 @@ import {
   rejectIfPlayerMaintenanceBreak,
   rejectIfPlayerMaintenanceBreakFromUser,
 } from '@/lib/maintenance/admin';
+import { isCacheSqlAuthoritative } from '@/lib/server/cacheSqlRead';
 import {
   authoritySqlWriteEnvLogFields,
   isAuthoritySqlWriteEnabled,
+  logAuthorityFirestoreFallbackBlocked,
   logAuthoritySqlWrite,
 } from '@/lib/server/authoritySqlWrite';
+import { isDatabaseUrlConfigured, shouldBlockFirestoreFallback } from '@/lib/server/sqlRuntime';
 import { createPlayerCashoutTaskInSql } from '@/lib/sql/authorityCashout';
 import { getPlayerMirrorPoolStats } from '@/lib/sql/playerMirrorCommon';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
@@ -81,20 +84,36 @@ function ttlAfterDays(days: number) {
   return new Date(Date.now() + days * DAY_MS);
 }
 
+/** Staff/coadmin read SQL cache — create must write SQL when reads are SQL-authoritative. */
+function shouldCreateCashoutInSql() {
+  return (
+    isAuthoritySqlWriteEnabled() ||
+    (isCacheSqlAuthoritative() && isDatabaseUrlConfigured())
+  );
+}
+
 export async function POST(request: Request) {
-  console.info('[CASHOUT_CREATE_START]', { route: ROUTE });
+  console.info('[CASHOUT_CREATE_START]', {
+    route: ROUTE,
+    authority_sql_write: isAuthoritySqlWriteEnabled(),
+    cache_sql_authoritative: isCacheSqlAuthoritative(),
+    database_url_configured: isDatabaseUrlConfigured(),
+    create_path: shouldCreateCashoutInSql() ? 'sql' : 'firestore',
+  });
   try {
     const auth = await requireApiUser(request, ['player']);
     if ('response' in auth) return auth.response;
 
-    console.info('[CASHOUT_CREATE_AUTH]', {
+    console.info('[CASHOUT_CREATE_AUTH_OK]', {
       playerUid: auth.user.uid,
       role: auth.user.role,
       coadminUid: auth.user.coadminUid,
+      authPath: auth.authPath,
     });
 
     const body = (await request.json()) as Body;
     const paymentDetails = String(body.paymentDetails || '').trim();
+    const payoutMethod = String(body.payoutMethod || '').trim() || null;
     if (paymentDetails.length < 5) {
       return apiError('Please provide clear payment details.', 400);
     }
@@ -102,26 +121,52 @@ export async function POST(request: Request) {
     const idempotencyKey =
       String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
 
-    if (isAuthoritySqlWriteEnabled()) {
+    const requestedCoadminUid =
+      auth.user.coadminUid ||
+      String(body.coadminUid || '').trim() ||
+      auth.user.createdBy ||
+      null;
+
+    if (shouldCreateCashoutInSql()) {
+      if (!isDatabaseUrlConfigured()) {
+        console.error('[CASHOUT_CREATE_FAILED]', {
+          reason: 'database_url_missing',
+          playerUid: auth.user.uid,
+        });
+        return apiError('Cashout is unavailable right now.', 503);
+      }
+
       await rejectIfPlayerMaintenanceBreakFromUser(auth.user, 'cashout');
+
+      console.info('[CASHOUT_CREATE_INSERT_START]', {
+        playerUid: auth.user.uid,
+        coadminUid: requestedCoadminUid,
+        payoutMethod,
+        table: 'player_cashout_tasks_cache',
+      });
 
       const result = await createPlayerCashoutTaskInSql({
         playerUid: auth.user.uid,
         playerUsername: auth.user.username,
         paymentDetails,
-        payoutMethod: String(body.payoutMethod || '').trim() || null,
+        payoutMethod,
         qrImageUrl: String(body.qrImageUrl || '').trim() || null,
         paymentAppName: String(body.paymentAppName || '').trim() || null,
         paymentAppCashTag: String(body.paymentAppCashTag || '').trim() || null,
         paymentAppAccountName: String(body.paymentAppAccountName || '').trim() || null,
         idempotencyKey,
-        requestedCoadminUid:
-          auth.user.coadminUid ||
-          String(body.coadminUid || '').trim() ||
-          auth.user.createdBy ||
-          null,
+        requestedCoadminUid,
       });
       const poolStats = getPlayerMirrorPoolStats();
+
+      console.info('[CASHOUT_CREATE_TASK_ID]', {
+        taskId: result.taskId,
+        duplicate: result.duplicate,
+        playerUid: auth.user.uid,
+        coadminUid: requestedCoadminUid,
+        table: 'player_cashout_tasks_cache',
+        status: 'pending',
+      });
 
       logAuthoritySqlWrite(ROUTE, {
         ...authoritySqlWriteEnvLogFields(),
@@ -141,6 +186,18 @@ export async function POST(request: Request) {
         duplicate: result.duplicate,
         authority: 'sql',
       });
+    }
+
+    if (shouldBlockFirestoreFallback()) {
+      logAuthorityFirestoreFallbackBlocked(ROUTE, 'cashout_create', {
+        playerUid: auth.user.uid,
+        reason: 'sql_cache_authoritative_requires_sql_create',
+      });
+      console.error('[CASHOUT_CREATE_FAILED]', {
+        reason: 'firestore_fallback_blocked',
+        playerUid: auth.user.uid,
+      });
+      return apiError('Cashout create requires SQL authority.', 503);
     }
 
     await rejectIfPlayerMaintenanceBreak(auth.user.uid, 'cashout');
@@ -243,7 +300,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, taskId: taskRef.id, authority: 'firestore' });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create cashout request.';
-    console.error('[CASHOUT_CREATE_ERROR]', {
+    console.error('[CASHOUT_CREATE_FAILED]', {
       message,
       error,
     });

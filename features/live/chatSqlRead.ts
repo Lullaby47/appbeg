@@ -6,12 +6,28 @@ import type { FirestoreChatMessage } from '@/features/messages/chatMessages';
 import { fetchChatApi } from '@/lib/client/chatLogoutDiagnostics';
 import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
-import { getCachedSessionUser } from '@/features/auth/sessionUser';
+import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { createPlayerScopedPoll } from '@/lib/client/playerPollGuard';
+import { auth } from '@/lib/firebase/client';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 const POLL_MS = 8_000;
+const SAFETY_REFETCH_MS = 45_000;
+
+const MESSAGE_LIVE_EVENTS = [
+  'player_message_created',
+  'chat.message.upserted',
+  'chat.message.deleted',
+] as const;
+
+function cleanText(value: unknown) {
+  return String(value || '').trim();
+}
+
+function userChatLiveChannel(uid: string) {
+  return `user:${cleanText(uid)}:chat`;
+}
 
 function isoToTimestamp(iso: string | null | undefined) {
   if (!iso) {
@@ -36,6 +52,29 @@ function mapCachedMessage(row: Record<string, unknown>): FirestoreChatMessage {
   };
 }
 
+function listQueryLogTag(role: string | null) {
+  const normalized = cleanText(role).toLowerCase();
+  if (normalized === 'coadmin') {
+    return 'COADMIN_MESSAGE_LIST';
+  }
+  if (normalized === 'staff' || normalized === 'carer' || normalized === 'admin') {
+    return 'STAFF_MESSAGE_LIST';
+  }
+  return 'MESSAGE_LIST';
+}
+
+async function resolveSelfUid() {
+  const cached = getCachedSessionUser();
+  if (cached?.uid) {
+    return cached.uid;
+  }
+  const sessionUser = await getSessionUserOnce().catch(() => null);
+  if (sessionUser?.uid) {
+    return sessionUser.uid;
+  }
+  return auth.currentUser?.uid || '';
+}
+
 async function readChatApiContext() {
   const cached = getCachedSessionUser();
   const headers = await getSqlApiReadHeaders(false);
@@ -51,6 +90,12 @@ async function readChatApiContext() {
 
 export async function fetchSqlUnreadCounts() {
   const context = await readChatApiContext();
+  const logTag = listQueryLogTag(context.role);
+  console.info(`[${logTag}_QUERY]`, {
+    uid: context.uid,
+    role: context.role,
+  });
+
   const response = await fetchChatApi(
     '/api/chat/unread-counts',
     {
@@ -76,7 +121,14 @@ export async function fetchSqlUnreadCounts() {
     }
     throw new Error(payload.error || 'Failed to load unread counts.');
   }
-  return payload.unreadCounts || {};
+  const counts = payload.unreadCounts || {};
+  console.info(`[${logTag}_RESULT]`, {
+    uid: context.uid,
+    role: context.role,
+    peerCount: Object.keys(counts).length,
+    totalUnread: Object.values(counts).reduce((sum, value) => sum + value, 0),
+  });
+  return counts;
 }
 
 export async function fetchSqlChatMessages(
@@ -85,6 +137,7 @@ export async function fetchSqlChatMessages(
   options?: { conversationId?: string }
 ) {
   const context = await readChatApiContext();
+  const logTag = listQueryLogTag(context.role);
   const params = new URLSearchParams({
     peerUid,
     limit: String(limit),
@@ -93,6 +146,14 @@ export async function fetchSqlChatMessages(
     params.set('conversationId', options.conversationId);
   }
   const url = `/api/chat/messages?${params.toString()}`;
+
+  console.info(`[${logTag}_QUERY]`, {
+    uid: context.uid,
+    role: context.role,
+    peerUid,
+    limit,
+  });
+
   const response = await fetchChatApi(
     url,
     {
@@ -119,21 +180,164 @@ export async function fetchSqlChatMessages(
     throw new Error(payload.error || 'Failed to load chat messages.');
   }
   const messages = (payload.messages || []).map(mapCachedMessage);
-  console.info('[CHAT_MESSAGES_CLIENT]', {
-    conversationId: options?.conversationId || null,
-    currentUid: context.uid,
+  console.info(`[${logTag}_RESULT]`, {
+    uid: context.uid,
+    role: context.role,
+    peerUid,
     totalMessages: messages.length,
     messageIds: messages.slice(0, 5).map((message) => message.id),
-    messages: messages.slice(0, 5).map((message) => ({
-      id: message.id,
-      senderUid: message.senderUid,
-      text: message.text,
-      deletedForAll: message.deletedForEveryone,
-      deletedForUsers: message.deletedFor,
-      createdAt: message.createdAt?.toDate?.()?.toISOString?.() || null,
-    })),
   });
   return messages;
+}
+
+function attachChatSqlPoll(input: {
+  selfUid: string;
+  onRefetch: (reason: string) => Promise<void>;
+  onError?: (error: Error) => void;
+  pollMs?: number;
+  enableLive?: boolean;
+}) {
+  let disposed = false;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let safetyTimer: ReturnType<typeof setInterval> | null = null;
+  let eventSource: EventSource | null = null;
+  let lastEventId = 0;
+  let refetchInFlight = false;
+
+  const runPoll = async (reason: string) => {
+    if (disposed || refetchInFlight) {
+      return;
+    }
+    refetchInFlight = true;
+    try {
+      await input.onRefetch(reason);
+    } catch (error) {
+      if (!disposed) {
+        input.onError?.(error instanceof Error ? error : new Error(String(error)));
+      }
+    } finally {
+      refetchInFlight = false;
+      if (!disposed) {
+        pollTimer = setTimeout(() => {
+          void runPoll('poll_interval');
+        }, input.pollMs || POLL_MS);
+      }
+    }
+  };
+
+  const scheduleImmediateRefetch = (reason: string) => {
+    if (disposed) {
+      return;
+    }
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+    void runPoll(reason);
+  };
+
+  const closeEventSource = () => {
+    if (eventSource) {
+      eventSource.close();
+      eventSource = null;
+    }
+  };
+
+  const connectEventSource = () => {
+    if (!input.enableLive || !input.selfUid || disposed) {
+      return;
+    }
+
+    closeEventSource();
+    const channel = userChatLiveChannel(input.selfUid);
+    const params = new URLSearchParams({
+      channels: channel,
+      lastEventId: String(Math.max(0, lastEventId)),
+    });
+    const appSessionId = cleanText(getLocalAppSessionId());
+    if (appSessionId) {
+      params.set('appSessionId', appSessionId);
+    }
+    const playerSessionId = cleanText(getLocalPlayerSessionId());
+    if (playerSessionId) {
+      params.set('playerSessionId', playerSessionId);
+    }
+
+    const url = `/api/live/stream?${params.toString()}`;
+    const source = new EventSource(url);
+    eventSource = source;
+
+    const handleLiveEvent = (eventName: string, rawData: string, outboxId: number) => {
+      if (eventName === 'ping') {
+        return;
+      }
+      if (outboxId > 0) {
+        lastEventId = Math.max(lastEventId, outboxId);
+      }
+      try {
+        const payload = JSON.parse(rawData) as Record<string, unknown>;
+        console.info('[MESSAGE_LIVE_EVENT_RECEIVED]', {
+          eventType: eventName,
+          messageId: cleanText(payload.messageId || payload.entityId),
+          playerUid: cleanText(payload.playerUid),
+          coadminUid: cleanText(payload.coadminUid),
+          senderUid: cleanText(payload.senderUid),
+          receiverUid: cleanText(payload.receiverUid),
+          outboxId,
+        });
+      } catch {
+        console.info('[MESSAGE_LIVE_EVENT_RECEIVED]', {
+          eventType: eventName,
+          outboxId,
+        });
+      }
+      scheduleImmediateRefetch(`live:${eventName}`);
+    };
+
+    source.addEventListener('ping', (ev: Event) => {
+      const message = ev as MessageEvent<string>;
+      handleLiveEvent('ping', String(message.data || ''), Number(message.lastEventId) || 0);
+    });
+
+    for (const eventName of MESSAGE_LIVE_EVENTS) {
+      source.addEventListener(eventName, (ev: Event) => {
+        const message = ev as MessageEvent<string>;
+        handleLiveEvent(
+          eventName,
+          String(message.data || ''),
+          Number(message.lastEventId) || 0
+        );
+      });
+    }
+
+    source.onmessage = (ev: MessageEvent<string>) => {
+      handleLiveEvent('message', String(ev.data || ''), Number(ev.lastEventId) || 0);
+    };
+
+    source.onerror = () => {
+      closeEventSource();
+      scheduleImmediateRefetch('sse_error');
+    };
+  };
+
+  void runPoll('initial');
+  connectEventSource();
+  safetyTimer = setInterval(() => {
+    scheduleImmediateRefetch('safety_interval');
+  }, SAFETY_REFETCH_MS);
+
+  return () => {
+    disposed = true;
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+    if (safetyTimer) {
+      clearInterval(safetyTimer);
+      safetyTimer = null;
+    }
+    closeEventSource();
+  };
 }
 
 export function attachSqlUnreadCountsPoll(
@@ -150,41 +354,46 @@ export function attachSqlUnreadCountsPoll(
       onTick: async () => {
         const counts = await fetchSqlUnreadCounts();
         onChange(counts);
+        console.info('[MESSAGE_UI_UPDATED]', {
+          kind: 'unread_counts',
+          peerCount: Object.keys(counts).length,
+          reason: 'player_poll',
+        });
       },
       onError,
     });
   }
 
-  let cancelled = false;
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+  let cleanupLive: (() => void) | null = null;
 
-  const tick = async () => {
-    if (cancelled) {
+  void (async () => {
+    const selfUid = await resolveSelfUid();
+    if (disposed) {
       return;
     }
-    try {
-      const counts = await fetchSqlUnreadCounts();
-      if (!cancelled) {
-        onChange(counts);
-      }
-    } catch (error) {
-      if (!cancelled) {
-        onError?.(error instanceof Error ? error : new Error(String(error)));
-      }
-    } finally {
-      if (!cancelled) {
-        timer = setTimeout(() => void tick(), POLL_MS);
-      }
-    }
-  };
+    cleanupLive = attachChatSqlPoll({
+      selfUid,
+      enableLive: Boolean(selfUid),
+      onRefetch: async (reason) => {
+        const counts = await fetchSqlUnreadCounts();
+        if (!disposed) {
+          onChange(counts);
+          console.info('[MESSAGE_UI_UPDATED]', {
+            kind: 'unread_counts',
+            peerCount: Object.keys(counts).length,
+            reason,
+          });
+        }
+      },
+      onError,
+    });
+  })();
 
-  void tick();
   return () => {
-    cancelled = true;
-    if (timer != null) {
-      clearTimeout(timer);
-      timer = null;
-    }
+    disposed = true;
+    cleanupLive?.();
+    cleanupLive = null;
   };
 }
 
@@ -208,43 +417,50 @@ export function attachSqlChatMessagesPoll(
           conversationId: options?.conversationId,
         });
         onChange(messages);
+        console.info('[MESSAGE_UI_UPDATED]', {
+          kind: 'messages',
+          peerUid,
+          count: messages.length,
+          reason: 'player_poll',
+        });
       },
       onError,
     });
   }
 
-  let cancelled = false;
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+  let cleanupLive: (() => void) | null = null;
 
-  const tick = async () => {
-    if (cancelled) {
+  void (async () => {
+    const selfUid = await resolveSelfUid();
+    if (disposed) {
       return;
     }
-    try {
-      const messages = await fetchSqlChatMessages(peerUid, options?.limit || 50, {
-        conversationId: options?.conversationId,
-      });
-      if (!cancelled) {
-        onChange(messages);
-      }
-    } catch (error) {
-      if (!cancelled) {
-        onError?.(error instanceof Error ? error : new Error(String(error)));
-      }
-    } finally {
-      if (!cancelled) {
-        timer = setTimeout(() => void tick(), POLL_MS);
-      }
-    }
-  };
+    cleanupLive = attachChatSqlPoll({
+      selfUid,
+      enableLive: Boolean(selfUid),
+      onRefetch: async (reason) => {
+        const messages = await fetchSqlChatMessages(peerUid, options?.limit || 50, {
+          conversationId: options?.conversationId,
+        });
+        if (!disposed) {
+          onChange(messages);
+          console.info('[MESSAGE_UI_UPDATED]', {
+            kind: 'messages',
+            peerUid,
+            count: messages.length,
+            reason,
+          });
+        }
+      },
+      onError,
+    });
+  })();
 
-  void tick();
   return () => {
-    cancelled = true;
-    if (timer != null) {
-      clearTimeout(timer);
-      timer = null;
-    }
+    disposed = true;
+    cleanupLive?.();
+    cleanupLive = null;
   };
 }
 

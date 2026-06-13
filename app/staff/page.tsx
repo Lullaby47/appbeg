@@ -303,6 +303,30 @@ export default function StaffPage() {
     [players, unreadCounts]
   );
 
+  useEffect(() => {
+    console.info('[MESSAGES_RENDER_FILTER]', {
+      totalMessages: pagedStaffPlayerChat.items.length,
+      visibleMessages: playerMessages.length,
+      currentRole: creatorRole,
+      staffUid: staffAuthUid,
+      selectedPeerUid: selectedPlayerChatUser?.uid || null,
+      activeView,
+      unreadPeerCount: Object.keys(unreadCounts).length,
+      playerCount: players.length,
+      playerChatUnreadTotal,
+    });
+  }, [
+    pagedStaffPlayerChat.items.length,
+    playerMessages.length,
+    creatorRole,
+    staffAuthUid,
+    selectedPlayerChatUser?.uid,
+    activeView,
+    unreadCounts,
+    players.length,
+    playerChatUnreadTotal,
+  ]);
+
   const playPlayerMessageSound = useCallback(() => {
     const audio = new Audio('/urgency-sound.mp3');
     audio.volume = 0.6;

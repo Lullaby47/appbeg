@@ -330,38 +330,41 @@ export async function createPlayerCashoutTask(values: {
       ? crypto.randomUUID()
       : `cashout-${Date.now()}`);
 
-  console.info('[PLAYER_CASHOUT_API_REQUEST]', {
-    coadminUid: values.coadminUid,
-    payoutMethod: values.payoutMethod || null,
+  const requestBody = {
+    ...values,
     idempotencyKey,
-  });
+  };
+
+  console.info('[PLAYER_CASHOUT_REQUEST_BODY]', requestBody);
 
   const response = await fetch('/api/player/cashout-tasks/create', {
     method: 'POST',
     credentials: 'include',
     headers: await getPlayerCashoutAuthHeaders(),
-    body: JSON.stringify({
-      ...values,
-      idempotencyKey,
-    }),
+    body: JSON.stringify(requestBody),
   });
   const payload = (await response.json().catch(() => ({}))) as {
     error?: string;
     taskId?: string;
     success?: boolean;
     authority?: string;
+    duplicate?: boolean;
   };
   if (!response.ok) {
-    console.error('[PLAYER_CASHOUT_API_ERROR]', {
+    console.error('[PLAYER_CASHOUT_ERROR]', {
       status: response.status,
       error: payload.error || null,
+      body: requestBody,
     });
     throw new Error(readApiError('Failed to create cashout request.', payload));
   }
 
-  console.info('[PLAYER_CASHOUT_API_SUCCESS]', {
+  console.info('[PLAYER_CASHOUT_RESPONSE]', {
+    status: response.status,
     taskId: payload.taskId || null,
     authority: payload.authority || null,
+    duplicate: payload.duplicate ?? false,
+    success: payload.success ?? true,
   });
 
   return payload;

@@ -666,6 +666,31 @@ export default function CoadminPage() {
     0
   );
 
+  useEffect(() => {
+    console.info('[MESSAGES_RENDER_FILTER]', {
+      totalMessages: pagedCoadminChat.items.length,
+      visibleMessages: messages.length,
+      currentRole: 'coadmin',
+      coadminUid: coadminActorUid || null,
+      selectedPeerUid: activeChatUser?.uid || null,
+      activeView,
+      unreadPeerCount: Object.keys(unreadCounts).length,
+      playerCount: playerList.length,
+      staffCount: staffList.length,
+      totalUnread,
+    });
+  }, [
+    pagedCoadminChat.items.length,
+    messages.length,
+    coadminActorUid,
+    activeChatUser?.uid,
+    activeView,
+    unreadCounts,
+    playerList.length,
+    staffList.length,
+    totalUnread,
+  ]);
+
   const staffUnreadCount = staffList.reduce(
     (total, staff) => total + (unreadCounts[staff.uid] || 0),
     0

@@ -40,6 +40,19 @@ export async function GET(request: Request) {
     counts[otherUid] = unread;
   }
 
+  const logTag =
+    auth.user.role === 'coadmin' ? 'COADMIN_MESSAGE_LIST' : 'STAFF_MESSAGE_LIST';
+  console.info(`[${logTag}_QUERY]`, {
+    uid: auth.user.uid,
+    role: auth.user.role,
+  });
+  console.info(`[${logTag}_RESULT]`, {
+    uid: auth.user.uid,
+    role: auth.user.role,
+    peerCount: Object.keys(counts).length,
+    totalUnread: Object.values(counts).reduce((sum, value) => sum + value, 0),
+  });
+
   if (isCacheSqlAuthoritative()) {
     logCacheSqlRead(ROUTE, {
       uid: auth.user.uid,

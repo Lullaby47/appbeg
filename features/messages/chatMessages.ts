@@ -37,6 +37,7 @@ import {
   logClientFirebaseRuntimeRemoved,
   logSqlClientMigration,
 } from '@/lib/client/sqlClientMigration';
+import { getCachedSessionUser } from '@/features/auth/sessionUser';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
@@ -69,6 +70,11 @@ export const CHAT_RECENT_MESSAGE_WINDOW = 50;
 export const CHAT_OLDER_MESSAGE_PAGE_SIZE = 50;
 
 async function sendChatMessageViaSql(receiverUid: string, text: string) {
+  console.info('[PLAYER_MESSAGE_API_REQUEST]', {
+    peerUid: receiverUid,
+    textLength: text.length,
+  });
+
   const response = await fetch('/api/chat/messages', {
     method: 'POST',
     headers: await getSqlApiReadHeaders(true),
@@ -79,10 +85,26 @@ async function sendChatMessageViaSql(receiverUid: string, text: string) {
     }),
     cache: 'no-store',
   });
-  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    messageId?: string;
+    conversationId?: string;
+  };
   if (!response.ok) {
+    console.error('[PLAYER_MESSAGE_API_ERROR]', {
+      peerUid: receiverUid,
+      status: response.status,
+      error: payload.error || null,
+    });
     throw new Error(payload.error || 'Failed to send chat message.');
   }
+
+  console.info('[PLAYER_MESSAGE_API_SUCCESS]', {
+    peerUid: receiverUid,
+    messageId: payload.messageId || null,
+    conversationId: payload.conversationId || null,
+  });
+
   logSqlClientMigration({
     feature: 'chat_send_text',
     oldFirebaseOperation: 'setDoc+addDoc',
@@ -376,13 +398,25 @@ export async function fetchMessagesOlderThan(
 }
 
 export async function markConversationAsRead(receiverUid: string) {
+  const cached = getCachedSessionUser();
+  const currentUserUid = cached?.uid || auth.currentUser?.uid;
+
+  if (!currentUserUid) {
+    return;
+  }
+
+  const conversationId = getConversationId(currentUserUid, receiverUid);
+
+  if (isChatSqlReadEnabled()) {
+    await markConversationReadCacheBestEffort(conversationId, currentUserUid);
+    return;
+  }
+
   const currentUser = auth.currentUser;
 
   if (!currentUser) {
     return;
   }
-
-  const conversationId = getConversationId(currentUser.uid, receiverUid);
 
   await setDoc(
     doc(db, 'conversations', conversationId),

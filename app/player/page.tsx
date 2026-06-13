@@ -3494,6 +3494,14 @@ export default function PlayerPage() {
       return;
     }
 
+    console.info('[PLAYER_MESSAGE_SEND_CLICK]', {
+      playerUid: playerUid || auth.currentUser?.uid || null,
+      coadminUid: playerCoadminUid || null,
+      peerUid: selectedAgent.uid,
+      hasText: Boolean(newMessage.trim()),
+      hasImage: Boolean(selectedImage),
+    });
+
     try {
       if (selectedImage) {
         setSendingImage(true);
@@ -3917,7 +3925,7 @@ export default function PlayerPage() {
     setMessage('');
 
     try {
-      await createPlayerCashoutTask({
+      const result = await createPlayerCashoutTask({
         coadminUid: playerCoadminUid,
         paymentDetails: composedPaymentDetails,
         payoutMethod: cashoutPayoutMethod,
@@ -3928,6 +3936,12 @@ export default function PlayerPage() {
           cashoutPayoutMethod === 'app' ? cashoutAccountName.trim() : '',
       });
 
+      console.info('[PLAYER_CASHOUT_RESPONSE]', {
+        taskId: result.taskId || null,
+        authority: result.authority || null,
+        duplicate: result.duplicate ?? false,
+      });
+
       setMessage('Cashout request sent. Waiting for confirmation.');
       setShowCashoutModal(false);
       setCashoutPayoutMethod('qr');
@@ -3936,6 +3950,11 @@ export default function PlayerPage() {
       setCashoutCashTag('');
       setCashoutAccountName('');
     } catch (error) {
+      console.error('[PLAYER_CASHOUT_ERROR]', {
+        playerUid: playerUid || auth.currentUser?.uid || null,
+        coadminUid: playerCoadminUid || null,
+        error: error instanceof Error ? error.message : String(error),
+      });
       reportPlayerUiError(
         'player_cashout_create',
         error,

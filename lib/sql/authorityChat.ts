@@ -133,6 +133,12 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
   const receiverUid = cleanText(input.receiverUid);
   const conversationId = cleanText(input.conversationId);
   const type = input.type === 'image' ? 'image' : 'text';
+  console.info('[MESSAGE_CREATE_START]', {
+    senderUid,
+    receiverUid,
+    conversationId,
+    type,
+  });
   if (!db || !senderUid || !receiverUid || !conversationId) {
     return { ok: false as const, reason: 'missing_input' };
   }
@@ -155,6 +161,46 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
   const client = await db.connect();
   try {
     await client.query('BEGIN');
+
+    const participantRows = await client.query(
+      `
+        SELECT uid, role, coadmin_uid, created_by
+        FROM public.players_cache
+        WHERE uid = ANY($1::text[]) AND deleted_at IS NULL
+      `,
+      [[senderUid, receiverUid]]
+    );
+    const byUid = new Map<string, Record<string, unknown>>();
+    for (const row of participantRows.rows as Record<string, unknown>[]) {
+      byUid.set(cleanText(row.uid), row);
+    }
+    const senderRow = byUid.get(senderUid);
+    const receiverRow = byUid.get(receiverUid);
+    console.info('[MESSAGE_CREATE_PLAYER_LOOKUP]', {
+      senderUid,
+      receiverUid,
+      senderRole: cleanText(senderRow?.role) || null,
+      receiverRole: cleanText(receiverRow?.role) || null,
+      senderCoadminUid: cleanText(senderRow?.coadmin_uid) || cleanText(senderRow?.created_by) || null,
+      receiverCoadminUid: cleanText(receiverRow?.coadmin_uid) || cleanText(receiverRow?.created_by) || null,
+    });
+
+    const senderRole = cleanText(senderRow?.role).toLowerCase();
+    const receiverRole = cleanText(receiverRow?.role).toLowerCase();
+    const playerUid =
+      senderRole === 'player' ? senderUid : receiverRole === 'player' ? receiverUid : senderUid;
+    const coadminUid =
+      cleanText(senderRow?.coadmin_uid) ||
+      cleanText(senderRow?.created_by) ||
+      cleanText(receiverRow?.coadmin_uid) ||
+      cleanText(receiverRow?.created_by) ||
+      null;
+    console.info('[MESSAGE_CREATE_COADMIN_RESOLVED]', {
+      playerUid,
+      coadminUid,
+      conversationId,
+    });
+
     await upsertConversationInTxn(client, {
       conversationId,
       senderUid,
@@ -174,8 +220,16 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
       imagePublicId: type === 'image' ? cleanText(input.imagePublicId) : null,
       nowIso,
     });
+    console.info('[MESSAGE_CREATE_ROW_WRITTEN]', {
+      messageId,
+      conversationId,
+      senderUid,
+      receiverUid,
+      playerUid,
+      coadminUid,
+    });
 
-    const payload = {
+    await emitChatMessageOutboxEvent(client, {
       entityId: messageId,
       conversationId,
       senderUid,
@@ -185,14 +239,24 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
       imageUrl: type === 'image' ? cleanText(input.imageUrl) : null,
       updatedAt: nowIso,
       source: 'authority_chat',
-    };
-
-    await emitChatMessageOutboxEvent(client, {
-      ...payload,
       participantUids: [senderUid, receiverUid],
+      playerUid,
+      coadminUid,
+    });
+    console.info('[MESSAGE_CREATE_OUTBOX_EVENT]', {
+      messageId,
+      playerUid,
+      coadminUid,
+      eventType: 'player_message_created',
     });
 
     await client.query('COMMIT');
+    console.info('[MESSAGE_CREATE_COMMIT]', {
+      messageId,
+      conversationId,
+      senderUid,
+      receiverUid,
+    });
     return {
       ok: true as const,
       messageId,
@@ -201,7 +265,12 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
     };
   } catch (error) {
     await client.query('ROLLBACK');
-    console.warn('[AUTHORITY_CHAT] send failed', { conversationId, error });
+    console.error('[MESSAGE_CREATE_ERROR]', {
+      conversationId,
+      senderUid,
+      receiverUid,
+      error,
+    });
     return { ok: false as const, reason: 'sql_write_failed' };
   } finally {
     client.release();

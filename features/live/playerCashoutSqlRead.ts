@@ -5,6 +5,7 @@ import { Timestamp } from 'firebase/firestore';
 import type { PlayerCashoutTask } from '@/features/cashouts/playerCashoutTasks';
 import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
+import { getCachedSessionUser } from '@/features/auth/sessionUser';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
@@ -31,6 +32,37 @@ function coadminCashoutLiveChannel(coadminUid: string) {
 
 function playerCashoutLiveChannel(playerUid: string) {
   return `player:${cleanText(playerUid)}:cashouts`;
+}
+
+function logScopeEventReceived(scope: CashoutScope, eventType: string, payload: Record<string, unknown>) {
+  const role = String(getCachedSessionUser()?.role || '').toLowerCase();
+  const base = {
+    eventType,
+    taskId: cleanText(payload.taskId || payload.entityId),
+    coadminUid: cleanText(payload.coadminUid),
+    playerUid: cleanText(payload.playerUid),
+    status: cleanText(payload.status),
+    scope,
+  };
+  if (scope === 'coadmin' || role === 'coadmin') {
+    console.info('[COADMIN_CASHOUT_EVENT_RECEIVED]', base);
+  }
+  if (scope === 'coadmin' || scope === 'all' || role === 'staff') {
+    console.info('[STAFF_CASHOUT_EVENT_RECEIVED]', base);
+  }
+  console.info('[CASHOUT_SSE_EVENT_RECEIVED]', base);
+}
+
+function logScopeListAfterEvent(scope: CashoutScope, count: number, reason: string) {
+  const role = String(getCachedSessionUser()?.role || '').toLowerCase();
+  const base = { scope, count, reason };
+  if (scope === 'coadmin' || role === 'coadmin') {
+    console.info('[COADMIN_CASHOUT_LIST_AFTER_EVENT]', base);
+  }
+  if (scope === 'coadmin' || scope === 'all' || role === 'staff') {
+    console.info('[STAFF_CASHOUT_LIST_AFTER_EVENT]', base);
+  }
+  console.info('[CASHOUT_UI_REFETCHED]', base);
 }
 
 function isoToTimestamp(iso: string | null | undefined): Timestamp | null {
@@ -136,6 +168,7 @@ function attachCashoutSqlPoll(input: {
       const tasks = await fetchCashoutTasks(input.scope, input.uid, input.limit || 50);
       if (!disposed) {
         input.onChange(tasks);
+        logScopeListAfterEvent(input.scope, tasks.length, reason);
         console.info('[CASHOUT_UI_UPDATED]', {
           scope: input.scope,
           uid: input.scope === 'all' ? null : input.uid,
@@ -215,6 +248,7 @@ function attachCashoutSqlPoll(input: {
       }
       try {
         const payload = JSON.parse(rawData) as Record<string, unknown>;
+        logScopeEventReceived(input.scope, eventName, payload);
         console.info('[CASHOUT_LIVE_EVENT_RECEIVED]', {
           eventType: eventName,
           taskId: cleanText(payload.taskId || payload.entityId),

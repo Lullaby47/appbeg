@@ -24,6 +24,7 @@ const CARER_JOBS_CHANNEL_PATTERN = /^carer:([A-Za-z0-9_-]+):jobs$/;
 const COADMIN_JOBS_CHANNEL_PATTERN = /^coadmin:([A-Za-z0-9_-]+):jobs$/;
 const PLAYER_CASHOUT_CHANNEL_PATTERN = /^player:([A-Za-z0-9_-]+):cashouts$/;
 const COADMIN_CASHOUT_CHANNEL_PATTERN = /^coadmin:([A-Za-z0-9_-]+):cashouts$/;
+const USER_CHAT_CHANNEL_PATTERN = /^user:([A-Za-z0-9_-]+):chat$/;
 
 type CarerStreamChannelSpec = {
   channels: string[];
@@ -295,6 +296,44 @@ function resolveCoadminCashoutStreamChannels(channels: string[]): string | null 
   return coadminUid;
 }
 
+function resolveUserChatStreamChannels(channels: string[]): string | null {
+  let userUid: string | null = null;
+
+  for (const channel of channels) {
+    const match = channel.match(USER_CHAT_CHANNEL_PATTERN);
+    if (!match) {
+      return null;
+    }
+    const uid = match[1];
+    if (userUid && userUid !== uid) {
+      return null;
+    }
+    userUid = uid;
+  }
+
+  return userUid;
+}
+
+async function authorizeUserChatStream(request: Request, expectedUid: string) {
+  const headerSessions = sessionIdsFromRequest(request);
+  if (headerSessions.player_session_id) {
+    const auth = await requirePlayerOwnedLiveAuth(request, expectedUid);
+    if (!auth.ok) {
+      return { ok: false as const, response: auth.response };
+    }
+    return { ok: true as const, auth: { uid: auth.uid } };
+  }
+
+  const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer', 'player']);
+  if ('response' in auth) {
+    return { ok: false as const, response: auth.response };
+  }
+  if (auth.user.uid !== expectedUid) {
+    return { ok: false as const, response: apiError('Forbidden.', 403) };
+  }
+  return { ok: true as const, auth: auth.user };
+}
+
 async function authorizeCoadminCashoutStream(request: Request, coadminUid: string) {
   const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff']);
   if ('response' in auth) {
@@ -400,6 +439,32 @@ export async function GET(request: Request) {
       coadminUid: coadminCashoutUid,
       uid: auth.auth.uid,
       role: auth.auth.role,
+    });
+
+    return createLiveStreamResponse(
+      liveRequest,
+      channels,
+      parseLastEventId(url.searchParams.get('lastEventId'))
+    );
+  }
+
+  const userChatUid = resolveUserChatStreamChannels(channels);
+  if (userChatUid) {
+    const auth = await authorizeUserChatStream(liveRequest, userChatUid);
+    if (!auth.ok) {
+      console.info('[LIVE_STREAM_AUTH]', {
+        channelType: 'user_chat',
+        userUid: userChatUid,
+        ok: false,
+      });
+      return auth.response;
+    }
+
+    console.info('[LIVE_STREAM_AUTH]', {
+      channelType: 'user_chat',
+      userUid: userChatUid,
+      uid: auth.auth.uid,
+      ok: true,
     });
 
     return createLiveStreamResponse(
@@ -585,8 +650,11 @@ function createLiveStreamResponse(
               row.entity_type === 'carer_task' ||
               row.entity_type === 'player_game_request' ||
               row.entity_type === 'player_cashout_task' ||
+              row.entity_type === 'chat_message' ||
               row.event_type.startsWith('task.') ||
               row.event_type.startsWith('cashout_') ||
+              row.event_type.startsWith('chat.') ||
+              row.event_type === 'player_message_created' ||
               row.event_type.endsWith('_create') ||
               row.event_type.endsWith('_task_created') ||
               row.event_type.endsWith('_task_create')
@@ -622,8 +690,11 @@ function createLiveStreamResponse(
               row.entity_type === 'carer_task' ||
               row.entity_type === 'player_game_request' ||
               row.entity_type === 'player_cashout_task' ||
+              row.entity_type === 'chat_message' ||
               row.event_type.startsWith('task.') ||
               row.event_type.startsWith('cashout_') ||
+              row.event_type.startsWith('chat.') ||
+              row.event_type === 'player_message_created' ||
               row.event_type.endsWith('_create') ||
               row.event_type.endsWith('_task_created') ||
               row.event_type.endsWith('_task_create')

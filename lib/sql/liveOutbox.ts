@@ -93,12 +93,17 @@ export function userChatLiveChannel(uid: string) {
 
 export type ChatMessageOutboxPayload = {
   entityId: string;
+  messageId: string;
   conversationId: string;
   senderUid: string;
   receiverUid: string;
+  playerUid: string;
+  coadminUid: string | null;
   type: string;
+  status: string;
   text: string | null;
   imageUrl: string | null;
+  createdAt: string | null;
   updatedAt: string | null;
   source: string;
 };
@@ -373,17 +378,28 @@ export async function emitChatMessageOutboxEvent(
     updatedAt?: string | null;
     source?: string;
     participantUids: string[];
+    playerUid?: string | null;
+    coadminUid?: string | null;
   }
 ) {
+  const nowIso = input.updatedAt || new Date().toISOString();
+  const senderUid = cleanText(input.senderUid);
+  const receiverUid = cleanText(input.receiverUid);
+  const playerUid = cleanText(input.playerUid) || (senderUid || receiverUid);
   const payload: ChatMessageOutboxPayload = {
     entityId: cleanText(input.entityId),
+    messageId: cleanText(input.entityId),
     conversationId: cleanText(input.conversationId),
-    senderUid: cleanText(input.senderUid),
-    receiverUid: cleanText(input.receiverUid),
+    senderUid,
+    receiverUid,
+    playerUid,
+    coadminUid: cleanText(input.coadminUid) || null,
     type: cleanText(input.type) || 'text',
+    status: 'open',
     text: cleanText(input.text) || null,
     imageUrl: cleanText(input.imageUrl) || null,
-    updatedAt: input.updatedAt || new Date().toISOString(),
+    createdAt: nowIso,
+    updatedAt: nowIso,
     source: cleanText(input.source) || 'authority_chat',
   };
 
@@ -394,12 +410,21 @@ export async function emitChatMessageOutboxEvent(
     }
     await insertLiveOutboxEventWithClient(client, {
       channel: userChatLiveChannel(cleanUid),
-      eventType: 'chat.message.upserted',
+      eventType: 'player_message_created',
       entityType: 'chat_message',
       entityId: payload.entityId,
       payload: payload as unknown as Record<string, unknown>,
       source: payload.source,
       mirroredAt: payload.updatedAt,
+    });
+    console.info('[MESSAGE_LIVE_EVENT_INSERTED]', {
+      channel: userChatLiveChannel(cleanUid),
+      eventType: 'player_message_created',
+      messageId: payload.messageId,
+      playerUid: payload.playerUid,
+      coadminUid: payload.coadminUid,
+      type: payload.type,
+      status: payload.status,
     });
   }
 }
