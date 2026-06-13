@@ -415,18 +415,18 @@ export default function PlayerPage() {
     },
   });
   const messages: ChatMessage[] = useMemo(() => {
-    const currentUser = auth.currentUser;
-    if (!currentUser) {
+    const currentUid = auth.currentUser?.uid || playerUid || getCachedSessionUser()?.uid || '';
+    if (!currentUid) {
       return [];
     }
     return pagedAgentChat.items.map((msg) => ({
       id: msg.id,
       text: msg.text,
       imageUrl: msg.imageUrl,
-      sender: msg.senderUid === currentUser.uid ? 'admin' : 'user',
+      sender: msg.senderUid === currentUid ? 'admin' : 'user',
       timestamp: msg.createdAt?.toDate?.() || new Date(),
     }));
-  }, [pagedAgentChat.items]);
+  }, [pagedAgentChat.items, playerUid]);
   const hasSeenCashoutTaskSnapshotRef = useRef(false);
   const knownCompletedCashoutTaskIdsRef = useRef<Set<string>>(new Set());
   const cashoutSplashSeenIdsRef = useRef<Set<string>>(new Set());

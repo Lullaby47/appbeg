@@ -41,6 +41,7 @@ import {
 } from '@/lib/client/sqlClientMigration';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
+import { attachSqlChatMessagesPoll } from '@/features/live/chatSqlRead';
 
 const DIRECT_CONVERSATIONS = 'playerConversations';
 const GROUP_CONVERSATIONS = 'playerGroupConversations';
@@ -175,6 +176,26 @@ export function getDirectConversationId(uidA: string, uidB: string) {
 
 function getFriendLinkId(uidA: string, uidB: string) {
   return [uidA, uidB].sort().join('__');
+}
+
+function mapSqlDirectMessage(message: {
+  id: string;
+  senderUid: string;
+  text?: string;
+  imageUrl?: string;
+  imagePublicId?: string;
+  type?: 'text' | 'image';
+  createdAt?: Timestamp | null;
+}): PlayerChatMessage {
+  return {
+    id: message.id,
+    senderUid: message.senderUid,
+    text: message.text,
+    imageUrl: message.imageUrl,
+    imagePublicId: message.imagePublicId,
+    type: message.type === 'image' ? 'image' : 'text',
+    createdAt: message.createdAt || undefined,
+  };
 }
 
 async function withRateLimit(conversationId: string, senderUid: string) {
@@ -357,6 +378,36 @@ export function listenDirectMessages(
   otherUid: string,
   onNext: (messages: PlayerChatMessage[]) => void
 ) {
+  const selfUid = resolveListenerSelfUid();
+  if (!selfUid) {
+    onNext([]);
+    return () => {};
+  }
+  const conversationId = getDirectConversationId(selfUid, otherUid);
+
+  if (isClientSqlReadMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'player_chat_direct_messages',
+      file: 'features/messages/playerChat.ts',
+      operation: 'onSnapshot',
+      replacement: 'GET /api/chat/messages',
+    });
+    return attachSqlChatMessagesPoll(
+      otherUid,
+      (messages) => {
+        onNext(messages.map(mapSqlDirectMessage));
+      },
+      {
+        limit: DIRECT_MESSAGE_LIVE_WINDOW,
+        requirePlayerRole: true,
+        conversationId,
+      },
+      (error) => {
+        console.error('[PLAYER_CHAT_DIRECT_MESSAGES_SQL_READ_FAILED]', error);
+      }
+    );
+  }
+
   if (
     shouldSkipClientFirestore({
       file: 'features/messages/playerChat.ts',
@@ -369,12 +420,6 @@ export function listenDirectMessages(
     return noopFirestoreUnsubscribe();
   }
 
-  const selfUid = resolveListenerSelfUid();
-  if (!selfUid) {
-    onNext([]);
-    return () => {};
-  }
-  const conversationId = getDirectConversationId(selfUid, otherUid);
   const q = query(
     collection(db, DIRECT_CONVERSATIONS, conversationId, 'messages'),
     orderBy('createdAt', 'desc'),

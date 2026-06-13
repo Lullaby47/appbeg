@@ -23,6 +23,36 @@ function getDirectConversationId(uid1: string, uid2: string) {
   return [uid1, uid2].sort().join('__');
 }
 
+function validateDirectConversationRead(input: {
+  authUid: string;
+  authRole: string;
+  peerUid: string;
+  conversationId: string;
+}) {
+  const authUid = cleanText(input.authUid);
+  const peerUid = cleanText(input.peerUid);
+  const conversationId = cleanText(input.conversationId);
+  if (input.authRole !== 'player') {
+    return { ok: false as const, reason: 'explicit_conversation_requires_player' };
+  }
+  if (!authUid || !peerUid || authUid === peerUid) {
+    return { ok: false as const, reason: 'invalid_direct_participants' };
+  }
+  const parts = conversationId.split('__');
+  if (parts.length !== 2 || parts.some((part) => !cleanText(part))) {
+    return { ok: false as const, reason: 'invalid_direct_conversation_format' };
+  }
+  const authMatches = parts.filter((part) => part === authUid).length;
+  const peerMatches = parts.filter((part) => part === peerUid).length;
+  if (authMatches !== 1 || peerMatches !== 1) {
+    return { ok: false as const, reason: 'direct_conversation_participant_mismatch' };
+  }
+  if (conversationId !== getDirectConversationId(authUid, peerUid)) {
+    return { ok: false as const, reason: 'direct_conversation_id_not_canonical' };
+  }
+  return { ok: true as const, conversationId };
+}
+
 function hasPlayerSessionHeaders(request: Request) {
   return Boolean(
     cleanText(request.headers.get('X-App-Session-Id')) ||
@@ -93,6 +123,7 @@ async function validatePlayerMessageScope(senderUid: string, receiverUid: string
 
 export async function GET(request: Request) {
   const startedAt = Date.now();
+  const url = new URL(request.url);
   const auth = await requireApiUser(request, [
     'admin',
     'coadmin',
@@ -104,13 +135,46 @@ export async function GET(request: Request) {
     return auth.response;
   }
 
-  const peerUid = String(new URL(request.url).searchParams.get('peerUid') || '').trim();
+  const peerUid = cleanText(url.searchParams.get('peerUid'));
   if (!peerUid) {
     return apiError('peerUid query parameter is required.', 400);
   }
 
-  const limit = Math.max(1, Math.min(200, Number(new URL(request.url).searchParams.get('limit') || 50)));
-  const conversationId = getConversationId(auth.user.uid, peerUid);
+  const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') || 50)));
+  const requestedConversationId = cleanText(url.searchParams.get('conversationId'));
+  let conversationId = getConversationId(auth.user.uid, peerUid);
+  if (requestedConversationId) {
+    const direct = validateDirectConversationRead({
+      authUid: auth.user.uid,
+      authRole: auth.user.role,
+      peerUid,
+      conversationId: requestedConversationId,
+    });
+    if (!direct.ok) {
+      console.info('[CHAT_MESSAGES_READ_DENIED]', {
+        route: ROUTE,
+        senderUid: auth.user.uid,
+        peerUid,
+        conversationId: requestedConversationId,
+        reason: direct.reason,
+        auth_path: auth.authPath,
+      });
+      return apiError('Conversation does not match authenticated player and peer.', 403);
+    }
+    const scope = await validatePlayerMessageScope(auth.user.uid, peerUid);
+    if (!scope.ok) {
+      console.info('[CHAT_MESSAGES_READ_DENIED]', {
+        route: ROUTE,
+        senderUid: auth.user.uid,
+        peerUid,
+        conversationId: requestedConversationId,
+        reason: scope.reason,
+        auth_path: auth.authPath,
+      });
+      return apiError('Forbidden.', 403);
+    }
+    conversationId = direct.conversationId;
+  }
   const messages = await readChatMessagesCacheByConversation(conversationId, limit);
 
   if (isCacheSqlAuthoritative()) {

@@ -77,9 +77,20 @@ export async function fetchSqlUnreadCounts() {
   return payload.unreadCounts || {};
 }
 
-export async function fetchSqlChatMessages(peerUid: string, limit = 50) {
+export async function fetchSqlChatMessages(
+  peerUid: string,
+  limit = 50,
+  options?: { conversationId?: string }
+) {
   const context = await readChatApiContext();
-  const url = `/api/chat/messages?peerUid=${encodeURIComponent(peerUid)}&limit=${limit}`;
+  const params = new URLSearchParams({
+    peerUid,
+    limit: String(limit),
+  });
+  if (options?.conversationId) {
+    params.set('conversationId', options.conversationId);
+  }
+  const url = `/api/chat/messages?${params.toString()}`;
   const response = await fetchChatApi(
     url,
     {
@@ -163,17 +174,22 @@ export function attachSqlUnreadCountsPoll(
 export function attachSqlChatMessagesPoll(
   peerUid: string,
   onChange: (messages: FirestoreChatMessage[]) => void,
-  options?: { limit?: number; requirePlayerRole?: boolean },
+  options?: { limit?: number; requirePlayerRole?: boolean; conversationId?: string },
   onError?: (error: Error) => void
 ) {
-  logClientFirestoreSkipped('chat_messages_listener', { peerUid });
+  logClientFirestoreSkipped('chat_messages_listener', {
+    peerUid,
+    conversationId: options?.conversationId || null,
+  });
 
   if (options?.requirePlayerRole) {
     return createPlayerScopedPoll({
       pollName: 'player_chat_messages',
       intervalMs: POLL_MS,
       onTick: async () => {
-        const messages = await fetchSqlChatMessages(peerUid, options?.limit || 50);
+        const messages = await fetchSqlChatMessages(peerUid, options?.limit || 50, {
+          conversationId: options?.conversationId,
+        });
         onChange(messages);
       },
       onError,
@@ -188,7 +204,9 @@ export function attachSqlChatMessagesPoll(
       return;
     }
     try {
-      const messages = await fetchSqlChatMessages(peerUid, options?.limit || 50);
+      const messages = await fetchSqlChatMessages(peerUid, options?.limit || 50, {
+        conversationId: options?.conversationId,
+      });
       if (!cancelled) {
         onChange(messages);
       }
