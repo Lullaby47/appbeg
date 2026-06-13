@@ -50,6 +50,7 @@ export default function PlayerChatPage() {
   const [allPlayers, setAllPlayers] = useState<PlayerPeer[]>([]);
   const [selectedPeer, setSelectedPeer] = useState<PlayerPeer | null>(null);
   const [messages, setMessages] = useState<PlayerChatMessage[]>([]);
+  const [rawMessageCount, setRawMessageCount] = useState(0);
   const [typing, setTyping] = useState(false);
   const [newMessage, setNewMessage] = useState('');
   const [sending, setSending] = useState(false);
@@ -219,7 +220,25 @@ export default function PlayerChatPage() {
     if (!isPlayerRole || !selectedPeer) return;
     const unsubMessages = listenDirectMessages(selectedPeer.uid, (list) => {
       const visible = filterVisibleDirectMessages(list, selfUid);
+      setRawMessageCount(list.length);
       setMessages(visible);
+      console.info('[CHAT_MESSAGES_FILTERED]', {
+        conversationId: [selfUid, selectedPeer.uid].sort().join('__'),
+        currentUid: selfUid,
+        participantIds: [selfUid, selectedPeer.uid],
+        totalMessages: list.length,
+        visibleMessages: visible.length,
+        messageIds: list.slice(0, 5).map((message) => message.id),
+        visibleMessageIds: visible.slice(0, 5).map((message) => message.id),
+        messages: list.slice(0, 5).map((message) => ({
+          id: message.id,
+          senderUid: message.senderUid,
+          text: message.text,
+          deletedForAll: message.deletedForEveryone,
+          deletedForUsers: message.deletedFor,
+          createdAt: message.createdAt?.toDate?.()?.toISOString?.() || null,
+        })),
+      });
       console.info('[CHAT_DELETE_UI_REFRESH]', {
         reason: 'live_messages_refresh',
         peerUid: selectedPeer.uid,
@@ -259,6 +278,19 @@ export default function PlayerChatPage() {
     }
     return allPlayers.filter((p) => p.username.toLowerCase().includes(term));
   }, [allPlayers, playerSearchTerm]);
+  const messagesHiddenByFilters = rawMessageCount > 0 && messages.length === 0;
+
+  useEffect(() => {
+    if (!selectedPeer) return;
+    console.info('[CHAT_MESSAGES_RENDER]', {
+      conversationId: [selfUid, selectedPeer.uid].sort().join('__'),
+      currentUid: selfUid,
+      participantIds: [selfUid, selectedPeer.uid],
+      totalMessages: rawMessageCount,
+      visibleMessages: messages.length,
+      messageIds: messages.slice(0, 5).map((message) => message.id),
+    });
+  }, [messages, rawMessageCount, selectedPeer, selfUid]);
 
   async function onSend(e: React.FormEvent) {
     e.preventDefault();
@@ -653,6 +685,10 @@ export default function PlayerChatPage() {
                   {chatLoading ? (
                     <div className="pt-14 text-center text-sm text-amber-100/45">
                       Chat loading...
+                    </div>
+                  ) : messagesHiddenByFilters ? (
+                    <div className="pt-14 text-center text-sm text-red-200">
+                      Messages loaded but hidden by filters
                     </div>
                   ) : messages.length === 0 ? (
                     <div className="pt-14 text-center text-sm text-amber-100/45">

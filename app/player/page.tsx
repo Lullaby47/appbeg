@@ -622,6 +622,11 @@ export default function PlayerPage() {
     setShowActiveTableSplash(false);
     if (!options?.fromPopState && hasActiveTableSplashHistoryState()) {
       activeTableHistoryOpenRef.current = false;
+      pwaBackHandledByOverlayRef.current = true;
+      console.info('[PLAYER_HISTORY_BACK]', {
+        reason: 'close_active_table_splash',
+        currentPath: window.location.pathname,
+      });
       window.history.back();
     }
     if (wasOpen && resumeThemeAfterTableRef.current) {
@@ -855,7 +860,10 @@ export default function PlayerPage() {
         return;
       }
       window.history.pushState(
-        { [PLAYER_PWA_EXIT_GUARD_HISTORY_KEY]: true },
+        {
+          ...(window.history.state as Record<string, unknown> | null),
+          [PLAYER_PWA_EXIT_GUARD_HISTORY_KEY]: true,
+        },
         '',
         window.location.href
       );
@@ -864,6 +872,10 @@ export default function PlayerPage() {
 
     const closeTopPlayerOverlay = () => {
       if (showPwaExitConfirm) {
+        return true;
+      }
+      if (showActiveTableSplashRef.current) {
+        closeActiveTableSplash({ fromPopState: true });
         return true;
       }
       if (mobileMenuOpen) {
@@ -884,6 +896,10 @@ export default function PlayerPage() {
       }
       if (showPaymentImageDownloadConfirm && !paymentImageDownloadBusy) {
         setShowPaymentImageDownloadConfirm(false);
+        return true;
+      }
+      if (credentialResetModal) {
+        setCredentialResetModal(null);
         return true;
       }
       if (showPlayerPasswordResetModal) {
@@ -952,6 +968,10 @@ export default function PlayerPage() {
 
       pushExitGuardState();
       setShowPwaExitConfirm(true);
+      console.info('[BEFORE_UNLOAD_TRIGGERED]', {
+        reason: 'pwa_back_no_overlay',
+        currentPath: window.location.pathname,
+      });
       console.info('[PWA_BACK] exit confirm shown');
     };
 
@@ -977,6 +997,7 @@ export default function PlayerPage() {
     showPaymentImageDownloadConfirm,
     showPlayerPasswordResetModal,
     showPwaExitConfirm,
+    credentialResetModal,
     paymentImageDownloadBusy,
   ]);
 
@@ -3239,7 +3260,17 @@ export default function PlayerPage() {
     }
   }, [activeView, closeActiveTableSplash, maintenanceBreak.enabled, playerCoadminUid, playerUid]);
 
-  async function handleGameRequest(type: PlayerGameRequestType) {
+  async function handleGameRequest(
+    type: PlayerGameRequestType,
+    clickEvent?: MouseEvent<HTMLButtonElement>
+  ) {
+    clickEvent?.preventDefault();
+    clickEvent?.stopPropagation();
+    console.info('[PLAYER_ACTION_CLICK]', {
+      action: type,
+      defaultPrevented: clickEvent?.defaultPrevented ?? false,
+    });
+
     if (maintenanceBreak.enabled) {
       console.info('[MAINTENANCE] blocked player action', {
         action: type,
@@ -3355,8 +3386,16 @@ export default function PlayerPage() {
 
   function openCredentialResetModal(
     gameLogin: PlayerGameLogin,
-    taskType: 'reset_password' | 'recreate_username'
+    taskType: 'reset_password' | 'recreate_username',
+    event?: MouseEvent<HTMLButtonElement>
   ) {
+    event?.preventDefault();
+    event?.stopPropagation();
+    console.info('[PLAYER_ACTION_CLICK]', {
+      action: taskType === 'reset_password' ? 'game_reset_password' : 'recreate_username',
+      defaultPrevented: event?.defaultPrevented ?? false,
+      gameLoginId: gameLogin.id,
+    });
     setCredentialResetModal({ gameLogin, taskType });
   }
 
@@ -3591,7 +3630,13 @@ export default function PlayerPage() {
     setShowCoinConfirmSplash(true);
   }
 
-  function openPlayerPasswordResetModal() {
+  function openPlayerPasswordResetModal(event?: MouseEvent<HTMLButtonElement>) {
+    event?.preventDefault();
+    event?.stopPropagation();
+    console.info('[PLAYER_ACTION_CLICK]', {
+      action: 'reset_password',
+      defaultPrevented: event?.defaultPrevented ?? false,
+    });
     console.info('[RESET_PASSWORD_CLICK]', {
       playerUid: playerUid || null,
       sqlMode: isSqlPlayerRuntimeMode(),
@@ -4511,8 +4556,8 @@ export default function PlayerPage() {
                             />
                             <button
                               type="button"
-                              onClick={() => {
-                                openPlayerPasswordResetModal();
+                              onClick={(event) => {
+                                openPlayerPasswordResetModal(event);
                                 setMobileMenuOpen(false);
                               }}
                               className="w-full rounded-2xl border border-amber-400/35 bg-amber-500/10 py-3.5 text-sm font-black text-amber-100 transition hover:bg-amber-500/20"
@@ -4576,7 +4621,7 @@ export default function PlayerPage() {
                       />
                       <button
                         type="button"
-                        onClick={openPlayerPasswordResetModal}
+                        onClick={(event) => openPlayerPasswordResetModal(event)}
                         className="w-full rounded-2xl border border-amber-400/35 bg-amber-500/10 py-3.5 text-sm font-bold text-amber-100 transition hover:bg-amber-500/20"
                       >
                         Reset Password
@@ -5273,7 +5318,7 @@ export default function PlayerPage() {
                       Number(playAmount) > 0 &&
                       Number(playAmount) > wallet.coin)
                   }
-                  onClick={() => void handleGameRequest('recharge')}
+                  onClick={(event) => void handleGameRequest('recharge', event)}
                   className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 py-3 text-base font-black text-white shadow-lg shadow-emerald-500/25 transition-all hover:brightness-110 disabled:opacity-50"
                 >
                   <span>⬇️</span> Send Recharge
@@ -5291,7 +5336,7 @@ export default function PlayerPage() {
                     Number(playAmount) < MIN_REDEEM_AMOUNT ||
                     Number(playAmount) > MAX_REDEEM_AMOUNT
                   }
-                  onClick={() => void handleGameRequest('redeem')}
+                  onClick={(event) => void handleGameRequest('redeem', event)}
                   className="flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-700 to-red-600 px-4 py-3 text-base font-black text-white shadow-lg shadow-rose-500/25 transition-all hover:brightness-110 disabled:opacity-50"
                 >
                   <span>⬆️</span> Send Redeem

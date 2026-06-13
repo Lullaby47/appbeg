@@ -37,6 +37,10 @@ function mapChatMessageRow(row: Record<string, unknown>): CachedChatMessage | nu
   if (!id || !conversationId) {
     return null;
   }
+  const raw =
+    row.raw_firestore_data && typeof row.raw_firestore_data === 'object'
+      ? (row.raw_firestore_data as Record<string, unknown>)
+      : {};
   const type = cleanText(row.type).toLowerCase() === 'image' ? 'image' : 'text';
   return {
     id,
@@ -48,8 +52,9 @@ function mapChatMessageRow(row: Record<string, unknown>): CachedChatMessage | nu
     imageUrl: cleanText(row.image_url) || null,
     imagePublicId: cleanText(row.image_public_id) || null,
     createdAt: toIsoString(row.created_at),
-    deletedForEveryone: row.deleted_for_everyone === true,
-    deletedFor: parseDeletedFor(row.deleted_for_uids),
+    deletedForEveryone:
+      row.deleted_for_everyone === true || raw.deletedForEveryone === true,
+    deletedFor: parseDeletedFor(row.deleted_for_uids ?? raw.deletedFor),
   };
 }
 
@@ -72,6 +77,11 @@ export async function upsertChatMessageCache(input: {
   const deletedFor = parseDeletedFor(raw.deletedFor ?? raw.deleted_for_uids);
   const deletedForEveryone =
     raw.deletedForEveryone === true || raw.deleted_for_everyone === true;
+  const rawWithDeleteState = {
+    ...normalizedRaw,
+    deletedFor,
+    deletedForEveryone,
+  };
 
   try {
     await db.query(
@@ -89,10 +99,7 @@ export async function upsertChatMessageCache(input: {
           raw_firestore_data,
           source,
           mirrored_at,
-          deleted_at,
-          deleted_for_uids,
-          deleted_for_everyone,
-          deleted_for_everyone_at
+          deleted_at
         )
         VALUES (
           $1,
@@ -107,10 +114,7 @@ export async function upsertChatMessageCache(input: {
           $10::jsonb,
           $11,
           now(),
-          NULL,
-          $12::jsonb,
-          $13,
-          CASE WHEN $13::boolean THEN now() ELSE NULL END
+          NULL
         )
         ON CONFLICT (firebase_id) DO UPDATE SET
           conversation_id = EXCLUDED.conversation_id,
@@ -124,13 +128,7 @@ export async function upsertChatMessageCache(input: {
           raw_firestore_data = EXCLUDED.raw_firestore_data,
           source = EXCLUDED.source,
           mirrored_at = now(),
-          deleted_at = NULL,
-          deleted_for_uids = EXCLUDED.deleted_for_uids,
-          deleted_for_everyone = EXCLUDED.deleted_for_everyone,
-          deleted_for_everyone_at = CASE
-            WHEN EXCLUDED.deleted_for_everyone THEN COALESCE(public.chat_messages_cache.deleted_for_everyone_at, now())
-            ELSE NULL
-          END
+          deleted_at = NULL
       `,
       [
         firebaseId,
@@ -142,10 +140,8 @@ export async function upsertChatMessageCache(input: {
         cleanText(raw.imageUrl ?? raw.image_url),
         cleanText(raw.imagePublicId ?? raw.image_public_id),
         toIsoString(raw.createdAt ?? raw.created_at),
-        JSON.stringify(normalizedRaw),
+        JSON.stringify(rawWithDeleteState),
         cleanText(input.source) || 'mirror',
-        JSON.stringify(deletedFor),
-        deletedForEveryone,
       ]
     );
     return true;
@@ -184,8 +180,8 @@ export async function readChatMessagesCacheByConversation(
     const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(
       db,
       `
-        SELECT firebase_id, conversation_id, sender_uid, receiver_uid, type, text, image_url, image_public_id,
-               created_at, deleted_for_uids, deleted_for_everyone
+        SELECT firebase_id, conversation_id, sender_uid, receiver_uid, type, text, image_url,
+               image_public_id, created_at, raw_firestore_data
         FROM public.chat_messages_cache
         WHERE deleted_at IS NULL
           AND conversation_id = $1
@@ -199,6 +195,19 @@ export async function readChatMessagesCacheByConversation(
       .map(mapChatMessageRow)
       .filter((row): row is CachedChatMessage => Boolean(row))
       .reverse();
+    console.info('[CHAT_MESSAGES_DB]', {
+      conversationId: cleanConversationId,
+      totalMessages: messages.length,
+      messageIds: messages.slice(0, 5).map((message) => message.id),
+      messages: messages.slice(0, 5).map((message) => ({
+        id: message.id,
+        senderUid: message.senderUid,
+        text: message.text,
+        deletedForAll: message.deletedForEveryone,
+        deletedForUsers: message.deletedFor,
+        createdAt: message.createdAt,
+      })),
+    });
     return messages;
   } catch (error) {
     console.warn('[CHAT_MESSAGES_CACHE] read failed', {

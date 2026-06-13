@@ -118,7 +118,22 @@ export async function fetchSqlChatMessages(
     }
     throw new Error(payload.error || 'Failed to load chat messages.');
   }
-  return (payload.messages || []).map(mapCachedMessage);
+  const messages = (payload.messages || []).map(mapCachedMessage);
+  console.info('[CHAT_MESSAGES_CLIENT]', {
+    conversationId: options?.conversationId || null,
+    currentUid: context.uid,
+    totalMessages: messages.length,
+    messageIds: messages.slice(0, 5).map((message) => message.id),
+    messages: messages.slice(0, 5).map((message) => ({
+      id: message.id,
+      senderUid: message.senderUid,
+      text: message.text,
+      deletedForAll: message.deletedForEveryone,
+      deletedForUsers: message.deletedFor,
+      createdAt: message.createdAt?.toDate?.()?.toISOString?.() || null,
+    })),
+  });
+  return messages;
 }
 
 export function attachSqlUnreadCountsPoll(

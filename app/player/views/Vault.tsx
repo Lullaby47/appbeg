@@ -260,7 +260,9 @@ export default function Vault(props: Props) {
                             <div className="border-t border-amber-200/10 pt-1">
                               <button
                                 type="button"
-                                onClick={() => openCredentialResetModal(login, 'reset_password')}
+                                onClick={(event) =>
+                                  openCredentialResetModal(login, 'reset_password', event)
+                                }
                                 disabled={credentialTaskLoadingKey === `reset_password:${login.id}`}
                                 className="min-h-[44px] w-full rounded-2xl border border-fuchsia-200/15 bg-gradient-to-r from-fuchsia-600 to-violet-600 px-3 py-2 text-sm font-black leading-tight text-white shadow-[0_10px_24px_-16px_rgba(217,70,239,0.95)] transition-all hover:from-fuchsia-500 hover:to-violet-500 disabled:opacity-50"
                               >

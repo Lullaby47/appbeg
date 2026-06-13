@@ -188,6 +188,21 @@ export async function GET(request: Request) {
     }
   }
 
+  console.info('[CHAT_MESSAGES_API]', {
+    conversationId,
+    currentUid: auth.user.uid,
+    totalMessages: messages?.length || 0,
+    messageIds: (messages || []).slice(0, 5).map((message) => message.id),
+    messages: (messages || []).slice(0, 5).map((message) => ({
+      id: message.id,
+      senderUid: message.senderUid,
+      text: message.text,
+      deletedForAll: message.deletedForEveryone,
+      deletedForUsers: message.deletedFor,
+      createdAt: message.createdAt,
+    })),
+  });
+
   return NextResponse.json({
     messages: (messages || []).map((message) => ({
       id: message.id,

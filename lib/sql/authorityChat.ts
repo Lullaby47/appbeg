@@ -226,7 +226,7 @@ export async function deleteChatMessageInSql(input: AuthorityChatDeleteInput) {
     const beforeResult = await client.query(
       `
         SELECT firebase_id, conversation_id, sender_uid, receiver_uid, type, text,
-               image_url, image_public_id, deleted_for_uids, deleted_for_everyone
+               image_url, image_public_id, raw_firestore_data
         FROM public.chat_messages_cache
         WHERE firebase_id = $1
           AND conversation_id = $2
@@ -245,8 +245,12 @@ export async function deleteChatMessageInSql(input: AuthorityChatDeleteInput) {
     const receiverUid = cleanText(before.receiver_uid);
     const participants = [senderUid, receiverUid].filter(Boolean);
     const isParticipant = participants.includes(actorUid) && participants.includes(peerUid);
-    const beforeDeletedFor = parseJsonArray(before.deleted_for_uids);
-    const beforeDeletedForEveryone = before.deleted_for_everyone === true;
+    const beforeRaw =
+      before.raw_firestore_data && typeof before.raw_firestore_data === 'object'
+        ? (before.raw_firestore_data as Record<string, unknown>)
+        : {};
+    const beforeDeletedFor = parseJsonArray(beforeRaw.deletedFor);
+    const beforeDeletedForEveryone = beforeRaw.deletedForEveryone === true;
 
     console.info('[CHAT_DELETE_REQUEST]', {
       messageId,
@@ -305,15 +309,14 @@ export async function deleteChatMessageInSql(input: AuthorityChatDeleteInput) {
       const result = await client.query(
         `
           UPDATE public.chat_messages_cache
-          SET deleted_for_uids = $3::jsonb,
-              raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object('deletedFor', $3::jsonb),
+          SET raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object('deletedFor', $3::jsonb),
               source = 'authority_chat_delete',
               mirrored_at = now()
           WHERE firebase_id = $1
             AND conversation_id = $2
             AND deleted_at IS NULL
           RETURNING firebase_id, conversation_id, sender_uid, receiver_uid, type, text,
-                    image_url, image_public_id, deleted_for_uids, deleted_for_everyone
+                    image_url, image_public_id, raw_firestore_data
         `,
         [messageId, conversationId, JSON.stringify(updatedDeletedFor)]
       );
@@ -337,8 +340,6 @@ export async function deleteChatMessageInSql(input: AuthorityChatDeleteInput) {
           SET text = NULL,
               image_url = NULL,
               image_public_id = NULL,
-              deleted_for_everyone = TRUE,
-              deleted_for_everyone_at = COALESCE(deleted_for_everyone_at, now()),
               raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb)
                 || jsonb_build_object(
                   'text', '',
@@ -354,7 +355,7 @@ export async function deleteChatMessageInSql(input: AuthorityChatDeleteInput) {
             AND conversation_id = $2
             AND deleted_at IS NULL
           RETURNING firebase_id, conversation_id, sender_uid, receiver_uid, type, text,
-                    image_url, image_public_id, deleted_for_uids, deleted_for_everyone
+                    image_url, image_public_id, raw_firestore_data
         `,
         [messageId, conversationId, nowIso]
       );
@@ -390,8 +391,12 @@ export async function deleteChatMessageInSql(input: AuthorityChatDeleteInput) {
       return { ok: false as const, status: 500, reason: 'message_update_failed' };
     }
 
-    const updatedDeletedFor = parseJsonArray(updatedRow.deleted_for_uids);
-    const updatedDeletedForEveryone = updatedRow.deleted_for_everyone === true;
+    const updatedRaw =
+      updatedRow.raw_firestore_data && typeof updatedRow.raw_firestore_data === 'object'
+        ? (updatedRow.raw_firestore_data as Record<string, unknown>)
+        : {};
+    const updatedDeletedFor = parseJsonArray(updatedRaw.deletedFor);
+    const updatedDeletedForEveryone = updatedRaw.deletedForEveryone === true;
     console.info('[CHAT_DELETE_DB_UPDATED]', {
       messageId,
       senderUid,

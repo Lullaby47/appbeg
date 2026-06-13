@@ -205,6 +205,9 @@ function mapSqlDirectMessage(message: {
 }
 
 export function isDirectMessageVisibleToPlayer(message: PlayerChatMessage, playerUid: string) {
+  if (message.deletedForEveryone === true) {
+    return true;
+  }
   return !Array.isArray(message.deletedFor) || !message.deletedFor.includes(playerUid);
 }
 
