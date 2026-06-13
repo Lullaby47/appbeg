@@ -51,6 +51,7 @@ const DIRECT_MESSAGE_LIVE_WINDOW = 50;
 export type PlayerPeer = {
   uid: string;
   username: string;
+  lastSeenAt?: string | null;
 };
 
 export type PlayerChatMessage = {
@@ -84,6 +85,47 @@ export type FriendLink = {
   status: 'pending' | 'accepted';
   requestedByUid: string;
 };
+
+export async function fetchPlayerChatBootstrap(search = '') {
+  const params = new URLSearchParams();
+  const cleanSearch = cleanText(search);
+  if (cleanSearch) {
+    params.set('search', cleanSearch);
+  }
+  params.set('limit', '150');
+
+  const headers = await getSqlApiReadHeaders(false);
+  const cached = getCachedSessionUser();
+  const response = await fetchChatApi(
+    `/api/player/chat/bootstrap?${params.toString()}`,
+    {
+      method: 'GET',
+      headers,
+      cache: 'no-store',
+    },
+    {
+      role: cached?.role ?? 'player',
+      uid: cached?.uid ?? null,
+      hasAppSessionId: Boolean(getLocalAppSessionId()),
+      hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+      headersSent: Object.keys(headers),
+    }
+  );
+  const payload = (await response.json().catch(() => ({}))) as {
+    players?: PlayerPeer[];
+    error?: string;
+  };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to load player chat.');
+  }
+  return (payload.players || [])
+    .map((player) => ({
+      uid: cleanText(player.uid),
+      username: cleanText(player.username) || 'Player',
+      lastSeenAt: cleanText(String(player.lastSeenAt || '')) || null,
+    }))
+    .filter((player) => player.uid);
+}
 
 type ConversationDoc = {
   participants?: string[];
@@ -415,6 +457,9 @@ export function listenDirectTyping(
 }
 
 export async function setDirectTyping(otherUid: string, typing: boolean) {
+  if (isClientSqlReadMode()) {
+    return;
+  }
   const selfUid = assertAuthUid();
   const conversationId = getDirectConversationId(selfUid, otherUid);
   await setDoc(

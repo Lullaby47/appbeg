@@ -10,7 +10,6 @@ import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessio
 import { computeRewardCoinsAfterFee } from '@/lib/rewardCoinTransferFee';
 import { logChatPageMount } from '@/lib/client/chatLogoutDiagnostics';
 import { shouldSkipClientFirestore } from '@/lib/client/clientFirestoreGuard';
-import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { useIsPlayerSessionRole } from '@/features/player/useIsPlayerSessionRole';
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
 import {
@@ -18,6 +17,7 @@ import {
   deleteDirectMessageForEveryone,
   deleteDirectMessageForMe,
   ensureReferralFriendLinks,
+  fetchPlayerChatBootstrap,
   FriendLink,
   listenDirectChatList,
   listenFriendLinks,
@@ -71,6 +71,7 @@ export default function PlayerChatPage() {
   const [referralNotice, setReferralNotice] = useState('');
   const [selfUid, setSelfUid] = useState('');
   const [chatLoading, setChatLoading] = useState(true);
+  const [chatLoadError, setChatLoadError] = useState('');
 
   useEffect(() => {
     if (!isPlayerRole) {
@@ -123,26 +124,53 @@ export default function PlayerChatPage() {
 
   useEffect(() => {
     if (!isPlayerRole) {
-      setChatLoading(false);
-      return;
-    }
-
-    if (
-      shouldSkipClientFirestore({
-        file: 'app/player/chat/page.tsx',
-        feature: 'player_chat_active_players_list',
-        collection: 'users',
-        operation: 'onSnapshot',
-      })
-    ) {
       setAllPlayers([]);
       setChatLoading(false);
       return;
     }
 
+    let cancelled = false;
+
+    const loadSqlPlayers = async () => {
+      setChatLoading(true);
+      setChatLoadError('');
+      try {
+        const players = await fetchPlayerChatBootstrap(playerSearchTerm);
+        if (!cancelled) {
+          setAllPlayers(players);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setAllPlayers([]);
+          setChatLoadError(error instanceof Error ? error.message : 'Failed to load player chat.');
+        }
+      } finally {
+        if (!cancelled) {
+          setChatLoading(false);
+        }
+      }
+    };
+
+    const skipFirestore = shouldSkipClientFirestore({
+      file: 'app/player/chat/page.tsx',
+      feature: 'player_chat_active_players_list',
+      collection: 'users',
+      operation: 'onSnapshot',
+    });
+
+    if (skipFirestore) {
+      void loadSqlPlayers();
+      return () => {
+        cancelled = true;
+      };
+    }
+
     void ensureReferralFriendLinks();
     setChatLoading(false);
-  }, [isPlayerRole, selfUid]);
+    return () => {
+      cancelled = true;
+    };
+  }, [isPlayerRole, selfUid, playerSearchTerm]);
 
   const onlineByUid = usePresenceOnlineMap(allPlayers.map((p) => p.uid), {
     requirePlayerRole: true,
@@ -352,9 +380,7 @@ export default function PlayerChatPage() {
                 </p>
               ) : filteredPlayers.length === 0 ? (
                 <p className="rounded-xl border border-white/10 bg-black/40 p-3 text-sm text-amber-100/60">
-                  {isClientSqlReadMode()
-                    ? 'Chat temporarily unavailable.'
-                    : 'No matching players found.'}
+                  {chatLoadError || 'No matching players found.'}
                 </p>
               ) : (
                 filteredPlayers.map((p) => {
