@@ -220,6 +220,7 @@ type SqlRequestPayload = {
   refunded?: unknown;
   createdAt?: unknown;
   updatedAt?: unknown;
+  completedAt?: unknown;
 };
 
 export type PlayerRequestToastVariant = 'success' | 'info' | 'error' | 'warning';
@@ -245,6 +246,8 @@ export type PlayerRequestOutcomeLiveEvent = {
   dismissReasonMessage: string | null;
   refunded: boolean;
   sourceEvent: string;
+  outboxId?: number;
+  eventAtMs?: number;
 };
 
 export type PlayerRechargeDismissLiveEvent = {
@@ -257,6 +260,8 @@ export type PlayerRechargeDismissLiveEvent = {
   dismissReasonMessage: string | null;
   refunded: boolean;
   sourceEvent: string;
+  outboxId?: number;
+  eventAtMs?: number;
 };
 
 export type PlayerRechargeSuccessLiveEvent = {
@@ -266,12 +271,36 @@ export type PlayerRechargeSuccessLiveEvent = {
   status: PlayerGameRequestStatus;
   message: string;
   sourceEvent: string;
+  outboxId?: number;
+  eventAtMs?: number;
 };
 
 export type PlayerRedeemDismissLiveEvent = PlayerRechargeDismissLiveEvent;
 
 function cleanText(value: unknown) {
   return String(value || '').trim();
+}
+
+function parsePayloadEventAtMs(payload: SqlRequestPayload): number | undefined {
+  for (const field of [payload.updatedAt, payload.completedAt, payload.createdAt]) {
+    const ms = Date.parse(String(field || ''));
+    if (Number.isFinite(ms)) {
+      return ms;
+    }
+  }
+  return undefined;
+}
+
+function attachLiveEventMeta<T extends { sourceEvent: string }>(
+  event: T,
+  outboxId: number,
+  payload: SqlRequestPayload
+): T & { outboxId?: number; eventAtMs?: number } {
+  return {
+    ...event,
+    outboxId: outboxId > 0 ? outboxId : undefined,
+    eventAtMs: parsePayloadEventAtMs(payload),
+  };
 }
 
 function playerRequestLiveChannel(playerUid: string) {
@@ -599,8 +628,15 @@ export function attachPlayerRequestSqlReadListener(
     onBalanceUpdate?: (reason: string) => void;
     onPlayerGameLoginUpdated?: (
       reason: string,
-      meta?: { updateReason?: string | null; gameName?: string | null; pokeMessage?: string | null }
+      meta?: {
+        updateReason?: string | null;
+        gameName?: string | null;
+        pokeMessage?: string | null;
+        outboxId?: number;
+        eventAtMs?: number;
+      }
     ) => void;
+    onSnapshotBootstrap?: (meta: { latestOutboxId: number }) => void;
   }
 ) {
   const cleanPlayerUid = cleanText(playerUid);
@@ -697,6 +733,9 @@ export function attachPlayerRequestSqlReadListener(
         Date.now() - startedAt
       );
       emitRequests();
+      if (reason === 'bootstrap') {
+        options?.onSnapshotBootstrap?.({ latestOutboxId: lastEventId });
+      }
       return true;
     } catch (error) {
       console.info('[PLAYER_REQUESTS_REFETCH_DONE]', {
@@ -713,16 +752,27 @@ export function attachPlayerRequestSqlReadListener(
     }
   };
 
-  const handleOutcomeLiveEvent = (eventName: string, payload: SqlRequestPayload, entityId: string) => {
+  const handleOutcomeLiveEvent = (
+    eventName: string,
+    payload: SqlRequestPayload,
+    entityId: string,
+    outboxId: number
+  ) => {
     const outcomeEvent = buildOutcomeEventFromPayload(eventName, entityId, payload, cleanPlayerUid);
     if (!outcomeEvent || !options?.onRequestOutcomeEvent) {
       return;
     }
-    console.info('[PLAYER_REQUEST_OUTCOME_EVENT]', outcomeEvent);
-    options.onRequestOutcomeEvent(outcomeEvent);
+    const enriched = attachLiveEventMeta(outcomeEvent, outboxId, payload);
+    console.info('[PLAYER_REQUEST_OUTCOME_EVENT]', enriched);
+    options.onRequestOutcomeEvent(enriched);
   };
 
-  const handleSuccessLiveEvent = (eventName: string, payload: SqlRequestPayload, entityId: string) => {
+  const handleSuccessLiveEvent = (
+    eventName: string,
+    payload: SqlRequestPayload,
+    entityId: string,
+    outboxId: number
+  ) => {
     if (
       eventName !== 'recharge_completed' &&
       eventName !== 'request.completed' &&
@@ -738,11 +788,17 @@ export function attachPlayerRequestSqlReadListener(
     if (options?.onRequestOutcomeEvent) {
       return;
     }
-    console.info('[PLAYER_RECHARGE_SUCCESS_EVENT]', successEvent);
-    options.onRechargeSuccessEvent(successEvent);
+    const enriched = attachLiveEventMeta(successEvent, outboxId, payload);
+    console.info('[PLAYER_RECHARGE_SUCCESS_EVENT]', enriched);
+    options.onRechargeSuccessEvent(enriched);
   };
 
-  const handleDismissLiveEvent = (eventName: string, payload: SqlRequestPayload, entityId: string) => {
+  const handleDismissLiveEvent = (
+    eventName: string,
+    payload: SqlRequestPayload,
+    entityId: string,
+    outboxId: number
+  ) => {
     if (
       eventName !== 'recharge_dismiss' &&
       eventName !== 'redeem_dismiss' &&
@@ -773,7 +829,7 @@ export function attachPlayerRequestSqlReadListener(
           pokeMessage: dismissEvent.pokeMessage,
         });
       }
-      options.onRedeemDismissEvent(dismissEvent);
+      options.onRedeemDismissEvent(attachLiveEventMeta(dismissEvent, outboxId, payload));
       return;
     }
     if (!options?.onRechargeDismissEvent) {
@@ -782,7 +838,8 @@ export function attachPlayerRequestSqlReadListener(
     if (options?.onRequestOutcomeEvent) {
       return;
     }
-    console.info('[PLAYER_RECHARGE_DISMISS_EVENT]', dismissEvent);
+    const enriched = attachLiveEventMeta(dismissEvent, outboxId, payload);
+    console.info('[PLAYER_RECHARGE_DISMISS_EVENT]', enriched);
     if (eventName === 'player_message') {
       console.info('[PLAYER_MESSAGE_EVENT]', {
         requestId: dismissEvent.requestId,
@@ -790,7 +847,7 @@ export function attachPlayerRequestSqlReadListener(
         pokeMessage: dismissEvent.pokeMessage,
       });
     }
-    options.onRechargeDismissEvent(dismissEvent);
+    options.onRechargeDismissEvent(enriched);
   };
 
   const handleStreamMessage = (eventName: string, rawData: string, outboxId: number) => {
@@ -866,14 +923,16 @@ export function attachPlayerRequestSqlReadListener(
         updateReason,
         gameName,
         pokeMessage,
+        outboxId: outboxId > 0 ? outboxId : undefined,
+        eventAtMs: parsePayloadEventAtMs(loginPayload),
       });
       return;
     }
 
     if (PLAYER_IMMEDIATE_REFETCH_EVENTS.has(eventName)) {
-      handleOutcomeLiveEvent(eventName, payload, entityId);
-      handleSuccessLiveEvent(eventName, payload, entityId);
-      handleDismissLiveEvent(eventName, payload, entityId);
+      handleOutcomeLiveEvent(eventName, payload, entityId, outboxId);
+      handleSuccessLiveEvent(eventName, payload, entityId, outboxId);
+      handleDismissLiveEvent(eventName, payload, entityId, outboxId);
       if (
         outcomeEventNeedsBalanceRefetch(eventName, payload) &&
         options?.onBalanceUpdate

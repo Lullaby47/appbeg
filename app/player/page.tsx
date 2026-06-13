@@ -162,6 +162,16 @@ import {
   UNKNOWN_CREATOR_FILTER_KEY,
 } from './constants';
 
+import {
+  loadPlayerPopupSeenState,
+  mergeRechargeSplashSeenSets,
+  mergeRedeemSplashSeenSets,
+  persistStoredStringSet,
+  playerSeenOutcomeKeysStorageKey,
+  playerSeenRechargeSplashIdsStorageKey,
+  playerSeenRedeemSplashIdsStorageKey,
+} from './popupSeenStorage';
+
 import InstallAppButton from './components/InstallAppButton';
 import PwaInstallNotReadyToast from './components/PwaInstallNotReadyToast';
 import PwaIosInstallGuide from './components/PwaIosInstallGuide';
@@ -431,6 +441,9 @@ export default function PlayerPage() {
   const [successSplashMessage, setSuccessSplashMessage] = useState<string | null>(null);
   const seenRequestOutcomeKeysRef = useRef<Set<string>>(new Set());
   const seenCompletedRedeemSplashIdsRef = useRef<Set<string>>(new Set());
+  const pageLoadAtRef = useRef(Date.now());
+  const bootOutboxCursorRef = useRef<number | null>(null);
+  const hasHydratedRequestHistoryRef = useRef(false);
 
   const [message, setMessage] = useState('');
   const [loadingList, setLoadingList] = useState(false);
@@ -1333,12 +1346,19 @@ export default function PlayerPage() {
     lastBonusIdsRef.current = nextIds;
   }, [playerBonusEvents]);
 
-  const displayedRequestHistory = useMemo(
-    () => requestHistory.slice(0, MAX_REQUEST_HISTORY_DISPLAY),
-    [requestHistory]
-  );
+  useEffect(() => {
+    pageLoadAtRef.current = Date.now();
+    bootOutboxCursorRef.current = null;
+    setMessage('');
+    setSuccessSplashMessage(null);
+    setRedeemDismissSplashRequest(null);
+    setBonusVanishedToast(false);
+  }, []);
+
   useEffect(() => {
     if (!playerUid) {
+      hasHydratedRequestHistoryRef.current = false;
+      bootOutboxCursorRef.current = null;
       knownRechargeRequestStatusByIdRef.current = {};
       seenCompletedRechargeSplashIdsRef.current = new Set();
       seenDismissedRechargeSplashIdsRef.current = new Set();
@@ -1349,20 +1369,119 @@ export default function PlayerPage() {
       return;
     }
 
-    const recentCompletionCutoffMs = Date.now() - 5 * 60 * 1000;
+    const seenState = loadPlayerPopupSeenState(playerUid);
+    seenRequestOutcomeKeysRef.current = seenState.outcomeKeys;
+    seenCompletedRechargeSplashIdsRef.current = new Set(seenState.rechargeSplashIds);
+    seenDismissedRechargeSplashIdsRef.current = new Set(seenState.rechargeSplashIds);
+    seenCompletedRedeemSplashIdsRef.current = new Set(seenState.redeemSplashIds);
+    seenDismissedRedeemSplashIdsRef.current = new Set(seenState.redeemSplashIds);
+    hasHydratedRequestHistoryRef.current = false;
+  }, [playerUid]);
+
+  const persistRechargeSplashSeenIds = useCallback((playerUidValue: string) => {
+    persistStoredStringSet(
+      playerSeenRechargeSplashIdsStorageKey(playerUidValue),
+      mergeRechargeSplashSeenSets(
+        seenCompletedRechargeSplashIdsRef.current,
+        seenDismissedRechargeSplashIdsRef.current
+      )
+    );
+  }, []);
+
+  const persistRedeemSplashSeenIds = useCallback((playerUidValue: string) => {
+    persistStoredStringSet(
+      playerSeenRedeemSplashIdsStorageKey(playerUidValue),
+      mergeRedeemSplashSeenSets(
+        seenCompletedRedeemSplashIdsRef.current,
+        seenDismissedRedeemSplashIdsRef.current
+      )
+    );
+  }, []);
+
+  const markOutcomeSeen = useCallback((playerUidValue: string, outcomeKey: string) => {
+    seenRequestOutcomeKeysRef.current.add(outcomeKey);
+    persistStoredStringSet(
+      playerSeenOutcomeKeysStorageKey(playerUidValue),
+      seenRequestOutcomeKeysRef.current
+    );
+  }, []);
+
+  const markRechargeSplashSeen = useCallback(
+    (playerUidValue: string, requestId: string) => {
+      seenCompletedRechargeSplashIdsRef.current.add(requestId);
+      seenDismissedRechargeSplashIdsRef.current.add(requestId);
+      persistRechargeSplashSeenIds(playerUidValue);
+    },
+    [persistRechargeSplashSeenIds]
+  );
+
+  const markRedeemSplashSeen = useCallback(
+    (playerUidValue: string, requestId: string) => {
+      seenCompletedRedeemSplashIdsRef.current.add(requestId);
+      seenDismissedRedeemSplashIdsRef.current.add(requestId);
+      persistRedeemSplashSeenIds(playerUidValue);
+    },
+    [persistRedeemSplashSeenIds]
+  );
+
+  const isStaleLivePopupEvent = useCallback(
+    (outboxId?: number, eventAtMs?: number) => {
+      const bootOutboxCursor = bootOutboxCursorRef.current;
+      if (
+        bootOutboxCursor !== null &&
+        outboxId !== undefined &&
+        outboxId > 0 &&
+        outboxId <= bootOutboxCursor
+      ) {
+        return true;
+      }
+      if (
+        eventAtMs !== undefined &&
+        Number.isFinite(eventAtMs) &&
+        eventAtMs < pageLoadAtRef.current
+      ) {
+        return true;
+      }
+      return false;
+    },
+    []
+  );
+
+  const displayedRequestHistory = useMemo(
+    () => requestHistory.slice(0, MAX_REQUEST_HISTORY_DISPLAY),
+    [requestHistory]
+  );
+
+  useEffect(() => {
+    if (!playerUid) {
+      return;
+    }
+
     const nextRechargeStatusById: Record<string, PlayerGameRequest['status']> = {};
-    const nextStatusById: Record<string, PlayerGameRequest['status']> = {};
+    const nextRedeemStatusById: Record<string, PlayerGameRequest['status']> = {};
 
     for (const request of requestHistory) {
       if (request.type === 'recharge') {
         nextRechargeStatusById[request.id] = request.status;
+      } else if (request.type === 'redeem') {
+        nextRedeemStatusById[request.id] = request.status;
+      }
+    }
+
+    if (!hasHydratedRequestHistoryRef.current) {
+      knownRechargeRequestStatusByIdRef.current = nextRechargeStatusById;
+      knownRedeemRequestStatusByIdRef.current = nextRedeemStatusById;
+      hasHydratedRequestHistoryRef.current = true;
+      return;
+    }
+
+    for (const request of requestHistory) {
+      if (request.type === 'recharge') {
         const previousStatus = knownRechargeRequestStatusByIdRef.current[request.id];
-        const completedAtMs = getTimestampMs(request.completedAt);
-        const recentlyCompleted = completedAtMs >= recentCompletionCutoffMs;
         const justCompleted =
           request.status === 'completed' &&
-          ((previousStatus !== undefined && previousStatus !== 'completed') ||
-            (previousStatus === undefined && recentlyCompleted));
+          previousStatus !== undefined &&
+          previousStatus !== 'completed';
 
         if (justCompleted && !seenCompletedRechargeSplashIdsRef.current.has(request.id)) {
           console.info('[PLAYER_RECHARGE_SUCCESS_TOAST_SHOW]', {
@@ -1370,14 +1489,16 @@ export default function PlayerPage() {
             source: 'request_history_transition',
           });
           showSuccessSplash(PLAYER_RECHARGE_SUCCESS_MESSAGE);
-          seenCompletedRechargeSplashIdsRef.current.add(request.id);
+          markRechargeSplashSeen(playerUid, request.id);
         }
+
         const justBlockedByKnownGameFailure =
           request.status === 'dismissed' &&
+          previousStatus !== undefined &&
+          previousStatus !== 'dismissed' &&
           (requestMatchesMidnightPartyDismiss(request) ||
-            requestMatchesPlayerInGameDismiss(request)) &&
-          ((previousStatus !== undefined && previousStatus !== 'dismissed') ||
-            (previousStatus === undefined && recentlyCompleted));
+            requestMatchesPlayerInGameDismiss(request));
+
         if (
           justBlockedByKnownGameFailure &&
           !seenDismissedRechargeSplashIdsRef.current.has(request.id)
@@ -1403,7 +1524,7 @@ export default function PlayerPage() {
             });
           }
           setRedeemDismissSplashRequest(request);
-          seenDismissedRechargeSplashIdsRef.current.add(request.id);
+          markRechargeSplashSeen(playerUid, request.id);
         }
       }
 
@@ -1411,14 +1532,12 @@ export default function PlayerPage() {
         continue;
       }
 
-      nextStatusById[request.id] = request.status;
       const previousStatus = knownRedeemRequestStatusByIdRef.current[request.id];
-      const completedAtMs = getTimestampMs(request.completedAt);
-      const recentlyCompleted = completedAtMs >= recentCompletionCutoffMs;
       const justCompleted =
         request.status === 'completed' &&
-        ((previousStatus !== undefined && previousStatus !== 'completed') ||
-          (previousStatus === undefined && recentlyCompleted));
+        previousStatus !== undefined &&
+        previousStatus !== 'completed';
+
       if (justCompleted && !seenCompletedRedeemSplashIdsRef.current.has(request.id)) {
         console.info('[PLAYER_REQUEST_OUTCOME_TOAST_SHOW]', {
           requestId: request.id,
@@ -1427,9 +1546,13 @@ export default function PlayerPage() {
           message: PLAYER_REDEEM_SUCCESS_MESSAGE,
         });
         showSuccessSplash(PLAYER_REDEEM_SUCCESS_MESSAGE);
-        seenCompletedRedeemSplashIdsRef.current.add(request.id);
+        markRedeemSplashSeen(playerUid, request.id);
       }
-      const justDismissed = previousStatus && previousStatus !== 'dismissed' && request.status === 'dismissed';
+
+      const justDismissed =
+        previousStatus !== undefined &&
+        previousStatus !== 'dismissed' &&
+        request.status === 'dismissed';
       const shouldShowDismissSplash =
         justDismissed && !seenDismissedRedeemSplashIdsRef.current.has(request.id);
 
@@ -1452,13 +1575,13 @@ export default function PlayerPage() {
           });
         }
         setRedeemDismissSplashRequest(request);
-        seenDismissedRedeemSplashIdsRef.current.add(request.id);
+        markRedeemSplashSeen(playerUid, request.id);
       }
     }
 
     knownRechargeRequestStatusByIdRef.current = nextRechargeStatusById;
-    knownRedeemRequestStatusByIdRef.current = nextStatusById;
-  }, [playerUid, requestHistory]);
+    knownRedeemRequestStatusByIdRef.current = nextRedeemStatusById;
+  }, [playerUid, requestHistory, markRechargeSplashSeen, markRedeemSplashSeen]);
 
   const usernamesCreatorFilterKeys = useMemo(() => {
     const uidSet = new Set<string>();
@@ -2389,7 +2512,23 @@ export default function PlayerPage() {
         if (seenRequestOutcomeKeysRef.current.has(outcomeKey)) {
           return;
         }
-        seenRequestOutcomeKeysRef.current.add(outcomeKey);
+        if (isStaleLivePopupEvent(event.outboxId, event.eventAtMs)) {
+          markOutcomeSeen(playerUid, outcomeKey);
+          if (
+            event.outcomeType === 'recharge_completed' ||
+            event.outcomeType === 'recharge_dismissed'
+          ) {
+            markRechargeSplashSeen(playerUid, event.requestId);
+          }
+          if (
+            event.outcomeType === 'redeem_completed' ||
+            event.outcomeType === 'redeem_dismissed'
+          ) {
+            markRedeemSplashSeen(playerUid, event.requestId);
+          }
+          return;
+        }
+        markOutcomeSeen(playerUid, outcomeKey);
         console.info('[PLAYER_REQUEST_OUTCOME_TOAST_SHOW]', {
           requestId: event.requestId,
           source: `sse_event:${event.sourceEvent}`,
@@ -2404,11 +2543,11 @@ export default function PlayerPage() {
             setMessage(event.message);
             return;
           case 'recharge_completed':
-            seenCompletedRechargeSplashIdsRef.current.add(event.requestId);
+            markRechargeSplashSeen(playerUid, event.requestId);
             showSuccessSplash(event.message);
             return;
           case 'redeem_completed':
-            seenCompletedRedeemSplashIdsRef.current.add(event.requestId);
+            markRedeemSplashSeen(playerUid, event.requestId);
             showSuccessSplash(event.message);
             return;
           case 'recharge_dismissed':
@@ -2430,7 +2569,7 @@ export default function PlayerPage() {
                 }),
               });
             }
-            seenDismissedRechargeSplashIdsRef.current.add(event.requestId);
+            markRechargeSplashSeen(playerUid, event.requestId);
             setRedeemDismissSplashRequest({
               id: event.requestId,
               playerUid: event.playerUid,
@@ -2465,7 +2604,7 @@ export default function PlayerPage() {
                 }),
               });
             }
-            seenDismissedRedeemSplashIdsRef.current.add(event.requestId);
+            markRedeemSplashSeen(playerUid, event.requestId);
             setRedeemDismissSplashRequest({
               id: event.requestId,
               playerUid: event.playerUid,
@@ -2493,12 +2632,16 @@ export default function PlayerPage() {
         if (seenCompletedRechargeSplashIdsRef.current.has(event.requestId)) {
           return;
         }
+        if (isStaleLivePopupEvent(event.outboxId, event.eventAtMs)) {
+          markRechargeSplashSeen(playerUid, event.requestId);
+          return;
+        }
         console.info('[PLAYER_RECHARGE_SUCCESS_TOAST_SHOW]', {
           requestId: event.requestId,
           source: `sse_event:${event.sourceEvent}`,
           message: event.message,
         });
-        seenCompletedRechargeSplashIdsRef.current.add(event.requestId);
+        markRechargeSplashSeen(playerUid, event.requestId);
         showSuccessSplash(event.message);
       };
 
@@ -2515,7 +2658,11 @@ export default function PlayerPage() {
         if (seenDismissedRedeemSplashIdsRef.current.has(event.requestId)) {
           return;
         }
-        const message = requestMatchesPlayerInGameDismiss(event)
+        if (isStaleLivePopupEvent(event.outboxId, event.eventAtMs)) {
+          markRedeemSplashSeen(playerUid, event.requestId);
+          return;
+        }
+        const dismissMessage = requestMatchesPlayerInGameDismiss(event)
           ? playerInGameDismissSplashMessage({
               requestType: 'redeem',
               pokeMessage: event.pokeMessage,
@@ -2530,10 +2677,10 @@ export default function PlayerPage() {
           {
             requestId: event.requestId,
             source: `sse_event:${event.sourceEvent}`,
-            message,
+            message: dismissMessage,
           }
         );
-        seenDismissedRedeemSplashIdsRef.current.add(event.requestId);
+        markRedeemSplashSeen(playerUid, event.requestId);
         setRedeemDismissSplashRequest({
           id: event.requestId,
           playerUid: event.playerUid,
@@ -2563,6 +2710,10 @@ export default function PlayerPage() {
         if (seenDismissedRechargeSplashIdsRef.current.has(event.requestId)) {
           return;
         }
+        if (isStaleLivePopupEvent(event.outboxId, event.eventAtMs)) {
+          markRechargeSplashSeen(playerUid, event.requestId);
+          return;
+        }
         console.info(
           requestMatchesPlayerInGameDismiss(event)
             ? '[PLAYER_IN_GAME_SPLASH_SHOW]'
@@ -2583,7 +2734,7 @@ export default function PlayerPage() {
               : null,
           }
         );
-        seenDismissedRechargeSplashIdsRef.current.add(event.requestId);
+        markRechargeSplashSeen(playerUid, event.requestId);
         setRedeemDismissSplashRequest({
           id: event.requestId,
           playerUid: event.playerUid,
@@ -2613,6 +2764,12 @@ export default function PlayerPage() {
           });
         },
         {
+          onSnapshotBootstrap: ({ latestOutboxId }) => {
+            bootOutboxCursorRef.current = Math.max(
+              bootOutboxCursorRef.current ?? 0,
+              latestOutboxId
+            );
+          },
           onRequestOutcomeEvent: handleRequestOutcomeFromLive,
           onRechargeDismissEvent: showRechargeDismissFromLiveEvent,
           onRechargeSuccessEvent: showRechargeSuccessFromLiveEvent,
@@ -2651,7 +2808,9 @@ export default function PlayerPage() {
               playerUid,
               reason,
             });
-            setMessage(playerMessage);
+            if (!isStaleLivePopupEvent(meta?.outboxId, meta?.eventAtMs)) {
+              setMessage(playerMessage);
+            }
             void getPlayerGameLoginsByPlayer(playerUid)
               .then((logins) => {
                 setGameLogins(sortByNewest(logins));
@@ -2687,7 +2846,15 @@ export default function PlayerPage() {
       sqlReadDispose?.();
       liveShadowCompare.dispose();
     };
-  }, [isPlayerRole, playerUid, syncCredentialSidecarsForPlayer]);
+  }, [
+    isPlayerRole,
+    playerUid,
+    syncCredentialSidecarsForPlayer,
+    isStaleLivePopupEvent,
+    markOutcomeSeen,
+    markRechargeSplashSeen,
+    markRedeemSplashSeen,
+  ]);
 
   useEffect(() => {
     if (!isPlayerRole || !playerUid) {
