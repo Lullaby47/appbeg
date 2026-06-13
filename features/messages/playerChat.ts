@@ -85,6 +85,8 @@ export type FriendLink = {
   participants: string[];
   status: 'pending' | 'accepted';
   requestedByUid: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 };
 
 export async function fetchPlayerChatBootstrap(search = '') {
@@ -674,15 +676,51 @@ export function listenGlobalGroupMessages(onNext: (messages: PlayerChatMessage[]
 }
 
 export async function sendFriendRequest(otherUid: string) {
+  const cleanOtherUid = cleanText(otherUid);
+  if (!cleanOtherUid) return;
+  if (isClientSqlReadMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'player_chat_friend_request',
+      file: 'features/messages/playerChat.ts',
+      operation: 'getDoc+setDoc playerFriendLinks',
+      replacement: 'POST /api/player/chat/friends',
+    });
+    const headers = await getPlayerApiHeaders(true, {
+      route: '/api/player/chat/friends',
+    });
+    const cached = getCachedSessionUser();
+    const response = await fetchChatApi(
+      '/api/player/chat/friends',
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ targetUid: cleanOtherUid }),
+        cache: 'no-store',
+      },
+      {
+        role: cached?.role ?? 'player',
+        uid: cached?.uid ?? null,
+        hasAppSessionId: Boolean(getLocalAppSessionId()),
+        hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+        headersSent: Object.keys(headers),
+      }
+    );
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    if (!response.ok) {
+      throw new Error(payload.error || 'Failed to send friend request.');
+    }
+    return;
+  }
+
   const selfUid = assertAuthUid();
-  if (selfUid === otherUid) return;
-  const ref = doc(db, 'playerFriendLinks', getFriendLinkId(selfUid, otherUid));
+  if (selfUid === cleanOtherUid) return;
+  const ref = doc(db, 'playerFriendLinks', getFriendLinkId(selfUid, cleanOtherUid));
   const snap = await getDoc(ref);
   if (snap.exists()) return;
   await setDoc(
     ref,
     {
-      participants: [selfUid, otherUid],
+      participants: [selfUid, cleanOtherUid],
       status: 'pending',
       requestedByUid: selfUid,
       createdAt: serverTimestamp(),
@@ -693,7 +731,6 @@ export async function sendFriendRequest(otherUid: string) {
 }
 
 export async function sendFriendRequestByReferralCode(referralCode: string) {
-  const selfUid = assertAuthUid();
   const cleanCode = String(referralCode || '').trim().toUpperCase();
   if (!cleanCode) {
     throw new Error('Referral code is required.');
@@ -720,7 +757,7 @@ export async function sendFriendRequestByReferralCode(referralCode: string) {
       },
       {
         role: cached?.role ?? 'player',
-        uid: cached?.uid ?? selfUid,
+        uid: cached?.uid ?? null,
         hasAppSessionId: Boolean(getLocalAppSessionId()),
         hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
         headersSent: Object.keys(headers),
@@ -739,6 +776,7 @@ export async function sendFriendRequestByReferralCode(referralCode: string) {
     };
   }
 
+  const selfUid = assertAuthUid();
   const matchSnap = await getDocs(
     query(
       collection(db, 'users'),
@@ -767,12 +805,48 @@ export async function sendFriendRequestByReferralCode(referralCode: string) {
 }
 
 export async function acceptFriendRequest(otherUid: string) {
+  const cleanOtherUid = cleanText(otherUid);
+  if (!cleanOtherUid) return;
+  if (isClientSqlReadMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'player_chat_friend_accept',
+      file: 'features/messages/playerChat.ts',
+      operation: 'setDoc playerFriendLinks',
+      replacement: 'POST /api/player/chat/friends/accept',
+    });
+    const headers = await getPlayerApiHeaders(true, {
+      route: '/api/player/chat/friends/accept',
+    });
+    const cached = getCachedSessionUser();
+    const response = await fetchChatApi(
+      '/api/player/chat/friends/accept',
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ otherUid: cleanOtherUid }),
+        cache: 'no-store',
+      },
+      {
+        role: cached?.role ?? 'player',
+        uid: cached?.uid ?? null,
+        hasAppSessionId: Boolean(getLocalAppSessionId()),
+        hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+        headersSent: Object.keys(headers),
+      }
+    );
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    if (!response.ok) {
+      throw new Error(payload.error || 'Failed to accept friend request.');
+    }
+    return;
+  }
+
   const selfUid = assertAuthUid();
-  const ref = doc(db, 'playerFriendLinks', getFriendLinkId(selfUid, otherUid));
+  const ref = doc(db, 'playerFriendLinks', getFriendLinkId(selfUid, cleanOtherUid));
   await setDoc(
     ref,
     {
-      participants: [selfUid, otherUid],
+      participants: [selfUid, cleanOtherUid],
       status: 'accepted',
       updatedAt: serverTimestamp(),
     },
@@ -789,8 +863,72 @@ export function listenFriendLinks(onNext: (links: FriendLink[]) => void) {
       operation: 'onSnapshot',
     })
   ) {
-    onNext([]);
-    return noopFirestoreUnsubscribe();
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const headers = await getPlayerApiHeaders(false, {
+          route: '/api/player/chat/friends',
+        });
+        const cached = getCachedSessionUser();
+        const response = await fetchChatApi(
+          '/api/player/chat/friends',
+          {
+            method: 'GET',
+            headers,
+            cache: 'no-store',
+          },
+          {
+            role: cached?.role ?? 'player',
+            uid: cached?.uid ?? null,
+            hasAppSessionId: Boolean(getLocalAppSessionId()),
+            hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+            headersSent: Object.keys(headers),
+          }
+        );
+        const payload = (await response.json().catch(() => ({}))) as {
+          links?: FriendLink[];
+          error?: string;
+        };
+        if (!response.ok) {
+          throw new Error(payload.error || 'Failed to load friend links.');
+        }
+        if (!cancelled) {
+          onNext(
+            (payload.links || [])
+              .map((link) => ({
+                id: cleanText(link.id),
+                participants: Array.isArray(link.participants)
+                  ? link.participants.map(cleanText).filter(Boolean)
+                  : [],
+                status: (link.status === 'accepted' ? 'accepted' : 'pending') as
+                  | 'accepted'
+                  | 'pending',
+                requestedByUid: cleanText(link.requestedByUid),
+                createdAt: link.createdAt || null,
+                updatedAt: link.updatedAt || null,
+              }))
+              .filter((link) => link.id && link.participants.length === 2)
+          );
+        }
+      } catch (error) {
+        console.warn('[PLAYER_CHAT_FRIEND_LINKS_SQL_POLL_FAILED]', error);
+        if (!cancelled) {
+          onNext([]);
+        }
+      } finally {
+        if (!cancelled) {
+          timer = setTimeout(poll, 4000);
+        }
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
   }
 
   const selfUid = resolveListenerSelfUid();

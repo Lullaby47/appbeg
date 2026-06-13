@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { createPendingPlayerFriendLink } from '@/lib/sql/playerFriendLinks';
 import { cleanText, getPlayerMirrorPool } from '@/lib/sql/playerMirrorCommon';
 
 export const runtime = 'nodejs';
@@ -10,25 +11,6 @@ const ROUTE = '/api/player/chat/friend-by-referral-code';
 
 function canonicalCoadminUid(row: Record<string, unknown>) {
   return cleanText(row.coadmin_uid) || cleanText(row.created_by) || null;
-}
-
-async function tableExists(tableName: string) {
-  const db = getPlayerMirrorPool();
-  const cleanName = cleanText(tableName);
-  if (!db || !cleanName) {
-    return false;
-  }
-  const result = await db.query(
-    `
-      SELECT 1
-      FROM information_schema.tables
-      WHERE table_schema = 'public'
-        AND table_name = $1
-      LIMIT 1
-    `,
-    [cleanName]
-  );
-  return result.rows.length > 0;
 }
 
 async function readPlayerByReferralCode(referralCode: string) {
@@ -136,41 +118,29 @@ export async function POST(request: Request) {
       return apiError('Forbidden: players must be in the same coadmin scope.', 403);
     }
 
-    const hasFriendLinksTable =
-      (await tableExists('player_friend_links_cache')) ||
-      (await tableExists('player_friend_links'));
-    if (!hasFriendLinksTable) {
-      console.info('[PLAYER_CHAT_FRIEND_BY_REFERRAL_SCHEMA_MISSING]', {
-        route: ROUTE,
-        uid: auth.user.uid,
-        targetUid,
-      });
-      return NextResponse.json(
-        {
-          error:
-            'Friend requests are not available in SQL mode until a player friend-links table is migrated.',
-          code: 'player_friend_links_sql_table_missing',
-          target: {
-            uid: targetUid,
-            username: cleanText(target.username) || 'Player',
-          },
-        },
-        { status: 501 }
-      );
-    }
+    const result = await createPendingPlayerFriendLink({
+      actorUid: auth.user.uid,
+      targetUid,
+      source: 'referral_code',
+    });
 
-    return NextResponse.json(
-      {
-        error:
-          'Friend requests are not available in SQL mode until the friend-links SQL writer is implemented.',
-        code: 'player_friend_links_sql_writer_missing',
-        target: {
-          uid: targetUid,
-          username: cleanText(target.username) || 'Player',
-        },
+    console.info('[PLAYER_CHAT_FRIEND_BY_REFERRAL_OK]', {
+      route: ROUTE,
+      uid: auth.user.uid,
+      targetUid,
+      status: result.link.status,
+      duplicate: result.duplicate,
+    });
+
+    return NextResponse.json({
+      link: result.link,
+      target: {
+        uid: targetUid,
+        username: cleanText(target.username) || result.target.username || 'Player',
       },
-      { status: 501 }
-    );
+      duplicate: result.duplicate,
+      source: 'postgres',
+    });
   } catch (error) {
     console.error(
       '[PLAYER_CHAT_FRIEND_BY_REFERRAL_ERROR]',
