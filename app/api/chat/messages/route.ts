@@ -6,7 +6,7 @@ import {
   logCacheFirestoreFallbackBlocked,
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
-import { sendChatMessageInSql } from '@/lib/sql/authorityChat';
+import { deleteChatMessageInSql, sendChatMessageInSql } from '@/lib/sql/authorityChat';
 import { readChatMessagesCacheByConversation } from '@/lib/sql/chatMessagesCache';
 import { cleanText, getPlayerMirrorPool } from '@/lib/sql/playerMirrorCommon';
 import { isDatabaseUrlConfigured } from '@/lib/server/sqlRuntime';
@@ -197,9 +197,105 @@ export async function GET(request: Request) {
       text: message.text,
       imageUrl: message.imageUrl,
       imagePublicId: message.imagePublicId,
+      deletedForEveryone: message.deletedForEveryone,
+      deletedFor: message.deletedFor,
       createdAt: message.createdAt,
     })),
     conversationId,
+    source: 'postgres',
+    firestore_fallback: false,
+  });
+}
+
+export async function PATCH(request: Request) {
+  const body = (await request.json().catch(() => ({}))) as {
+    peerUid?: string;
+    conversationId?: string;
+    messageId?: string;
+    scope?: string;
+  };
+  const peerUid = cleanText(body.peerUid);
+  const messageId = cleanText(body.messageId);
+  const scope = body.scope === 'for_everyone' ? 'for_everyone' : 'for_me';
+
+  console.info('[CHAT_DELETE_REQUEST]', {
+    route: ROUTE,
+    messageId,
+    peerUid,
+    scope,
+    hasAppSessionId: Boolean(cleanText(request.headers.get('X-App-Session-Id'))),
+    hasPlayerSessionId: Boolean(cleanText(request.headers.get('X-Player-Session-Id'))),
+  });
+
+  const auth = await requireChatPostUser(request);
+  if ('response' in auth) {
+    return auth.response;
+  }
+
+  if (!isDatabaseUrlConfigured()) {
+    return apiError('Chat is unavailable in SQL mode right now.', 503);
+  }
+
+  if (auth.user.role !== 'player') {
+    return apiError('Only players can delete player chat messages here.', 403);
+  }
+
+  if (!peerUid || !messageId) {
+    return apiError('peerUid and messageId are required.', 400);
+  }
+
+  const conversationId = cleanText(body.conversationId) || getDirectConversationId(auth.user.uid, peerUid);
+  const direct = validateDirectConversationRead({
+    authUid: auth.user.uid,
+    authRole: auth.user.role,
+    peerUid,
+    conversationId,
+  });
+  if (!direct.ok) {
+    console.info('[CHAT_DELETE_PERMISSION_DENIED]', {
+      route: ROUTE,
+      messageId,
+      actorUid: auth.user.uid,
+      peerUid,
+      conversationId,
+      reason: direct.reason,
+    });
+    return apiError('Conversation does not match authenticated player and peer.', 403);
+  }
+
+  const playerScope = await validatePlayerMessageScope(auth.user.uid, peerUid);
+  if (!playerScope.ok) {
+    console.info('[CHAT_DELETE_PERMISSION_DENIED]', {
+      route: ROUTE,
+      messageId,
+      actorUid: auth.user.uid,
+      peerUid,
+      conversationId,
+      reason: playerScope.reason,
+    });
+    return apiError('Forbidden.', 403);
+  }
+
+  const result = await deleteChatMessageInSql({
+    actorUid: auth.user.uid,
+    peerUid,
+    conversationId: direct.conversationId,
+    messageId,
+    scope,
+  });
+
+  if (!result.ok) {
+    return apiError(
+      result.reason === 'only_sender_can_delete_for_everyone'
+        ? 'Only sender can delete for everyone.'
+        : 'Failed to delete chat message.',
+      result.status
+    );
+  }
+
+  return NextResponse.json({
+    success: true,
+    message: result.message,
     source: 'postgres',
     firestore_fallback: false,
   });

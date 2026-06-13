@@ -49,6 +49,8 @@ export type FirestoreChatMessage = {
   senderUid: string;
   receiverUid: string;
   createdAt?: any;
+  deletedForEveryone?: boolean;
+  deletedFor?: string[];
 };
 
 export type UnreadConversationNotice = {

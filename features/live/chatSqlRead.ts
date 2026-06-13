@@ -31,6 +31,8 @@ function mapCachedMessage(row: Record<string, unknown>): FirestoreChatMessage {
     senderUid: String(row.senderUid || ''),
     receiverUid: String(row.receiverUid || ''),
     createdAt: isoToTimestamp(String(row.createdAt || '') || null),
+    deletedForEveryone: row.deletedForEveryone === true,
+    deletedFor: Array.isArray(row.deletedFor) ? row.deletedFor.map(String).filter(Boolean) : [],
   };
 }
 

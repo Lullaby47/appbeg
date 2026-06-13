@@ -188,6 +188,8 @@ function mapSqlDirectMessage(message: {
   imagePublicId?: string;
   type?: 'text' | 'image';
   createdAt?: Timestamp | null;
+  deletedForEveryone?: boolean;
+  deletedFor?: string[];
 }): PlayerChatMessage {
   return {
     id: message.id,
@@ -197,7 +199,66 @@ function mapSqlDirectMessage(message: {
     imagePublicId: message.imagePublicId,
     type: message.type === 'image' ? 'image' : 'text',
     createdAt: message.createdAt || undefined,
+    deletedForEveryone: message.deletedForEveryone === true,
+    deletedFor: Array.isArray(message.deletedFor) ? message.deletedFor : [],
   };
+}
+
+export function isDirectMessageVisibleToPlayer(message: PlayerChatMessage, playerUid: string) {
+  return !Array.isArray(message.deletedFor) || !message.deletedFor.includes(playerUid);
+}
+
+export function filterVisibleDirectMessages(
+  messages: PlayerChatMessage[],
+  playerUid: string
+) {
+  return messages.filter((message) => isDirectMessageVisibleToPlayer(message, playerUid));
+}
+
+async function deleteDirectMessageViaSql(
+  otherUid: string,
+  messageId: string,
+  scope: 'for_me' | 'for_everyone'
+) {
+  const selfUid = assertAuthUid();
+  const conversationId = getDirectConversationId(selfUid, otherUid);
+  console.info('[CHAT_DELETE_REQUEST]', {
+    messageId,
+    senderUid: selfUid,
+    peerUid: otherUid,
+    conversationId,
+    scope,
+    source: 'client',
+  });
+  const response = await fetchChatApi(
+    '/api/chat/messages',
+    {
+      method: 'PATCH',
+      headers: await getSqlApiReadHeaders(true),
+      body: JSON.stringify({
+        peerUid: otherUid,
+        conversationId,
+        messageId,
+        scope,
+      }),
+      cache: 'no-store',
+    },
+    {
+      role: getCachedSessionUser()?.role ?? 'player',
+      uid: selfUid,
+      hasAppSessionId: Boolean(getLocalAppSessionId()),
+      hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+      headersSent: ['content-type'],
+    }
+  );
+  const payload = (await response.json().catch(() => ({}))) as {
+    message?: PlayerChatMessage;
+    error?: string;
+  };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to delete chat message.');
+  }
+  return payload.message ? mapSqlDirectMessage(payload.message) : null;
 }
 
 async function withRateLimit(conversationId: string, senderUid: string) {
@@ -585,14 +646,21 @@ export async function setDirectConversationMuted(otherUid: string, muted: boolea
 }
 
 export async function deleteDirectMessageForMe(otherUid: string, messageId: string) {
+  if (isClientSqlReadMode()) {
+    return deleteDirectMessageViaSql(otherUid, messageId, 'for_me');
+  }
   const selfUid = assertAuthUid();
   const conversationId = getDirectConversationId(selfUid, otherUid);
   await updateDoc(doc(db, DIRECT_CONVERSATIONS, conversationId, 'messages', messageId), {
     deletedFor: arrayUnion(selfUid),
   });
+  return null;
 }
 
 export async function deleteDirectMessageForEveryone(otherUid: string, messageId: string) {
+  if (isClientSqlReadMode()) {
+    return deleteDirectMessageViaSql(otherUid, messageId, 'for_everyone');
+  }
   const selfUid = assertAuthUid();
   const conversationId = getDirectConversationId(selfUid, otherUid);
   const messageRef = doc(db, DIRECT_CONVERSATIONS, conversationId, 'messages', messageId);
@@ -609,6 +677,7 @@ export async function deleteDirectMessageForEveryone(otherUid: string, messageId
     deletedForEveryone: true,
     searchTokens: [],
   });
+  return null;
 }
 
 export async function searchDirectMessages(otherUid: string, keyword: string) {

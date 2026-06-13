@@ -19,6 +19,7 @@ import {
   deleteDirectMessageForMe,
   ensureReferralFriendLinks,
   fetchPlayerChatBootstrap,
+  filterVisibleDirectMessages,
   FriendLink,
   listenDirectChatList,
   listenFriendLinks,
@@ -217,8 +218,14 @@ export default function PlayerChatPage() {
   useEffect(() => {
     if (!isPlayerRole || !selectedPeer) return;
     const unsubMessages = listenDirectMessages(selectedPeer.uid, (list) => {
-      const visible = list.filter((m) => !Array.isArray(m.deletedFor) || !m.deletedFor.includes(selfUid));
+      const visible = filterVisibleDirectMessages(list, selfUid);
       setMessages(visible);
+      console.info('[CHAT_DELETE_UI_REFRESH]', {
+        reason: 'live_messages_refresh',
+        peerUid: selectedPeer.uid,
+        visibleCount: visible.length,
+        rawCount: list.length,
+      });
     });
     const unsubTyping = listenDirectTyping(selectedPeer.uid, setTyping);
     void markDirectConversationSeen(selectedPeer.uid);
@@ -295,7 +302,96 @@ export default function PlayerChatPage() {
   async function onSearch() {
     if (!selectedPeer) return;
     const results = await searchDirectMessages(selectedPeer.uid, searchTerm);
-    setSearchResults(results);
+    setSearchResults(filterVisibleDirectMessages(results, selfUid));
+  }
+
+  async function onDeleteForMe(message: PlayerChatMessage) {
+    if (!selectedPeer) return;
+    setMessageError('');
+    console.info('[CHAT_DELETE_REQUEST]', {
+      messageId: message.id,
+      senderUid: message.senderUid,
+      peerUid: selectedPeer.uid,
+      scope: 'for_me',
+      source: 'ui',
+    });
+    try {
+      await deleteDirectMessageForMe(selectedPeer.uid, message.id);
+      setMessages((current) => current.filter((item) => item.id !== message.id));
+      setChatList((current) => ({
+        ...current,
+        [selectedPeer.uid]: {
+          ...(current[selectedPeer.uid] || { unread: 0, muted: false, last: '' }),
+          last:
+            current[selectedPeer.uid]?.last &&
+            message.text &&
+            current[selectedPeer.uid]?.last === message.text
+              ? ''
+              : current[selectedPeer.uid]?.last || '',
+        },
+      }));
+      console.info('[CHAT_DELETE_UI_REFRESH]', {
+        reason: 'delete_for_me_local_state',
+        messageId: message.id,
+        peerUid: selectedPeer.uid,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Failed to delete message.';
+      console.error('[CHAT_DELETE_FOR_ME]', {
+        messageId: message.id,
+        senderUid: message.senderUid,
+        error: reason,
+      });
+      setMessageError(reason);
+    }
+  }
+
+  async function onDeleteForEveryone(message: PlayerChatMessage) {
+    if (!selectedPeer) return;
+    setMessageError('');
+    console.info('[CHAT_DELETE_REQUEST]', {
+      messageId: message.id,
+      senderUid: message.senderUid,
+      peerUid: selectedPeer.uid,
+      scope: 'for_everyone',
+      source: 'ui',
+    });
+    try {
+      await deleteDirectMessageForEveryone(selectedPeer.uid, message.id);
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === message.id
+            ? {
+                ...item,
+                text: '',
+                imageUrl: '',
+                imagePublicId: '',
+                deletedForEveryone: true,
+              }
+            : item
+        )
+      );
+      setChatList((current) => ({
+        ...current,
+        [selectedPeer.uid]: {
+          ...(current[selectedPeer.uid] || { unread: 0, muted: false, last: '' }),
+          last: 'Message deleted',
+        },
+      }));
+      console.info('[CHAT_DELETE_UI_REFRESH]', {
+        reason: 'delete_for_everyone_local_state',
+        messageId: message.id,
+        peerUid: selectedPeer.uid,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Failed to delete message.';
+      console.error('[CHAT_DELETE_FOR_ALL]', {
+        messageId: message.id,
+        senderUid: message.senderUid,
+        error: reason,
+      });
+      setMessageError(reason);
+    }
   }
 
   async function onAddFriendByReferralCode(e: React.FormEvent) {
@@ -583,7 +679,7 @@ export default function PlayerChatPage() {
                               </p>
                             ) : null}
                             {m.deletedForEveryone ? (
-                              <p className="italic opacity-70">This message was deleted.</p>
+                              <p className="italic opacity-70">Message deleted</p>
                             ) : (
                               <>
                                 {m.imageUrl ? (
@@ -602,7 +698,7 @@ export default function PlayerChatPage() {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => void deleteDirectMessageForMe(selectedPeer.uid, m.id)}
+                                onClick={() => void onDeleteForMe(m)}
                                 className="underline"
                               >
                                 Delete for me
@@ -611,7 +707,7 @@ export default function PlayerChatPage() {
                                 <button
                                   type="button"
                                   onClick={() =>
-                                    void deleteDirectMessageForEveryone(selectedPeer.uid, m.id)
+                                    void onDeleteForEveryone(m)
                                   }
                                   className="underline"
                                 >
