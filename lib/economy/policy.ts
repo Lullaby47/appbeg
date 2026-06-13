@@ -1,6 +1,7 @@
 export const SIGNUP_BONUS_COINS = 15;
 export const REFERRAL_REWARD_COINS = 5;
-export const MIN_WITHDRAWAL_NPR = 1000;
+/** Rolling 24-hour maximum cashout total — not a per-request minimum. */
+export const MAX_ROLLING_CASHOUT_NPR_PER_24_H = 1000;
 
 export type WithdrawalPolicyInput = {
   amountNpr: number;
@@ -10,7 +11,7 @@ export type WithdrawalPolicyInput = {
 
 export type WithdrawalPolicyDecision = {
   allowed: boolean;
-  code: 'ok' | 'minimum_withdrawal' | 'possible_bonus_abuse';
+  code: 'ok' | 'possible_bonus_abuse';
   message: string;
 };
 
@@ -33,14 +34,6 @@ export function evaluateWithdrawalPolicy(
   const amountNpr = toWhole(input.amountNpr);
   const completedWithdrawalCount = toWhole(input.completedWithdrawalCount);
   const lastRechargeAmountNpr = toWhole(input.lastRechargeAmountNpr);
-
-  if (amountNpr < MIN_WITHDRAWAL_NPR) {
-    return {
-      allowed: false,
-      code: 'minimum_withdrawal',
-      message: `Minimum withdrawal is ${MIN_WITHDRAWAL_NPR}.`,
-    };
-  }
 
   if (
     completedWithdrawalCount > 0 &&

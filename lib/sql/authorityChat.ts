@@ -139,6 +139,12 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
     conversationId,
     type,
   });
+  console.info('[CHAT_SEND_START]', {
+    senderUid,
+    receiverUid,
+    conversationId,
+    type,
+  });
   if (!db || !senderUid || !receiverUid || !conversationId) {
     return { ok: false as const, reason: 'missing_input' };
   }
@@ -228,6 +234,12 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
       playerUid,
       coadminUid,
     });
+    console.info('[CHAT_SEND_ROW_WRITTEN]', {
+      messageId,
+      conversationId,
+      senderUid,
+      receiverUid,
+    });
 
     await emitChatMessageOutboxEvent(client, {
       entityId: messageId,
@@ -249,6 +261,16 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
       coadminUid,
       eventType: 'player_message_created',
     });
+    console.info('[CHAT_SEND_OUTBOX_EVENT]', {
+      messageId,
+      playerUid,
+      coadminUid,
+    });
+    console.info('[CHAT_UNREAD_UPDATED]', {
+      conversationId,
+      receiverUid,
+      unreadCount: unreadCounts[receiverUid],
+    });
 
     await client.query('COMMIT');
     console.info('[MESSAGE_CREATE_COMMIT]', {
@@ -256,6 +278,11 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
       conversationId,
       senderUid,
       receiverUid,
+    });
+    console.info('[CHAT_SEND_RESPONSE]', {
+      messageId,
+      conversationId,
+      createdAt: nowIso,
     });
     return {
       ok: true as const,

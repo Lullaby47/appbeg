@@ -31,9 +31,11 @@ import {
 } from '@/features/users/adminUsers';
 import {
   listenToUnreadCounts,
+  mapFirestoreChatToDisplay,
   markConversationAsRead,
   sendChatMessage,
 } from '@/features/messages/chatMessages';
+import { getCachedSessionUser } from '@/features/auth/sessionUser';
 import { usePaginatedChatMessages } from '@/features/messages/usePaginatedChatMessages';
 import {
   CarerEscalationAlert,
@@ -226,33 +228,15 @@ export default function StaffPage() {
     },
   });
 
+  const staffChatActorUid = staffAuthUid || getCachedSessionUser()?.uid || auth.currentUser?.uid || '';
+
   const messages: ChatMessage[] = useMemo(() => {
-    const currentUser = auth.currentUser;
-    if (!currentUser) {
-      return [];
-    }
-    return pagedStaffAgentChat.items.map((msg) => ({
-      id: msg.id,
-      text: msg.text,
-      imageUrl: msg.imageUrl,
-      sender: msg.senderUid === currentUser.uid ? 'admin' : 'user',
-      timestamp: msg.createdAt?.toDate?.() || new Date(),
-    }));
-  }, [pagedStaffAgentChat.items]);
+    return mapFirestoreChatToDisplay(pagedStaffAgentChat.items, staffChatActorUid);
+  }, [pagedStaffAgentChat.items, staffChatActorUid]);
 
   const playerMessages: ChatMessage[] = useMemo(() => {
-    const currentUser = auth.currentUser;
-    if (!currentUser) {
-      return [];
-    }
-    return pagedStaffPlayerChat.items.map((msg) => ({
-      id: msg.id,
-      text: msg.text,
-      imageUrl: msg.imageUrl,
-      sender: msg.senderUid === currentUser.uid ? 'admin' : 'user',
-      timestamp: msg.createdAt?.toDate?.() || new Date(),
-    }));
-  }, [pagedStaffPlayerChat.items]);
+    return mapFirestoreChatToDisplay(pagedStaffPlayerChat.items, staffChatActorUid);
+  }, [pagedStaffPlayerChat.items, staffChatActorUid]);
 
   const reachOutUnread = useMemo(
     () => chatUsers.reduce((total, user) => total + (unreadCounts[user.uid] || 0), 0),
@@ -304,9 +288,35 @@ export default function StaffPage() {
   );
 
   useEffect(() => {
+    const returnedMessages = pagedStaffPlayerChat.items.length;
+    const visibleMessages = playerMessages.length;
+    console.info('[CHAT_MESSAGES_RENDER]', {
+      stateMessagesLength: returnedMessages,
+      visibleMessagesLength: visibleMessages,
+      currentUid: staffChatActorUid,
+      currentRole: creatorRole,
+      selectedPeerUid: selectedPlayerChatUser?.uid || null,
+    });
+    if (returnedMessages > 0 && visibleMessages === 0) {
+      console.warn('[CHAT_MESSAGES_HIDDEN_BY_UI_FILTER]', {
+        returnedMessages,
+        currentUid: staffChatActorUid,
+        selectedPeerUid: selectedPlayerChatUser?.uid || null,
+      });
+    }
+    const peerUnread = selectedPlayerChatUser
+      ? unreadCounts[selectedPlayerChatUser.uid] || 0
+      : 0;
+    if (peerUnread > 0 && returnedMessages === 0) {
+      console.warn('[CHAT_INCONSISTENT_UNREAD_NO_MESSAGES]', {
+        peerUid: selectedPlayerChatUser?.uid || null,
+        unreadCount: peerUnread,
+        currentUid: staffChatActorUid,
+      });
+    }
     console.info('[MESSAGES_RENDER_FILTER]', {
-      totalMessages: pagedStaffPlayerChat.items.length,
-      visibleMessages: playerMessages.length,
+      totalMessages: returnedMessages,
+      visibleMessages,
       currentRole: creatorRole,
       staffUid: staffAuthUid,
       selectedPeerUid: selectedPlayerChatUser?.uid || null,
@@ -318,6 +328,7 @@ export default function StaffPage() {
   }, [
     pagedStaffPlayerChat.items.length,
     playerMessages.length,
+    staffChatActorUid,
     creatorRole,
     staffAuthUid,
     selectedPlayerChatUser?.uid,

@@ -234,10 +234,9 @@ export async function POST(request: Request) {
         throw new Error('No cash available to cash out.');
       }
       const amountThisRequest = Math.min(availableCash, remainingQuota);
-      if (amountThisRequest <= 0) {
-        throw new Error(
-          `Rolling 24-hour cash out limit (${PLAYER_CASHOUT_MAX_NPR_PER_24_H} NPR) is reached for now.`
-        );
+      const limitPassed = rollingUsed + amountThisRequest <= PLAYER_CASHOUT_MAX_NPR_PER_24_H;
+      if (!limitPassed || amountThisRequest <= 0) {
+        throw new Error('Maximum withdrawal is 1000 in 24 hours.');
       }
 
       const decision = evaluateWithdrawalPolicy({
@@ -300,10 +299,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, taskId: taskRef.id, authority: 'firestore' });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create cashout request.';
-    console.error('[CASHOUT_CREATE_FAILED]', {
-      message,
-      error,
-    });
+    const isValidation =
+      /Maximum withdrawal|Possible Bonus|No cash|Please provide|Only players|not found|limit|bonus/i.test(
+        message
+      );
+    if (isValidation) {
+      console.info('[CASHOUT_CREATE_VALIDATION_FAILED]', { message });
+    } else {
+      console.error('[CASHOUT_CREATE_FAILED]', { message, error });
+    }
     if (message.startsWith('MAINTENANCE_BREAK:')) {
       return maintenanceBreakApiResponse(message.replace(/^MAINTENANCE_BREAK:/, ''));
     }
@@ -314,7 +318,9 @@ export async function POST(request: Request) {
           ? 403
           : /already|conflict|not available/i.test(message)
             ? 409
-            : /required|valid|not found|only|limit|cash out|cashout|bonus/i.test(message)
+            : /required|valid|not found|only|limit|cash out|cashout|bonus|Maximum withdrawal|Possible Bonus|No cash/i.test(
+                message
+              )
               ? 400
               : 500;
     return NextResponse.json({ error: message }, { status });

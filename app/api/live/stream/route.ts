@@ -655,6 +655,7 @@ function createLiveStreamResponse(
               row.event_type.startsWith('cashout_') ||
               row.event_type.startsWith('chat.') ||
               row.event_type === 'player_message_created' ||
+              row.event_type === 'chat_message_created' ||
               row.event_type.endsWith('_create') ||
               row.event_type.endsWith('_task_created') ||
               row.event_type.endsWith('_task_create')
@@ -695,6 +696,7 @@ function createLiveStreamResponse(
               row.event_type.startsWith('cashout_') ||
               row.event_type.startsWith('chat.') ||
               row.event_type === 'player_message_created' ||
+              row.event_type === 'chat_message_created' ||
               row.event_type.endsWith('_create') ||
               row.event_type.endsWith('_task_created') ||
               row.event_type.endsWith('_task_create')

@@ -55,6 +55,7 @@ import {
 } from '@/features/live/playerRequestSqlRead';
 import {
   listenToUnreadCounts,
+  mapFirestoreChatToDisplay,
   markConversationAsRead,
   sendChatMessage,
   sendImageMessage,
@@ -415,17 +416,8 @@ export default function PlayerPage() {
     },
   });
   const messages: ChatMessage[] = useMemo(() => {
-    const currentUid = auth.currentUser?.uid || playerUid || getCachedSessionUser()?.uid || '';
-    if (!currentUid) {
-      return [];
-    }
-    return pagedAgentChat.items.map((msg) => ({
-      id: msg.id,
-      text: msg.text,
-      imageUrl: msg.imageUrl,
-      sender: msg.senderUid === currentUid ? 'admin' : 'user',
-      timestamp: msg.createdAt?.toDate?.() || new Date(),
-    }));
+    const currentUid = playerUid || auth.currentUser?.uid || getCachedSessionUser()?.uid || '';
+    return mapFirestoreChatToDisplay(pagedAgentChat.items, currentUid);
   }, [pagedAgentChat.items, playerUid]);
   const hasSeenCashoutTaskSnapshotRef = useRef(false);
   const knownCompletedCashoutTaskIdsRef = useRef<Set<string>>(new Set());

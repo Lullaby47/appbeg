@@ -417,9 +417,18 @@ export async function emitChatMessageOutboxEvent(
       source: payload.source,
       mirroredAt: payload.updatedAt,
     });
+    await insertLiveOutboxEventWithClient(client, {
+      channel: userChatLiveChannel(cleanUid),
+      eventType: 'chat_message_created',
+      entityType: 'chat_message',
+      entityId: payload.entityId,
+      payload: payload as unknown as Record<string, unknown>,
+      source: payload.source,
+      mirroredAt: payload.updatedAt,
+    });
     console.info('[MESSAGE_LIVE_EVENT_INSERTED]', {
       channel: userChatLiveChannel(cleanUid),
-      eventType: 'player_message_created',
+      eventTypes: ['player_message_created', 'chat_message_created'],
       messageId: payload.messageId,
       playerUid: payload.playerUid,
       coadminUid: payload.coadminUid,

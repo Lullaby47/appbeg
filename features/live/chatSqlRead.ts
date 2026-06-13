@@ -8,6 +8,8 @@ import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import { getStaffAppSessionApiHeaders } from '@/lib/client/staffApiHeaders';
+import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 import { createPlayerScopedPoll } from '@/lib/client/playerPollGuard';
 import { auth } from '@/lib/firebase/client';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
@@ -16,6 +18,7 @@ const POLL_MS = 8_000;
 const SAFETY_REFETCH_MS = 45_000;
 
 const MESSAGE_LIVE_EVENTS = [
+  'chat_message_created',
   'player_message_created',
   'chat.message.upserted',
   'chat.message.deleted',
@@ -75,12 +78,42 @@ async function resolveSelfUid() {
   return auth.currentUser?.uid || '';
 }
 
-async function readChatApiContext() {
+async function readChatApiContext(options?: { preferStaffSession?: boolean; peerUid?: string }) {
   const cached = getCachedSessionUser();
-  const headers = await getSqlApiReadHeaders(false);
+  const role = String(cached?.role || '').toLowerCase();
+  const uid = cached?.uid ?? null;
+  const preferStaff =
+    options?.preferStaffSession === true ||
+    role === 'staff' ||
+    role === 'coadmin' ||
+    role === 'admin' ||
+    role === 'carer';
+
+  const headers = preferStaff
+    ? await getStaffAppSessionApiHeaders(false)
+    : role === 'player'
+      ? await getPlayerApiHeaders(false)
+      : await getSqlApiReadHeaders(false);
+
+  const conversationId =
+    uid && options?.peerUid
+      ? [uid, options.peerUid].sort().join('_')
+      : null;
+
+  console.info('[CHAT_SESSION_CONTEXT]', {
+    currentUid: uid,
+    currentRole: role || null,
+    expectedReceiverUid: options?.peerUid || null,
+    selectedPlayerUid: options?.peerUid || null,
+    conversationId,
+    preferStaffSession: preferStaff,
+    hasAppSessionId: Boolean(getLocalAppSessionId()),
+    hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+  });
+
   return {
     role: cached?.role ?? null,
-    uid: cached?.uid ?? null,
+    uid,
     hasAppSessionId: Boolean(getLocalAppSessionId()),
     hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
     headersSent: Object.keys(headers),
@@ -88,8 +121,10 @@ async function readChatApiContext() {
   };
 }
 
-export async function fetchSqlUnreadCounts() {
-  const context = await readChatApiContext();
+export async function fetchSqlUnreadCounts(options?: { preferStaffSession?: boolean }) {
+  const context = await readChatApiContext({
+    preferStaffSession: options?.preferStaffSession,
+  });
   const logTag = listQueryLogTag(context.role);
   console.info(`[${logTag}_QUERY]`, {
     uid: context.uid,
@@ -134,9 +169,12 @@ export async function fetchSqlUnreadCounts() {
 export async function fetchSqlChatMessages(
   peerUid: string,
   limit = 50,
-  options?: { conversationId?: string }
+  options?: { conversationId?: string; preferStaffSession?: boolean }
 ) {
-  const context = await readChatApiContext();
+  const context = await readChatApiContext({
+    preferStaffSession: options?.preferStaffSession,
+    peerUid,
+  });
   const logTag = listQueryLogTag(context.role);
   const params = new URLSearchParams({
     peerUid,
@@ -180,11 +218,11 @@ export async function fetchSqlChatMessages(
     throw new Error(payload.error || 'Failed to load chat messages.');
   }
   const messages = (payload.messages || []).map(mapCachedMessage);
-  console.info(`[${logTag}_RESULT]`, {
-    uid: context.uid,
-    role: context.role,
-    peerUid,
-    totalMessages: messages.length,
+  console.info('[CHAT_MESSAGES_CLIENT]', {
+    conversationId: options?.conversationId || null,
+    currentUid: context.uid,
+    currentRole: context.role,
+    returnedMessages: messages.length,
     messageIds: messages.slice(0, 5).map((message) => message.id),
   });
   return messages;
@@ -354,11 +392,6 @@ export function attachSqlUnreadCountsPoll(
       onTick: async () => {
         const counts = await fetchSqlUnreadCounts();
         onChange(counts);
-        console.info('[MESSAGE_UI_UPDATED]', {
-          kind: 'unread_counts',
-          peerCount: Object.keys(counts).length,
-          reason: 'player_poll',
-        });
       },
       onError,
     });
@@ -376,10 +409,10 @@ export function attachSqlUnreadCountsPoll(
       selfUid,
       enableLive: Boolean(selfUid),
       onRefetch: async (reason) => {
-        const counts = await fetchSqlUnreadCounts();
+        const counts = await fetchSqlUnreadCounts({ preferStaffSession: true });
         if (!disposed) {
           onChange(counts);
-          console.info('[MESSAGE_UI_UPDATED]', {
+          console.info('[CHAT_RECEIVER_UI_UPDATED]', {
             kind: 'unread_counts',
             peerCount: Object.keys(counts).length,
             reason,
@@ -417,7 +450,7 @@ export function attachSqlChatMessagesPoll(
           conversationId: options?.conversationId,
         });
         onChange(messages);
-        console.info('[MESSAGE_UI_UPDATED]', {
+        console.info('[CHAT_RECEIVER_UI_UPDATED]', {
           kind: 'messages',
           peerUid,
           count: messages.length,
@@ -442,10 +475,16 @@ export function attachSqlChatMessagesPoll(
       onRefetch: async (reason) => {
         const messages = await fetchSqlChatMessages(peerUid, options?.limit || 50, {
           conversationId: options?.conversationId,
+          preferStaffSession: true,
         });
         if (!disposed) {
           onChange(messages);
-          console.info('[MESSAGE_UI_UPDATED]', {
+          console.info('[CHAT_MESSAGES_REFETCHED]', {
+            peerUid,
+            count: messages.length,
+            reason,
+          });
+          console.info('[CHAT_RECEIVER_UI_UPDATED]', {
             kind: 'messages',
             peerUid,
             count: messages.length,

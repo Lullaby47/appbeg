@@ -125,6 +125,7 @@ import {
 } from '../../features/bonusEvents/bonusEvents';
 import {
   listenToUnreadCounts,
+  mapFirestoreChatToDisplay,
   markConversationAsRead,
   sendChatMessage,
   sendImageMessage,
@@ -649,16 +650,7 @@ export default function CoadminPage() {
 
   const messages: ChatMessage[] = useMemo(() => {
     const actorUid = coadminActorUid || auth.currentUser?.uid || '';
-    if (!actorUid) {
-      return [];
-    }
-    return pagedCoadminChat.items.map((msg) => ({
-      id: msg.id,
-      text: msg.text,
-      imageUrl: msg.imageUrl,
-      sender: msg.senderUid === actorUid ? 'admin' : 'user',
-      timestamp: msg.createdAt?.toDate?.() || new Date(),
-    }));
+    return mapFirestoreChatToDisplay(pagedCoadminChat.items, actorUid);
   }, [coadminActorUid, pagedCoadminChat.items]);
 
   const totalUnread = Object.values(unreadCounts).reduce(
@@ -667,9 +659,34 @@ export default function CoadminPage() {
   );
 
   useEffect(() => {
+    const actorUid = coadminActorUid || auth.currentUser?.uid || '';
+    const returnedMessages = pagedCoadminChat.items.length;
+    const visibleMessages = messages.length;
+    console.info('[CHAT_MESSAGES_RENDER]', {
+      stateMessagesLength: returnedMessages,
+      visibleMessagesLength: visibleMessages,
+      currentUid: actorUid,
+      currentRole: 'coadmin',
+      selectedPeerUid: activeChatUser?.uid || null,
+    });
+    if (returnedMessages > 0 && visibleMessages === 0) {
+      console.warn('[CHAT_MESSAGES_HIDDEN_BY_UI_FILTER]', {
+        returnedMessages,
+        currentUid: actorUid,
+        selectedPeerUid: activeChatUser?.uid || null,
+      });
+    }
+    const peerUnread = activeChatUser ? unreadCounts[activeChatUser.uid] || 0 : 0;
+    if (peerUnread > 0 && returnedMessages === 0) {
+      console.warn('[CHAT_INCONSISTENT_UNREAD_NO_MESSAGES]', {
+        peerUid: activeChatUser?.uid || null,
+        unreadCount: peerUnread,
+        currentUid: actorUid,
+      });
+    }
     console.info('[MESSAGES_RENDER_FILTER]', {
-      totalMessages: pagedCoadminChat.items.length,
-      visibleMessages: messages.length,
+      totalMessages: returnedMessages,
+      visibleMessages,
       currentRole: 'coadmin',
       coadminUid: coadminActorUid || null,
       selectedPeerUid: activeChatUser?.uid || null,

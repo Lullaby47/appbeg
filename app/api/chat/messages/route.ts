@@ -143,6 +143,14 @@ export async function GET(request: Request) {
   const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') || 50)));
   const requestedConversationId = cleanText(url.searchParams.get('conversationId'));
   let conversationId = getConversationId(auth.user.uid, peerUid);
+  console.info('[CHAT_SESSION_CONTEXT]', {
+    currentUid: auth.user.uid,
+    currentRole: auth.user.role,
+    expectedReceiverUid: peerUid,
+    selectedPlayerUid: peerUid,
+    conversationId,
+    authPath: auth.authPath,
+  });
   if (requestedConversationId) {
     const direct = validateDirectConversationRead({
       authUid: auth.user.uid,

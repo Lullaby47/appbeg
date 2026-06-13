@@ -441,17 +441,23 @@ export async function createPlayerCashoutTaskInSql(
     if (availableCash <= 0) throw new Error('No cash available to cash out.');
 
     const amountThisRequest = Math.min(availableCash, remainingQuota);
-    console.info('[CASHOUT_CREATE_BALANCE_BEFORE]', {
+    const limitPassed = rollingUsed + amountThisRequest <= PLAYER_CASHOUT_MAX_NPR_PER_24_H;
+    console.info('[CASHOUT_24H_LIMIT_CHECK]', {
       playerUid,
-      availableCash,
-      remainingQuota,
-      amountThisRequest,
-      rollingUsed,
+      requestedAmount: amountThisRequest,
+      last24HourTotal: rollingUsed,
+      max24HourLimit: PLAYER_CASHOUT_MAX_NPR_PER_24_H,
+      remainingLimit: remainingQuota,
+      passed: limitPassed && amountThisRequest > 0,
     });
-    if (amountThisRequest <= 0) {
-      throw new Error(
-        `Rolling 24-hour cash out limit (${PLAYER_CASHOUT_MAX_NPR_PER_24_H} NPR) is reached for now.`
-      );
+    if (!limitPassed || amountThisRequest <= 0) {
+      console.info('[CASHOUT_CREATE_VALIDATION_FAILED]', {
+        playerUid,
+        reason: 'rolling_24h_max',
+        last24HourTotal: rollingUsed,
+        requestedAmount: amountThisRequest,
+      });
+      throw new Error('Maximum withdrawal is 1000 in 24 hours.');
     }
 
     const decision = evaluateWithdrawalPolicy({
@@ -459,7 +465,14 @@ export async function createPlayerCashoutTaskInSql(
       completedWithdrawalCount: completedCashoutCount,
       lastRechargeAmountNpr,
     });
-    if (!decision.allowed) throw new Error(decision.message);
+    if (!decision.allowed) {
+      console.info('[CASHOUT_CREATE_VALIDATION_FAILED]', {
+        playerUid,
+        reason: decision.code,
+        message: decision.message,
+      });
+      throw new Error(decision.message);
+    }
 
     const coadminUid =
       cleanText(input.requestedCoadminUid) ||

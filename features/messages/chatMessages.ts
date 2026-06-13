@@ -54,6 +54,49 @@ export type FirestoreChatMessage = {
   deletedFor?: string[];
 };
 
+export type DisplayChatMessage = {
+  id: string;
+  text?: string;
+  imageUrl?: string;
+  sender: 'admin' | 'user';
+  timestamp: Date;
+  deletedForEveryone?: boolean;
+};
+
+export function isChatMessageVisibleToViewer(
+  message: FirestoreChatMessage,
+  viewerUid: string
+) {
+  if (message.deletedForEveryone === true) {
+    return true;
+  }
+  return !(Array.isArray(message.deletedFor) && message.deletedFor.includes(viewerUid));
+}
+
+export function filterVisibleChatMessagesForViewer(
+  messages: FirestoreChatMessage[],
+  viewerUid: string
+) {
+  return messages.filter((message) => isChatMessageVisibleToViewer(message, viewerUid));
+}
+
+export function mapFirestoreChatToDisplay(
+  messages: FirestoreChatMessage[],
+  viewerUid: string
+): DisplayChatMessage[] {
+  if (!viewerUid) {
+    return [];
+  }
+  return filterVisibleChatMessagesForViewer(messages, viewerUid).map((msg) => ({
+    id: msg.id,
+    text: msg.deletedForEveryone ? 'Message deleted' : msg.text,
+    imageUrl: msg.deletedForEveryone ? undefined : msg.imageUrl,
+    sender: msg.senderUid === viewerUid ? 'admin' : 'user',
+    timestamp: msg.createdAt?.toDate?.() || new Date(),
+    deletedForEveryone: msg.deletedForEveryone,
+  }));
+}
+
 export type UnreadConversationNotice = {
   uid: string;
   unreadCount: number;
