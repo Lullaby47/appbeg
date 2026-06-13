@@ -8,6 +8,7 @@ import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { computeRewardCoinsAfterFee } from '@/lib/rewardCoinTransferFee';
+import { getPublicDisplayName } from '@/lib/player/publicDisplayName';
 import { logChatPageMount } from '@/lib/client/chatLogoutDiagnostics';
 import { shouldSkipClientFirestore } from '@/lib/client/clientFirestoreGuard';
 import { useIsPlayerSessionRole } from '@/features/player/useIsPlayerSessionRole';
@@ -241,6 +242,9 @@ export default function PlayerChatPage() {
 
   const selectedMuted = selectedPeer ? Boolean(chatList[selectedPeer.uid]?.muted) : false;
   const selectedFriend = selectedPeer ? friendByUid[selectedPeer.uid] : null;
+  const selectedPeerDisplayName = selectedPeer
+    ? getPublicDisplayName(selectedPeer.username)
+    : '';
   const filteredPlayers = useMemo(() => {
     const term = playerSearchTerm.trim().toLowerCase();
     if (!term) {
@@ -307,7 +311,7 @@ export default function PlayerChatPage() {
     setReferralNotice('');
     try {
       const matched = await sendFriendRequestByReferralCode(code);
-      setReferralNotice(`Friend request sent to ${matched.username}.`);
+      setReferralNotice(`Friend request sent to ${getPublicDisplayName(matched.username)}.`);
       setReferralInput('');
     } catch (error) {
       setReferralError(error instanceof Error ? error.message : 'Failed to add friend.');
@@ -402,6 +406,7 @@ export default function PlayerChatPage() {
                 filteredPlayers.map((p) => {
                   const stat = chatList[p.uid];
                   const selected = selectedPeer?.uid === p.uid;
+                  const publicName = getPublicDisplayName(p.username);
                   return (
                     <button
                       key={p.uid}
@@ -423,7 +428,7 @@ export default function PlayerChatPage() {
                               onlineByUid[p.uid] ? 'bg-emerald-400' : 'bg-neutral-600'
                             }`}
                           />
-                          {p.username}
+                          {publicName}
                         </span>
                         {stat?.unread ? (
                           <span className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-black">
@@ -450,7 +455,7 @@ export default function PlayerChatPage() {
             ) : (
               <>
                 <header className="flex flex-wrap items-center gap-2 border-b border-white/10 p-3">
-                  <h2 className="mr-auto text-lg font-bold">{selectedPeer.username}</h2>
+                  <h2 className="mr-auto text-lg font-bold">{selectedPeerDisplayName}</h2>
                   {typing ? <span className="text-xs text-emerald-300">typing...</span> : null}
                   {!selectedFriend ? (
                     <button

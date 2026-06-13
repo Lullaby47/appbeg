@@ -3,6 +3,7 @@
 import { AnimatePresence, motion } from 'motion/react';
 
 import type { ReferralRewardGroup } from '@/features/referrals/playerReferralRewards';
+import { getPublicDisplayName } from '@/lib/player/publicDisplayName';
 
 type Props = {
   claimingFreeplayGift: boolean;
@@ -193,7 +194,9 @@ export default function EarnCoins(props: Props) {
                   {referredByPlayerName ? (
                     <p className="mt-2 text-xs text-emerald-200/80">
                       You were referred by:{' '}
-                      <span className="font-bold text-emerald-300">{referredByPlayerName}</span>
+                      <span className="font-bold text-emerald-300">
+                        {getPublicDisplayName(referredByPlayerName)}
+                      </span>
                     </p>
                   ) : null}
                 </div>
@@ -220,7 +223,9 @@ export default function EarnCoins(props: Props) {
                         <div className="flex items-start justify-between gap-3">
                           <div>
                             <h3 className="mt-1 text-xl font-black text-white">
-                              {group.referredPlayerName || 'Unnamed Player'}
+                              {group.referredPlayerName
+                                ? getPublicDisplayName(group.referredPlayerName)
+                                : 'Unnamed Player'}
                             </h3>
                             <p className="mt-1 text-sm text-amber-100/70">
                               Claimable:{' '}
