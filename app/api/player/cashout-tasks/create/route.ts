@@ -299,30 +299,38 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, taskId: taskRef.id, authority: 'firestore' });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create cashout request.';
+    const pgCode =
+      error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: unknown }).code || '')
+        : '';
     const isValidation =
-      /Maximum withdrawal|Possible Bonus|No cash|Please provide|Only players|not found|limit|bonus/i.test(
+      !pgCode &&
+      /Maximum withdrawal|Possible Bonus|No cash|Please provide|Only players|Duplicate cashout/i.test(
         message
       );
     if (isValidation) {
       console.info('[CASHOUT_CREATE_VALIDATION_FAILED]', { message });
     } else {
-      console.error('[CASHOUT_CREATE_FAILED]', { message, error });
+      console.error('[CASHOUT_CREATE_FAILED]', { message, pgCode: pgCode || null, error });
     }
     if (message.startsWith('MAINTENANCE_BREAK:')) {
       return maintenanceBreakApiResponse(message.replace(/^MAINTENANCE_BREAK:/, ''));
     }
     const status =
-      /not authenticated|authorization|token/i.test(message)
-        ? 401
-        : /forbidden|outside your scope/i.test(message)
-          ? 403
-          : /already|conflict|not available/i.test(message)
-            ? 409
-            : /required|valid|not found|only|limit|cash out|cashout|bonus|Maximum withdrawal|Possible Bonus|No cash/i.test(
-                message
-              )
-              ? 400
-              : 500;
+      pgCode
+        ? 500
+        : /not authenticated|authorization|token/i.test(message)
+          ? 401
+          : /forbidden|outside your scope/i.test(message)
+            ? 403
+            : /already|conflict|not available/i.test(message)
+              ? 409
+              : isValidation ||
+                  /Maximum withdrawal|Possible Bonus|No cash|Please provide|Only players|Player profile not found/i.test(
+                    message
+                  )
+                ? 400
+                : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }

@@ -116,24 +116,29 @@ function readRewardBlocked(snapshot: Record<string, unknown>, playerRow?: Record
   return readRawField(raw, 'rewardBlocked') === true;
 }
 
-async function fetchRolling24hCashoutUsageNpr(client: PoolClient, playerUid: string) {
-  const since = new Date(Date.now() - PLAYER_CASHOUT_ROLLING_WINDOW_MS).toISOString();
+async function fetchRolling24hCashoutUsageNpr(
+  client: PoolClient,
+  playerUid: string,
+  requestedAmount: number | null = null
+) {
+  const cutoffIso = new Date(Date.now() - PLAYER_CASHOUT_ROLLING_WINDOW_MS).toISOString();
+  console.info('[CASHOUT_24H_LIMIT_QUERY_PARAMS]', {
+    playerUid,
+    cutoffIso,
+    requestedAmount,
+  });
   const result = await client.query(
     `
-      SELECT amount_npr, status
+      SELECT COALESCE(SUM(amount_npr), 0)::numeric AS total
       FROM public.player_cashout_tasks_cache
-      WHERE player_uid = $1
+      WHERE player_uid = $1::text
         AND deleted_at IS NULL
-        AND created_at >= $2::timestamptz
+        AND created_at >= NOW() - INTERVAL '24 hours'
+        AND LOWER(COALESCE(status, '')) NOT IN ('declined', 'cancelled', 'failed')
     `,
-    [playerUid, since]
+    [playerUid]
   );
-  let total = 0;
-  for (const row of result.rows) {
-    if (cleanText((row as Record<string, unknown>).status).toLowerCase() === 'declined') continue;
-    total += Math.max(0, Number((row as Record<string, unknown>).amount_npr || 0));
-  }
-  return total;
+  return Math.max(0, Number(result.rows[0]?.total || 0));
 }
 
 export async function isPlayerCashoutRollingLimitHit(client: PoolClient, playerUid: string) {
@@ -146,7 +151,7 @@ async function fetchCompletedCashoutCount(client: PoolClient, playerUid: string)
     `
       SELECT COUNT(*)::int AS count
       FROM public.player_cashout_tasks_cache
-      WHERE player_uid = $1
+      WHERE player_uid = $1::text
         AND deleted_at IS NULL
         AND status = 'completed'
     `,
@@ -160,7 +165,7 @@ async function fetchLatestCompletedRechargeAmount(client: PoolClient, playerUid:
     `
       SELECT amount, base_amount, completed_at
       FROM public.player_game_requests_cache
-      WHERE player_uid = $1
+      WHERE player_uid = $1::text
         AND deleted_at IS NULL
         AND type = 'recharge'
         AND status = 'completed'
@@ -189,12 +194,12 @@ async function upsertCashoutTaskCache(client: PoolClient, taskId: string, input:
         raw_firestore_data
       )
       VALUES (
-        $1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), $5,
-        NULLIF($6, ''), NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''),
-        NULLIF($10, ''), NULLIF($11, ''), $12, NULLIF($13, ''),
-        NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''), $17,
-        $18, $19::jsonb, $20::timestamptz, $21::timestamptz,
-        $22::timestamptz, $23::timestamptz, $24, now(), NULL,
+        $1::text, NULLIF($2::text, ''), NULLIF($3::text, ''), NULLIF($4::text, ''), $5::numeric,
+        NULLIF($6::text, ''), NULLIF($7::text, ''), NULLIF($8::text, ''), NULLIF($9::text, ''),
+        NULLIF($10::text, ''), NULLIF($11::text, ''), $12::boolean, NULLIF($13::text, ''),
+        NULLIF($14::text, ''), NULLIF($15::text, ''), NULLIF($16::text, ''), $17::numeric,
+        $18::boolean, $19::jsonb, $20::timestamptz, $21::timestamptz,
+        $22::timestamptz, $23::timestamptz, $24::text, now(), NULL,
         $25::jsonb
       )
       ON CONFLICT (firebase_id) DO UPDATE SET
@@ -266,10 +271,10 @@ async function updateBalances(
       `
         UPDATE public.players_cache
         SET
-          cash = $2,
+          cash = $2::numeric,
           updated_at = $3::timestamptz,
-          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object('cash', $2)
-        WHERE uid = $1 AND deleted_at IS NULL
+          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object('cash', $2::numeric)
+        WHERE uid = $1::text AND deleted_at IS NULL
       `,
       [uid, input.cash, nowIso]
     );
@@ -277,11 +282,11 @@ async function updateBalances(
       `
         UPDATE public.user_balance_snapshots_cache
         SET
-          cash = $2,
+          cash = $2::numeric,
           updated_at = $3::timestamptz,
           mirrored_at = now(),
-          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object('cash', $2)
-        WHERE firebase_id = $1 AND deleted_at IS NULL
+          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object('cash', $2::numeric)
+        WHERE firebase_id = $1::text AND deleted_at IS NULL
       `,
       [uid, input.cash, nowIso]
     );
@@ -291,11 +296,11 @@ async function updateBalances(
       `
         UPDATE public.user_balance_snapshots_cache
         SET
-          cash_box_npr = $2,
+          cash_box_npr = $2::numeric,
           updated_at = $3::timestamptz,
           mirrored_at = now(),
-          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object('cashBoxNpr', $2)
-        WHERE firebase_id = $1 AND deleted_at IS NULL
+          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object('cashBoxNpr', $2::numeric)
+        WHERE firebase_id = $1::text AND deleted_at IS NULL
       `,
       [uid, input.cashBoxNpr, nowIso]
     );
@@ -304,8 +309,8 @@ async function updateBalances(
         UPDATE public.players_cache
         SET
           updated_at = $3::timestamptz,
-          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object('cashBoxNpr', $2)
-        WHERE uid = $1 AND deleted_at IS NULL
+          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || jsonb_build_object('cashBoxNpr', $2::numeric)
+        WHERE uid = $1::text AND deleted_at IS NULL
       `,
       [uid, input.cashBoxNpr, nowIso]
     );
@@ -419,7 +424,7 @@ export async function createPlayerCashoutTaskInSql(
       `
         SELECT uid, username, role, status, cash, coadmin_uid, created_by
         FROM public.players_cache
-        WHERE uid = $1 AND deleted_at IS NULL
+        WHERE uid = $1::text AND deleted_at IS NULL
         FOR UPDATE
       `,
       [playerUid]
@@ -552,8 +557,8 @@ export async function createPlayerCashoutTaskInSql(
           source, mirrored_at, deleted_at, raw_firestore_data
         )
         VALUES (
-          $1, $2, $3, 'cashout_request_deduct', $4, $5,
-          $6, $7, $8::timestamptz, $8::timestamptz, $9::timestamptz,
+          $1::text, $2::text, $3::text, 'cashout_request_deduct', $4::numeric, $5::text,
+          $6::numeric, $7::numeric, $8::timestamptz, $8::timestamptz, $9::timestamptz,
           'authority_cashout_create', now(), NULL, $10::jsonb
         )
         ON CONFLICT (firebase_id) DO NOTHING
@@ -645,8 +650,13 @@ export async function createPlayerCashoutTaskInSql(
     return { success: true, duplicate: false, taskId };
   } catch (error) {
     await client.query('ROLLBACK');
+    const pgCode =
+      error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: unknown }).code || '')
+        : '';
     console.error('[CASHOUT_CREATE_FAILED]', {
       playerUid,
+      pgCode: pgCode || null,
       error: error instanceof Error ? error.message : String(error),
     });
     throw error;
