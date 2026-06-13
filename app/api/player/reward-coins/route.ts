@@ -26,6 +26,10 @@ function parsePositiveWhole(value: unknown) {
   return Math.max(0, Math.floor(n));
 }
 
+function cleanText(value: unknown) {
+  return String(value || '').trim();
+}
+
 function canonicalPlayerCoadminUid(player: { coadminUid?: unknown; createdBy?: unknown }) {
   return String(player.coadminUid || '').trim() || String(player.createdBy || '').trim();
 }
@@ -74,6 +78,8 @@ function httpStatusForRewardCoinsError(error: unknown): number {
     'Sender profile',
     'Player profile not found',
     'Target player not found',
+    'Sender player is inactive',
+    'Target player is inactive',
     'Target user must be a player.',
     'Not enough coin balance',
     'transferable coin balance',
@@ -90,7 +96,7 @@ export async function POST(request: Request) {
   try {
     const { senderUid } = await verifyPlayerFromAuthHeader(request);
 
-    let body: { targetUid?: string; amountCoins?: unknown };
+    let body: { targetUid?: string; amountCoins?: unknown; idempotencyKey?: unknown };
     try {
       body = (await request.json()) as { targetUid?: string; amountCoins?: unknown };
     } catch {
@@ -99,6 +105,7 @@ export async function POST(request: Request) {
 
     const targetUid = String(body.targetUid || '').trim();
     const amountCoins = parsePositiveWhole(body.amountCoins);
+    const idempotencyKey = cleanText(body.idempotencyKey);
 
     if (!targetUid) {
       return NextResponse.json({ error: 'targetUid is required.' }, { status: 400 });
@@ -129,6 +136,7 @@ export async function POST(request: Request) {
         senderUid,
         targetUid,
         amountCoins,
+        idempotencyKey,
       });
       logAuthoritySqlWrite('/api/player/reward-coins', {
         rewardId: result.rewardId,

@@ -699,6 +699,46 @@ export async function sendFriendRequestByReferralCode(referralCode: string) {
     throw new Error('Referral code is required.');
   }
 
+  if (isClientSqlReadMode()) {
+    logClientFirebaseRuntimeRemoved({
+      feature: 'player_chat_friend_by_referral_code',
+      file: 'features/messages/playerChat.ts',
+      operation: 'query users + setDoc playerFriendLinks',
+      replacement: 'POST /api/player/chat/friend-by-referral-code',
+    });
+    const headers = await getPlayerApiHeaders(true, {
+      route: '/api/player/chat/friend-by-referral-code',
+    });
+    const cached = getCachedSessionUser();
+    const response = await fetchChatApi(
+      '/api/player/chat/friend-by-referral-code',
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ referralCode: cleanCode }),
+        cache: 'no-store',
+      },
+      {
+        role: cached?.role ?? 'player',
+        uid: cached?.uid ?? selfUid,
+        hasAppSessionId: Boolean(getLocalAppSessionId()),
+        hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+        headersSent: Object.keys(headers),
+      }
+    );
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      target?: { uid?: string; username?: string };
+    };
+    if (!response.ok) {
+      throw new Error(payload.error || 'Failed to add friend.');
+    }
+    return {
+      uid: cleanText(payload.target?.uid || ''),
+      username: cleanText(payload.target?.username || '') || 'Player',
+    };
+  }
+
   const matchSnap = await getDocs(
     query(
       collection(db, 'users'),
@@ -805,10 +845,16 @@ export async function ensureReferralFriendLinks() {
   await batch.commit();
 }
 
-export async function rewardCoinsToPlayer(targetUid: string, amountCoins: number) {
+export async function rewardCoinsToPlayer(
+  targetUid: string,
+  amountCoins: number,
+  options?: { idempotencyKey?: string }
+) {
   const MAX_REWARD_COINS_PER_TRANSFER = 50;
-  const self = auth.currentUser;
-  if (!self) {
+  const cached = getCachedSessionUser();
+  const selfUid = cached?.uid || auth.currentUser?.uid || '';
+  const hasSqlSession = Boolean(getLocalAppSessionId()) && Boolean(getLocalPlayerSessionId());
+  if (!selfUid && !hasSqlSession) {
     throw new Error('Not authenticated.');
   }
   const cleanTargetUid = String(targetUid || '').trim();
@@ -824,7 +870,6 @@ export async function rewardCoinsToPlayer(targetUid: string, amountCoins: number
   }
 
   const headers = await getPlayerApiHeaders(false, { route: '/api/player/reward-coins' });
-  const cached = getCachedSessionUser();
   const response = await fetchChatApi(
     '/api/player/reward-coins',
     {
@@ -833,11 +878,12 @@ export async function rewardCoinsToPlayer(targetUid: string, amountCoins: number
       body: JSON.stringify({
         targetUid: cleanTargetUid,
         amountCoins: cleanAmount,
+        idempotencyKey: cleanText(options?.idempotencyKey || ''),
       }),
     },
     {
       role: cached?.role ?? 'player',
-      uid: cached?.uid ?? self.uid,
+      uid: selfUid || cached?.uid || null,
       hasAppSessionId: Boolean(getLocalAppSessionId()),
       hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
       headersSent: Object.keys(headers),

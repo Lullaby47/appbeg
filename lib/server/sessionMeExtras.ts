@@ -44,14 +44,20 @@ export async function readSessionMePlayerExtras(input: {
           client,
           `
             SELECT
-              coin,
-              cash,
-              referral_code,
-              referred_by_uid,
-              raw_firestore_data
-            FROM public.players_cache
-            WHERE uid = $1
-              AND deleted_at IS NULL
+              p.coin,
+              p.cash,
+              p.referral_code,
+              p.referred_by_uid,
+              p.raw_firestore_data,
+              r.username AS referred_by_username
+            FROM public.players_cache p
+            LEFT JOIN public.players_cache r
+              ON r.uid = p.referred_by_uid
+             AND r.deleted_at IS NULL
+             AND r.role = 'player'
+             AND LOWER(COALESCE(r.status, '')) = 'active'
+            WHERE p.uid = $1
+              AND p.deleted_at IS NULL
             LIMIT 1
           `,
           [uid]
@@ -94,7 +100,10 @@ export async function readSessionMePlayerExtras(input: {
             cleanText(row.referral_code) || cleanText(readRawField(raw, 'referralCode')) || null,
           referredByUid:
             cleanText(row.referred_by_uid) || cleanText(readRawField(raw, 'referredByUid')) || null,
-          referredByUsername: cleanText(readRawField(raw, 'referredByUsername')) || null,
+          referredByUsername:
+            cleanText(row.referred_by_username) ||
+            cleanText(readRawField(raw, 'referredByUsername')) ||
+            null,
           dismissedPaymentDetailsNoticeVersion: Number(
             readRawField(raw, 'dismissedPaymentDetailsNoticeVersion') || 0
           ),

@@ -60,6 +60,8 @@ export default function PlayerChatPage() {
   const [rewardAmount, setRewardAmount] = useState('10');
   const [rewardBusy, setRewardBusy] = useState(false);
   const [rewardNotice, setRewardNotice] = useState('');
+  const rewardRequestIdRef = useRef<string | null>(null);
+  const rewardInFlightRef = useRef(false);
   const [chatList, setChatList] = useState<Record<string, { unread: number; muted: boolean; last: string }>>({});
   const [friendByUid, setFriendByUid] = useState<
     Record<string, { status: 'pending' | 'accepted'; requestedByUid: string }>
@@ -315,26 +317,40 @@ export default function PlayerChatPage() {
   }
 
   async function onRewardCoins() {
-    if (!selectedPeer || rewardBusy) return;
+    if (!selectedPeer || rewardBusy || rewardInFlightRef.current) return;
     const amount = Math.max(0, Math.floor(Number(rewardAmount || 0)));
     if (amount <= 0) {
       setMessageError('Reward amount must be at least 1 coin.');
       return;
     }
+    rewardInFlightRef.current = true;
     setRewardBusy(true);
     setMessageError('');
     setRewardNotice('');
+    rewardRequestIdRef.current =
+      rewardRequestIdRef.current ||
+      (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
     try {
-      const result = await rewardCoinsToPlayer(selectedPeer.uid, amount);
-      await sendDirectTextMessage(
-        selectedPeer.uid,
-        `Received ${result.recipientCoins} coin reward.`
-      );
+      const result = await rewardCoinsToPlayer(selectedPeer.uid, amount, {
+        idempotencyKey: rewardRequestIdRef.current,
+      });
+      try {
+        await sendDirectTextMessage(
+          selectedPeer.uid,
+          `Received ${result.recipientCoins} coin reward.`
+        );
+      } catch (noticeError) {
+        console.warn('[PLAYER_CHAT_REWARD_NOTICE_FAILED]', noticeError);
+      }
       setRewardNotice(`Reward sent. Friend receives ${result.recipientCoins} coins.`);
       setShowRewardPanel(false);
     } catch (error) {
       setMessageError(error instanceof Error ? error.message : 'Failed to reward coins.');
     } finally {
+      rewardRequestIdRef.current = null;
+      rewardInFlightRef.current = false;
       setRewardBusy(false);
     }
   }

@@ -355,6 +355,7 @@ const PLAYERS_BY_REFERRER_SQL = `
   FROM public.players_cache
   WHERE deleted_at IS NULL
     AND role = 'player'
+    AND LOWER(COALESCE(status, '')) = 'active'
     AND referred_by_uid = $1
   ORDER BY uid, COALESCE(updated_at, created_at, mirrored_at) DESC
 `;

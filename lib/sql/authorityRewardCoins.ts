@@ -46,10 +46,12 @@ export async function rewardCoinsInSql(input: {
   senderUid: string;
   targetUid: string;
   amountCoins: number;
+  idempotencyKey?: string;
 }) {
   const senderUid = cleanText(input.senderUid);
   const targetUid = cleanText(input.targetUid);
   const amountCoins = parsePositiveWhole(input.amountCoins);
+  const idempotencyKey = cleanText(input.idempotencyKey).slice(0, 160);
 
   if (!senderUid || !targetUid) throw new Error('targetUid is required.');
   if (targetUid === senderUid) throw new Error('You cannot reward yourself.');
@@ -64,7 +66,9 @@ export async function rewardCoinsInSql(input: {
   }
 
   const rewardId = randomUUID();
-  const operationKey = `reward_coins:${rewardId}`;
+  const operationKey = idempotencyKey
+    ? `reward_coins:${senderUid}:${idempotencyKey}`
+    : `reward_coins:${rewardId}`;
   const existing = await readAuthorityOperationPayload(operationKey);
   if (existing?.rewardId) {
     return {
@@ -112,7 +116,7 @@ export async function rewardCoinsInSql(input: {
 
     const senderLock = await client.query(
       `
-        SELECT uid, username, role, coin, promo_locked_coins, coadmin_uid, created_by, raw_firestore_data
+        SELECT uid, username, role, status, coin, promo_locked_coins, coadmin_uid, created_by, raw_firestore_data
         FROM public.players_cache
         WHERE uid = $1 AND deleted_at IS NULL
         FOR UPDATE
@@ -124,10 +128,13 @@ export async function rewardCoinsInSql(input: {
     if (cleanText(sender.role).toLowerCase() !== 'player') {
       throw new Error('Only players can reward coins.');
     }
+    if (cleanText(sender.status).toLowerCase() !== 'active') {
+      throw new Error('Sender player is inactive.');
+    }
 
     const targetLock = await client.query(
       `
-        SELECT uid, username, role, coin, coadmin_uid, created_by, raw_firestore_data
+        SELECT uid, username, role, status, coin, coadmin_uid, created_by, raw_firestore_data
         FROM public.players_cache
         WHERE uid = $1 AND deleted_at IS NULL
         FOR UPDATE
@@ -138,6 +145,9 @@ export async function rewardCoinsInSql(input: {
     const target = targetLock.rows[0] as Record<string, unknown>;
     if (cleanText(target.role).toLowerCase() !== 'player') {
       throw new Error('Target user must be a player.');
+    }
+    if (cleanText(target.status).toLowerCase() !== 'active') {
+      throw new Error('Target player is inactive.');
     }
 
     const senderCoadminUid = canonicalPlayerCoadminUid(sender);

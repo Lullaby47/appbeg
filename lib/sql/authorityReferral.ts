@@ -229,7 +229,7 @@ export async function claimReferralRewardInSql(
     const [referrerResult, referredResult] = await Promise.all([
       client.query(
         `
-          SELECT uid, username, coin, promo_locked_coins, raw_firestore_data
+          SELECT uid, username, role, status, coin, promo_locked_coins, raw_firestore_data
           FROM public.players_cache
           WHERE uid = $1 AND deleted_at IS NULL
           FOR UPDATE
@@ -238,7 +238,7 @@ export async function claimReferralRewardInSql(
       ),
       client.query(
         `
-          SELECT uid, username, referred_by_uid, raw_firestore_data
+          SELECT uid, username, role, status, referred_by_uid, raw_firestore_data
           FROM public.players_cache
           WHERE uid = $1 AND deleted_at IS NULL
           FOR UPDATE
@@ -252,6 +252,18 @@ export async function claimReferralRewardInSql(
 
     const referrer = referrerResult.rows[0] as Record<string, unknown>;
     const referred = referredResult.rows[0] as Record<string, unknown>;
+    if (cleanText(referrer.role).toLowerCase() !== 'player') {
+      throw new Error('Referrer must be an active player.');
+    }
+    if (cleanText(referrer.status).toLowerCase() !== 'active') {
+      throw new Error('Referrer player is inactive.');
+    }
+    if (cleanText(referred.role).toLowerCase() !== 'player') {
+      throw new Error('Referred user must be an active player.');
+    }
+    if (cleanText(referred.status).toLowerCase() !== 'active') {
+      throw new Error('Referred player is inactive.');
+    }
     if (cleanText(referred.referred_by_uid) !== referrerUid) {
       throw new Error('This player is not in your referral list.');
     }
