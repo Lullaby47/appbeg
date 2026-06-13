@@ -1,7 +1,9 @@
 import {
   apiError,
+  requireApiUser,
   requireCarerOwnedLiveAuth,
   requirePlayerOwnedLiveAuth,
+  scopedCoadminUid,
   verifyApiTokenIdentity,
 } from '@/lib/firebase/apiAuth';
 import { authSqlReadEnvLogFields } from '@/lib/server/authSqlRead';
@@ -20,6 +22,8 @@ const CARER_CHANNEL_PATTERN = /^carer:([A-Za-z0-9_-]+):tasks$/;
 const COADMIN_CHANNEL_PATTERN = /^coadmin:([A-Za-z0-9_-]+):tasks$/;
 const CARER_JOBS_CHANNEL_PATTERN = /^carer:([A-Za-z0-9_-]+):jobs$/;
 const COADMIN_JOBS_CHANNEL_PATTERN = /^coadmin:([A-Za-z0-9_-]+):jobs$/;
+const PLAYER_CASHOUT_CHANNEL_PATTERN = /^player:([A-Za-z0-9_-]+):cashouts$/;
+const COADMIN_CASHOUT_CHANNEL_PATTERN = /^coadmin:([A-Za-z0-9_-]+):cashouts$/;
 
 type CarerStreamChannelSpec = {
   channels: string[];
@@ -255,6 +259,58 @@ async function authorizeCarerTaskStream(
   return { ok: true as const, auth };
 }
 
+function resolvePlayerCashoutStreamChannels(channels: string[]): string[] | null {
+  const playerUids = new Set<string>();
+
+  for (const channel of channels) {
+    const playerMatch = channel.match(PLAYER_CASHOUT_CHANNEL_PATTERN);
+    if (!playerMatch) {
+      return null;
+    }
+    playerUids.add(playerMatch[1]);
+  }
+
+  if (playerUids.size !== 1) {
+    return null;
+  }
+
+  return channels;
+}
+
+function resolveCoadminCashoutStreamChannels(channels: string[]): string | null {
+  let coadminUid: string | null = null;
+
+  for (const channel of channels) {
+    const coadminMatch = channel.match(COADMIN_CASHOUT_CHANNEL_PATTERN);
+    if (!coadminMatch) {
+      return null;
+    }
+    const uid = coadminMatch[1];
+    if (coadminUid && coadminUid !== uid) {
+      return null;
+    }
+    coadminUid = uid;
+  }
+
+  return coadminUid;
+}
+
+async function authorizeCoadminCashoutStream(request: Request, coadminUid: string) {
+  const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff']);
+  if ('response' in auth) {
+    return { ok: false as const, response: auth.response };
+  }
+
+  if (auth.user.role !== 'admin') {
+    const scopeUid = scopedCoadminUid(auth.user);
+    if (!scopeUid || scopeUid !== coadminUid) {
+      return { ok: false as const, response: apiError('Forbidden.', 403) };
+    }
+  }
+
+  return { ok: true as const, auth: auth.user };
+}
+
 async function authorizeCarerJobStream(
   request: Request,
   spec: CarerJobStreamChannelSpec
@@ -293,6 +349,64 @@ export async function GET(request: Request) {
   const channels = parseChannels(url.searchParams.get('channels'));
   if (!channels.length) {
     return apiError('channels query parameter is required.', 400);
+  }
+
+  const playerCashoutChannels = resolvePlayerCashoutStreamChannels(channels);
+  if (playerCashoutChannels) {
+    const playerUid = playerCashoutChannels[0].match(PLAYER_CASHOUT_CHANNEL_PATTERN)?.[1] || '';
+    const headerSessions = sessionIdsFromRequest(request);
+    const auth = await requirePlayerOwnedLiveAuth(liveRequest, playerUid);
+    if (!auth.ok) {
+      logRouteSessionValidation('/api/live/stream', {
+        ok: false,
+        channelType: 'player_cashouts',
+        playerUid,
+        ...headerSessions,
+        canonical_session_id: headerSessions.player_session_id,
+        validates: 'player_session_sql',
+        ...authSqlReadEnvLogFields(),
+        ...auth.timing,
+      });
+      return auth.response;
+    }
+
+    logRouteSessionValidation('/api/live/stream', {
+      ok: true,
+      channelType: 'player_cashouts',
+      playerUid,
+      ...headerSessions,
+      canonical_session_id: headerSessions.player_session_id,
+      validates: 'player_session_sql',
+      ...authSqlReadEnvLogFields(),
+      ...auth.timing,
+    });
+
+    return createLiveStreamResponse(
+      liveRequest,
+      playerCashoutChannels,
+      parseLastEventId(url.searchParams.get('lastEventId'))
+    );
+  }
+
+  const coadminCashoutUid = resolveCoadminCashoutStreamChannels(channels);
+  if (coadminCashoutUid) {
+    const auth = await authorizeCoadminCashoutStream(liveRequest, coadminCashoutUid);
+    if (!auth.ok) {
+      return auth.response;
+    }
+
+    console.info('[LIVE_STREAM_AUTH]', {
+      channelType: 'coadmin_cashouts',
+      coadminUid: coadminCashoutUid,
+      uid: auth.auth.uid,
+      role: auth.auth.role,
+    });
+
+    return createLiveStreamResponse(
+      liveRequest,
+      channels,
+      parseLastEventId(url.searchParams.get('lastEventId'))
+    );
   }
 
   const playerChannels = resolvePlayerOwnedChannels(channels);
@@ -470,8 +584,11 @@ function createLiveStreamResponse(
             if (
               row.entity_type === 'carer_task' ||
               row.entity_type === 'player_game_request' ||
+              row.entity_type === 'player_cashout_task' ||
               row.event_type.startsWith('task.') ||
+              row.event_type.startsWith('cashout_') ||
               row.event_type.endsWith('_create') ||
+              row.event_type.endsWith('_task_created') ||
               row.event_type.endsWith('_task_create')
             ) {
               console.info('[LIVE_STREAM_EVENT_DELIVERED]', {
@@ -504,8 +621,11 @@ function createLiveStreamResponse(
             if (
               row.entity_type === 'carer_task' ||
               row.entity_type === 'player_game_request' ||
+              row.entity_type === 'player_cashout_task' ||
               row.event_type.startsWith('task.') ||
+              row.event_type.startsWith('cashout_') ||
               row.event_type.endsWith('_create') ||
+              row.event_type.endsWith('_task_created') ||
               row.event_type.endsWith('_task_create')
             ) {
               console.info('[LIVE_STREAM_EVENT_DELIVERED]', {

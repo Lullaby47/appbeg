@@ -19,6 +19,7 @@ import {
   readPlayerCashoutTasksCacheByAssignedHandler,
   readPlayerCashoutTasksCacheByCoadmin,
   readPlayerCashoutTasksCacheByPlayer,
+  readPlayerCashoutTasksCacheAll,
   type CachedPlayerCashoutTask,
 } from '@/lib/sql/playerCashoutTasksCache';
 
@@ -26,7 +27,7 @@ export const runtime = 'nodejs';
 
 const ROUTE = '/api/player-cashout-tasks/cache';
 
-type Scope = 'player' | 'coadmin' | 'assigned_handler';
+type Scope = 'player' | 'coadmin' | 'assigned_handler' | 'all';
 
 function cleanText(value: unknown) {
   return String(value || '').trim();
@@ -34,7 +35,7 @@ function cleanText(value: unknown) {
 
 function resolveScope(request: Request): Scope | null {
   const scope = cleanText(new URL(request.url).searchParams.get('scope')).toLowerCase();
-  if (scope === 'player' || scope === 'coadmin' || scope === 'assigned_handler') {
+  if (scope === 'player' || scope === 'coadmin' || scope === 'assigned_handler' || scope === 'all') {
     return scope;
   }
   return null;
@@ -84,7 +85,7 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const scope = resolveScope(request);
   if (!scope) {
-    return apiError('scope query parameter is required (player|coadmin|assigned_handler).', 400);
+    return apiError('scope query parameter is required (player|coadmin|assigned_handler|all).', 400);
   }
 
   const sqlReadMode = isCacheSqlAuthoritative();
@@ -116,7 +117,13 @@ export async function GET(request: Request) {
     const scopedCoadmin = scopedCoadminUid(user);
 
     let targetUid = requestedUid;
-    if (scope === 'player') {
+
+    if (scope === 'all') {
+      if (user.role !== 'admin') {
+        return apiError('Forbidden.', 403);
+      }
+      targetUid = '';
+    } else if (scope === 'player') {
       targetUid = user.role === 'admin' ? requestedUid || user.uid : user.uid;
       if (!targetUid) {
         return apiError('uid is required for player scope.', 400);
@@ -150,13 +157,15 @@ export async function GET(request: Request) {
       }
     }
 
-    if (!targetUid) {
+    if (!targetUid && scope !== 'all') {
       return apiError('uid is required for this scope.', 400);
     }
 
     let tasks: CachedPlayerCashoutTask[] | null = null;
 
-    if (scope === 'player') {
+    if (scope === 'all') {
+      tasks = await readPlayerCashoutTasksCacheAll(limit);
+    } else if (scope === 'player') {
       tasks = await readPlayerCashoutTasksCacheByPlayer(targetUid, limit);
     } else if (scope === 'coadmin') {
       tasks = await readPlayerCashoutTasksCacheByCoadmin(targetUid, limit);
@@ -165,10 +174,16 @@ export async function GET(request: Request) {
     }
 
     if (tasks !== null) {
+      console.info('[CASHOUT_LIST_QUERY]', {
+        scope,
+        uid: scope === 'all' ? null : targetUid,
+        count: tasks.length,
+        sqlMode: sqlReadMode,
+      });
       if (sqlReadMode) {
         logCacheSqlRead(ROUTE, {
           scope,
-          uid: targetUid,
+          uid: scope === 'all' ? 'all' : targetUid,
           count: tasks.length,
           durationMs: Date.now() - startedAt,
         });

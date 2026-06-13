@@ -3860,6 +3860,13 @@ export default function PlayerPage() {
   }
 
   async function handlePlayerCashoutRequest() {
+    console.info('[PLAYER_CASHOUT_CLICK]', {
+      playerUid: playerUid || auth.currentUser?.uid || null,
+      coadminUid: playerCoadminUid || null,
+      payoutMethod: cashoutPayoutMethod,
+      amountNpr: cashoutThisRequestNpr,
+    });
+
     if (maintenanceBreak.enabled) {
       console.info('[MAINTENANCE] blocked player action', {
         action: 'cashout',

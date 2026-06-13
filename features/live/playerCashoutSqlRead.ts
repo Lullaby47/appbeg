@@ -3,13 +3,35 @@
 import { Timestamp } from 'firebase/firestore';
 
 import type { PlayerCashoutTask } from '@/features/cashouts/playerCashoutTasks';
+import { getLocalAppSessionId } from '@/features/auth/appSession';
+import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
-import { createPlayerScopedPoll } from '@/lib/client/playerPollGuard';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 const POLL_MS = 10_000;
+const SAFETY_REFETCH_MS = 45_000;
 
-type CashoutScope = 'player' | 'coadmin' | 'assigned_handler';
+type CashoutScope = 'player' | 'coadmin' | 'assigned_handler' | 'all';
+
+const CASHOUT_LIVE_EVENTS = [
+  'cashout_create',
+  'cashout_task_created',
+  'cashout_start',
+  'cashout_complete',
+  'cashout_decline',
+] as const;
+
+function cleanText(value: unknown) {
+  return String(value || '').trim();
+}
+
+function coadminCashoutLiveChannel(coadminUid: string) {
+  return `coadmin:${cleanText(coadminUid)}:cashouts`;
+}
+
+function playerCashoutLiveChannel(playerUid: string) {
+  return `player:${cleanText(playerUid)}:cashouts`;
+}
 
 function isoToTimestamp(iso: string | null | undefined): Timestamp | null {
   if (!iso) {
@@ -48,14 +70,25 @@ function mapCachedTask(row: Record<string, unknown>): PlayerCashoutTask {
 }
 
 async function fetchCashoutTasks(scope: CashoutScope, uid: string, limit: number) {
-  const response = await fetch(
-    `/api/player-cashout-tasks/cache?scope=${encodeURIComponent(scope)}&uid=${encodeURIComponent(uid)}&limit=${limit}`,
-    {
-      method: 'GET',
-      headers: await getSqlApiReadHeaders(false),
-      cache: 'no-store',
-    }
-  );
+  const params = new URLSearchParams({
+    scope,
+    limit: String(limit),
+  });
+  if (scope !== 'all') {
+    params.set('uid', uid);
+  }
+
+  console.info('[CASHOUT_LIST_QUERY]', {
+    scope,
+    uid: scope === 'all' ? null : uid,
+    limit,
+  });
+
+  const response = await fetch(`/api/player-cashout-tasks/cache?${params.toString()}`, {
+    method: 'GET',
+    headers: await getSqlApiReadHeaders(false),
+    cache: 'no-store',
+  });
   const payload = (await response.json().catch(() => ({}))) as {
     tasks?: Array<Record<string, unknown>>;
     error?: string;
@@ -63,7 +96,186 @@ async function fetchCashoutTasks(scope: CashoutScope, uid: string, limit: number
   if (!response.ok) {
     throw new Error(payload.error || 'Failed to load cashout tasks.');
   }
-  return (payload.tasks || []).map(mapCachedTask);
+
+  const tasks = (payload.tasks || []).map(mapCachedTask);
+  console.info('[CASHOUT_LIST_RESULT]', {
+    scope,
+    uid: scope === 'all' ? null : uid,
+    count: tasks.length,
+  });
+  return tasks;
+}
+
+function attachCashoutSqlPoll(input: {
+  scope: CashoutScope;
+  uid: string;
+  limit?: number;
+  onChange: (tasks: PlayerCashoutTask[]) => void;
+  onError?: (error: Error) => void;
+  liveChannel?: string | null;
+}) {
+  logClientFirestoreSkipped('player_cashout_tasks_listener', {
+    scope: input.scope,
+    uid: input.uid,
+    liveChannel: input.liveChannel || null,
+  });
+
+  let disposed = false;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let safetyTimer: ReturnType<typeof setInterval> | null = null;
+  let eventSource: EventSource | null = null;
+  let lastEventId = 0;
+  let refetchInFlight = false;
+
+  const runPoll = async (reason: string) => {
+    if (disposed || refetchInFlight) {
+      return;
+    }
+    refetchInFlight = true;
+    try {
+      const tasks = await fetchCashoutTasks(input.scope, input.uid, input.limit || 50);
+      if (!disposed) {
+        input.onChange(tasks);
+        console.info('[CASHOUT_UI_UPDATED]', {
+          scope: input.scope,
+          uid: input.scope === 'all' ? null : input.uid,
+          count: tasks.length,
+          reason,
+        });
+      }
+    } catch (error) {
+      if (!disposed) {
+        input.onError?.(error instanceof Error ? error : new Error(String(error)));
+      }
+    } finally {
+      refetchInFlight = false;
+      if (!disposed) {
+        pollTimer = setTimeout(() => {
+          void runPoll('poll_interval');
+        }, POLL_MS);
+      }
+    }
+  };
+
+  const scheduleImmediateRefetch = (reason: string) => {
+    if (disposed) {
+      return;
+    }
+    console.info('[CASHOUT_LIVE_EVENT_RECEIVED]', {
+      scope: input.scope,
+      uid: input.scope === 'all' ? null : input.uid,
+      reason,
+      lastEventId,
+    });
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+    void runPoll(reason);
+  };
+
+  const closeEventSource = () => {
+    if (eventSource) {
+      eventSource.close();
+      eventSource = null;
+    }
+  };
+
+  const connectEventSource = () => {
+    if (!input.liveChannel || disposed) {
+      return;
+    }
+
+    closeEventSource();
+    const params = new URLSearchParams({
+      channels: input.liveChannel,
+      lastEventId: String(Math.max(0, lastEventId)),
+    });
+    const appSessionId = cleanText(getLocalAppSessionId());
+    if (appSessionId) {
+      params.set('appSessionId', appSessionId);
+    }
+    if (input.scope === 'player') {
+      const playerSessionId = cleanText(getLocalPlayerSessionId());
+      if (playerSessionId) {
+        params.set('playerSessionId', playerSessionId);
+      }
+    }
+
+    const url = `/api/live/stream?${params.toString()}`;
+    const source = new EventSource(url);
+    eventSource = source;
+
+    const handleLiveEvent = (eventName: string, rawData: string, outboxId: number) => {
+      if (eventName === 'ping') {
+        return;
+      }
+      if (outboxId > 0) {
+        lastEventId = Math.max(lastEventId, outboxId);
+      }
+      try {
+        const payload = JSON.parse(rawData) as Record<string, unknown>;
+        console.info('[CASHOUT_LIVE_EVENT_RECEIVED]', {
+          eventType: eventName,
+          taskId: cleanText(payload.taskId || payload.entityId),
+          coadminUid: cleanText(payload.coadminUid),
+          playerUid: cleanText(payload.playerUid),
+          status: cleanText(payload.status),
+          outboxId,
+        });
+      } catch {
+        console.info('[CASHOUT_LIVE_EVENT_RECEIVED]', {
+          eventType: eventName,
+          outboxId,
+        });
+      }
+      scheduleImmediateRefetch(`live:${eventName}`);
+    };
+
+    source.addEventListener('ping', (ev: Event) => {
+      const message = ev as MessageEvent<string>;
+      handleLiveEvent('ping', String(message.data || ''), Number(message.lastEventId) || 0);
+    });
+
+    for (const eventName of CASHOUT_LIVE_EVENTS) {
+      source.addEventListener(eventName, (ev: Event) => {
+        const message = ev as MessageEvent<string>;
+        handleLiveEvent(
+          eventName,
+          String(message.data || ''),
+          Number(message.lastEventId) || 0
+        );
+      });
+    }
+
+    source.onmessage = (ev: MessageEvent<string>) => {
+      handleLiveEvent('message', String(ev.data || ''), Number(ev.lastEventId) || 0);
+    };
+
+    source.onerror = () => {
+      closeEventSource();
+      scheduleImmediateRefetch('sse_error');
+    };
+  };
+
+  void runPoll('initial');
+  connectEventSource();
+  safetyTimer = setInterval(() => {
+    scheduleImmediateRefetch('safety_interval');
+  }, SAFETY_REFETCH_MS);
+
+  return () => {
+    disposed = true;
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+    if (safetyTimer) {
+      clearInterval(safetyTimer);
+      safetyTimer = null;
+    }
+    closeEventSource();
+  };
 }
 
 export function attachPlayerCashoutTasksSqlPoll(input: {
@@ -73,56 +285,17 @@ export function attachPlayerCashoutTasksSqlPoll(input: {
   onChange: (tasks: PlayerCashoutTask[]) => void;
   onError?: (error: Error) => void;
 }) {
-  logClientFirestoreSkipped('player_cashout_tasks_listener', {
-    scope: input.scope,
-    uid: input.uid,
+  const liveChannel =
+    input.scope === 'coadmin'
+      ? coadminCashoutLiveChannel(input.uid)
+      : input.scope === 'player'
+        ? playerCashoutLiveChannel(input.uid)
+        : null;
+
+  return attachCashoutSqlPoll({
+    ...input,
+    liveChannel,
   });
-
-  const runPoll = async () => {
-    const tasks = await fetchCashoutTasks(input.scope, input.uid, input.limit || 50);
-    input.onChange(tasks);
-  };
-
-  if (input.scope === 'player') {
-    return createPlayerScopedPoll({
-      pollName: 'player_cashout_tasks',
-      intervalMs: POLL_MS,
-      onTick: runPoll,
-      onError: input.onError,
-    });
-  }
-
-  let cancelled = false;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-
-  const tick = async () => {
-    if (cancelled) {
-      return;
-    }
-    try {
-      await runPoll();
-    } catch (error) {
-      if (!cancelled) {
-        input.onError?.(error instanceof Error ? error : new Error(String(error)));
-      }
-    } finally {
-      if (!cancelled) {
-        timer = setTimeout(() => {
-          void tick();
-        }, POLL_MS);
-      }
-    }
-  };
-
-  void tick();
-
-  return () => {
-    cancelled = true;
-    if (timer != null) {
-      clearTimeout(timer);
-      timer = null;
-    }
-  };
 }
 
 export function isPlayerCashoutSqlReadEnabled() {

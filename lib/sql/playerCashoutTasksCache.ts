@@ -338,6 +338,22 @@ export async function readPlayerCashoutTasksCacheByAssignedHandler(
   );
 }
 
+export async function readPlayerCashoutTasksCacheAll(
+  limit = 100
+): Promise<CachedPlayerCashoutTask[] | null> {
+  return readPlayerCashoutTasksBySql(
+    `
+      SELECT *
+      FROM public.player_cashout_tasks_cache
+      WHERE deleted_at IS NULL
+      ORDER BY created_at DESC NULLS LAST
+      LIMIT $1
+    `,
+    [Math.max(1, Math.min(200, limit))],
+    'all'
+  );
+}
+
 export async function getPlayerCashoutTaskCacheById(firebaseId: string) {
   const db = getPlayerMirrorPool();
   const cleanId = cleanText(firebaseId);

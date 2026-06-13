@@ -322,16 +322,49 @@ export async function createPlayerCashoutTask(values: {
   paymentAppName?: string;
   paymentAppCashTag?: string;
   paymentAppAccountName?: string;
+  idempotencyKey?: string;
 }) {
+  const idempotencyKey =
+    String(values.idempotencyKey || '').trim() ||
+    (typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `cashout-${Date.now()}`);
+
+  console.info('[PLAYER_CASHOUT_API_REQUEST]', {
+    coadminUid: values.coadminUid,
+    payoutMethod: values.payoutMethod || null,
+    idempotencyKey,
+  });
+
   const response = await fetch('/api/player/cashout-tasks/create', {
     method: 'POST',
+    credentials: 'include',
     headers: await getPlayerCashoutAuthHeaders(),
-    body: JSON.stringify(values),
+    body: JSON.stringify({
+      ...values,
+      idempotencyKey,
+    }),
   });
-  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    taskId?: string;
+    success?: boolean;
+    authority?: string;
+  };
   if (!response.ok) {
+    console.error('[PLAYER_CASHOUT_API_ERROR]', {
+      status: response.status,
+      error: payload.error || null,
+    });
     throw new Error(readApiError('Failed to create cashout request.', payload));
   }
+
+  console.info('[PLAYER_CASHOUT_API_SUCCESS]', {
+    taskId: payload.taskId || null,
+    authority: payload.authority || null,
+  });
+
+  return payload;
 }
 
 export async function startPlayerCashoutTask(taskId: string) {
@@ -476,7 +509,13 @@ export function listenAllPlayerCashoutTasks(
   onError?: (error: Error) => void
 ) {
   if (isPlayerCashoutSqlReadEnabled()) {
-    return () => {};
+    return attachPlayerCashoutTasksSqlPoll({
+      scope: 'all',
+      uid: 'all',
+      limit: CASHOUT_ACTIVE_LISTENER_LIMIT,
+      onChange,
+      onError,
+    });
   }
 
   const tasksQuery = query(

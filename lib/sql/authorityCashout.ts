@@ -30,6 +30,7 @@ export type AuthorityCashoutCreateInput = {
   paymentAppCashTag?: string | null;
   paymentAppAccountName?: string | null;
   idempotencyKey?: string | null;
+  requestedCoadminUid?: string | null;
 };
 
 export type AuthorityCashoutCreateResult = {
@@ -327,6 +328,7 @@ async function writeCashoutOutbox(
     coadminUid: input.coadminUid,
     status: input.status,
     amountNpr: input.amountNpr,
+    createdAt: input.updatedAt,
     updatedAt: input.updatedAt,
     source: 'authority',
   };
@@ -356,6 +358,10 @@ export async function createPlayerCashoutTaskInSql(
   const playerUid = cleanText(input.playerUid);
   const paymentDetails = cleanText(input.paymentDetails);
   const idempotencyKey = cleanText(input.idempotencyKey);
+  console.info('[CASHOUT_CREATE_START]', {
+    playerUid,
+    requestedCoadminUid: cleanText(input.requestedCoadminUid) || null,
+  });
   if (!playerUid) throw new Error('Player profile not found.');
   if (paymentDetails.length < 5) throw new Error('Please provide clear payment details.');
 
@@ -417,6 +423,13 @@ export async function createPlayerCashoutTaskInSql(
     );
     if (!playerLock.rows.length) throw new Error('Player profile not found.');
     const player = playerLock.rows[0] as Record<string, unknown>;
+    console.info('[CASHOUT_CREATE_PLAYER_LOOKUP]', {
+      playerUid,
+      role: cleanText(player.role),
+      cash: Number(player.cash || 0),
+      coadminUid: cleanText(player.coadmin_uid) || null,
+      createdBy: cleanText(player.created_by) || null,
+    });
     if (cleanText(player.role).toLowerCase() !== 'player') {
       throw new Error('Only players can create cashout tasks.');
     }
@@ -425,6 +438,13 @@ export async function createPlayerCashoutTaskInSql(
     if (availableCash <= 0) throw new Error('No cash available to cash out.');
 
     const amountThisRequest = Math.min(availableCash, remainingQuota);
+    console.info('[CASHOUT_CREATE_BALANCE_CHECK]', {
+      playerUid,
+      availableCash,
+      remainingQuota,
+      amountThisRequest,
+      rollingUsed,
+    });
     if (amountThisRequest <= 0) {
       throw new Error(
         `Rolling 24-hour cash out limit (${PLAYER_CASHOUT_MAX_NPR_PER_24_H} NPR) is reached for now.`
@@ -438,8 +458,16 @@ export async function createPlayerCashoutTaskInSql(
     });
     if (!decision.allowed) throw new Error(decision.message);
 
-    const coadminUid = cleanText(player.coadmin_uid) || cleanText(player.created_by);
+    const coadminUid =
+      cleanText(player.coadmin_uid) ||
+      cleanText(player.created_by) ||
+      cleanText(input.requestedCoadminUid);
     if (!coadminUid) throw new Error('Player coadmin scope not found.');
+    console.info('[CASHOUT_CREATE_AUTH]', {
+      playerUid,
+      coadminUid,
+      requestedCoadminUid: cleanText(input.requestedCoadminUid) || null,
+    });
 
     const maintenanceBreak = await getCoadminMaintenanceBreak(coadminUid);
     if (maintenanceBreak.enabled) {
@@ -477,6 +505,12 @@ export async function createPlayerCashoutTaskInSql(
       ...taskRaw,
       source: 'authority_cashout_create',
       rawFirestoreData: taskRaw,
+    });
+    console.info('[CASHOUT_CREATE_SQL_MIRROR_WRITTEN]', {
+      taskId,
+      playerUid,
+      coadminUid,
+      amountNpr: amountThisRequest,
     });
 
     const rawEvent = {
@@ -544,8 +578,14 @@ export async function createPlayerCashoutTaskInSql(
       taskId,
       status: 'pending',
       amountNpr: amountThisRequest,
-      eventType: 'cashout_create',
+      eventType: 'cashout_task_created',
       updatedAt: nowIso,
+    });
+    console.info('[CASHOUT_CREATE_OUTBOX_EVENT]', {
+      taskId,
+      playerUid,
+      coadminUid,
+      eventType: 'cashout_task_created',
     });
 
     await client.query(
@@ -554,9 +594,20 @@ export async function createPlayerCashoutTaskInSql(
     );
 
     await client.query('COMMIT');
+    console.info('[CASHOUT_CREATE_COMMIT]', {
+      taskId,
+      playerUid,
+      coadminUid,
+      amountNpr: amountThisRequest,
+    });
+    console.info('[CASHOUT_CREATE_TASK_CREATED]', { taskId, playerUid, coadminUid });
     return { success: true, duplicate: false, taskId };
   } catch (error) {
     await client.query('ROLLBACK');
+    console.error('[CASHOUT_CREATE_ERROR]', {
+      playerUid,
+      error: error instanceof Error ? error.message : String(error),
+    });
     throw error;
   } finally {
     client.release();

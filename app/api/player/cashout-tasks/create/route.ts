@@ -28,6 +28,7 @@ const PLAYER_CASHOUT_MAX_NPR_PER_24_H = 1000;
 const PLAYER_CASHOUT_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 type Body = {
+  coadminUid?: unknown;
   paymentDetails?: unknown;
   payoutMethod?: unknown;
   qrImageUrl?: unknown;
@@ -81,9 +82,16 @@ function ttlAfterDays(days: number) {
 }
 
 export async function POST(request: Request) {
+  console.info('[CASHOUT_CREATE_START]', { route: ROUTE });
   try {
     const auth = await requireApiUser(request, ['player']);
     if ('response' in auth) return auth.response;
+
+    console.info('[CASHOUT_CREATE_AUTH]', {
+      playerUid: auth.user.uid,
+      role: auth.user.role,
+      coadminUid: auth.user.coadminUid,
+    });
 
     const body = (await request.json()) as Body;
     const paymentDetails = String(body.paymentDetails || '').trim();
@@ -107,6 +115,11 @@ export async function POST(request: Request) {
         paymentAppCashTag: String(body.paymentAppCashTag || '').trim() || null,
         paymentAppAccountName: String(body.paymentAppAccountName || '').trim() || null,
         idempotencyKey,
+        requestedCoadminUid:
+          auth.user.coadminUid ||
+          String(body.coadminUid || '').trim() ||
+          auth.user.createdBy ||
+          null,
       });
       const poolStats = getPlayerMirrorPoolStats();
 
@@ -230,6 +243,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, taskId: taskRef.id, authority: 'firestore' });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create cashout request.';
+    console.error('[CASHOUT_CREATE_ERROR]', {
+      message,
+      error,
+    });
     if (message.startsWith('MAINTENANCE_BREAK:')) {
       return maintenanceBreakApiResponse(message.replace(/^MAINTENANCE_BREAK:/, ''));
     }
