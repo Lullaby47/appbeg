@@ -146,13 +146,13 @@ export async function GET(request: Request) {
         return NextResponse.json({ tasks: [], source: 'postgres' });
       }
       if (user.role === 'staff') {
-        console.info('[CASHOUT_TASKS_CACHE] staffScope', {
+        console.info('[PLAYER_CASHOUT_TASKS_CACHE] staffScope', {
           staffUid: user.uid,
           coadminUid: targetUid,
           requestedUid: requestedUid || null,
         });
       } else if (user.role === 'coadmin') {
-        console.info('[CASHOUT_TASKS_CACHE] coadminScope', {
+        console.info('[PLAYER_CASHOUT_TASKS_CACHE] coadminScope', {
           coadminUid: targetUid,
         });
       }
@@ -186,7 +186,7 @@ export async function GET(request: Request) {
     } else if (scope === 'player') {
       tasks = await readPlayerCashoutTasksCacheByPlayer(targetUid, limit);
     } else if (scope === 'coadmin') {
-      tasks = await readPlayerCashoutTasksCacheByCoadmin(targetUid, limit);
+      tasks = await readPlayerCashoutTasksCacheByCoadmin(targetUid, limit, true);
       tasks = tasks?.filter(isPendingUnclaimedTask) ?? tasks;
     } else {
       tasks = await readPlayerCashoutTasksCacheByAssignedHandler(targetUid, limit);

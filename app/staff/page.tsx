@@ -836,6 +836,7 @@ export default function StaffPage() {
 
     async function startCarerEscalationListener() {
       try {
+        return;
         if (isCancelled) {
           return;
         }

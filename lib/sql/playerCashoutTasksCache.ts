@@ -296,18 +296,26 @@ export async function readPlayerCashoutTasksCacheByPlayer(
 
 export async function readPlayerCashoutTasksCacheByCoadmin(
   coadminUid: string,
-  limit = 100
+  limit = 100,
+  pendingOnly = false
 ): Promise<CachedPlayerCashoutTask[] | null> {
   const cleanCoadminUid = cleanText(coadminUid);
   if (!cleanCoadminUid) {
     return [];
   }
+  const pendingWhere = pendingOnly
+    ? `
+        AND LOWER(COALESCE(status, '')) = 'pending'
+        AND COALESCE(assigned_handler_uid, '') = ''
+      `
+    : '';
   return readPlayerCashoutTasksBySql(
     `
       SELECT *
       FROM public.player_cashout_tasks_cache
       WHERE deleted_at IS NULL
         AND coadmin_uid = $1
+        ${pendingWhere}
       ORDER BY created_at DESC NULLS LAST
       LIMIT $2
     `,
