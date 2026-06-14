@@ -324,6 +324,59 @@ export async function readPlayerCashoutTasksCacheByCoadmin(
   );
 }
 
+export async function readStaffActiveCashoutTasks(
+  coadminUid: string,
+  staffUid: string,
+  limit = 50
+): Promise<CachedPlayerCashoutTask[] | null> {
+  const cleanCoadminUid = cleanText(coadminUid);
+  const cleanStaffUid = cleanText(staffUid);
+  if (!cleanCoadminUid || !cleanStaffUid) {
+    return [];
+  }
+  return readPlayerCashoutTasksBySql(
+    `
+      SELECT *
+      FROM public.player_cashout_tasks_cache
+      WHERE deleted_at IS NULL
+        AND coadmin_uid = $1
+        AND LOWER(COALESCE(status, '')) = 'in_progress'
+        AND assigned_handler_uid = $2
+        AND (expires_at IS NULL OR expires_at > NOW())
+      ORDER BY started_at DESC NULLS LAST, created_at DESC NULLS LAST
+      LIMIT $3
+    `,
+    [cleanCoadminUid, cleanStaffUid, Math.max(1, Math.min(200, limit))],
+    'staff_active'
+  );
+}
+
+export async function readStaffCompletedCashoutTasks(
+  coadminUid: string,
+  staffUid: string,
+  limit = 50
+): Promise<CachedPlayerCashoutTask[] | null> {
+  const cleanCoadminUid = cleanText(coadminUid);
+  const cleanStaffUid = cleanText(staffUid);
+  if (!cleanCoadminUid || !cleanStaffUid) {
+    return [];
+  }
+  return readPlayerCashoutTasksBySql(
+    `
+      SELECT *
+      FROM public.player_cashout_tasks_cache
+      WHERE deleted_at IS NULL
+        AND coadmin_uid = $1
+        AND LOWER(COALESCE(status, '')) = 'completed'
+        AND assigned_handler_uid = $2
+      ORDER BY completed_at DESC NULLS LAST, created_at DESC NULLS LAST
+      LIMIT $3
+    `,
+    [cleanCoadminUid, cleanStaffUid, Math.max(1, Math.min(200, limit))],
+    'staff_completed'
+  );
+}
+
 export async function readPlayerCashoutTasksCacheByAssignedHandler(
   assignedHandlerUid: string,
   limit = 50

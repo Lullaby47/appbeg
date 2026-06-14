@@ -13,6 +13,7 @@ const POLL_MS = 10_000;
 const SAFETY_REFETCH_MS = 45_000;
 
 type CashoutScope = 'player' | 'coadmin' | 'staff' | 'assigned_handler' | 'all';
+type StaffCashoutList = 'pending' | 'active' | 'completed';
 
 const CASHOUT_LIVE_EVENTS = [
   'cashout_create',
@@ -101,13 +102,21 @@ function mapCachedTask(row: Record<string, unknown>): PlayerCashoutTask {
   };
 }
 
-async function fetchCashoutTasks(scope: CashoutScope, uid: string, limit: number) {
+async function fetchCashoutTasks(
+  scope: CashoutScope,
+  uid: string,
+  limit: number,
+  list?: StaffCashoutList
+) {
   const params = new URLSearchParams({
     scope,
     limit: String(limit),
   });
   if (scope !== 'all') {
     params.set('uid', uid);
+  }
+  if (scope === 'staff' && list) {
+    params.set('list', list);
   }
 
   console.info('[CASHOUT_LIST_QUERY]', {
@@ -285,6 +294,152 @@ function attachCashoutSqlPoll(input: {
     source.onmessage = (ev: MessageEvent<string>) => {
       handleLiveEvent('message', String(ev.data || ''), Number(ev.lastEventId) || 0);
     };
+
+    source.onerror = () => {
+      closeEventSource();
+      scheduleImmediateRefetch('sse_error');
+    };
+  };
+
+  void runPoll('initial');
+  connectEventSource();
+  safetyTimer = setInterval(() => {
+    scheduleImmediateRefetch('safety_interval');
+  }, SAFETY_REFETCH_MS);
+
+  return () => {
+    disposed = true;
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+    if (safetyTimer) {
+      clearInterval(safetyTimer);
+      safetyTimer = null;
+    }
+    closeEventSource();
+  };
+}
+
+export function attachStaffCashoutLifecyclePoll(input: {
+  coadminUid: string;
+  limit?: number;
+  onPendingChange: (tasks: PlayerCashoutTask[]) => void;
+  onActiveChange: (tasks: PlayerCashoutTask[]) => void;
+  onCompletedChange: (tasks: PlayerCashoutTask[]) => void;
+  onError?: (error: Error) => void;
+}) {
+  const limit = input.limit || 50;
+  let disposed = false;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let safetyTimer: ReturnType<typeof setInterval> | null = null;
+  let eventSource: EventSource | null = null;
+  let lastEventId = 0;
+  let refetchInFlight = false;
+  const liveChannel = coadminCashoutLiveChannel(input.coadminUid);
+
+  const runPoll = async (reason: string) => {
+    if (disposed || refetchInFlight) {
+      return;
+    }
+    refetchInFlight = true;
+    try {
+      const [pending, active, completed] = await Promise.all([
+        fetchCashoutTasks('staff', input.coadminUid, limit, 'pending'),
+        fetchCashoutTasks('staff', input.coadminUid, limit, 'active'),
+        fetchCashoutTasks('staff', input.coadminUid, limit, 'completed'),
+      ]);
+      if (!disposed) {
+        input.onPendingChange(pending);
+        input.onActiveChange(active);
+        input.onCompletedChange(completed);
+        console.info('[STAFF_CASHOUT_TASKS] pendingLoaded', { count: pending.length, reason });
+        console.info('[STAFF_CASHOUT_TASKS] activeLoaded', { count: active.length, reason });
+        console.info('[STAFF_CASHOUT_TASKS] completedLoaded', { count: completed.length, reason });
+      }
+    } catch (error) {
+      if (!disposed) {
+        input.onError?.(error instanceof Error ? error : new Error(String(error)));
+      }
+    } finally {
+      refetchInFlight = false;
+      if (!disposed) {
+        pollTimer = setTimeout(() => {
+          void runPoll('poll_interval');
+        }, POLL_MS);
+      }
+    }
+  };
+
+  const scheduleImmediateRefetch = (reason: string) => {
+    if (disposed) {
+      return;
+    }
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+    void runPoll(reason);
+  };
+
+  const closeEventSource = () => {
+    if (eventSource) {
+      eventSource.close();
+      eventSource = null;
+    }
+  };
+
+  const connectEventSource = () => {
+    if (disposed) {
+      return;
+    }
+    closeEventSource();
+    const params = new URLSearchParams({
+      channels: liveChannel,
+      lastEventId: String(Math.max(0, lastEventId)),
+    });
+    const appSessionId = cleanText(getLocalAppSessionId());
+    if (appSessionId) {
+      params.set('appSessionId', appSessionId);
+    }
+    const source = new EventSource(`/api/live/stream?${params.toString()}`);
+    eventSource = source;
+
+    const handleLiveEvent = (eventName: string, rawData: string, outboxId: number) => {
+      if (eventName === 'ping') {
+        return;
+      }
+      if (outboxId > 0) {
+        lastEventId = Math.max(lastEventId, outboxId);
+      }
+      try {
+        const payload = JSON.parse(rawData) as Record<string, unknown>;
+        logScopeEventReceived('staff', eventName, payload);
+      } catch {
+        // Ignore malformed SSE payloads; still refetch lists.
+      }
+      scheduleImmediateRefetch(`live:${eventName}`);
+    };
+
+    source.addEventListener('ping', (ev: Event) => {
+      const message = ev as MessageEvent<string>;
+      handleLiveEvent('ping', String(message.data || ''), Number(message.lastEventId) || 0);
+    });
+
+    for (const eventName of CASHOUT_LIVE_EVENTS) {
+      source.addEventListener(eventName, (ev: Event) => {
+        const message = ev as MessageEvent<string>;
+        try {
+          handleLiveEvent(
+            eventName,
+            String(message.data || ''),
+            Number(message.lastEventId) || 0
+          );
+        } catch {
+          scheduleImmediateRefetch(`live:${eventName}`);
+        }
+      });
+    }
 
     source.onerror = () => {
       closeEventSource();

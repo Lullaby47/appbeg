@@ -19,6 +19,7 @@ import { evaluateWithdrawalPolicy } from '@/lib/economy/policy';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 import {
   attachPlayerCashoutTasksSqlPoll,
+  attachStaffCashoutLifecyclePoll,
   isPlayerCashoutSqlReadEnabled,
 } from '@/features/live/playerCashoutSqlRead';
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
@@ -422,8 +423,29 @@ export async function startPlayerCashoutTask(taskId: string) {
 
 export async function completePlayerCashoutTask(taskId: string) {
   const action = 'complete';
+  console.info('[CASHOUT_TASK_DONE] attempting', { taskId });
   const headers = await getCashoutTaskAppSessionHeaders(action);
   const response = await fetch('/api/cashout-tasks/complete', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ taskId }),
+  });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    console.error('[CASHOUT_TASK_DONE] failed', {
+      taskId,
+      status: response.status,
+      error: payload.error || null,
+    });
+    throw new Error(readApiError('Failed to complete cashout task.', payload));
+  }
+  console.info('[CASHOUT_TASK_DONE] success', { taskId, status: response.status });
+}
+
+export async function releasePlayerCashoutTask(taskId: string) {
+  const action = 'release';
+  const headers = await getCashoutTaskAppSessionHeaders(action);
+  const response = await fetch('/api/cashout-tasks/release', {
     method: 'POST',
     headers,
     body: JSON.stringify({ taskId }),
@@ -436,9 +458,40 @@ export async function completePlayerCashoutTask(taskId: string) {
       status: response.status,
       error: payload.error || null,
     });
-    throw new Error(readApiError('Failed to complete cashout task.', payload));
+    throw new Error(readApiError('Failed to release cashout task.', payload));
   }
-  console.info('[CASHOUT_TASK_SEND] success', { action, taskId, status: response.status });
+  console.info('[CASHOUT_TASK_RELEASE] success', { taskId, status: response.status });
+}
+
+export function listenStaffCashoutTaskLifecycle(
+  coadminUid: string,
+  handlers: {
+    onPendingChange: (tasks: PlayerCashoutTask[]) => void;
+    onActiveChange: (tasks: PlayerCashoutTask[]) => void;
+    onCompletedChange: (tasks: PlayerCashoutTask[]) => void;
+    onError?: (error: Error) => void;
+  }
+) {
+  if (isPlayerCashoutSqlReadEnabled()) {
+    return attachStaffCashoutLifecyclePoll({
+      coadminUid,
+      limit: CASHOUT_ACTIVE_LISTENER_LIMIT,
+      ...handlers,
+    });
+  }
+
+  return listenPlayerCashoutTasksForStaff(coadminUid, (tasks) => {
+    const pending = tasks.filter(
+      (task) => task.status === 'pending' && !task.assignedHandlerUid
+    );
+    handlers.onPendingChange(pending);
+    handlers.onActiveChange(
+      tasks.filter((task) => task.status === 'in_progress')
+    );
+    handlers.onCompletedChange(
+      tasks.filter((task) => task.status === 'completed')
+    );
+  }, handlers.onError);
 }
 
 export async function declinePlayerCashoutTaskForCurrentHandler(taskId: string) {

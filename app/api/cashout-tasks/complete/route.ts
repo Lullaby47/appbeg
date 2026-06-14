@@ -37,6 +37,12 @@ export async function POST(request: Request) {
       String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
 
     if (isAuthoritySqlWriteEnabled()) {
+      console.info('[CASHOUT_TASK_DONE] attempting', {
+        taskId,
+        actorUid: auth.user.uid,
+        actorRole: auth.user.role,
+        coadminUid: scopedCoadminUid(auth.user),
+      });
       const result = await completePlayerCashoutTaskInSql({
         taskId,
         actorUid: auth.user.uid,

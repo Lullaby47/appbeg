@@ -91,6 +91,22 @@ export type AuthorityCashoutStartResult = {
   expiresAtMs: number;
 };
 
+export type AuthorityCashoutReleaseInput = {
+  taskId: string;
+  actorUid: string;
+  actorRole: string;
+  isAdmin: boolean;
+  scopeUid: string | null;
+  reason?: 'manual' | 'timeout';
+};
+
+export type AuthorityCashoutReleaseResult = {
+  success: true;
+  duplicate: boolean;
+  taskId: string;
+  released: boolean;
+};
+
 const CASHOUT_TASK_DURATION_MS = 3 * 60 * 1000;
 
 function ttlAfterDays(days: number) {
@@ -681,7 +697,7 @@ export async function completePlayerCashoutTaskInSql(
   if (!taskId) throw new Error('taskId is required.');
   if (!actorUid || !actorRole) throw new Error('Actor is required.');
 
-  console.info('[CASHOUT_TASK_CLAIM] attempting', {
+  console.info('[CASHOUT_TASK_DONE] attempting', {
     taskId,
     actorUid,
     actorRole,
@@ -949,9 +965,21 @@ export async function completePlayerCashoutTaskInSql(
     );
 
     await client.query('COMMIT');
+    console.info('[CASHOUT_TASK_DONE] success', {
+      taskId,
+      actorUid,
+      actorRole,
+      coadminUid: taskScope,
+    });
     return { success: true, duplicate: false, alreadyCompleted: false, taskId };
   } catch (error) {
     await client.query('ROLLBACK');
+    console.error('[CASHOUT_TASK_DONE] failed', {
+      taskId,
+      actorUid,
+      actorRole,
+      error: error instanceof Error ? error.message : String(error),
+    });
     throw error;
   } finally {
     client.release();
@@ -1102,6 +1130,214 @@ export async function startPlayerCashoutTaskInSql(
     throw error;
   } finally {
     client.release();
+  }
+}
+
+export async function releaseExpiredPlayerCashoutTasksForCoadminInSql(
+  coadminUid: string
+): Promise<string[]> {
+  const cleanCoadminUid = cleanText(coadminUid);
+  if (!cleanCoadminUid) {
+    return [];
+  }
+  const db = getPlayerMirrorPool();
+  if (!db) {
+    return [];
+  }
+
+  const client = await db.connect();
+  const releasedIds: string[] = [];
+  try {
+    await client.query('BEGIN');
+    const expired = await client.query(
+      `
+        SELECT firebase_id
+        FROM public.player_cashout_tasks_cache
+        WHERE deleted_at IS NULL
+          AND coadmin_uid = $1
+          AND LOWER(COALESCE(status, '')) = 'in_progress'
+          AND expires_at IS NOT NULL
+          AND expires_at <= NOW()
+        FOR UPDATE
+      `,
+      [cleanCoadminUid]
+    );
+
+    for (const row of expired.rows) {
+      const taskId = cleanText((row as Record<string, unknown>).firebase_id);
+      if (!taskId) {
+        continue;
+      }
+      const result = await releasePlayerCashoutTaskInSql(
+        {
+          taskId,
+          actorUid: 'system',
+          actorRole: 'system',
+          isAdmin: true,
+          scopeUid: cleanCoadminUid,
+          reason: 'timeout',
+        },
+        client
+      );
+      if (result.released) {
+        releasedIds.push(taskId);
+        console.info('[CASHOUT_TASK_TIMEOUT_RELEASE] success', {
+          taskId,
+          coadminUid: cleanCoadminUid,
+        });
+      }
+    }
+
+    await client.query('COMMIT');
+    return releasedIds;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function releasePlayerCashoutTaskInSql(
+  input: AuthorityCashoutReleaseInput,
+  existingClient?: PoolClient
+): Promise<AuthorityCashoutReleaseResult> {
+  const taskId = cleanText(input.taskId);
+  const actorUid = cleanText(input.actorUid);
+  const actorRole = cleanText(input.actorRole);
+  if (!taskId) throw new Error('taskId is required.');
+  if (!actorUid || !actorRole) throw new Error('Actor is required.');
+
+  const operationKey = `cashout_release:${taskId}:${input.reason || 'manual'}:${actorUid}`;
+  const db = getPlayerMirrorPool();
+  if (!db) throw new Error('Postgres is unavailable.');
+
+  const client = existingClient || (await db.connect());
+  const ownsClient = !existingClient;
+
+  try {
+    if (!existingClient) {
+      await client.query('BEGIN');
+    }
+
+    const taskLock = await client.query(
+      `SELECT * FROM public.player_cashout_tasks_cache WHERE firebase_id = $1 AND deleted_at IS NULL FOR UPDATE`,
+      [taskId]
+    );
+    if (!taskLock.rows.length) throw new Error('Cashout task not found.');
+    const task = taskLock.rows[0] as Record<string, unknown>;
+    const status = cleanText(task.status).toLowerCase();
+    const taskScope = cleanText(task.coadmin_uid);
+    const playerUid = cleanText(task.player_uid);
+    const amountNpr = Math.max(0, Math.round(Number(task.amount_npr || 0)));
+    const assignedHandlerUid = cleanText(task.assigned_handler_uid);
+
+    if (!input.isAdmin && (!input.scopeUid || input.scopeUid !== taskScope)) {
+      throw new Error('Forbidden: cashout task is outside your scope.');
+    }
+
+    if (status !== 'in_progress') {
+      return { success: true, duplicate: true, taskId, released: false };
+    }
+
+    if (
+      input.reason !== 'timeout' &&
+      assignedHandlerUid &&
+      assignedHandlerUid !== actorUid &&
+      !input.isAdmin &&
+      actorRole !== 'coadmin'
+    ) {
+      throw new Error('Only the handler who claimed this task can release it.');
+    }
+
+    const claim = await claimAuthorityOperation(client, {
+      operationKey,
+      operationType: 'cashout_release',
+      userUid: playerUid,
+      sourceId: taskId,
+      actorUid,
+      actorRole,
+      payload: {},
+    });
+    if (claim.duplicate) {
+      if (!existingClient) {
+        await client.query('ROLLBACK');
+      }
+      return { success: true, duplicate: true, taskId, released: false };
+    }
+
+    const taskRaw = {
+      ...(task.raw_firestore_data &&
+      typeof task.raw_firestore_data === 'object' &&
+      !Array.isArray(task.raw_firestore_data)
+        ? (task.raw_firestore_data as Record<string, unknown>)
+        : {}),
+      status: 'pending',
+      assignedHandlerUid: null,
+      assignedHandlerUsername: null,
+      assignedHandlerRole: null,
+      claimedByRole: null,
+      claimedAt: null,
+      startedAt: null,
+      expiresAt: null,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await upsertCashoutTaskCache(client, taskId, {
+      coadminUid: taskScope,
+      playerUid,
+      playerUsername: cleanText(task.player_username),
+      amountNpr,
+      paymentDetails: cleanText(task.payment_details),
+      payoutMethod: cleanText(task.payout_method),
+      qrImageUrl: cleanText(task.qr_image_url),
+      paymentAppName: cleanText(task.payment_app_name),
+      paymentAppCashTag: cleanText(task.payment_app_cash_tag),
+      paymentAppAccountName: cleanText(task.payment_app_account_name),
+      cashDeductedOnRequest: task.cash_deducted_on_request === true,
+      status: 'pending',
+      assignedHandlerUid: null,
+      assignedHandlerUsername: null,
+      startedAt: null,
+      expiresAt: null,
+      createdAt: task.created_at,
+      source: input.reason === 'timeout' ? 'authority_cashout_timeout_release' : 'authority_cashout_release',
+      rawFirestoreData: taskRaw,
+    });
+
+    await writeCashoutOutbox(client, {
+      playerUid,
+      coadminUid: taskScope,
+      taskId,
+      status: 'pending',
+      amountNpr,
+      eventType: input.reason === 'timeout' ? 'cashout_timeout_release' : 'cashout_release',
+      updatedAt: new Date().toISOString(),
+    });
+
+    if (!existingClient) {
+      await client.query('COMMIT');
+    }
+
+    if (input.reason !== 'timeout') {
+      console.info('[CASHOUT_TASK_RELEASE] success', {
+        taskId,
+        actorUid,
+        actorRole,
+        coadminUid: taskScope,
+      });
+    }
+
+    return { success: true, duplicate: false, taskId, released: true };
+  } catch (error) {
+    if (!existingClient) {
+      await client.query('ROLLBACK');
+    }
+    throw error;
+  } finally {
+    if (ownsClient) {
+      client.release();
+    }
   }
 }
 

@@ -15,13 +15,15 @@ import {
 import { logPlayerApiAuthOk } from '@/lib/server/playerApiAuthLog';
 import { extractPgErrorDetails } from '@/lib/server/sqlErrorDetails';
 import {
-
   readPlayerCashoutTasksCacheByAssignedHandler,
   readPlayerCashoutTasksCacheByCoadmin,
   readPlayerCashoutTasksCacheByPlayer,
   readPlayerCashoutTasksCacheAll,
+  readStaffActiveCashoutTasks,
+  readStaffCompletedCashoutTasks,
   type CachedPlayerCashoutTask,
 } from '@/lib/sql/playerCashoutTasksCache';
+import { releaseExpiredPlayerCashoutTasksForCoadminInSql } from '@/lib/sql/authorityCashout';
 
 export const runtime = 'nodejs';
 
@@ -78,6 +80,16 @@ async function readFirestoreTasks(scope: Scope, uid: string, limit: number) {
       completedAt: null,
     } satisfies CachedPlayerCashoutTask;
   });
+}
+
+type StaffCashoutList = 'pending' | 'active' | 'completed';
+
+function resolveStaffList(request: Request): StaffCashoutList {
+  const list = cleanText(new URL(request.url).searchParams.get('list')).toLowerCase();
+  if (list === 'active' || list === 'completed') {
+    return list;
+  }
+  return 'pending';
 }
 
 function isPendingUnclaimedTask(task: CachedPlayerCashoutTask) {
@@ -195,12 +207,23 @@ export async function GET(request: Request) {
     } else if (scope === 'player') {
       tasks = await readPlayerCashoutTasksCacheByPlayer(targetUid, limit);
     } else if (scope === 'coadmin' || scope === 'staff') {
-      tasks = await readPlayerCashoutTasksCacheByCoadmin(targetUid, limit, true);
-      tasks = tasks?.filter(isPendingUnclaimedTask) ?? tasks;
+      const staffList = scope === 'staff' ? resolveStaffList(request) : 'pending';
+      if (scope === 'staff') {
+        await releaseExpiredPlayerCashoutTasksForCoadminInSql(targetUid);
+      }
+      if (scope === 'staff' && staffList === 'active') {
+        tasks = await readStaffActiveCashoutTasks(targetUid, user.uid, limit);
+      } else if (scope === 'staff' && staffList === 'completed') {
+        tasks = await readStaffCompletedCashoutTasks(targetUid, user.uid, limit);
+      } else {
+        tasks = await readPlayerCashoutTasksCacheByCoadmin(targetUid, limit, true);
+        tasks = tasks?.filter(isPendingUnclaimedTask) ?? tasks;
+      }
       if (scope === 'staff' && user.role === 'staff') {
         console.info('[PLAYER_CASHOUT_TASKS_CACHE] staffScope', {
           staffUid: user.uid,
           coadminUid: targetUid,
+          list: staffList,
           count: tasks?.length ?? 0,
         });
       }

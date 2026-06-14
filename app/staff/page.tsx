@@ -45,13 +45,12 @@ import {
 import {
   completePlayerCashoutTask,
   declinePlayerCashoutTaskForCurrentHandler,
-  getEffectivePlayerCashoutTaskStatus,
   getPlayerCashoutTaskCountdown,
-  isPlayerCashoutHandledBySomeoneElse,
   getPlayerCashoutPaymentDisplay,
   listenAllPlayerCashoutTasks,
-  listenPlayerCashoutTasksForStaff,
+  listenStaffCashoutTaskLifecycle,
   PlayerCashoutTask,
+  releasePlayerCashoutTask,
   startPlayerCashoutTask,
 } from '@/features/cashouts/playerCashoutTasks';
 import { createCarerCashoutRequest } from '@/features/cashouts/carerCashouts';
@@ -199,7 +198,9 @@ export default function StaffPage() {
   const [dismissedCarerEscalationIds, setDismissedCarerEscalationIds] = useState<
     string[]
   >([]);
-  const [playerCashoutTasks, setPlayerCashoutTasks] = useState<PlayerCashoutTask[]>([]);
+  const [pendingCashoutTasks, setPendingCashoutTasks] = useState<PlayerCashoutTask[]>([]);
+  const [activeCashoutTasks, setActiveCashoutTasks] = useState<PlayerCashoutTask[]>([]);
+  const [completedCashoutTasks, setCompletedCashoutTasks] = useState<PlayerCashoutTask[]>([]);
   const [playerCashoutTasksLoading, setPlayerCashoutTasksLoading] = useState(true);
   const [cashoutTasksError, setCashoutTasksError] = useState<string | null>(null);
   const [staffSession, setStaffSession] = useState<StaffSessionContext | null>(null);
@@ -265,23 +266,6 @@ export default function StaffPage() {
     (alert) => !dismissedCarerEscalationIds.includes(alert.id)
   );
   const currentUserUid = staffAuthUid || auth.currentUser?.uid || '';
-  const visiblePlayerCashoutTasks = playerCashoutTasks
-    .filter(
-      (task) =>
-        !isPlayerCashoutHandledBySomeoneElse(task, currentUserUid) &&
-        !(task.declinedByUids || []).includes(currentUserUid) &&
-        getEffectivePlayerCashoutTaskStatus(task) !== 'completed'
-    )
-    .map((task) => ({
-      ...task,
-      status: getEffectivePlayerCashoutTaskStatus(task),
-    }));
-  const completedPlayerCashoutTasks = playerCashoutTasks
-    .map((task) => ({
-      ...task,
-      status: getEffectivePlayerCashoutTaskStatus(task),
-    }))
-    .filter((task) => task.status === 'completed');
   const staffCashBoxUsdAmount = Number(staffCashBoxNpr || 0);
   const riskyPlayers = useMemo(
     () => riskSnapshots.filter((entry) => entry.riskLevel !== 'low').slice(0, 10),
@@ -650,9 +634,11 @@ export default function StaffPage() {
 
   useEffect(() => {
     console.info('[STAFF_CASHOUT_TASKS] render', {
-      count: visiblePlayerCashoutTasks.length,
+      pendingCount: pendingCashoutTasks.length,
+      activeCount: activeCashoutTasks.length,
+      completedCount: completedCashoutTasks.length,
     });
-  }, [visiblePlayerCashoutTasks.length]);
+  }, [pendingCashoutTasks.length, activeCashoutTasks.length, completedCashoutTasks.length]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -676,13 +662,26 @@ export default function StaffPage() {
           unsubscribe = listenAllPlayerCashoutTasks(
             (tasks) => {
               if (!isCancelled) {
-                setPlayerCashoutTasks(tasks);
+                const pending = tasks.filter(
+                  (task) => task.status === 'pending' && !task.assignedHandlerUid
+                );
+                const active = tasks.filter(
+                  (task) =>
+                    task.status === 'in_progress' &&
+                    task.assignedHandlerUid === staffSession.uid
+                );
+                const completed = tasks.filter(
+                  (task) =>
+                    task.status === 'completed' &&
+                    task.assignedHandlerUid === staffSession.uid
+                );
+                setPendingCashoutTasks(pending);
+                setActiveCashoutTasks(active);
+                setCompletedCashoutTasks(completed);
                 setPlayerCashoutTasksLoading(false);
-                console.info('[STAFF_CASHOUT_TASKS] fetchSuccess', {
-                  staffUid: staffSession.uid,
-                  scope: 'all',
-                  count: tasks.length,
-                });
+                console.info('[STAFF_CASHOUT_TASKS] pendingLoaded', { count: pending.length });
+                console.info('[STAFF_CASHOUT_TASKS] activeLoaded', { count: active.length });
+                console.info('[STAFF_CASHOUT_TASKS] completedLoaded', { count: completed.length });
               }
             },
             (error) => {
@@ -708,26 +707,34 @@ export default function StaffPage() {
         }
 
         if (!coadminUid) {
-          setPlayerCashoutTasks([]);
+          setPendingCashoutTasks([]);
+          setActiveCashoutTasks([]);
+          setCompletedCashoutTasks([]);
           setPlayerCashoutTasksLoading(false);
           setCashoutTasksError('No coadmin assigned to this staff account.');
           return;
         }
 
-        unsubscribe = listenPlayerCashoutTasksForStaff(
-          coadminUid,
-          (tasks) => {
+        unsubscribe = listenStaffCashoutTaskLifecycle(coadminUid, {
+          onPendingChange: (tasks) => {
             if (!isCancelled) {
-              setPlayerCashoutTasks(tasks);
+              setPendingCashoutTasks(tasks);
               setPlayerCashoutTasksLoading(false);
-              console.info('[STAFF_CASHOUT_TASKS] fetchSuccess', {
-                staffUid: staffSession.uid,
-                staffCoadminUid: coadminUid,
-                count: tasks.length,
-              });
             }
           },
-          (error) => {
+          onActiveChange: (tasks) => {
+            if (!isCancelled) {
+              setActiveCashoutTasks(tasks);
+              setPlayerCashoutTasksLoading(false);
+            }
+          },
+          onCompletedChange: (tasks) => {
+            if (!isCancelled) {
+              setCompletedCashoutTasks(tasks);
+              setPlayerCashoutTasksLoading(false);
+            }
+          },
+          onError: (error) => {
             if (!isCancelled) {
               setPlayerCashoutTasksLoading(false);
               setCashoutTasksError(error.message);
@@ -738,8 +745,8 @@ export default function StaffPage() {
               });
               setMessage(error.message || 'Failed to listen for player cashout tasks.');
             }
-          }
-        );
+          },
+        });
       } catch (error: any) {
         if (!isCancelled) {
           setPlayerCashoutTasksLoading(false);
@@ -1017,7 +1024,7 @@ export default function StaffPage() {
     setMessage('');
     try {
       await startPlayerCashoutTask(taskId);
-      setPlayerCashoutTasks((current) => current.filter((task) => task.id !== taskId));
+      setMessage('Cashout task claimed.');
     } catch (error: any) {
       setMessage(error.message || 'Failed to start player cashout task.');
     } finally {
@@ -1033,6 +1040,19 @@ export default function StaffPage() {
       setMessage('Player cashout task completed.');
     } catch (error: any) {
       setMessage(error.message || 'Failed to complete player cashout task.');
+    } finally {
+      setPlayerCashoutTaskLoadingId(null);
+    }
+  }
+
+  async function handleReleasePlayerCashoutTask(taskId: string) {
+    setPlayerCashoutTaskLoadingId(taskId);
+    setMessage('');
+    try {
+      await releasePlayerCashoutTask(taskId);
+      setMessage('Cashout task released back to pending.');
+    } catch (error: any) {
+      setMessage(error.message || 'Failed to release player cashout task.');
     } finally {
       setPlayerCashoutTaskLoadingId(null);
     }
@@ -1383,67 +1403,103 @@ export default function StaffPage() {
     );
   }
 
-  function renderPendingCashoutTasksPanel() {
+  function renderStaffCashoutTasksView() {
     return (
-      <>
-        <div className="mb-4 rounded-xl border border-yellow-500/30 bg-yellow-500/5 p-3 text-xs font-mono text-yellow-100/80">
+      <div className="space-y-6">
+        <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/5 p-3 text-xs font-mono text-yellow-100/80">
           <p>staffUid: {staffSession?.uid || staffAuthUid || '—'}</p>
           <p>staffCoadminUid: {staffSession?.coadminUid || '—'}</p>
           <p>cashoutTasksLoading: {String(playerCashoutTasksLoading)}</p>
-          <p>cashoutTasksCount: {visiblePlayerCashoutTasks.length}</p>
+          <p>cashoutTasksCount: {pendingCashoutTasks.length + activeCashoutTasks.length + completedCashoutTasks.length}</p>
           <p>cashoutTasksError: {cashoutTasksError || '—'}</p>
         </div>
 
-        <div className="mb-6 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-5">
+        <div className="rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-5">
           <h3 className="text-lg font-bold text-cyan-200">Pending Cashout Tasks</h3>
           {playerCashoutTasksLoading ? (
             <p className="mt-3 text-sm text-cyan-100/70">Loading cashout tasks...</p>
-          ) : visiblePlayerCashoutTasks.length === 0 ? (
+          ) : pendingCashoutTasks.length === 0 ? (
             <p className="mt-3 text-sm text-cyan-100/70">No pending cashout tasks.</p>
           ) : (
             <div className="mt-3 space-y-3">
-              {visiblePlayerCashoutTasks.map((task) => {
-                const isInProgress = task.status === 'in_progress';
-                const remainingMs = getPlayerCashoutTaskCountdown(task);
-                const actionLabel = isInProgress
-                  ? `Done (${formatCountdownMs(remainingMs + countdownTick * 0)})`
-                  : 'Claim Task';
+              {pendingCashoutTasks.map((task) => (
+                <div
+                  key={task.id}
+                  className="rounded-xl border border-cyan-400/25 bg-black/30 p-4"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-semibold text-white">
+                        Player: {task.playerUsername}
+                      </p>
+                      <p className="text-sm text-cyan-100/85">
+                        Amount: {formatUsdFromNpr(task.amountNpr || 0)}
+                      </p>
+                      {renderPlayerCashoutPayment(task)}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleStartPlayerCashoutTask(task.id)}
+                      disabled={playerCashoutTaskLoadingId === task.id}
+                      className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-60"
+                    >
+                      {playerCashoutTaskLoadingId === task.id ? 'Saving...' : 'Claim / Start'}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
+        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-5">
+          <h3 className="text-lg font-bold text-amber-200">My Active Cashout Task</h3>
+          {playerCashoutTasksLoading ? (
+            <p className="mt-3 text-sm text-amber-100/70">Loading active task...</p>
+          ) : activeCashoutTasks.length === 0 ? (
+            <p className="mt-3 text-sm text-amber-100/70">No active cashout task.</p>
+          ) : (
+            <div className="mt-3 space-y-3">
+              {activeCashoutTasks.map((task) => {
+                const remainingMs = getPlayerCashoutTaskCountdown(task);
                 return (
                   <div
                     key={task.id}
-                    className="rounded-xl border border-cyan-400/25 bg-black/30 p-4"
+                    className="rounded-xl border border-amber-400/25 bg-black/30 p-4"
                   >
                     <div className="flex flex-wrap items-start justify-between gap-4">
                       <div>
                         <p className="text-sm font-semibold text-white">
                           Player: {task.playerUsername}
                         </p>
-                        <p className="text-sm text-cyan-100/85">
+                        <p className="text-sm text-amber-100/85">
                           Amount: {formatUsdFromNpr(task.amountNpr || 0)}
+                        </p>
+                        <p className="mt-1 text-xs text-amber-100/70">
+                          Time left: {formatCountdownMs(remainingMs + countdownTick * 0)}
                         </p>
                         {renderPlayerCashoutPayment(task)}
                       </div>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void (isInProgress
-                            ? handleCompletePlayerCashoutTask(task.id)
-                            : handleStartPlayerCashoutTask(task.id))
-                        }
-                        disabled={playerCashoutTaskLoadingId === task.id}
-                        className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-60"
-                      >
-                        {playerCashoutTaskLoadingId === task.id ? 'Saving...' : actionLabel}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleDeclinePlayerCashoutTask(task.id)}
-                        disabled={playerCashoutTaskLoadingId === task.id}
-                        className="rounded-lg border border-rose-400/35 bg-rose-500/15 px-4 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/25 disabled:opacity-60"
-                      >
-                        Decline
-                      </button>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleCompletePlayerCashoutTask(task.id)}
+                          disabled={playerCashoutTaskLoadingId === task.id}
+                          className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-60"
+                        >
+                          {playerCashoutTaskLoadingId === task.id
+                            ? 'Saving...'
+                            : `Done (${formatCountdownMs(remainingMs + countdownTick * 0)})`}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleReleasePlayerCashoutTask(task.id)}
+                          disabled={playerCashoutTaskLoadingId === task.id}
+                          className="rounded-lg border border-amber-400/35 bg-amber-500/15 px-4 py-2 text-sm font-semibold text-amber-100 hover:bg-amber-500/25 disabled:opacity-60"
+                        >
+                          Release
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -1451,7 +1507,39 @@ export default function StaffPage() {
             </div>
           )}
         </div>
-      </>
+
+        <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-5">
+          <h3 className="text-lg font-bold text-emerald-200">Completed Tasks</h3>
+          {playerCashoutTasksLoading ? (
+            <p className="mt-3 text-sm text-emerald-100/70">Loading completed tasks...</p>
+          ) : completedCashoutTasks.length === 0 ? (
+            <p className="mt-3 text-sm text-emerald-100/70">No completed tasks yet.</p>
+          ) : (
+            <div className="mt-3 space-y-3">
+              {completedCashoutTasks.map((task) => (
+                <div
+                  key={task.id}
+                  className="rounded-xl border border-emerald-400/25 bg-black/30 p-4"
+                >
+                  <p className="text-sm font-semibold text-white">
+                    Player: {task.playerUsername}
+                  </p>
+                  <p className="text-sm text-emerald-100/85">
+                    Amount: {formatUsdFromNpr(task.amountNpr || 0)}
+                  </p>
+                  {renderPlayerCashoutPayment(task)}
+                  <p className="mt-1 text-xs text-emerald-100/70">
+                    Completed: {task.completedAt?.toDate?.().toLocaleString?.() || 'Done'}
+                  </p>
+                  <p className="mt-1 text-xs text-emerald-100/70">
+                    Handler: {task.assignedHandlerUsername || currentUserUid || 'Unknown'}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     );
   }
 
@@ -1480,8 +1568,6 @@ export default function StaffPage() {
               {message}
             </div>
           )}
-
-          {renderPendingCashoutTasksPanel()}
 
           {activeView === 'dashboard' && (
             <div className="space-y-6">
@@ -1594,34 +1680,8 @@ export default function StaffPage() {
 
           {activeView === 'view-tasks' && (
             <div>
-              <h2 className="mb-6 text-3xl font-bold">Completed Tasks</h2>
-
-              {completedPlayerCashoutTasks.length === 0 ? (
-                <p className="text-sm text-neutral-400">No completed tasks yet.</p>
-              ) : (
-                <div className="space-y-3">
-                  {completedPlayerCashoutTasks.map((task) => (
-                    <div
-                      key={task.id}
-                      className="rounded-xl border border-cyan-400/25 bg-cyan-500/10 p-4"
-                    >
-                      <p className="text-sm font-semibold text-white">
-                        Player: {task.playerUsername}
-                      </p>
-                      <p className="text-sm text-cyan-100/85">
-                        Amount: {formatUsdFromNpr(task.amountNpr || 0)}
-                      </p>
-                      {renderPlayerCashoutPayment(task)}
-                      <p className="mt-1 text-xs text-cyan-100/70">
-                        Completed: {task.completedAt?.toDate?.().toLocaleString?.() || 'Done'}
-                      </p>
-                      <p className="mt-1 text-xs text-cyan-100/70">
-                        Handler: {task.assignedHandlerUsername || 'Unknown'}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <h2 className="mb-6 text-3xl font-bold">Cashout Tasks</h2>
+              {renderStaffCashoutTasksView()}
             </div>
           )}
 
