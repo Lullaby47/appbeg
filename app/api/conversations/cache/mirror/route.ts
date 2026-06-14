@@ -10,6 +10,7 @@ import {
 import { logFirestoreTouch, routeFromRequest } from '@/lib/server/firestoreTouchAudit';
 import {
 
+  clearConversationUnreadForUser,
   mergeConversationUnreadCounts,
   mirrorConversationSnapshot,
   tombstoneConversationCache,
@@ -70,14 +71,34 @@ export async function POST(request: Request) {
     const unreadCounts = readRawRecord(body.unreadCounts) || {
       [auth.user.uid]: 0,
     };
+    const unreadEntries = Object.entries(unreadCounts as Record<string, unknown>);
     const mirrored = await Promise.all(
-      conversationIds.map((conversationId) =>
-        mergeConversationUnreadCounts({
-          firebaseId: conversationId,
-          unreadCounts: unreadCounts as Record<string, number>,
-          source: 'appbeg_browser_write',
-        })
-      )
+      conversationIds.map(async (conversationId) => {
+        let changed = false;
+        const positiveUnreadCounts: Record<string, number> = {};
+        for (const [uid, rawCount] of unreadEntries) {
+          const count = Number(rawCount);
+          if (Number.isFinite(count) && count <= 0) {
+            const clearResult = await clearConversationUnreadForUser({
+              firebaseId: conversationId,
+              uid,
+              source: 'appbeg_browser_mark_read',
+            });
+            changed = changed || clearResult.ok;
+          } else if (Number.isFinite(count) && count > 0) {
+            positiveUnreadCounts[uid] = count;
+          }
+        }
+        if (Object.keys(positiveUnreadCounts).length) {
+          changed =
+            (await mergeConversationUnreadCounts({
+              firebaseId: conversationId,
+              unreadCounts: positiveUnreadCounts,
+              source: 'appbeg_browser_write',
+            })) || changed;
+        }
+        return changed;
+      })
     );
     logCacheSqlRead(route, {
       action: 'mark_read',

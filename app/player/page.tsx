@@ -56,14 +56,18 @@ import {
 import {
   listenToUnreadCounts,
   mapFirestoreChatToDisplay,
-  markConversationAsRead,
   sendChatMessage,
   sendImageMessage,
 } from '@/features/messages/chatMessages';
 import {
+  markPlayerChatThreadRead,
+  type PlayerChatReadType,
+} from '@/features/messages/playerChatRead';
+import {
   clearStaleRoleThemeStorage,
   installPlayerThemeAudioGuard,
   playerThemeRouteGuard,
+  stopDuplicatePlayerThemeAudio,
   stopWrongPlayerRouteThemeAudio,
   tagPlayerThemeAudio,
 } from '@/lib/client/playerThemeAudioGuard';
@@ -427,8 +431,23 @@ export default function PlayerPage() {
   const lastChatReadClearAtRef = useRef<Record<string, number>>({});
   const resolvedPlayerRole = isPlayerRole ? 'player' : null;
 
+  const playerAuthorityChatTypeForUser = useCallback((user: AdminUser | null | undefined): PlayerChatReadType => {
+    const role = String((user as any)?.role || '').toLowerCase();
+    if (role === 'staff') {
+      return 'player_staff';
+    }
+    if (role === 'carer') {
+      return 'player_carer';
+    }
+    return 'player_agent';
+  }, []);
+
   const markThreadReadOnPlayerChatFocus = useCallback(
-    (threadId: string | null | undefined, chatType: 'player_agent' | 'player_player') => {
+    (
+      threadId: string | null | undefined,
+      chatType: PlayerChatReadType,
+      trigger: 'open' | 'input' = 'input'
+    ) => {
       const cleanThreadId = String(threadId || '').trim();
       if (!cleanThreadId) {
         console.info('[PLAYER_CHAT_READ] skippedNoThread', { chatType });
@@ -438,18 +457,25 @@ export default function PlayerPage() {
       const dedupeKey = `${chatType}:${cleanThreadId}`;
       const now = Date.now();
       if (chatReadInFlightRef.current.has(dedupeKey)) {
+        console.info('[PLAYER_CHAT_READ] debounced', { chatType, threadId: cleanThreadId, reason: 'in_flight' });
         return;
       }
       if (now - (lastChatReadClearAtRef.current[dedupeKey] || 0) < 10000) {
+        console.info('[PLAYER_CHAT_READ] debounced', { chatType, threadId: cleanThreadId, reason: 'recent' });
         return;
       }
       lastChatReadClearAtRef.current[dedupeKey] = now;
 
-      console.info('[PLAYER_CHAT_READ] focusClearUnread', {
+      console.info(
+        trigger === 'open'
+          ? '[PLAYER_CHAT_READ] openThreadClearUnread'
+          : '[PLAYER_CHAT_READ] inputFocusClearUnread',
+        {
         chatType,
         threadId: cleanThreadId,
         playerUid: playerUid || auth.currentUser?.uid || getCachedSessionUser()?.uid || null,
-      });
+        }
+      );
 
       setUnreadCounts((previous) => {
         if (!previous[cleanThreadId]) {
@@ -466,11 +492,13 @@ export default function PlayerPage() {
       });
 
       chatReadInFlightRef.current.add(dedupeKey);
-      void markConversationAsRead(cleanThreadId)
-        .then(() => {
+      void markPlayerChatThreadRead(cleanThreadId, chatType)
+        .then((payload) => {
           console.info('[PLAYER_CHAT_READ] persisted', {
             chatType,
             threadId: cleanThreadId,
+            conversationId: payload.conversationId || null,
+            unreadCount: payload.unreadCount ?? null,
           });
         })
         .catch((error) => {
@@ -492,7 +520,11 @@ export default function PlayerPage() {
     requirePlayerRole: true,
     onWindowMessages: () => {
       if (selectedAgent && (unreadCounts[selectedAgent.uid] || 0) > 0) {
-        markThreadReadOnPlayerChatFocus(selectedAgent.uid, 'player_agent');
+        markThreadReadOnPlayerChatFocus(
+          selectedAgent.uid,
+          playerAuthorityChatTypeForUser(selectedAgent),
+          'open'
+        );
       }
     },
   });
@@ -1780,6 +1812,7 @@ export default function PlayerPage() {
 
     try {
       stopWrongPlayerRouteThemeAudio(CASINO_BACKGROUND_TRACKS);
+      stopDuplicatePlayerThemeAudio(audio, CASINO_BACKGROUND_TRACKS);
       giftSoundRef.current?.pause();
       activeTableSoundRef.current?.pause();
       notificationSoundRef.current?.pause();
@@ -2560,7 +2593,12 @@ export default function PlayerPage() {
     if (!isPlayerRole) {
       return;
     }
-    const unsubscribe = listenToUnreadCounts(setUnreadCounts, { requirePlayerRole: true });
+    const unsubscribe = listenToUnreadCounts((counts) => {
+      console.info('[PLAYER_CHAT_READ] refreshReadStateLoaded', {
+        threadCount: Object.keys(counts).length,
+      });
+      setUnreadCounts(counts);
+    }, { requirePlayerRole: true });
     return () => unsubscribe();
   }, [isPlayerRole]);
 
@@ -3798,7 +3836,7 @@ export default function PlayerPage() {
     setSelectedAgent(agent);
     setNewMessage('');
     handleClearImage();
-    markThreadReadOnPlayerChatFocus(agent.uid, 'player_agent');
+    markThreadReadOnPlayerChatFocus(agent.uid, playerAuthorityChatTypeForUser(agent), 'open');
   }
 
   function handleOpenFirstUnreadAgent() {
@@ -5203,7 +5241,7 @@ export default function PlayerPage() {
             {activeView === 'earn-coins' && <EarnCoins claimingFreeplayGift={claimingFreeplayGift} claimingReferredPlayerUid={claimingReferredPlayerUid} freeplayClaimSuccessMessage={freeplayClaimSuccessMessage} handleClaimFreeplayGift={handleClaimFreeplayGift} handleClaimReferralReward={handleClaimReferralReward} hasPendingFreeplayGift={hasPendingFreeplayGift} referralRewardGroups={referralRewardGroups} referralRewardsLoading={referralRewardsLoading} referredByPlayerName={referredByPlayerName} />}
 
             {/* AGENTS VIEW - ReachOutView integration remains the same but styled via the prop structure */}
-            {activeView === 'agents' && <Agents agentOnlineByUid={agentOnlineByUid} agents={agents} agentsScrollRef={agentsScrollRef} handleAgentSelect={handleAgentSelect} handleClearImage={handleClearImage} handleImageSelect={handleImageSelect} handleSendMessage={handleSendMessage} imagePreview={imagePreview} messages={messages} newMessage={newMessage} onMessageFocus={() => markThreadReadOnPlayerChatFocus(selectedAgent?.uid, 'player_agent')} pagedAgentChat={pagedAgentChat} selectedAgent={selectedAgent} sendingImage={sendingImage} setNewMessage={setNewMessage} unreadCounts={unreadCounts} />}
+            {activeView === 'agents' && <Agents agentOnlineByUid={agentOnlineByUid} agents={agents} agentsScrollRef={agentsScrollRef} handleAgentSelect={handleAgentSelect} handleClearImage={handleClearImage} handleImageSelect={handleImageSelect} handleSendMessage={handleSendMessage} imagePreview={imagePreview} messages={messages} newMessage={newMessage} onMessageFocus={() => markThreadReadOnPlayerChatFocus(selectedAgent?.uid, playerAuthorityChatTypeForUser(selectedAgent), 'input')} pagedAgentChat={pagedAgentChat} selectedAgent={selectedAgent} sendingImage={sendingImage} setNewMessage={setNewMessage} unreadCounts={unreadCounts} />}
             </div>
           </div>
         </section>

@@ -18,6 +18,7 @@ declare global {
     __appbegPlayerThemeAudioGuardInstalled?: boolean;
     __appbegNativeAudioCtor?: AudioCtor;
     __appbegThemeAudioElements?: Set<HTMLAudioElement>;
+    __appbegPlayerThemeAudioGuardCurrent?: HTMLAudioElement | null;
   }
 }
 
@@ -78,7 +79,18 @@ export function playerThemeRouteGuard(input: PlayerThemeGuardInput) {
   });
 
   if (routeAllowed && (!roleAllowed || !themeAllowed)) {
+    if (routeAllowed && input.audioTheme && String(input.audioTheme).toLowerCase() !== PLAYER_THEME) {
+      console.info('[THEME_AUDIO_GUARD] blockedWrongThemeOnPlayer', {
+        currentPath: input.currentPath,
+        requestedTheme: input.audioTheme,
+      });
+    }
     console.info('[PLAYER_THEME_AUDIO] blockedUntilRoleResolved', {
+      currentPath: input.currentPath,
+      resolvedRole: input.resolvedRole || null,
+      audioTheme: input.audioTheme || null,
+    });
+    console.info('[PLAYER_THEME_AUDIO] waitingForRole', {
       currentPath: input.currentPath,
       resolvedRole: input.resolvedRole || null,
       audioTheme: input.audioTheme || null,
@@ -98,6 +110,36 @@ export function playerThemeRouteGuard(input: PlayerThemeGuardInput) {
 
 export function tagPlayerThemeAudio(audio: HTMLAudioElement) {
   audio.dataset.appbegAudioTheme = PLAYER_THEME;
+}
+
+export function stopDuplicatePlayerThemeAudio(
+  currentAudio: HTMLAudioElement,
+  playerTracks: readonly string[]
+) {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return;
+  }
+
+  const tracked = Array.from(window.__appbegThemeAudioElements || []);
+  const documentAudio = Array.from(document.querySelectorAll('audio'));
+  const allAudio = Array.from(new Set([...tracked, ...documentAudio]));
+  let stopped = 0;
+
+  for (const audio of allAudio) {
+    if (audio === currentAudio || !isPlayerThemeAudio(audio, playerTracks)) {
+      continue;
+    }
+    if (audio.paused && audio.currentTime === 0) {
+      continue;
+    }
+    stopAudio(audio);
+    stopped += 1;
+  }
+
+  if (stopped > 0) {
+    console.info('[PLAYER_THEME_AUDIO] duplicateLoopPrevented', { stopped });
+  }
+  window.__appbegPlayerThemeAudioGuardCurrent = currentAudio;
 }
 
 export function stopWrongPlayerRouteThemeAudio(playerTracks: readonly string[]) {
@@ -120,6 +162,7 @@ export function stopWrongPlayerRouteThemeAudio(playerTracks: readonly string[]) 
 
   if (stopped > 0) {
     console.info('[PLAYER_THEME_AUDIO] stoppedWrongTheme', { stopped });
+    console.info('[THEME_AUDIO_GUARD] stoppedLeakedTheme', { stopped });
   }
 }
 
@@ -154,6 +197,27 @@ export function installPlayerThemeAudioGuard(playerTracks: readonly string[]) {
   const GuardedAudio = function AudioGuard(src?: string) {
     const audio = new NativeAudio(src);
     window.__appbegThemeAudioElements?.add(audio);
+    const nativePlay = audio.play.bind(audio);
+    audio.play = (() => {
+      const path = window.location.pathname;
+      if (isPlayerPath(path) && !isPlayerThemeAudio(audio, playerTracks)) {
+        stopAudio(audio);
+        console.info('[THEME_AUDIO_GUARD] blockedWrongThemeOnPlayer', {
+          currentPath: path,
+          source: audio.currentSrc || audio.src || src || null,
+          audioTheme: getAudioTheme(audio) || null,
+        });
+        console.info('[THEME_AUDIO_GUARD] stoppedLeakedTheme', {
+          stopped: 1,
+          source: audio.currentSrc || audio.src || src || null,
+        });
+        return Promise.reject(new Error('Blocked non-player theme audio on /player route.'));
+      }
+      if (isPlayerPath(path) && isPlayerThemeAudio(audio, playerTracks)) {
+        stopDuplicatePlayerThemeAudio(audio, playerTracks);
+      }
+      return nativePlay();
+    }) as typeof audio.play;
 
     const path = window.location.pathname;
     if (isPlayerPath(path) && !isPlayerThemeAudio(audio, playerTracks)) {
@@ -161,6 +225,10 @@ export function installPlayerThemeAudioGuard(playerTracks: readonly string[]) {
         if (shouldStopAudio(audio, playerTracks)) {
           stopAudio(audio);
           console.info('[PLAYER_THEME_AUDIO] stoppedWrongTheme', {
+            stopped: 1,
+            source: src || audio.currentSrc || audio.src || null,
+          });
+          console.info('[THEME_AUDIO_GUARD] stoppedLeakedTheme', {
             stopped: 1,
             source: src || audio.currentSrc || audio.src || null,
           });

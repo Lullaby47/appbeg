@@ -173,6 +173,56 @@ export async function mergeConversationUnreadCounts(input: {
   }
 }
 
+export async function clearConversationUnreadForUser(input: {
+  firebaseId: string;
+  uid: string;
+  source?: string;
+}): Promise<{ ok: boolean; unauthorized?: boolean; unreadCount: number }> {
+  const db = getPlayerMirrorPool();
+  const firebaseId = cleanText(input.firebaseId);
+  const uid = cleanText(input.uid);
+  if (!db || !firebaseId || !uid) {
+    return { ok: false, unreadCount: 0 };
+  }
+
+  try {
+    const { rows } = await db.query<{ unread_count: unknown }>(
+      `
+        UPDATE public.conversations_cache
+        SET unread_counts = coalesce(unread_counts, '{}'::jsonb) - $2,
+            source = $3,
+            mirrored_at = now(),
+            deleted_at = NULL
+        WHERE firebase_id = $1
+          AND participant_uids ? $2
+        RETURNING COALESCE((unread_counts ->> $2)::int, 0) AS unread_count
+      `,
+      [firebaseId, uid, cleanText(input.source) || 'api_mark_read']
+    );
+    if (!rows.length) {
+      const existing = await db.query<{ participant_uids: unknown }>(
+        `
+          SELECT participant_uids
+          FROM public.conversations_cache
+          WHERE firebase_id = $1
+            AND deleted_at IS NULL
+          LIMIT 1
+        `,
+        [firebaseId]
+      );
+      if (!existing.rows.length) {
+        return { ok: false, unreadCount: 0 };
+      }
+      return { ok: false, unauthorized: true, unreadCount: 0 };
+    }
+    const unreadCount = Number(rows[0]?.unread_count || 0);
+    return { ok: true, unreadCount: Number.isFinite(unreadCount) ? unreadCount : 0 };
+  } catch (error) {
+    console.warn('[CONVERSATIONS_CACHE] clear unread failed', { firebaseId, uid, error });
+    return { ok: false, unreadCount: 0 };
+  }
+}
+
 export async function mirrorConversationSnapshot(snap: DocumentSnapshot) {
   if (!snap.exists) {
     return false;

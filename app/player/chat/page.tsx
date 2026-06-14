@@ -43,6 +43,7 @@ import {
   setDirectConversationMuted,
   setDirectTyping,
 } from '@/features/messages/playerChat';
+import { markPlayerChatThreadRead, type PlayerChatReadType } from '@/features/messages/playerChatRead';
 
 function toTime(value: { toMillis?: () => number } | null | undefined) {
   const ms = value?.toMillis?.() ?? 0;
@@ -97,7 +98,11 @@ export default function PlayerChatPage() {
   }, []);
 
   const markThreadReadOnPlayerChatFocus = useCallback(
-    (threadId: string | null | undefined, chatType: 'player_player' | 'player_agent') => {
+    (
+      threadId: string | null | undefined,
+      chatType: PlayerChatReadType,
+      trigger: 'open' | 'input' = 'input'
+    ) => {
       const cleanThreadId = String(threadId || '').trim();
       if (!cleanThreadId) {
         console.info('[PLAYER_CHAT_READ] skippedNoThread', { chatType });
@@ -107,18 +112,25 @@ export default function PlayerChatPage() {
       const dedupeKey = `${chatType}:${cleanThreadId}`;
       const now = Date.now();
       if (chatReadInFlightRef.current.has(dedupeKey)) {
+        console.info('[PLAYER_CHAT_READ] debounced', { chatType, threadId: cleanThreadId, reason: 'in_flight' });
         return;
       }
       if (now - (lastChatReadClearAtRef.current[dedupeKey] || 0) < 10000) {
+        console.info('[PLAYER_CHAT_READ] debounced', { chatType, threadId: cleanThreadId, reason: 'recent' });
         return;
       }
       lastChatReadClearAtRef.current[dedupeKey] = now;
 
-      console.info('[PLAYER_CHAT_READ] focusClearUnread', {
+      console.info(
+        trigger === 'open'
+          ? '[PLAYER_CHAT_READ] openThreadClearUnread'
+          : '[PLAYER_CHAT_READ] inputFocusClearUnread',
+        {
         chatType,
         threadId: cleanThreadId,
         playerUid: selfUid || getCachedSessionUser()?.uid || null,
-      });
+        }
+      );
       setChatList((previous) => {
         const current = previous[cleanThreadId];
         if (!current?.unread) {
@@ -138,11 +150,13 @@ export default function PlayerChatPage() {
       });
 
       chatReadInFlightRef.current.add(dedupeKey);
-      void markDirectConversationSeen(cleanThreadId)
-        .then(() => {
+      void markPlayerChatThreadRead(cleanThreadId, chatType)
+        .then((payload) => {
           console.info('[PLAYER_CHAT_READ] persisted', {
             chatType,
             threadId: cleanThreadId,
+            conversationId: payload.conversationId || null,
+            unreadCount: payload.unreadCount ?? null,
           });
         })
         .catch((error) => {
@@ -275,6 +289,9 @@ export default function PlayerChatPage() {
           last: row.lastMessage,
         };
       });
+      console.info('[PLAYER_CHAT_READ] refreshReadStateLoaded', {
+        threadCount: Object.keys(next).length,
+      });
       setChatList(next);
     });
   }, [isPlayerRole]);
@@ -328,13 +345,13 @@ export default function PlayerChatPage() {
       });
     });
     const unsubTyping = listenDirectTyping(selectedPeer.uid, setTyping);
-    void markDirectConversationSeen(selectedPeer.uid);
+    markThreadReadOnPlayerChatFocus(selectedPeer.uid, 'player_player', 'open');
     return () => {
       unsubMessages();
       unsubTyping();
       void setDirectTyping(selectedPeer.uid, false);
     };
-  }, [isPlayerRole, selectedPeer, selfUid]);
+  }, [isPlayerRole, markThreadReadOnPlayerChatFocus, selectedPeer, selfUid]);
 
   useEffect(() => {
     setShowRewardPanel(false);
@@ -854,7 +871,7 @@ export default function PlayerChatPage() {
 
                 <form
                   onSubmit={onSend}
-                  onClick={() => markThreadReadOnPlayerChatFocus(selectedPeer.uid, 'player_player')}
+                  onClick={() => markThreadReadOnPlayerChatFocus(selectedPeer.uid, 'player_player', 'input')}
                   className="border-t border-white/10 p-3"
                 >
                   <div className="mb-2 flex gap-2">
@@ -875,10 +892,10 @@ export default function PlayerChatPage() {
                     <input
                       value={newMessage}
                       onFocus={() =>
-                        markThreadReadOnPlayerChatFocus(selectedPeer.uid, 'player_player')
+                        markThreadReadOnPlayerChatFocus(selectedPeer.uid, 'player_player', 'input')
                       }
                       onClick={() =>
-                        markThreadReadOnPlayerChatFocus(selectedPeer.uid, 'player_player')
+                        markThreadReadOnPlayerChatFocus(selectedPeer.uid, 'player_player', 'input')
                       }
                       onChange={(e) => {
                         setNewMessage(e.target.value);
