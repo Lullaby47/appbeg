@@ -7,8 +7,11 @@ import {
   isAuthoritySqlWriteEnabled,
   logAuthoritySqlWrite,
 } from '@/lib/server/authoritySqlWrite';
+import {
+  CashoutClaimConflictError,
+} from '@/lib/cashouts/playerCashoutClaimConflict';
 import { startPlayerCashoutTaskInSql } from '@/lib/sql/authorityCashout';
-import { mirrorPlayerCashoutTaskById } from '@/lib/sql/playerCashoutTasksCache';
+import { mirrorPlayerCashoutTaskById, readPlayerCashoutTaskCacheById } from '@/lib/sql/playerCashoutTasksCache';
 
 export const runtime = 'nodejs';
 
@@ -27,12 +30,13 @@ function claimStatusForError(message: string) {
 }
 
 export async function POST(request: Request) {
+  let taskId = '';
   try {
     const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff']);
     if ('response' in auth) return auth.response;
 
     const body = (await request.json()) as Body;
-    const taskId = String(body.taskId || '').trim();
+    taskId = String(body.taskId || '').trim();
     if (!taskId) {
       return apiError('taskId is required.', 400);
     }
@@ -133,7 +137,36 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ success: true, expiresAtMs: result.expiresAtMs });
   } catch (error) {
+    if (CashoutClaimConflictError.is(error)) {
+      return NextResponse.json(
+        {
+          error: error.message,
+          conflict: true,
+          task: error.snapshot,
+        },
+        { status: 409 }
+      );
+    }
+
     const message = error instanceof Error ? error.message : 'Failed to claim cashout task.';
+    if (message === 'already_claimed_or_not_pending') {
+      const cached = await readPlayerCashoutTaskCacheById(taskId);
+      return NextResponse.json(
+        {
+          error: message,
+          conflict: true,
+          task: cached
+            ? {
+                taskId: cached.id,
+                status: cached.status,
+                claimedByUid: cached.assignedHandlerUid,
+                claimedAt: cached.startedAt,
+              }
+            : { taskId, status: 'unknown', claimedByUid: null, claimedAt: null },
+        },
+        { status: 409 }
+      );
+    }
     return NextResponse.json({ error: message }, { status: claimStatusForError(message) });
   }
 }

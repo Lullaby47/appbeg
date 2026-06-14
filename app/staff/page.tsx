@@ -37,6 +37,7 @@ import {
 } from '@/features/messages/chatMessages';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { usePaginatedChatMessages } from '@/features/messages/usePaginatedChatMessages';
+import { CashoutClaimConflictError } from '@/lib/cashouts/playerCashoutClaimConflict';
 import {
   CarerEscalationAlert,
   dismissCarerEscalationAlertForCurrentUser,
@@ -218,6 +219,7 @@ export default function StaffPage() {
   const previousPlayerChatUnreadRef = useRef(0);
   const hasSyncedPlayerChatUnreadRef = useRef(false);
   const shiftSessionIdRef = useRef<string | null>(null);
+  const refetchCashoutTasksRef = useRef<(() => void) | null>(null);
   const [playerBlockActionUid, setPlayerBlockActionUid] = useState<string | null>(null);
   const [freeplayGiveTargetUid, setFreeplayGiveTargetUid] = useState<string | null>(null);
 
@@ -642,7 +644,7 @@ export default function StaffPage() {
 
   useEffect(() => {
     let isCancelled = false;
-    let unsubscribe: (() => void) | undefined;
+    let disposeListener: (() => void) | undefined;
 
     async function startPlayerCashoutTaskListener() {
       try {
@@ -659,7 +661,7 @@ export default function StaffPage() {
         });
 
         if (creatorRole === 'admin') {
-          unsubscribe = listenAllPlayerCashoutTasks(
+          const adminUnsubscribe = listenAllPlayerCashoutTasks(
             (tasks) => {
               if (!isCancelled) {
                 const pending = tasks.filter(
@@ -697,6 +699,8 @@ export default function StaffPage() {
               }
             }
           );
+          disposeListener = adminUnsubscribe;
+          refetchCashoutTasksRef.current = null;
           return;
         }
 
@@ -715,7 +719,7 @@ export default function StaffPage() {
           return;
         }
 
-        unsubscribe = listenStaffCashoutTaskLifecycle(coadminUid, {
+        const lifecycle = listenStaffCashoutTaskLifecycle(coadminUid, {
           onPendingChange: (tasks) => {
             if (!isCancelled) {
               setPendingCashoutTasks(tasks);
@@ -747,6 +751,8 @@ export default function StaffPage() {
             }
           },
         });
+        disposeListener = lifecycle.dispose;
+        refetchCashoutTasksRef.current = () => lifecycle.refetchNow();
       } catch (error: any) {
         if (!isCancelled) {
           setPlayerCashoutTasksLoading(false);
@@ -764,7 +770,8 @@ export default function StaffPage() {
 
     return () => {
       isCancelled = true;
-      unsubscribe?.();
+      refetchCashoutTasksRef.current = null;
+      disposeListener?.();
     };
   }, [creatorRole, staffSession]);
 
@@ -1025,8 +1032,22 @@ export default function StaffPage() {
     try {
       await startPlayerCashoutTask(taskId);
       setMessage('Cashout task claimed.');
-    } catch (error: any) {
-      setMessage(error.message || 'Failed to start player cashout task.');
+    } catch (error: unknown) {
+      if (CashoutClaimConflictError.is(error)) {
+        setPendingCashoutTasks((prev) => prev.filter((task) => task.id !== taskId));
+        refetchCashoutTasksRef.current?.();
+        setMessage('Task was already claimed by someone else.');
+        console.warn('[STAFF_CASHOUT_TASKS] claimConflict', {
+          taskId,
+          status: error.snapshot.status,
+          claimedByUid: error.snapshot.claimedByUid,
+          claimedAt: error.snapshot.claimedAt,
+        });
+        return;
+      }
+      const message =
+        error instanceof Error ? error.message : 'Failed to start player cashout task.';
+      setMessage(message);
     } finally {
       setPlayerCashoutTaskLoadingId(null);
     }
@@ -1410,8 +1431,22 @@ export default function StaffPage() {
           <p>staffUid: {staffSession?.uid || staffAuthUid || '—'}</p>
           <p>staffCoadminUid: {staffSession?.coadminUid || '—'}</p>
           <p>cashoutTasksLoading: {String(playerCashoutTasksLoading)}</p>
+          <p>pendingCount: {pendingCashoutTasks.length}</p>
           <p>cashoutTasksCount: {pendingCashoutTasks.length + activeCashoutTasks.length + completedCashoutTasks.length}</p>
           <p>cashoutTasksError: {cashoutTasksError || '—'}</p>
+          {pendingCashoutTasks[0] ? (
+            <>
+              <p>debugTaskId: {pendingCashoutTasks[0].id}</p>
+              <p>debugStatus: {pendingCashoutTasks[0].status}</p>
+              <p>debugClaimedByUid: {pendingCashoutTasks[0].assignedHandlerUid || '—'}</p>
+              <p>
+                debugClaimedAt:{' '}
+                {pendingCashoutTasks[0].startedAt?.toDate?.().toISOString?.() || '—'}
+              </p>
+            </>
+          ) : (
+            <p>debugPendingTask: —</p>
+          )}
         </div>
 
         <div className="rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-5">

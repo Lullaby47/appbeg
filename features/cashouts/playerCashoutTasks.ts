@@ -29,6 +29,13 @@ import {
   staffApiHeaderFlags,
 } from '@/lib/client/staffApiHeaders';
 
+import {
+  CashoutClaimConflictError,
+  isCashoutClaimConflictResponse,
+  parseCashoutClaimConflictSnapshot,
+  type CashoutClaimConflictSnapshot,
+} from '@/lib/cashouts/playerCashoutClaimConflict';
+
 export type PlayerCashoutTaskStatus = 'pending' | 'in_progress' | 'completed' | 'declined';
 export type PlayerCashoutPayoutMethod = 'qr' | 'app';
 
@@ -408,8 +415,15 @@ export async function startPlayerCashoutTask(taskId: string) {
     headers,
     body: JSON.stringify({ taskId }),
   });
-  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    conflict?: boolean;
+    task?: Partial<CashoutClaimConflictSnapshot> | null;
+  };
   if (!response.ok) {
+    if (response.status === 409 && isCashoutClaimConflictResponse(payload)) {
+      throw new CashoutClaimConflictError(parseCashoutClaimConflictSnapshot(taskId, payload));
+    }
     console.warn('[CASHOUT_TASK_SEND] failed', {
       action,
       taskId,
@@ -471,7 +485,7 @@ export function listenStaffCashoutTaskLifecycle(
     onCompletedChange: (tasks: PlayerCashoutTask[]) => void;
     onError?: (error: Error) => void;
   }
-) {
+): { dispose: () => void; refetchNow: () => void } {
   if (isPlayerCashoutSqlReadEnabled()) {
     return attachStaffCashoutLifecyclePoll({
       coadminUid,
@@ -480,7 +494,7 @@ export function listenStaffCashoutTaskLifecycle(
     });
   }
 
-  return listenPlayerCashoutTasksForStaff(coadminUid, (tasks) => {
+  const dispose = listenPlayerCashoutTasksForStaff(coadminUid, (tasks) => {
     const pending = tasks.filter(
       (task) => task.status === 'pending' && !task.assignedHandlerUid
     );
@@ -492,6 +506,8 @@ export function listenStaffCashoutTaskLifecycle(
       tasks.filter((task) => task.status === 'completed')
     );
   }, handlers.onError);
+
+  return { dispose, refetchNow: () => {} };
 }
 
 export async function declinePlayerCashoutTaskForCurrentHandler(taskId: string) {

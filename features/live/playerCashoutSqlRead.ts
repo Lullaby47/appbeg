@@ -147,6 +147,14 @@ async function fetchCashoutTasks(
   return tasks;
 }
 
+function sanitizePendingCashoutTasks(tasks: PlayerCashoutTask[]): PlayerCashoutTask[] {
+  return tasks.filter(
+    (task) =>
+      String(task.status || '').toLowerCase() === 'pending' &&
+      !cleanText(task.assignedHandlerUid)
+  );
+}
+
 function attachCashoutSqlPoll(input: {
   scope: CashoutScope;
   uid: string;
@@ -167,9 +175,14 @@ function attachCashoutSqlPoll(input: {
   let eventSource: EventSource | null = null;
   let lastEventId = 0;
   let refetchInFlight = false;
+  let refetchQueued = false;
 
   const runPoll = async (reason: string) => {
-    if (disposed || refetchInFlight) {
+    if (disposed) {
+      return;
+    }
+    if (refetchInFlight) {
+      refetchQueued = true;
       return;
     }
     refetchInFlight = true;
@@ -191,6 +204,11 @@ function attachCashoutSqlPoll(input: {
       }
     } finally {
       refetchInFlight = false;
+      if (!disposed && refetchQueued) {
+        refetchQueued = false;
+        void runPoll('queued');
+        return;
+      }
       if (!disposed) {
         pollTimer = setTimeout(() => {
           void runPoll('poll_interval');
@@ -328,7 +346,7 @@ export function attachStaffCashoutLifecyclePoll(input: {
   onActiveChange: (tasks: PlayerCashoutTask[]) => void;
   onCompletedChange: (tasks: PlayerCashoutTask[]) => void;
   onError?: (error: Error) => void;
-}) {
+}): { dispose: () => void; refetchNow: () => void } {
   const limit = input.limit || 50;
   let disposed = false;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -336,10 +354,15 @@ export function attachStaffCashoutLifecyclePoll(input: {
   let eventSource: EventSource | null = null;
   let lastEventId = 0;
   let refetchInFlight = false;
+  let refetchQueued = false;
   const liveChannel = coadminCashoutLiveChannel(input.coadminUid);
 
   const runPoll = async (reason: string) => {
-    if (disposed || refetchInFlight) {
+    if (disposed) {
+      return;
+    }
+    if (refetchInFlight) {
+      refetchQueued = true;
       return;
     }
     refetchInFlight = true;
@@ -350,10 +373,15 @@ export function attachStaffCashoutLifecyclePoll(input: {
         fetchCashoutTasks('staff', input.coadminUid, limit, 'completed'),
       ]);
       if (!disposed) {
-        input.onPendingChange(pending);
+        const sanitizedPending = sanitizePendingCashoutTasks(pending);
+        input.onPendingChange(sanitizedPending);
         input.onActiveChange(active);
         input.onCompletedChange(completed);
-        console.info('[STAFF_CASHOUT_TASKS] pendingLoaded', { count: pending.length, reason });
+        console.info('[STAFF_CASHOUT_TASKS] pendingLoaded', {
+          count: sanitizedPending.length,
+          rawCount: pending.length,
+          reason,
+        });
         console.info('[STAFF_CASHOUT_TASKS] activeLoaded', { count: active.length, reason });
         console.info('[STAFF_CASHOUT_TASKS] completedLoaded', { count: completed.length, reason });
       }
@@ -363,12 +391,28 @@ export function attachStaffCashoutLifecyclePoll(input: {
       }
     } finally {
       refetchInFlight = false;
+      if (!disposed && refetchQueued) {
+        refetchQueued = false;
+        void runPoll('queued');
+        return;
+      }
       if (!disposed) {
         pollTimer = setTimeout(() => {
           void runPoll('poll_interval');
         }, POLL_MS);
       }
     }
+  };
+
+  const refetchNow = (reason = 'manual') => {
+    if (disposed) {
+      return;
+    }
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+    void runPoll(reason);
   };
 
   const scheduleImmediateRefetch = (reason: string) => {
@@ -379,7 +423,7 @@ export function attachStaffCashoutLifecyclePoll(input: {
       clearTimeout(pollTimer);
       pollTimer = null;
     }
-    void runPoll(reason);
+    refetchNow(reason);
   };
 
   const closeEventSource = () => {
@@ -453,7 +497,7 @@ export function attachStaffCashoutLifecyclePoll(input: {
     scheduleImmediateRefetch('safety_interval');
   }, SAFETY_REFETCH_MS);
 
-  return () => {
+  const dispose = () => {
     disposed = true;
     if (pollTimer) {
       clearTimeout(pollTimer);
@@ -465,6 +509,8 @@ export function attachStaffCashoutLifecyclePoll(input: {
     }
     closeEventSource();
   };
+
+  return { dispose, refetchNow };
 }
 
 export function attachPlayerCashoutTasksSqlPoll(input: {

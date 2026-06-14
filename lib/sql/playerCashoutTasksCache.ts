@@ -324,6 +324,42 @@ export async function readPlayerCashoutTasksCacheByCoadmin(
   );
 }
 
+export async function readStaffPendingCashoutTasks(
+  coadminUid: string,
+  limit = 50
+): Promise<CachedPlayerCashoutTask[] | null> {
+  const tasks = await readPlayerCashoutTasksCacheByCoadmin(coadminUid, limit, true);
+  if (tasks === null) {
+    return null;
+  }
+  return tasks.filter(
+    (task) =>
+      cleanText(task.status).toLowerCase() === 'pending' &&
+      !cleanText(task.assignedHandlerUid)
+  );
+}
+
+export async function readPlayerCashoutTaskCacheById(
+  taskId: string
+): Promise<CachedPlayerCashoutTask | null> {
+  const cleanId = cleanText(taskId);
+  if (!cleanId) {
+    return null;
+  }
+  const tasks = await readPlayerCashoutTasksBySql(
+    `
+      SELECT *
+      FROM public.player_cashout_tasks_cache
+      WHERE deleted_at IS NULL
+        AND firebase_id = $1
+      LIMIT 1
+    `,
+    [cleanId],
+    'by_id'
+  );
+  return tasks?.[0] ?? null;
+}
+
 export async function readStaffActiveCashoutTasks(
   coadminUid: string,
   staffUid: string,

@@ -21,6 +21,7 @@ import {
   readPlayerCashoutTasksCacheAll,
   readStaffActiveCashoutTasks,
   readStaffCompletedCashoutTasks,
+  readStaffPendingCashoutTasks,
   type CachedPlayerCashoutTask,
 } from '@/lib/sql/playerCashoutTasksCache';
 import { releaseExpiredPlayerCashoutTasksForCoadminInSql } from '@/lib/sql/authorityCashout';
@@ -216,8 +217,7 @@ export async function GET(request: Request) {
       } else if (scope === 'staff' && staffList === 'completed') {
         tasks = await readStaffCompletedCashoutTasks(targetUid, user.uid, limit);
       } else {
-        tasks = await readPlayerCashoutTasksCacheByCoadmin(targetUid, limit, true);
-        tasks = tasks?.filter(isPendingUnclaimedTask) ?? tasks;
+        tasks = await readStaffPendingCashoutTasks(targetUid, limit);
       }
       if (scope === 'staff' && user.role === 'staff') {
         console.info('[PLAYER_CASHOUT_TASKS_CACHE] staffScope', {

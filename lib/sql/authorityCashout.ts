@@ -5,6 +5,7 @@ import type { PoolClient } from 'pg';
 
 import { evaluateWithdrawalPolicy } from '@/lib/economy/policy';
 import { getCoadminMaintenanceBreak } from '@/lib/maintenance/admin';
+import { CashoutClaimConflictError } from '@/lib/cashouts/playerCashoutClaimConflict';
 import { cleanText, getPlayerMirrorPool, toIsoString } from '@/lib/sql/playerMirrorCommon';
 import {
   claimAuthorityOperation,
@@ -108,6 +109,15 @@ export type AuthorityCashoutReleaseResult = {
 };
 
 const CASHOUT_TASK_DURATION_MS = 3 * 60 * 1000;
+
+function cashoutClaimConflictFromTaskRow(taskId: string, task: Record<string, unknown>) {
+  return new CashoutClaimConflictError({
+    taskId,
+    status: cleanText(task.status) || 'pending',
+    claimedByUid: cleanText(task.assigned_handler_uid) || null,
+    claimedAt: toIsoString(task.started_at),
+  });
+}
 
 function ttlAfterDays(days: number) {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
@@ -1038,7 +1048,7 @@ export async function startPlayerCashoutTaskInSql(
         status,
         assignedHandlerUid: assignedHandlerUid || null,
       });
-      throw new Error('already_claimed_or_not_pending');
+      throw cashoutClaimConflictFromTaskRow(taskId, task);
     }
 
     const claim = await claimAuthorityOperation(client, {
@@ -1059,7 +1069,7 @@ export async function startPlayerCashoutTaskInSql(
         assignedHandlerUid: assignedHandlerUid || null,
         duplicateOperation: true,
       });
-      throw new Error('already_claimed_or_not_pending');
+      throw cashoutClaimConflictFromTaskRow(taskId, task);
     }
 
     const taskRaw = {
