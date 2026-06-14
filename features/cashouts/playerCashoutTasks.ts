@@ -563,6 +563,39 @@ export function listenPlayerCashoutTasksByCoadmin(
   );
 }
 
+export function listenPlayerCashoutTasksForStaff(
+  coadminUid: string,
+  onChange: (tasks: PlayerCashoutTask[]) => void,
+  onError?: (error: Error) => void
+) {
+  if (isPlayerCashoutSqlReadEnabled()) {
+    return attachPlayerCashoutTasksSqlPoll({
+      scope: 'staff',
+      uid: coadminUid,
+      limit: CASHOUT_ACTIVE_LISTENER_LIMIT,
+      onChange,
+      onError,
+    });
+  }
+
+  const tasksQuery = query(
+    collection(db, 'playerCashoutTasks'),
+    where('coadminUid', '==', coadminUid),
+    orderBy('createdAt', 'desc'),
+    limit(CASHOUT_ACTIVE_LISTENER_LIMIT)
+  );
+
+  return onSnapshot(
+    tasksQuery,
+    (snapshot) => {
+      const tasks = snapshot.docs
+        .map((docSnap) => toTask(docSnap.id, docSnap.data() as Omit<PlayerCashoutTask, 'id'>));
+      onChange(sortByNewest(tasks));
+    },
+    (error) => onError?.(error as Error)
+  );
+}
+
 export function listenAllPlayerCashoutTasks(
   onChange: (tasks: PlayerCashoutTask[]) => void,
   onError?: (error: Error) => void

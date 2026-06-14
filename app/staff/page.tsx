@@ -35,7 +35,7 @@ import {
   markConversationAsRead,
   sendChatMessage,
 } from '@/features/messages/chatMessages';
-import { getCachedSessionUser } from '@/features/auth/sessionUser';
+import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { usePaginatedChatMessages } from '@/features/messages/usePaginatedChatMessages';
 import {
   CarerEscalationAlert,
@@ -50,7 +50,7 @@ import {
   isPlayerCashoutHandledBySomeoneElse,
   getPlayerCashoutPaymentDisplay,
   listenAllPlayerCashoutTasks,
-  listenPlayerCashoutTasksByCoadmin,
+  listenPlayerCashoutTasksForStaff,
   PlayerCashoutTask,
   startPlayerCashoutTask,
 } from '@/features/cashouts/playerCashoutTasks';
@@ -84,6 +84,12 @@ type StaffView =
   | 'claim-pay'
   | 'create-coadmin'
   | 'view-coadmins';
+
+type StaffSessionContext = {
+  uid: string;
+  role: string;
+  coadminUid: string;
+};
 
 const AED_TO_USD = 0.2723;
 const NPR_TO_USD = 0.0075;
@@ -195,6 +201,8 @@ export default function StaffPage() {
   >([]);
   const [playerCashoutTasks, setPlayerCashoutTasks] = useState<PlayerCashoutTask[]>([]);
   const [playerCashoutTasksLoading, setPlayerCashoutTasksLoading] = useState(true);
+  const [cashoutTasksError, setCashoutTasksError] = useState<string | null>(null);
+  const [staffSession, setStaffSession] = useState<StaffSessionContext | null>(null);
   const [playerCashoutTaskLoadingId, setPlayerCashoutTaskLoadingId] = useState<string | null>(
     null
   );
@@ -590,11 +598,61 @@ export default function StaffPage() {
   }, [creatorRole]);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setStaffAuthUid(user?.uid || '');
-    });
-    return () => unsubscribe();
+    let isCancelled = false;
+
+    async function resolveStaffAuth() {
+      try {
+        const cached = getCachedSessionUser();
+        const sessionUser = cached?.uid ? cached : await getSessionUserOnce();
+        if (isCancelled || !sessionUser?.uid) {
+          return;
+        }
+
+        const role = String(sessionUser.role || '').trim().toLowerCase();
+        const coadminUid =
+          role === 'coadmin'
+            ? String(sessionUser.uid || '').trim()
+            : String(sessionUser.coadminUid || '').trim();
+
+        console.info('[STAFF_CASHOUT_TASKS] authResolved', {
+          uid: sessionUser.uid,
+          role,
+          coadminUid: coadminUid || null,
+        });
+
+        if (!isCancelled) {
+          setStaffSession({
+            uid: sessionUser.uid,
+            role,
+            coadminUid,
+          });
+          setStaffAuthUid(sessionUser.uid);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('[STAFF_CASHOUT_TASKS] fetchError', {
+          phase: 'authResolved',
+          error: message,
+        });
+        if (!isCancelled) {
+          setCashoutTasksError(message);
+          setPlayerCashoutTasksLoading(false);
+        }
+      }
+    }
+
+    void resolveStaffAuth();
+
+    return () => {
+      isCancelled = true;
+    };
   }, []);
+
+  useEffect(() => {
+    console.info('[STAFF_CASHOUT_TASKS] render', {
+      count: visiblePlayerCashoutTasks.length,
+    });
+  }, [visiblePlayerCashoutTasks.length]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -602,12 +660,15 @@ export default function StaffPage() {
 
     async function startPlayerCashoutTaskListener() {
       try {
-        if (!staffAuthUid) {
+        if (!staffSession?.uid) {
           return;
         }
+
         setPlayerCashoutTasksLoading(true);
-        console.info('[STAFF_CASHOUT_TASKS] loading', {
-          staffUid: staffAuthUid,
+        setCashoutTasksError(null);
+        console.info('[STAFF_CASHOUT_TASKS] fetchStart', {
+          staffUid: staffSession.uid,
+          staffCoadminUid: staffSession.coadminUid || null,
           creatorRole,
         });
 
@@ -617,22 +678,22 @@ export default function StaffPage() {
               if (!isCancelled) {
                 setPlayerCashoutTasks(tasks);
                 setPlayerCashoutTasksLoading(false);
-                console.info('[STAFF_CASHOUT_TASKS] loaded', {
-                  staffUid: staffAuthUid,
+                console.info('[STAFF_CASHOUT_TASKS] fetchSuccess', {
+                  staffUid: staffSession.uid,
                   scope: 'all',
                   count: tasks.length,
                 });
-                if (tasks.length === 0) {
-                  console.info('[STAFF_CASHOUT_TASKS] empty', {
-                    staffUid: staffAuthUid,
-                    scope: 'all',
-                  });
-                }
               }
             },
             (error) => {
               if (!isCancelled) {
                 setPlayerCashoutTasksLoading(false);
+                setCashoutTasksError(error.message);
+                console.error('[STAFF_CASHOUT_TASKS] fetchError', {
+                  staffUid: staffSession.uid,
+                  scope: 'all',
+                  error: error.message,
+                });
                 setMessage(error.message || 'Failed to listen for player cashout tasks.');
               }
             }
@@ -640,41 +701,41 @@ export default function StaffPage() {
           return;
         }
 
-        const coadminUid = await getCurrentUserCoadminUid();
+        const coadminUid = staffSession.coadminUid || (await getCurrentUserCoadminUid());
 
         if (isCancelled) {
           return;
         }
-        console.info('[STAFF_CASHOUT_TASKS] loading', {
-          staffUid: staffAuthUid,
-          scope: 'coadmin',
-          coadminUid,
-        });
 
-        unsubscribe = listenPlayerCashoutTasksByCoadmin(
+        if (!coadminUid) {
+          setPlayerCashoutTasks([]);
+          setPlayerCashoutTasksLoading(false);
+          setCashoutTasksError('No coadmin assigned to this staff account.');
+          return;
+        }
+
+        unsubscribe = listenPlayerCashoutTasksForStaff(
           coadminUid,
           (tasks) => {
             if (!isCancelled) {
               setPlayerCashoutTasks(tasks);
               setPlayerCashoutTasksLoading(false);
-              console.info('[STAFF_CASHOUT_TASKS] loaded', {
-                staffUid: staffAuthUid,
-                scope: 'coadmin',
-                coadminUid,
+              console.info('[STAFF_CASHOUT_TASKS] fetchSuccess', {
+                staffUid: staffSession.uid,
+                staffCoadminUid: coadminUid,
                 count: tasks.length,
               });
-              if (tasks.length === 0) {
-                console.info('[STAFF_CASHOUT_TASKS] empty', {
-                  staffUid: staffAuthUid,
-                  scope: 'coadmin',
-                  coadminUid,
-                });
-              }
             }
           },
           (error) => {
             if (!isCancelled) {
               setPlayerCashoutTasksLoading(false);
+              setCashoutTasksError(error.message);
+              console.error('[STAFF_CASHOUT_TASKS] fetchError', {
+                staffUid: staffSession.uid,
+                staffCoadminUid: coadminUid,
+                error: error.message,
+              });
               setMessage(error.message || 'Failed to listen for player cashout tasks.');
             }
           }
@@ -682,6 +743,11 @@ export default function StaffPage() {
       } catch (error: any) {
         if (!isCancelled) {
           setPlayerCashoutTasksLoading(false);
+          setCashoutTasksError(error?.message || 'Failed to start player cashout task listener.');
+          console.error('[STAFF_CASHOUT_TASKS] fetchError', {
+            staffUid: staffSession?.uid || null,
+            error: error?.message || String(error),
+          });
           setMessage(error.message || 'Failed to start player cashout task listener.');
         }
       }
@@ -693,7 +759,7 @@ export default function StaffPage() {
       isCancelled = true;
       unsubscribe?.();
     };
-  }, [creatorRole, staffAuthUid]);
+  }, [creatorRole, staffSession]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -1317,6 +1383,78 @@ export default function StaffPage() {
     );
   }
 
+  function renderPendingCashoutTasksPanel() {
+    return (
+      <>
+        <div className="mb-4 rounded-xl border border-yellow-500/30 bg-yellow-500/5 p-3 text-xs font-mono text-yellow-100/80">
+          <p>staffUid: {staffSession?.uid || staffAuthUid || '—'}</p>
+          <p>staffCoadminUid: {staffSession?.coadminUid || '—'}</p>
+          <p>cashoutTasksLoading: {String(playerCashoutTasksLoading)}</p>
+          <p>cashoutTasksCount: {visiblePlayerCashoutTasks.length}</p>
+          <p>cashoutTasksError: {cashoutTasksError || '—'}</p>
+        </div>
+
+        <div className="mb-6 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-5">
+          <h3 className="text-lg font-bold text-cyan-200">Pending Cashout Tasks</h3>
+          {playerCashoutTasksLoading ? (
+            <p className="mt-3 text-sm text-cyan-100/70">Loading cashout tasks...</p>
+          ) : visiblePlayerCashoutTasks.length === 0 ? (
+            <p className="mt-3 text-sm text-cyan-100/70">No pending cashout tasks.</p>
+          ) : (
+            <div className="mt-3 space-y-3">
+              {visiblePlayerCashoutTasks.map((task) => {
+                const isInProgress = task.status === 'in_progress';
+                const remainingMs = getPlayerCashoutTaskCountdown(task);
+                const actionLabel = isInProgress
+                  ? `Done (${formatCountdownMs(remainingMs + countdownTick * 0)})`
+                  : 'Claim Task';
+
+                return (
+                  <div
+                    key={task.id}
+                    className="rounded-xl border border-cyan-400/25 bg-black/30 p-4"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-semibold text-white">
+                          Player: {task.playerUsername}
+                        </p>
+                        <p className="text-sm text-cyan-100/85">
+                          Amount: {formatUsdFromNpr(task.amountNpr || 0)}
+                        </p>
+                        {renderPlayerCashoutPayment(task)}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void (isInProgress
+                            ? handleCompletePlayerCashoutTask(task.id)
+                            : handleStartPlayerCashoutTask(task.id))
+                        }
+                        disabled={playerCashoutTaskLoadingId === task.id}
+                        className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-60"
+                      >
+                        {playerCashoutTaskLoadingId === task.id ? 'Saving...' : actionLabel}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeclinePlayerCashoutTask(task.id)}
+                        disabled={playerCashoutTaskLoadingId === task.id}
+                        className="rounded-lg border border-rose-400/35 bg-rose-500/15 px-4 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/25 disabled:opacity-60"
+                      >
+                        Decline
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </>
+    );
+  }
+
   return (
     <ProtectedRoute allowedRoles={['staff']}>
       <RoleSidebarLayout
@@ -1342,6 +1480,8 @@ export default function StaffPage() {
               {message}
             </div>
           )}
+
+          {renderPendingCashoutTasksPanel()}
 
           {activeView === 'dashboard' && (
             <div className="space-y-6">
@@ -1414,67 +1554,6 @@ export default function StaffPage() {
                   </div>
                 </div>
               )}
-
-              <div className="rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-5">
-                <h3 className="text-lg font-bold text-cyan-200">
-                  Pending Player Cashout Tasks ({visiblePlayerCashoutTasks.length})
-                </h3>
-                {playerCashoutTasksLoading ? (
-                  <p className="mt-3 text-sm text-cyan-100/70">Loading cashout tasks...</p>
-                ) : visiblePlayerCashoutTasks.length === 0 ? (
-                  <p className="mt-3 text-sm text-cyan-100/70">No pending cashout tasks.</p>
-                ) : (
-                  <div className="mt-3 space-y-3">
-                    {visiblePlayerCashoutTasks.map((task) => {
-                      const isInProgress = task.status === 'in_progress';
-                      const remainingMs = getPlayerCashoutTaskCountdown(task);
-                      const actionLabel = isInProgress
-                        ? `Done (${formatCountdownMs(remainingMs + countdownTick * 0)})`
-                        : 'Claim Task';
-
-                      return (
-                        <div
-                          key={task.id}
-                          className="rounded-xl border border-cyan-400/25 bg-black/30 p-4"
-                        >
-                          <div className="flex flex-wrap items-start justify-between gap-4">
-                            <div>
-                              <p className="text-sm font-semibold text-white">
-                                Player: {task.playerUsername}
-                              </p>
-                              <p className="text-sm text-cyan-100/85">
-                                Amount: {formatUsdFromNpr(task.amountNpr || 0)}
-                              </p>
-                              {renderPlayerCashoutPayment(task)}
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                void (isInProgress
-                                  ? handleCompletePlayerCashoutTask(task.id)
-                                  : handleStartPlayerCashoutTask(task.id))
-                              }
-                              disabled={playerCashoutTaskLoadingId === task.id}
-                              className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-60"
-                            >
-                              {playerCashoutTaskLoadingId === task.id ? 'Saving...' : actionLabel}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void handleDeclinePlayerCashoutTask(task.id)}
-                              disabled={playerCashoutTaskLoadingId === task.id}
-                              className="rounded-lg border border-rose-400/35 bg-rose-500/15 px-4 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/25 disabled:opacity-60"
-                            >
-                              Decline
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
 
               {riskyPlayers.length > 0 && (
                 <div className="rounded-2xl border border-orange-500/35 bg-orange-500/10 p-5">

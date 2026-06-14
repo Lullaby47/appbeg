@@ -12,7 +12,7 @@ import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sql
 const POLL_MS = 10_000;
 const SAFETY_REFETCH_MS = 45_000;
 
-type CashoutScope = 'player' | 'coadmin' | 'assigned_handler' | 'all';
+type CashoutScope = 'player' | 'coadmin' | 'staff' | 'assigned_handler' | 'all';
 
 const CASHOUT_LIVE_EVENTS = [
   'cashout_create',
@@ -47,7 +47,7 @@ function logScopeEventReceived(scope: CashoutScope, eventType: string, payload: 
   if (scope === 'coadmin' || role === 'coadmin') {
     console.info('[COADMIN_CASHOUT_EVENT_RECEIVED]', base);
   }
-  if (scope === 'coadmin' || scope === 'all' || role === 'staff') {
+  if (scope === 'coadmin' || scope === 'all' || scope === 'staff' || role === 'staff') {
     console.info('[STAFF_CASHOUT_EVENT_RECEIVED]', base);
   }
   console.info('[CASHOUT_SSE_EVENT_RECEIVED]', base);
@@ -59,7 +59,7 @@ function logScopeListAfterEvent(scope: CashoutScope, count: number, reason: stri
   if (scope === 'coadmin' || role === 'coadmin') {
     console.info('[COADMIN_CASHOUT_LIST_AFTER_EVENT]', base);
   }
-  if (scope === 'coadmin' || scope === 'all' || role === 'staff') {
+  if (scope === 'coadmin' || scope === 'all' || scope === 'staff' || role === 'staff') {
     console.info('[STAFF_CASHOUT_LIST_AFTER_EVENT]', base);
   }
   console.info('[CASHOUT_UI_REFETCHED]', base);
@@ -320,7 +320,7 @@ export function attachPlayerCashoutTasksSqlPoll(input: {
   onError?: (error: Error) => void;
 }) {
   const liveChannel =
-    input.scope === 'coadmin'
+    input.scope === 'coadmin' || input.scope === 'staff'
       ? coadminCashoutLiveChannel(input.uid)
       : input.scope === 'player'
         ? playerCashoutLiveChannel(input.uid)
