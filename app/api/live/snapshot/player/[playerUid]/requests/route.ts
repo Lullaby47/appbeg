@@ -7,7 +7,11 @@ import {
   toIsoString,
   withPlayerMirrorClient,
 } from '@/lib/sql/playerMirrorCommon';
-import { getLatestOutboxIdForChannels, playerRequestLiveChannel } from '@/lib/sql/liveOutbox';
+import {
+  getLatestOutboxIdForChannels,
+  playerFreeplayLiveChannel,
+  playerRequestLiveChannel,
+} from '@/lib/sql/liveOutbox';
 
 export const runtime = 'nodejs';
 
@@ -123,8 +127,8 @@ async function fetchSnapshotRowsOnClient(playerUid: string) {
       );
 
       trackQuery();
-      const channel = playerRequestLiveChannel(playerUid);
-      const outboxPack = await getLatestOutboxIdForChannels([channel], { mirrorClient: client });
+      const channels = [playerRequestLiveChannel(playerUid), playerFreeplayLiveChannel(playerUid)];
+      const outboxPack = await getLatestOutboxIdForChannels(channels, { mirrorClient: client });
 
       const merged = new Map<string, Record<string, unknown>>();
       for (const row of [...recentResult.rows, ...activeResult.rows]) {

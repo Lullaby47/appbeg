@@ -237,28 +237,46 @@ async function writeFreeplayOutbox(
     eventType: string;
   }
 ) {
+  const isGiveEvent = input.eventType === 'freeplay.given' || input.eventType === 'freeplay_give';
   const payload = {
     entityId: input.giftId,
     playerUid: input.playerUid,
+    freeplayGiftId: input.giftId,
     giftId: input.giftId,
     status: input.status,
     amount: input.amount ?? null,
+    message: isGiveEvent ? 'You received freeplay.' : null,
+    createdAt: input.updatedAt,
     updatedAt: input.updatedAt,
     source: 'authority',
   };
-  await insertLiveOutboxEventWithClient(client, {
+  if (isGiveEvent) {
+    console.info('[FREEPLAY_GIVE_OUTBOX_START]', {
+      playerUid: input.playerUid,
+      freeplayGiftId: input.giftId,
+      amount: input.amount ?? null,
+      channel: playerFreeplayLiveChannel(input.playerUid),
+      eventType: 'freeplay.given',
+    });
+  }
+  const outboxId = await insertLiveOutboxEventWithClient(client, {
     channel: playerFreeplayLiveChannel(input.playerUid),
-    eventType: input.eventType,
+    eventType: isGiveEvent ? 'freeplay.given' : input.eventType,
     entityType: 'freeplay_gift',
     entityId: input.giftId,
     source: 'authority_freeplay',
     mirroredAt: input.updatedAt,
     payload,
   });
-  console.info('[FREEPLAY_CLAIM_OUTBOX_INSERTED]', {
+  console.info(isGiveEvent ? '[FREEPLAY_GIVE_OUTBOX_INSERTED]' : '[FREEPLAY_CLAIM_OUTBOX_INSERTED]', {
+    outboxId,
     playerUid: input.playerUid,
+    freeplayGiftId: input.giftId,
     giftId: input.giftId,
-    eventType: input.eventType,
+    amount: input.amount ?? null,
+    message: payload.message,
+    createdAt: payload.createdAt,
+    eventType: isGiveEvent ? 'freeplay.given' : input.eventType,
     channel: playerFreeplayLiveChannel(input.playerUid),
   });
 }
@@ -587,6 +605,13 @@ export async function giveFreeplayGiftInSql(input: {
       updatedAt: nowIso,
       source: 'authority_freeplay_give',
     });
+    console.info('[FREEPLAY_GIVE_SQL_SUCCESS]', {
+      playerUid: selectedPlayer.uid,
+      freeplayGiftId: giftId,
+      giftId,
+      amount: null,
+      createdAt: nowIso,
+    });
 
     await writeFreeplayOutbox(client, {
       playerUid: selectedPlayer.uid,
@@ -594,7 +619,7 @@ export async function giveFreeplayGiftInSql(input: {
       status: 'pending',
       amount: null,
       updatedAt: nowIso,
-      eventType: 'freeplay_give',
+      eventType: 'freeplay.given',
     });
 
     await client.query('COMMIT');

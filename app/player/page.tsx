@@ -48,6 +48,7 @@ import {
   PLAYER_REQUESTS_SQL_READ_ENABLED,
   requestMatchesFakeRedeemDismiss,
   requestMatchesPlayerInGameDismiss,
+  type PlayerFreeplayGivenLiveEvent,
   type PlayerRechargeDismissLiveEvent,
   type PlayerRechargeSuccessLiveEvent,
   type PlayerRedeemDismissLiveEvent,
@@ -2936,7 +2937,44 @@ export default function PlayerPage() {
                 reason,
                 playerUid,
               });
+              });
+          },
+          onFreeplayGivenEvent: (event: PlayerFreeplayGivenLiveEvent) => {
+            console.info('[PLAYER_FREEPLAY_REFETCH_START]', {
+              playerUid,
+              freeplayGiftId: event.freeplayGiftId,
+              source: `sse_event:${event.sourceEvent}`,
             });
+            void fetchPendingFreeplayGift()
+              .then((pendingGift) => {
+                setHasPendingFreeplayGift(pendingGift.hasPendingGift);
+                setPendingFreeplayGiftId(pendingGift.giftId);
+                console.info('[PLAYER_FREEPLAY_REFETCH_DONE]', {
+                  ok: true,
+                  playerUid,
+                  freeplayGiftId: event.freeplayGiftId,
+                  hasPendingGift: pendingGift.hasPendingGift,
+                  pendingGiftId: pendingGift.giftId || null,
+                  source: `sse_event:${event.sourceEvent}`,
+                });
+                if (!isStaleLivePopupEvent(event.outboxId, event.eventAtMs)) {
+                  console.info('[PLAYER_FREEPLAY_TOAST_SHOW]', {
+                    playerUid,
+                    freeplayGiftId: event.freeplayGiftId,
+                    message: event.message || 'You received freeplay.',
+                  });
+                  setMessage(event.message || 'You received freeplay.');
+                }
+              })
+              .catch((error) => {
+                console.info('[PLAYER_FREEPLAY_REFETCH_DONE]', {
+                  ok: false,
+                  playerUid,
+                  freeplayGiftId: event.freeplayGiftId,
+                  error: error instanceof Error ? error.message : String(error),
+                  source: `sse_event:${event.sourceEvent}`,
+                });
+              });
           },
           onPlayerGameLoginUpdated: (reason, meta) => {
             const playerMessage =

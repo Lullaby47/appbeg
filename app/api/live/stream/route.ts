@@ -17,7 +17,7 @@ export const dynamic = 'force-dynamic';
 const MAX_CHANNELS = 3;
 const POLL_INTERVAL_MS = 1_000;
 const HEARTBEAT_INTERVAL_MS = 25_000;
-const PLAYER_CHANNEL_PATTERN = /^player:([A-Za-z0-9_-]+):requests$/;
+const PLAYER_CHANNEL_PATTERN = /^player:([A-Za-z0-9_-]+):(requests|freeplay)$/;
 const CARER_CHANNEL_PATTERN = /^carer:([A-Za-z0-9_-]+):tasks$/;
 const COADMIN_CHANNEL_PATTERN = /^coadmin:([A-Za-z0-9_-]+):tasks$/;
 const CARER_JOBS_CHANNEL_PATTERN = /^carer:([A-Za-z0-9_-]+):jobs$/;
@@ -504,6 +504,12 @@ export async function GET(request: Request) {
       ...auth.timing,
     });
 
+    console.info('[PLAYER_LIVE_STREAM_SUBSCRIBE]', {
+      playerUid,
+      channels: playerChannels,
+      lastEventId: parseLastEventId(url.searchParams.get('lastEventId')),
+    });
+
     return createLiveStreamResponse(
       liveRequest,
       playerChannels,
@@ -649,8 +655,10 @@ function createLiveStreamResponse(
             if (
               row.entity_type === 'carer_task' ||
               row.entity_type === 'player_game_request' ||
+              row.entity_type === 'freeplay_gift' ||
               row.entity_type === 'player_cashout_task' ||
               row.entity_type === 'chat_message' ||
+              row.event_type.startsWith('freeplay.') ||
               row.event_type.startsWith('task.') ||
               row.event_type.startsWith('cashout_') ||
               row.event_type.startsWith('chat.') ||
@@ -690,8 +698,10 @@ function createLiveStreamResponse(
             if (
               row.entity_type === 'carer_task' ||
               row.entity_type === 'player_game_request' ||
+              row.entity_type === 'freeplay_gift' ||
               row.entity_type === 'player_cashout_task' ||
               row.entity_type === 'chat_message' ||
+              row.event_type.startsWith('freeplay.') ||
               row.event_type.startsWith('task.') ||
               row.event_type.startsWith('cashout_') ||
               row.event_type.startsWith('chat.') ||

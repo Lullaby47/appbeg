@@ -58,6 +58,8 @@ const PLAYER_IMMEDIATE_REFETCH_EVENTS = new Set([
   'game_request_complete',
   'player_message',
   'balance_update',
+  'freeplay.given',
+  'freeplay_pending',
   'request.upserted',
   'task.dismissed',
 ]);
@@ -73,6 +75,8 @@ const PLAYER_LIVE_SSE_EVENTS = [
   'game_request_complete',
   'player_message',
   'balance_update',
+  'freeplay.given',
+  'freeplay_pending',
   'player_game_login.updated',
   'request.upserted',
   'request.tombstoned',
@@ -221,6 +225,8 @@ type SqlRequestPayload = {
   createdAt?: unknown;
   updatedAt?: unknown;
   completedAt?: unknown;
+  freeplayGiftId?: unknown;
+  giftId?: unknown;
 };
 
 export type PlayerRequestToastVariant = 'success' | 'info' | 'error' | 'warning';
@@ -277,6 +283,17 @@ export type PlayerRechargeSuccessLiveEvent = {
 
 export type PlayerRedeemDismissLiveEvent = PlayerRechargeDismissLiveEvent;
 
+export type PlayerFreeplayGivenLiveEvent = {
+  playerUid: string;
+  freeplayGiftId: string;
+  amount: number | null;
+  message: string;
+  createdAt: string | null;
+  sourceEvent: string;
+  outboxId?: number;
+  eventAtMs?: number;
+};
+
 function cleanText(value: unknown) {
   return String(value || '').trim();
 }
@@ -305,6 +322,10 @@ function attachLiveEventMeta<T extends { sourceEvent: string }>(
 
 function playerRequestLiveChannel(playerUid: string) {
   return `player:${cleanText(playerUid)}:requests`;
+}
+
+function playerFreeplayLiveChannel(playerUid: string) {
+  return `player:${cleanText(playerUid)}:freeplay`;
 }
 
 function isoToTimestamp(iso: string | null | undefined): Timestamp | null {
@@ -344,6 +365,9 @@ function resolveEntityId(payload: SqlRequestPayload, eventName: string) {
   }
   if (eventName === 'balance_update') {
     return cleanText(payload.playerUid);
+  }
+  if (eventName === 'freeplay.given' || eventName === 'freeplay_pending') {
+    return cleanText(payload.freeplayGiftId) || cleanText(payload.giftId);
   }
   return '';
 }
@@ -565,6 +589,28 @@ function outcomeEventNeedsBalanceRefetch(eventName: string, payload: SqlRequestP
   );
 }
 
+function buildFreeplayGivenEventFromPayload(
+  eventName: string,
+  payload: SqlRequestPayload,
+  playerUid: string
+): PlayerFreeplayGivenLiveEvent | null {
+  if (eventName !== 'freeplay.given' && eventName !== 'freeplay_pending') {
+    return null;
+  }
+  const freeplayGiftId = cleanText(payload.freeplayGiftId) || cleanText(payload.giftId);
+  if (!freeplayGiftId) {
+    return null;
+  }
+  return {
+    playerUid: cleanText(payload.playerUid) || playerUid,
+    freeplayGiftId,
+    amount: Number.isFinite(Number(payload.amount)) ? Number(payload.amount) : null,
+    message: cleanText(payload.message) || 'You received freeplay.',
+    createdAt: cleanText(payload.createdAt) || cleanText(payload.updatedAt) || null,
+    sourceEvent: eventName,
+  };
+}
+
 function buildSuccessEventFromPayload(
   eventName: string,
   entityId: string,
@@ -625,6 +671,7 @@ export function attachPlayerRequestSqlReadListener(
     onRechargeDismissEvent?: (event: PlayerRechargeDismissLiveEvent) => void;
     onRechargeSuccessEvent?: (event: PlayerRechargeSuccessLiveEvent) => void;
     onRedeemDismissEvent?: (event: PlayerRedeemDismissLiveEvent) => void;
+    onFreeplayGivenEvent?: (event: PlayerFreeplayGivenLiveEvent) => void;
     onBalanceUpdate?: (reason: string) => void;
     onPlayerGameLoginUpdated?: (
       reason: string,
@@ -640,7 +687,10 @@ export function attachPlayerRequestSqlReadListener(
   }
 ) {
   const cleanPlayerUid = cleanText(playerUid);
-  const streamChannel = playerRequestLiveChannel(cleanPlayerUid);
+  const streamChannels = [
+    playerRequestLiveChannel(cleanPlayerUid),
+    playerFreeplayLiveChannel(cleanPlayerUid),
+  ];
   let lastEventId = 0;
   let eventSource: EventSource | null = null;
   let disposed = false;
@@ -880,11 +930,22 @@ export function attachPlayerRequestSqlReadListener(
 
     console.info('[PLAYER_LIVE_STREAM_EVENT]', {
       type: eventName,
+      eventType: eventName,
       outboxId,
       entityId: entityId || null,
       playerUid: cleanPlayerUid,
       immediateRefetch: PLAYER_IMMEDIATE_REFETCH_EVENTS.has(eventName),
     });
+
+    if (eventName === 'freeplay.given' || eventName === 'freeplay_pending') {
+      const freeplayEvent = buildFreeplayGivenEventFromPayload(eventName, payload, cleanPlayerUid);
+      if (freeplayEvent && options?.onFreeplayGivenEvent) {
+        const enriched = attachLiveEventMeta(freeplayEvent, outboxId, payload);
+        console.info('[PLAYER_FREEPLAY_EVENT]', enriched);
+        options.onFreeplayGivenEvent(enriched);
+      }
+      return;
+    }
 
     if (eventName === 'balance_update') {
       console.info('[PLAYER_BALANCE_EVENT]', {
@@ -964,7 +1025,7 @@ export function attachPlayerRequestSqlReadListener(
 
   const buildStreamUrl = () => {
     const params = new URLSearchParams({
-      channels: streamChannel,
+      channels: streamChannels.join(','),
       lastEventId: String(Math.max(0, lastEventId)),
     });
     const appSessionId = cleanText(getLocalAppSessionId());
@@ -1006,7 +1067,7 @@ export function attachPlayerRequestSqlReadListener(
       const url = buildStreamUrl();
       console.info('[PLAYER_LIVE_STREAM_SUBSCRIBE]', {
         playerUid: cleanPlayerUid,
-        channel: streamChannel,
+        channels: streamChannels,
         lastEventId,
         url,
       });
@@ -1020,7 +1081,7 @@ export function attachPlayerRequestSqlReadListener(
         reconnectBackoffMs = INITIAL_RECONNECT_MS;
         console.info('[PLAYER_LIVE_STREAM_OPEN]', {
           playerUid: cleanPlayerUid,
-          channel: streamChannel,
+          channels: streamChannels,
           lastEventId,
           readyState: source.readyState,
         });
