@@ -358,6 +358,13 @@ async function writeCashoutOutbox(
     mirroredAt: input.updatedAt,
     payload,
   });
+  console.info('[CASHOUT_TASK_LIVE] emitted', {
+    taskId: input.taskId,
+    coadminUid: input.coadminUid,
+    playerUid: input.playerUid,
+    eventType: input.eventType,
+    status: input.status,
+  });
 }
 
 export async function createPlayerCashoutTaskInSql(
@@ -674,6 +681,14 @@ export async function completePlayerCashoutTaskInSql(
   if (!taskId) throw new Error('taskId is required.');
   if (!actorUid || !actorRole) throw new Error('Actor is required.');
 
+  console.info('[CASHOUT_TASK_CLAIM] attempting', {
+    taskId,
+    actorUid,
+    actorRole,
+    scopeUid: cleanText(input.scopeUid) || null,
+    isAdmin: input.isAdmin,
+  });
+
   const idempotencyKey = cleanText(input.idempotencyKey) || taskId;
   const operationKey = `cashout_complete:${taskId}:${idempotencyKey}`;
   const existing = await readAuthorityOperationPayload(operationKey);
@@ -953,15 +968,6 @@ export async function startPlayerCashoutTaskInSql(
   if (!actorUid || !actorRole) throw new Error('Actor is required.');
 
   const operationKey = `cashout_start:${taskId}:${actorUid}`;
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.taskId && existing.expiresAtMs != null) {
-    return {
-      success: true,
-      duplicate: true,
-      taskId,
-      expiresAtMs: Number(existing.expiresAtMs),
-    };
-  }
 
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('Postgres is unavailable.');
@@ -986,47 +992,25 @@ export async function startPlayerCashoutTaskInSql(
     const amountNpr = Math.max(0, Math.round(Number(task.amount_npr || 0)));
 
     if (!input.isAdmin && (!input.scopeUid || input.scopeUid !== taskScope)) {
-      throw new Error('Forbidden: cashout task is outside your scope.');
-    }
-    if (status === 'completed') {
-      throw new Error('Task already completed.');
-    }
-    if (status === 'declined') {
-      throw new Error('Task already declined.');
-    }
-    if (status !== 'pending' && status !== 'in_progress') {
-      throw new Error('Cashout task is not available to start.');
-    }
-
-    const assignedHandlerUid = cleanText(task.assigned_handler_uid);
-    const expiresAtMsExisting = task.expires_at ? Date.parse(String(task.expires_at)) : 0;
-    const activeInProgress =
-      status === 'in_progress' && (!expiresAtMsExisting || expiresAtMsExisting > Date.now());
-    if (activeInProgress && assignedHandlerUid && assignedHandlerUid !== actorUid) {
-      throw new Error('This task is already assigned to another handler.');
-    }
-
-    if (
-      activeInProgress &&
-      assignedHandlerUid === actorUid &&
-      expiresAtMsExisting > Date.now()
-    ) {
-      const claim = await claimAuthorityOperation(client, {
-        operationKey,
-        operationType: 'cashout_start',
-        userUid: playerUid,
-        sourceId: taskId,
+      console.warn('[CASHOUT_TASK_CLAIM] forbiddenScope', {
+        taskId,
         actorUid,
         actorRole,
-        payload: { taskId, expiresAtMs: expiresAtMsExisting },
+        actorScopeUid: cleanText(input.scopeUid) || null,
+        taskScope,
       });
-      await client.query('COMMIT');
-      return {
-        success: true,
-        duplicate: claim.duplicate,
+      throw new Error('Forbidden: cashout task is outside your scope.');
+    }
+    const assignedHandlerUid = cleanText(task.assigned_handler_uid);
+    if (status !== 'pending' || assignedHandlerUid) {
+      console.warn('[CASHOUT_TASK_CLAIM] conflictAlreadyClaimed', {
         taskId,
-        expiresAtMs: expiresAtMsExisting,
-      };
+        actorUid,
+        actorRole,
+        status,
+        assignedHandlerUid: assignedHandlerUid || null,
+      });
+      throw new Error('already_claimed_or_not_pending');
     }
 
     const claim = await claimAuthorityOperation(client, {
@@ -1039,14 +1023,15 @@ export async function startPlayerCashoutTaskInSql(
       payload: {},
     });
     if (claim.duplicate) {
-      const payload = await readAuthorityOperationPayload(operationKey);
-      await client.query('COMMIT');
-      return {
-        success: true,
-        duplicate: true,
+      console.warn('[CASHOUT_TASK_CLAIM] conflictAlreadyClaimed', {
         taskId,
-        expiresAtMs: Number(payload?.expiresAtMs || expiresAtMs),
-      };
+        actorUid,
+        actorRole,
+        status,
+        assignedHandlerUid: assignedHandlerUid || null,
+        duplicateOperation: true,
+      });
+      throw new Error('already_claimed_or_not_pending');
     }
 
     const taskRaw = {
@@ -1058,6 +1043,9 @@ export async function startPlayerCashoutTaskInSql(
       status: 'in_progress',
       assignedHandlerUid: actorUid,
       assignedHandlerUsername: cleanText(input.actorUsername) || 'Handler',
+      assignedHandlerRole: actorRole,
+      claimedByRole: actorRole,
+      claimedAt: nowIso,
       startedAt: nowIso,
       expiresAt: expiresAtIso,
       updatedAt: nowIso,
@@ -1101,6 +1089,13 @@ export async function startPlayerCashoutTaskInSql(
     );
 
     await client.query('COMMIT');
+    console.info('[CASHOUT_TASK_CLAIM] success', {
+      taskId,
+      actorUid,
+      actorRole,
+      coadminUid: taskScope,
+      expiresAtMs,
+    });
     return { success: true, duplicate: false, taskId, expiresAtMs };
   } catch (error) {
     await client.query('ROLLBACK');

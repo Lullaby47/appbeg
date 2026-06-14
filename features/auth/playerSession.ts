@@ -56,6 +56,14 @@ export function isSqlPlayerAppSessionMode() {
 
 let forcedPlayerLogout = false;
 
+function isCurrentPlayerRoute() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  const pathname = window.location.pathname || '';
+  return pathname === '/player' || pathname.startsWith('/player/');
+}
+
 const PLAYER_SESSION_END_DEDUP_MS = 2_000;
 let lastPlayerSessionEndSent: {
   sessionId: string;
@@ -1037,6 +1045,24 @@ export function startPlayerSessionStatusPolling(
   if (!sessionId) {
     return () => {};
   }
+  if (!isCurrentPlayerRoute()) {
+    console.info('[PLAYER_SESSION_STATUS] skippedNonPlayerRoute', {
+      pathname: window.location.pathname || null,
+      hasPlayerSessionId: true,
+      source: 'startPlayerSessionStatusPolling',
+    });
+    return () => {};
+  }
+  const cachedUser = getCachedSessionUser();
+  if (cachedUser?.role && cachedUser.role !== 'player') {
+    console.info('[PLAYER_SESSION_STATUS] skippedNonPlayerRole', {
+      role: cachedUser.role,
+      uid: cachedUser.uid || null,
+      hasPlayerSessionId: true,
+      source: 'startPlayerSessionStatusPolling',
+    });
+    return () => {};
+  }
 
   console.info('[PLAYER_SESSION_POLL]', {
     started: true,
@@ -1070,6 +1096,15 @@ export function startPlayerSessionStatusPolling(
 
   const tick = async () => {
     if (stopped || isPlayerSessionStale()) {
+      stop();
+      return;
+    }
+    if (!isCurrentPlayerRoute()) {
+      console.info('[PLAYER_SESSION_STATUS] skippedNonPlayerRoute', {
+        pathname: window.location.pathname || null,
+        hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+        source: 'player_session_poll_tick',
+      });
       stop();
       return;
     }
@@ -1225,6 +1260,7 @@ export type PlayerSessionVerifyFailureReason =
   | 'missing_local_session_id'
   | 'forced_logout_already_set'
   | 'not_player_app_session'
+  | 'non_player_route'
   | 'session_replaced'
   | 'session_inactive';
 
@@ -1241,6 +1277,23 @@ async function verifyActivePlayerSessionViaApi(
   localSessionId: string
 ): Promise<PlayerSessionVerifyResult | null> {
   syncPlayerSessionReadyFromStorage('verifyActivePlayerSessionViaApi');
+  const cachedSessionUser = getCachedSessionUser();
+  if (!isCurrentPlayerRoute()) {
+    console.info('[PLAYER_SESSION_STATUS] skippedNonPlayerRoute', {
+      pathname: typeof window === 'undefined' ? null : window.location.pathname || null,
+      role: cachedSessionUser?.role || null,
+      hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+    });
+    return { ok: false, reason: 'non_player_route', source: 'sql' };
+  }
+  if (cachedSessionUser?.role && cachedSessionUser.role !== 'player') {
+    console.info('[PLAYER_SESSION_STATUS] skippedNonPlayerRole', {
+      role: cachedSessionUser.role,
+      uid: cachedSessionUser.uid || null,
+      hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+    });
+    return { ok: false, reason: 'not_player_app_session', source: 'sql' };
+  }
   const currentLocalSessionId = getLocalPlayerSessionId();
   if (!currentLocalSessionId || currentLocalSessionId !== localSessionId) {
     return {
@@ -1273,6 +1326,23 @@ async function verifyActivePlayerSessionViaApi(
       cache: 'no-store',
     });
     if (!response.ok) {
+      if (response.status === 401) {
+        console.info('[PLAYER_SESSION_STATUS] unauthorizedStopPolling', {
+          pathname: typeof window === 'undefined' ? null : window.location.pathname || null,
+          status: response.status,
+          hasPlayerSessionId: Boolean(localSessionId),
+        });
+        stopAllPlayerRuntimePolls('player_session_status', 'status_401');
+        markPlayerSessionStale('session_inactive', 'player_session_status', {
+          skipRedirect: !isCurrentPlayerRoute(),
+        });
+        return {
+          ok: false,
+          reason: 'session_inactive',
+          activeSessionId: null,
+          source: 'sql',
+        };
+      }
       return null;
     }
 
@@ -1494,6 +1564,17 @@ export async function getPlayerApiHeaders(
   const uid = String(
     sessionUser?.uid || (isSqlPlayerRuntimeMode() ? '' : auth.currentUser?.uid) || ''
   ).trim() || null;
+
+  if (!isCurrentPlayerRoute()) {
+    console.info('[PLAYER_SESSION_STATUS] skippedNonPlayerRoute', {
+      pathname: typeof window === 'undefined' ? null : window.location.pathname || null,
+      route,
+      uid,
+      role,
+      hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+    });
+    throw new Error('Player route required.');
+  }
 
   if (role && role !== 'player') {
     logPlayerFetchBlockedRole({

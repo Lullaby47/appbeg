@@ -23,6 +23,10 @@ import {
 } from '@/features/live/playerCashoutSqlRead';
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
+import {
+  getStaffAppSessionApiHeaders,
+  staffApiHeaderFlags,
+} from '@/lib/client/staffApiHeaders';
 
 export type PlayerCashoutTaskStatus = 'pending' | 'in_progress' | 'completed' | 'declined';
 export type PlayerCashoutPayoutMethod = 'qr' | 'app';
@@ -294,6 +298,31 @@ async function getPlayerCashoutAuthHeaders() {
   return getPlayerApiHeaders();
 }
 
+async function getCashoutTaskAppSessionHeaders(action: string) {
+  try {
+    const headers = await getStaffAppSessionApiHeaders(true);
+    const flags = staffApiHeaderFlags(headers);
+    console.info('[CASHOUT_TASK_SEND] usingAppSessionAuth', {
+      action,
+      ...flags,
+    });
+    if (!flags.hasAppSessionId && !flags.usesAuthorizationHeader) {
+      console.warn('[CASHOUT_TASK_SEND] blockedMissingStaffCoadminAuth', {
+        action,
+        ...flags,
+      });
+      throw new Error('Staff/coadmin session required.');
+    }
+    return headers;
+  } catch (error) {
+    console.warn('[CASHOUT_TASK_SEND] blockedMissingStaffCoadminAuth', {
+      action,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
 function readApiError(messageFallback: string, payload: unknown) {
   if (
     payload &&
@@ -371,27 +400,45 @@ export async function createPlayerCashoutTask(values: {
 }
 
 export async function startPlayerCashoutTask(taskId: string) {
-  const response = await fetch('/api/cashout-tasks/start', {
+  const action = 'claim';
+  const headers = await getCashoutTaskAppSessionHeaders(action);
+  const response = await fetch('/api/cashout-tasks/claim', {
     method: 'POST',
-    headers: await getFirebaseApiHeaders(),
+    headers,
     body: JSON.stringify({ taskId }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
   if (!response.ok) {
-    throw new Error(readApiError('Failed to start cashout task.', payload));
+    console.warn('[CASHOUT_TASK_SEND] failed', {
+      action,
+      taskId,
+      status: response.status,
+      error: payload.error || null,
+    });
+    throw new Error(readApiError('Failed to claim cashout task.', payload));
   }
+  console.info('[CASHOUT_TASK_SEND] success', { action, taskId, status: response.status });
 }
 
 export async function completePlayerCashoutTask(taskId: string) {
+  const action = 'complete';
+  const headers = await getCashoutTaskAppSessionHeaders(action);
   const response = await fetch('/api/cashout-tasks/complete', {
     method: 'POST',
-    headers: await getFirebaseApiHeaders(),
+    headers,
     body: JSON.stringify({ taskId }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
   if (!response.ok) {
+    console.warn('[CASHOUT_TASK_SEND] failed', {
+      action,
+      taskId,
+      status: response.status,
+      error: payload.error || null,
+    });
     throw new Error(readApiError('Failed to complete cashout task.', payload));
   }
+  console.info('[CASHOUT_TASK_SEND] success', { action, taskId, status: response.status });
 }
 
 export async function declinePlayerCashoutTaskForCurrentHandler(taskId: string) {
@@ -414,15 +461,24 @@ export async function declinePlayerCashoutTaskForCurrentHandler(taskId: string) 
 }
 
 export async function declinePlayerCashoutTaskByCoadmin(taskId: string) {
+  const action = 'decline';
+  const headers = await getCashoutTaskAppSessionHeaders(action);
   const response = await fetch('/api/cashout-tasks/decline', {
     method: 'POST',
-    headers: await getFirebaseApiHeaders(),
+    headers,
     body: JSON.stringify({ taskId }),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
   if (!response.ok) {
+    console.warn('[CASHOUT_TASK_SEND] failed', {
+      action,
+      taskId,
+      status: response.status,
+      error: payload.error || null,
+    });
     throw new Error(readApiError('Failed to decline cashout task.', payload));
   }
+  console.info('[CASHOUT_TASK_SEND] success', { action, taskId, status: response.status });
 }
 
 function sortByNewest(tasks: PlayerCashoutTask[]) {

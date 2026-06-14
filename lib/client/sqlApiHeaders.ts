@@ -21,15 +21,42 @@ function isStaffRole(role: string) {
   return STAFF_ROLES.has(role);
 }
 
+function isPlayerRoute() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  const pathname = window.location.pathname || '';
+  return pathname === '/player' || pathname.startsWith('/player/');
+}
+
 /**
  * SQL read API headers: player routes use player session; staff/coadmin use app session only.
  */
 export async function getSqlApiReadHeaders(contentType = false) {
   const role = await resolveClientRole();
-  if (role === 'player') {
+  const playerRoute = isPlayerRoute();
+  if (!playerRoute) {
+    console.info('[PLAYER_SESSION_STATUS] skippedNonPlayerRoute', {
+      pathname: typeof window === 'undefined' ? null : window.location.pathname || null,
+      role: role || null,
+      hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+    });
+  }
+  if (role === 'player' && playerRoute) {
     return getPlayerApiHeaders(contentType);
   }
+  if (role === 'player' && !playerRoute) {
+    console.info('[PLAYER_SESSION_STATUS] skippedNonPlayerRoute', {
+      pathname: typeof window === 'undefined' ? null : window.location.pathname || null,
+      role,
+      hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+    });
+  }
   if (role && isStaffRole(role)) {
+    console.info('[PLAYER_SESSION_STATUS] skippedNonPlayerRole', {
+      role,
+      hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+    });
     return getStaffAppSessionApiHeaders(contentType);
   }
   const appSessionId = getLocalAppSessionId();
@@ -40,16 +67,35 @@ export async function getSqlApiReadHeaders(contentType = false) {
   if (appSessionId && playerSessionId) {
     const sessionUser = await getSessionUserOnce().catch(() => null);
     const resolvedRole = String(sessionUser?.role || '').toLowerCase();
-    if (resolvedRole === 'player') {
+    if (resolvedRole === 'player' && playerRoute) {
       return getPlayerApiHeaders(contentType);
     }
+    if (resolvedRole === 'player' && !playerRoute) {
+      console.info('[PLAYER_SESSION_STATUS] skippedNonPlayerRoute', {
+        pathname: typeof window === 'undefined' ? null : window.location.pathname || null,
+        role: resolvedRole,
+        hasPlayerSessionId: Boolean(playerSessionId),
+      });
+      return getStaffAppSessionApiHeaders(contentType);
+    }
     if (resolvedRole && isStaffRole(resolvedRole)) {
+      console.info('[PLAYER_SESSION_STATUS] skippedNonPlayerRole', {
+        role: resolvedRole,
+        hasPlayerSessionId: Boolean(playerSessionId),
+      });
       return getStaffAppSessionApiHeaders(contentType);
     }
     return getStaffAppSessionApiHeaders(contentType);
   }
-  if (playerSessionId) {
+  if (playerSessionId && playerRoute) {
     return getPlayerApiHeaders(contentType);
+  }
+  if (playerSessionId && !playerRoute) {
+    console.info('[PLAYER_SESSION_STATUS] skippedNonPlayerRoute', {
+      pathname: typeof window === 'undefined' ? null : window.location.pathname || null,
+      role: role || null,
+      hasPlayerSessionId: true,
+    });
   }
   return getFirebaseApiHeaders(contentType);
 }

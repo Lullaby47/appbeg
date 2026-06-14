@@ -18,8 +18,12 @@ type Body = {
 
 const TASK_DURATION_MS = 3 * 60 * 1000;
 
-function logRejected(reason: string, context: Record<string, unknown>) {
-  console.warn('[CASHOUT_START_API] rejected reason=' + reason, context);
+function claimStatusForError(message: string) {
+  if (/not authenticated|authorization|token/i.test(message)) return 401;
+  if (/forbidden|outside your scope/i.test(message)) return 403;
+  if (/already|not available|not pending|claimed|in_progress|conflict/i.test(message)) return 409;
+  if (/required|not found|invalid/i.test(message)) return 400;
+  return 500;
 }
 
 export async function POST(request: Request) {
@@ -37,10 +41,11 @@ export async function POST(request: Request) {
     const callerIsAdmin = caller.role === 'admin';
     const callerScope = scopedCoadminUid(caller);
 
-    console.info('[CASHOUT_START_API] start requested', {
+    console.info('[CASHOUT_TASK_CLAIM] attempting', {
       taskId,
       callerUid: caller.uid,
       role: caller.role,
+      coadminUid: callerScope || null,
     });
 
     if (isAuthoritySqlWriteEnabled()) {
@@ -52,7 +57,7 @@ export async function POST(request: Request) {
         isAdmin: callerIsAdmin,
         scopeUid: callerScope,
       });
-      logAuthoritySqlWrite('/api/cashout-tasks/start', {
+      logAuthoritySqlWrite('/api/cashout-tasks/claim', {
         taskId,
         duplicate: result.duplicate,
         expiresAtMs: result.expiresAtMs,
@@ -68,7 +73,6 @@ export async function POST(request: Request) {
     const result = await adminDb.runTransaction(async (transaction) => {
       const taskSnap = await transaction.get(taskRef);
       if (!taskSnap.exists) {
-        logRejected('not_found', { taskId, callerUid: caller.uid });
         throw new Error('Cashout task not found.');
       }
 
@@ -76,27 +80,28 @@ export async function POST(request: Request) {
         status?: string;
         coadminUid?: string;
         assignedHandlerUid?: string | null;
-        expiresAt?: Timestamp | null;
       };
       const status = String(task.status || '').toLowerCase();
       const taskScope = String(task.coadminUid || '').trim();
 
       if (!callerIsAdmin && (!callerScope || callerScope !== taskScope)) {
-        logRejected('outside_scope', {
+        console.warn('[CASHOUT_TASK_CLAIM] forbiddenScope', {
           taskId,
           callerUid: caller.uid,
-          callerScope,
+          callerRole: caller.role,
+          callerScope: callerScope || null,
           taskScope,
         });
         throw new Error('Forbidden: cashout task is outside your scope.');
       }
 
       if (status !== 'pending' || task.assignedHandlerUid) {
-        logRejected('already_claimed_or_not_pending', {
+        console.warn('[CASHOUT_TASK_CLAIM] conflictAlreadyClaimed', {
           taskId,
           callerUid: caller.uid,
+          callerRole: caller.role,
           status,
-          assignedHandlerUid: task.assignedHandlerUid,
+          assignedHandlerUid: task.assignedHandlerUid || null,
         });
         throw new Error('already_claimed_or_not_pending');
       }
@@ -114,29 +119,21 @@ export async function POST(request: Request) {
         expiresAt,
       });
 
-      return { expiresAtMs: expiresAt.toMillis() };
+      return { expiresAtMs: expiresAt.toMillis(), taskScope };
     });
 
-    console.info('[CASHOUT_START_API] task started', {
+    console.info('[CASHOUT_TASK_CLAIM] success', {
       taskId,
       callerUid: caller.uid,
+      role: caller.role,
+      coadminUid: result.taskScope,
       expiresAtMs: result.expiresAtMs,
     });
-    void mirrorPlayerCashoutTaskById(taskId, 'appbeg_cashout_start');
+    void mirrorPlayerCashoutTaskById(taskId, 'appbeg_cashout_claim');
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, expiresAtMs: result.expiresAtMs });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to start cashout task.';
-    const status =
-      /not authenticated|authorization|token/i.test(message)
-        ? 401
-        : /forbidden|outside your scope/i.test(message)
-          ? 403
-          : /already|not available|not pending|claimed|in_progress|conflict/i.test(message)
-            ? 409
-            : /required|not found|invalid/i.test(message)
-              ? 400
-              : 500;
-    return NextResponse.json({ error: message }, { status });
+    const message = error instanceof Error ? error.message : 'Failed to claim cashout task.';
+    return NextResponse.json({ error: message }, { status: claimStatusForError(message) });
   }
 }

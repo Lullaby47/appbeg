@@ -80,6 +80,10 @@ async function readFirestoreTasks(scope: Scope, uid: string, limit: number) {
   });
 }
 
+function isPendingUnclaimedTask(task: CachedPlayerCashoutTask) {
+  return cleanText(task.status).toLowerCase() === 'pending' && !cleanText(task.assignedHandlerUid);
+}
+
 export async function GET(request: Request) {
   const startedAt = Date.now();
   const url = new URL(request.url);
@@ -105,7 +109,7 @@ export async function GET(request: Request) {
         authPath: playerAuth.authPath,
       });
     } else {
-      const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer', 'player']);
+      const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer']);
       if ('response' in auth) {
         return auth.response;
       }
@@ -133,15 +137,29 @@ export async function GET(request: Request) {
       }
     } else if (scope === 'coadmin') {
       targetUid =
-        user.role === 'coadmin' ? user.uid : requestedUid || scopedCoadmin || '';
+        user.role === 'coadmin'
+          ? user.uid
+          : user.role === 'staff'
+            ? scopedCoadmin || ''
+            : requestedUid || scopedCoadmin || '';
       if (!targetUid) {
         return NextResponse.json({ tasks: [], source: 'postgres' });
+      }
+      if (user.role === 'staff') {
+        console.info('[CASHOUT_TASKS_CACHE] staffScope', {
+          staffUid: user.uid,
+          coadminUid: targetUid,
+          requestedUid: requestedUid || null,
+        });
+      } else if (user.role === 'coadmin') {
+        console.info('[CASHOUT_TASKS_CACHE] coadminScope', {
+          coadminUid: targetUid,
+        });
       }
       if (
         user.role !== 'admin' &&
         user.role !== 'coadmin' &&
-        scopedCoadmin &&
-        targetUid !== scopedCoadmin
+        (!scopedCoadmin || targetUid !== scopedCoadmin)
       ) {
         return apiError('Forbidden.', 403);
       }
@@ -169,6 +187,7 @@ export async function GET(request: Request) {
       tasks = await readPlayerCashoutTasksCacheByPlayer(targetUid, limit);
     } else if (scope === 'coadmin') {
       tasks = await readPlayerCashoutTasksCacheByCoadmin(targetUid, limit);
+      tasks = tasks?.filter(isPendingUnclaimedTask) ?? tasks;
     } else {
       tasks = await readPlayerCashoutTasksCacheByAssignedHandler(targetUid, limit);
     }
@@ -199,7 +218,10 @@ export async function GET(request: Request) {
       return NextResponse.json({ tasks: [], source: 'postgres' });
     }
 
-    const firestoreTasks = await readFirestoreTasks(scope, targetUid, limit);
+    let firestoreTasks = await readFirestoreTasks(scope, targetUid, limit);
+    if (scope === 'coadmin') {
+      firestoreTasks = firestoreTasks.filter(isPendingUnclaimedTask);
+    }
     return NextResponse.json({ tasks: firestoreTasks, source: 'firestore' });
   } catch (error) {
     const pg = extractPgErrorDetails(error);

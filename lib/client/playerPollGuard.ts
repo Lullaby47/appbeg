@@ -32,6 +32,17 @@ export async function checkPlayerPollRole(pollName: string) {
     return null;
   }
 
+  const pathname = typeof window === 'undefined' ? '' : window.location.pathname || '';
+  const isPlayerRoute = pathname === '/player' || pathname.startsWith('/player/');
+  if (!isPlayerRoute) {
+    console.info('[PLAYER_SESSION_STATUS] skippedNonPlayerRoute', {
+      pollName,
+      pathname: pathname || null,
+      hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+    });
+    return null;
+  }
+
   const cached = getCachedSessionUser();
   if (cached?.role === 'player') {
     return cached;
@@ -46,6 +57,12 @@ export async function checkPlayerPollRole(pollName: string) {
     pollName,
     uid: fetched?.uid ?? cached?.uid ?? null,
     role: fetched?.role ?? cached?.role ?? null,
+  });
+  console.info('[PLAYER_SESSION_STATUS] skippedNonPlayerRole', {
+    pollName,
+    uid: fetched?.uid ?? cached?.uid ?? null,
+    role: fetched?.role ?? cached?.role ?? null,
+    hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
   });
   return null;
 }

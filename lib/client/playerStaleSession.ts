@@ -29,6 +29,11 @@ function currentRoute() {
   return typeof window !== 'undefined' ? window.location.pathname || '' : '';
 }
 
+function isCurrentPlayerRoute() {
+  const route = currentRoute();
+  return route === '/player' || route.startsWith('/player/');
+}
+
 function sessionIdPrefix(value: string | null | undefined) {
   const clean = String(value || '').trim();
   return clean ? clean.slice(0, 8) : null;
@@ -151,7 +156,14 @@ export function markPlayerSessionStale(
     stopped: true,
   });
 
-  if (options?.skipRedirect || redirectScheduled) {
+  if (options?.skipRedirect || redirectScheduled || !isCurrentPlayerRoute()) {
+    if (!options?.skipRedirect && !isCurrentPlayerRoute()) {
+      console.info('[PLAYER_SESSION_STATUS] unauthorizedStopPolling', {
+        route: currentRoute(),
+        reason,
+        redirectSkipped: true,
+      });
+    }
     return;
   }
 
