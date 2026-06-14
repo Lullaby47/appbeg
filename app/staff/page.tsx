@@ -194,6 +194,7 @@ export default function StaffPage() {
     string[]
   >([]);
   const [playerCashoutTasks, setPlayerCashoutTasks] = useState<PlayerCashoutTask[]>([]);
+  const [playerCashoutTasksLoading, setPlayerCashoutTasksLoading] = useState(true);
   const [playerCashoutTaskLoadingId, setPlayerCashoutTaskLoadingId] = useState<string | null>(
     null
   );
@@ -255,7 +256,7 @@ export default function StaffPage() {
   const visibleRecentCarerEscalations = recentCarerEscalations.filter(
     (alert) => !dismissedCarerEscalationIds.includes(alert.id)
   );
-  const currentUserUid = auth.currentUser?.uid || '';
+  const currentUserUid = staffAuthUid || auth.currentUser?.uid || '';
   const visiblePlayerCashoutTasks = playerCashoutTasks
     .filter(
       (task) =>
@@ -604,16 +605,34 @@ export default function StaffPage() {
         if (!staffAuthUid) {
           return;
         }
+        setPlayerCashoutTasksLoading(true);
+        console.info('[STAFF_CASHOUT_TASKS] loading', {
+          staffUid: staffAuthUid,
+          creatorRole,
+        });
 
         if (creatorRole === 'admin') {
           unsubscribe = listenAllPlayerCashoutTasks(
             (tasks) => {
               if (!isCancelled) {
                 setPlayerCashoutTasks(tasks);
+                setPlayerCashoutTasksLoading(false);
+                console.info('[STAFF_CASHOUT_TASKS] loaded', {
+                  staffUid: staffAuthUid,
+                  scope: 'all',
+                  count: tasks.length,
+                });
+                if (tasks.length === 0) {
+                  console.info('[STAFF_CASHOUT_TASKS] empty', {
+                    staffUid: staffAuthUid,
+                    scope: 'all',
+                  });
+                }
               }
             },
             (error) => {
               if (!isCancelled) {
+                setPlayerCashoutTasksLoading(false);
                 setMessage(error.message || 'Failed to listen for player cashout tasks.');
               }
             }
@@ -626,22 +645,43 @@ export default function StaffPage() {
         if (isCancelled) {
           return;
         }
+        console.info('[STAFF_CASHOUT_TASKS] loading', {
+          staffUid: staffAuthUid,
+          scope: 'coadmin',
+          coadminUid,
+        });
 
         unsubscribe = listenPlayerCashoutTasksByCoadmin(
           coadminUid,
           (tasks) => {
             if (!isCancelled) {
               setPlayerCashoutTasks(tasks);
+              setPlayerCashoutTasksLoading(false);
+              console.info('[STAFF_CASHOUT_TASKS] loaded', {
+                staffUid: staffAuthUid,
+                scope: 'coadmin',
+                coadminUid,
+                count: tasks.length,
+              });
+              if (tasks.length === 0) {
+                console.info('[STAFF_CASHOUT_TASKS] empty', {
+                  staffUid: staffAuthUid,
+                  scope: 'coadmin',
+                  coadminUid,
+                });
+              }
             }
           },
           (error) => {
             if (!isCancelled) {
+              setPlayerCashoutTasksLoading(false);
               setMessage(error.message || 'Failed to listen for player cashout tasks.');
             }
           }
         );
       } catch (error: any) {
         if (!isCancelled) {
+          setPlayerCashoutTasksLoading(false);
           setMessage(error.message || 'Failed to start player cashout task listener.');
         }
       }
@@ -910,6 +950,7 @@ export default function StaffPage() {
     setMessage('');
     try {
       await startPlayerCashoutTask(taskId);
+      setPlayerCashoutTasks((current) => current.filter((task) => task.id !== taskId));
     } catch (error: any) {
       setMessage(error.message || 'Failed to start player cashout task.');
     } finally {
@@ -1373,18 +1414,22 @@ export default function StaffPage() {
                 </div>
               )}
 
-              {visiblePlayerCashoutTasks.length > 0 && (
-                <div className="rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-5">
-                  <h3 className="text-lg font-bold text-cyan-200">
-                    Player Cashout Tasks ({visiblePlayerCashoutTasks.length})
-                  </h3>
+              <div className="rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-5">
+                <h3 className="text-lg font-bold text-cyan-200">
+                  Pending Player Cashout Tasks ({visiblePlayerCashoutTasks.length})
+                </h3>
+                {playerCashoutTasksLoading ? (
+                  <p className="mt-3 text-sm text-cyan-100/70">Loading cashout tasks...</p>
+                ) : visiblePlayerCashoutTasks.length === 0 ? (
+                  <p className="mt-3 text-sm text-cyan-100/70">No pending cashout tasks.</p>
+                ) : (
                   <div className="mt-3 space-y-3">
                     {visiblePlayerCashoutTasks.map((task) => {
                       const isInProgress = task.status === 'in_progress';
                       const remainingMs = getPlayerCashoutTaskCountdown(task);
                       const actionLabel = isInProgress
                         ? `Done (${formatCountdownMs(remainingMs + countdownTick * 0)})`
-                        : 'Start Task';
+                        : 'Claim Task';
 
                       return (
                         <div
@@ -1426,8 +1471,8 @@ export default function StaffPage() {
                       );
                     })}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
 
 
               {riskyPlayers.length > 0 && (
