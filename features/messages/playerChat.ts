@@ -318,6 +318,25 @@ async function sendDirectTextMessageViaSql(
   });
 }
 
+async function markDirectConversationSeenViaSql(otherUid: string) {
+  const selfUid = assertAuthUid();
+  const conversationId = getDirectConversationId(selfUid, otherUid);
+  const response = await fetch('/api/conversations/cache/mirror', {
+    method: 'POST',
+    headers: await getSqlApiReadHeaders(true),
+    body: JSON.stringify({
+      conversationId,
+      action: 'mark_read',
+      unreadCounts: { [selfUid]: 0 },
+    }),
+    cache: 'no-store',
+  });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to mark chat as read.');
+  }
+}
+
 export async function sendDirectTextMessage(
   receiverUid: string,
   text: string,
@@ -499,6 +518,7 @@ export function listenDirectMessages(
 
 export async function markDirectConversationSeen(otherUid: string) {
   if (isClientSqlReadMode()) {
+    await markDirectConversationSeenViaSql(otherUid);
     return;
   }
   const selfUid = assertAuthUid();

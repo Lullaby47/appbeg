@@ -60,6 +60,13 @@ import {
   sendChatMessage,
   sendImageMessage,
 } from '@/features/messages/chatMessages';
+import {
+  clearStaleRoleThemeStorage,
+  installPlayerThemeAudioGuard,
+  playerThemeRouteGuard,
+  stopWrongPlayerRouteThemeAudio,
+  tagPlayerThemeAudio,
+} from '@/lib/client/playerThemeAudioGuard';
 import { usePaginatedChatMessages } from '@/features/messages/usePaginatedChatMessages';
 import {
   createCoinLoadSession,
@@ -416,12 +423,76 @@ export default function PlayerPage() {
 
   const pageScrollRef = useRef<HTMLElement | null>(null);
   const previousUnreadRef = useRef(0);
+  const chatReadInFlightRef = useRef<Set<string>>(new Set());
+  const lastChatReadClearAtRef = useRef<Record<string, number>>({});
+  const resolvedPlayerRole = isPlayerRole ? 'player' : null;
+
+  const markThreadReadOnPlayerChatFocus = useCallback(
+    (threadId: string | null | undefined, chatType: 'player_agent' | 'player_player') => {
+      const cleanThreadId = String(threadId || '').trim();
+      if (!cleanThreadId) {
+        console.info('[PLAYER_CHAT_READ] skippedNoThread', { chatType });
+        return;
+      }
+
+      const dedupeKey = `${chatType}:${cleanThreadId}`;
+      const now = Date.now();
+      if (chatReadInFlightRef.current.has(dedupeKey)) {
+        return;
+      }
+      if (now - (lastChatReadClearAtRef.current[dedupeKey] || 0) < 10000) {
+        return;
+      }
+      lastChatReadClearAtRef.current[dedupeKey] = now;
+
+      console.info('[PLAYER_CHAT_READ] focusClearUnread', {
+        chatType,
+        threadId: cleanThreadId,
+        playerUid: playerUid || auth.currentUser?.uid || getCachedSessionUser()?.uid || null,
+      });
+
+      setUnreadCounts((previous) => {
+        if (!previous[cleanThreadId]) {
+          return previous;
+        }
+        console.info('[PLAYER_CHAT_READ] optimisticClear', {
+          chatType,
+          threadId: cleanThreadId,
+        });
+        return {
+          ...previous,
+          [cleanThreadId]: 0,
+        };
+      });
+
+      chatReadInFlightRef.current.add(dedupeKey);
+      void markConversationAsRead(cleanThreadId)
+        .then(() => {
+          console.info('[PLAYER_CHAT_READ] persisted', {
+            chatType,
+            threadId: cleanThreadId,
+          });
+        })
+        .catch((error) => {
+          console.warn('[PLAYER_CHAT_READ] persisted', {
+            chatType,
+            threadId: cleanThreadId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        })
+        .finally(() => {
+          chatReadInFlightRef.current.delete(dedupeKey);
+        });
+    },
+    [playerUid]
+  );
+
   const pagedAgentChat = usePaginatedChatMessages(selectedAgent?.uid ?? null, {
     scrollContainerRef: agentsScrollRef,
     requirePlayerRole: true,
     onWindowMessages: () => {
-      if (selectedAgent) {
-        markConversationAsRead(selectedAgent.uid);
+      if (selectedAgent && (unreadCounts[selectedAgent.uid] || 0) > 0) {
+        markThreadReadOnPlayerChatFocus(selectedAgent.uid, 'player_agent');
       }
     },
   });
@@ -1696,8 +1767,19 @@ export default function PlayerPage() {
     if (!audio || !musicEnabledRef.current || !pageVisibleRef.current) {
       return false;
     }
+    if (
+      !playerThemeRouteGuard({
+        currentPath: typeof window === 'undefined' ? '' : window.location.pathname,
+        resolvedRole: resolvedPlayerRole,
+        audioTheme: 'player',
+      })
+    ) {
+      audio.pause();
+      return false;
+    }
 
     try {
+      stopWrongPlayerRouteThemeAudio(CASINO_BACKGROUND_TRACKS);
       giftSoundRef.current?.pause();
       activeTableSoundRef.current?.pause();
       notificationSoundRef.current?.pause();
@@ -1710,7 +1792,7 @@ export default function PlayerPage() {
     } catch {
       return false;
     }
-  }, [clearAutoplayRetry, clearInteractionListener]);
+  }, [clearAutoplayRetry, clearInteractionListener, resolvedPlayerRole]);
 
   useEffect(() => {
     resumeBackgroundMusicRef.current = () => {
@@ -1744,12 +1826,25 @@ export default function PlayerPage() {
       if (!musicEnabledRef.current) {
         return;
       }
+      if (
+        !playerThemeRouteGuard({
+          currentPath: typeof window === 'undefined' ? '' : window.location.pathname,
+          resolvedRole: resolvedPlayerRole,
+          audioTheme: 'player',
+        })
+      ) {
+        clearInteractionListener();
+        clearAutoplayRetry();
+        cleanupAudioElement();
+        return;
+      }
 
       clearAutoplayRetry();
       cleanupAudioElement();
 
       const nextTrack = chooseRandomTrack(previousTrack ?? currentTrackRef.current);
       const audio = new Audio(nextTrack);
+      tagPlayerThemeAudio(audio);
       audio.volume = DEFAULT_PLAYER_MUSIC_VOLUME;
       audio.preload = 'auto';
       audio.loop = true;
@@ -1781,7 +1876,9 @@ export default function PlayerPage() {
       chooseRandomTrack,
       cleanupAudioElement,
       clearAutoplayRetry,
+      clearInteractionListener,
       playCurrentAudio,
+      resolvedPlayerRole,
     ]
   );
   useEffect(() => {
@@ -1792,6 +1889,9 @@ export default function PlayerPage() {
     if (typeof window === 'undefined' || typeof document === 'undefined') {
       return undefined;
     }
+    installPlayerThemeAudioGuard(CASINO_BACKGROUND_TRACKS);
+    clearStaleRoleThemeStorage();
+    stopWrongPlayerRouteThemeAudio(CASINO_BACKGROUND_TRACKS);
 
     const isDocumentVisible = () => document.visibilityState === 'visible';
 
@@ -1844,6 +1944,7 @@ export default function PlayerPage() {
       window.removeEventListener('freeze', pauseForBackground);
       window.removeEventListener('pageshow', resumeForForeground);
       window.removeEventListener('focus', resumeForForeground);
+      stopWrongPlayerRouteThemeAudio(CASINO_BACKGROUND_TRACKS);
     };
   }, [
     attachInteractionListener,
@@ -2038,6 +2139,18 @@ export default function PlayerPage() {
       }
       return;
     }
+    if (
+      !playerThemeRouteGuard({
+        currentPath: typeof window === 'undefined' ? '' : window.location.pathname,
+        resolvedRole: resolvedPlayerRole,
+        audioTheme: 'player',
+      })
+    ) {
+      clearInteractionListener();
+      clearAutoplayRetry();
+      cleanupAudioElement();
+      return;
+    }
 
     if (audioRef.current) {
       void playCurrentAudio();
@@ -2049,6 +2162,8 @@ export default function PlayerPage() {
     clearAutoplayRetry,
     clearInteractionListener,
     musicEnabled,
+    resolvedPlayerRole,
+    cleanupAudioElement,
     playCurrentAudio,
     playRandomTrack,
   ]);
@@ -3683,7 +3798,7 @@ export default function PlayerPage() {
     setSelectedAgent(agent);
     setNewMessage('');
     handleClearImage();
-    markConversationAsRead(agent.uid);
+    markThreadReadOnPlayerChatFocus(agent.uid, 'player_agent');
   }
 
   function handleOpenFirstUnreadAgent() {
@@ -5088,7 +5203,7 @@ export default function PlayerPage() {
             {activeView === 'earn-coins' && <EarnCoins claimingFreeplayGift={claimingFreeplayGift} claimingReferredPlayerUid={claimingReferredPlayerUid} freeplayClaimSuccessMessage={freeplayClaimSuccessMessage} handleClaimFreeplayGift={handleClaimFreeplayGift} handleClaimReferralReward={handleClaimReferralReward} hasPendingFreeplayGift={hasPendingFreeplayGift} referralRewardGroups={referralRewardGroups} referralRewardsLoading={referralRewardsLoading} referredByPlayerName={referredByPlayerName} />}
 
             {/* AGENTS VIEW - ReachOutView integration remains the same but styled via the prop structure */}
-            {activeView === 'agents' && <Agents agentOnlineByUid={agentOnlineByUid} agents={agents} agentsScrollRef={agentsScrollRef} handleAgentSelect={handleAgentSelect} handleClearImage={handleClearImage} handleImageSelect={handleImageSelect} handleSendMessage={handleSendMessage} imagePreview={imagePreview} messages={messages} newMessage={newMessage} pagedAgentChat={pagedAgentChat} selectedAgent={selectedAgent} sendingImage={sendingImage} setNewMessage={setNewMessage} unreadCounts={unreadCounts} />}
+            {activeView === 'agents' && <Agents agentOnlineByUid={agentOnlineByUid} agents={agents} agentsScrollRef={agentsScrollRef} handleAgentSelect={handleAgentSelect} handleClearImage={handleClearImage} handleImageSelect={handleImageSelect} handleSendMessage={handleSendMessage} imagePreview={imagePreview} messages={messages} newMessage={newMessage} onMessageFocus={() => markThreadReadOnPlayerChatFocus(selectedAgent?.uid, 'player_agent')} pagedAgentChat={pagedAgentChat} selectedAgent={selectedAgent} sendingImage={sendingImage} setNewMessage={setNewMessage} unreadCounts={unreadCounts} />}
             </div>
           </div>
         </section>

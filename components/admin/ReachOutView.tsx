@@ -35,6 +35,7 @@ interface Props {
   onLoadOlderMessages?: () => void;
   onSelectUser: (user: AdminUser) => void;
   onMessageChange: (value: string) => void;
+  onMessageFocus?: () => void;
   onSendMessage: (e: React.FormEvent) => void;
   onImageSelect?: (file: File) => void;
   onClearImage?: () => void;
@@ -53,6 +54,7 @@ export default function ReachOutView({
   sendingImage = false,
   onSelectUser,
   onMessageChange,
+  onMessageFocus,
   onSendMessage,
   onImageSelect,
   onClearImage,
@@ -316,6 +318,7 @@ export default function ReachOutView({
 
             <form
               onSubmit={onSendMessage}
+              onClick={onMessageFocus}
               className="shrink-0 border-t border-white/10 bg-black/40 p-3 xl:p-4"
             >
               {imagePreview && (
@@ -341,6 +344,8 @@ export default function ReachOutView({
                   type="text"
                   value={newMessage}
                   onChange={(e) => onMessageChange(e.target.value)}
+                  onFocus={onMessageFocus}
+                  onClick={onMessageFocus}
                   placeholder="Message…"
                   className="min-w-0 flex-1 rounded-xl border border-amber-500/20 bg-neutral-900/90 px-4 py-3 text-base text-white placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-amber-400/40"
                 />

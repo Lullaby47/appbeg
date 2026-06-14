@@ -2,7 +2,7 @@
 
 import '@/styles/player-fire.css';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
@@ -13,6 +13,12 @@ import { logChatPageMount } from '@/lib/client/chatLogoutDiagnostics';
 import { shouldSkipClientFirestore } from '@/lib/client/clientFirestoreGuard';
 import { useIsPlayerSessionRole } from '@/features/player/useIsPlayerSessionRole';
 import { usePresenceOnlineMap } from '@/features/presence/userPresence';
+import {
+  clearStaleRoleThemeStorage,
+  installPlayerThemeAudioGuard,
+  stopWrongPlayerRouteThemeAudio,
+} from '@/lib/client/playerThemeAudioGuard';
+import { CASINO_BACKGROUND_TRACKS } from '../constants';
 import {
   acceptFriendRequest,
   deleteDirectMessageForEveryone,
@@ -77,6 +83,81 @@ export default function PlayerChatPage() {
   const [selfUid, setSelfUid] = useState('');
   const [chatLoading, setChatLoading] = useState(true);
   const [chatLoadError, setChatLoadError] = useState('');
+  const chatReadInFlightRef = useRef<Set<string>>(new Set());
+  const lastChatReadClearAtRef = useRef<Record<string, number>>({});
+
+  useEffect(() => {
+    installPlayerThemeAudioGuard(CASINO_BACKGROUND_TRACKS);
+    clearStaleRoleThemeStorage();
+    stopWrongPlayerRouteThemeAudio(CASINO_BACKGROUND_TRACKS);
+
+    return () => {
+      stopWrongPlayerRouteThemeAudio(CASINO_BACKGROUND_TRACKS);
+    };
+  }, []);
+
+  const markThreadReadOnPlayerChatFocus = useCallback(
+    (threadId: string | null | undefined, chatType: 'player_player' | 'player_agent') => {
+      const cleanThreadId = String(threadId || '').trim();
+      if (!cleanThreadId) {
+        console.info('[PLAYER_CHAT_READ] skippedNoThread', { chatType });
+        return;
+      }
+
+      const dedupeKey = `${chatType}:${cleanThreadId}`;
+      const now = Date.now();
+      if (chatReadInFlightRef.current.has(dedupeKey)) {
+        return;
+      }
+      if (now - (lastChatReadClearAtRef.current[dedupeKey] || 0) < 10000) {
+        return;
+      }
+      lastChatReadClearAtRef.current[dedupeKey] = now;
+
+      console.info('[PLAYER_CHAT_READ] focusClearUnread', {
+        chatType,
+        threadId: cleanThreadId,
+        playerUid: selfUid || getCachedSessionUser()?.uid || null,
+      });
+      setChatList((previous) => {
+        const current = previous[cleanThreadId];
+        if (!current?.unread) {
+          return previous;
+        }
+        console.info('[PLAYER_CHAT_READ] optimisticClear', {
+          chatType,
+          threadId: cleanThreadId,
+        });
+        return {
+          ...previous,
+          [cleanThreadId]: {
+            ...current,
+            unread: 0,
+          },
+        };
+      });
+
+      chatReadInFlightRef.current.add(dedupeKey);
+      void markDirectConversationSeen(cleanThreadId)
+        .then(() => {
+          console.info('[PLAYER_CHAT_READ] persisted', {
+            chatType,
+            threadId: cleanThreadId,
+          });
+        })
+        .catch((error) => {
+          console.warn('[PLAYER_CHAT_READ] persisted', {
+            chatType,
+            threadId: cleanThreadId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        })
+        .finally(() => {
+          chatReadInFlightRef.current.delete(dedupeKey);
+        });
+    },
+    [selfUid]
+  );
 
   useEffect(() => {
     if (!isPlayerRole) {
@@ -771,7 +852,11 @@ export default function PlayerChatPage() {
                   </div>
                 ) : null}
 
-                <form onSubmit={onSend} className="border-t border-white/10 p-3">
+                <form
+                  onSubmit={onSend}
+                  onClick={() => markThreadReadOnPlayerChatFocus(selectedPeer.uid, 'player_player')}
+                  className="border-t border-white/10 p-3"
+                >
                   <div className="mb-2 flex gap-2">
                     <input
                       type="file"
@@ -789,6 +874,12 @@ export default function PlayerChatPage() {
                   <div className="flex gap-2">
                     <input
                       value={newMessage}
+                      onFocus={() =>
+                        markThreadReadOnPlayerChatFocus(selectedPeer.uid, 'player_player')
+                      }
+                      onClick={() =>
+                        markThreadReadOnPlayerChatFocus(selectedPeer.uid, 'player_player')
+                      }
                       onChange={(e) => {
                         setNewMessage(e.target.value);
                         void setDirectTyping(selectedPeer.uid, e.target.value.trim().length > 0);

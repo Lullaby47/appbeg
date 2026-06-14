@@ -16,6 +16,7 @@ export default function Agents(props: Props) {
     imagePreview,
     messages,
     newMessage,
+    onMessageFocus,
     pagedAgentChat,
     selectedAgent,
     sendingImage,
@@ -40,6 +41,7 @@ export default function Agents(props: Props) {
                   onLoadOlderMessages={pagedAgentChat.loadOlder}
                   onSelectUser={handleAgentSelect}
                   onMessageChange={setNewMessage}
+                  onMessageFocus={onMessageFocus}
                   onSendMessage={handleSendMessage}
                   onImageSelect={handleImageSelect}
                   onClearImage={handleClearImage}
