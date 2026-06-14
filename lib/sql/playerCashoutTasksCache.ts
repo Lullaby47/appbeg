@@ -404,12 +404,61 @@ export async function readStaffCompletedCashoutTasks(
       WHERE deleted_at IS NULL
         AND coadmin_uid = $1
         AND LOWER(COALESCE(status, '')) = 'completed'
-        AND assigned_handler_uid = $2
+        AND COALESCE(
+          NULLIF(raw_firestore_data->>'actorUid', ''),
+          assigned_handler_uid
+        ) = $2
       ORDER BY completed_at DESC NULLS LAST, created_at DESC NULLS LAST
       LIMIT $3
     `,
     [cleanCoadminUid, cleanStaffUid, Math.max(1, Math.min(200, limit))],
     'staff_completed'
+  );
+}
+
+export async function readCoadminActiveCashoutTasks(
+  coadminUid: string,
+  limit = 50
+): Promise<CachedPlayerCashoutTask[] | null> {
+  const cleanCoadminUid = cleanText(coadminUid);
+  if (!cleanCoadminUid) {
+    return [];
+  }
+  return readPlayerCashoutTasksBySql(
+    `
+      SELECT *
+      FROM public.player_cashout_tasks_cache
+      WHERE deleted_at IS NULL
+        AND coadmin_uid = $1
+        AND LOWER(COALESCE(status, '')) = 'in_progress'
+      ORDER BY started_at DESC NULLS LAST, created_at DESC NULLS LAST
+      LIMIT $2
+    `,
+    [cleanCoadminUid, Math.max(1, Math.min(200, limit))],
+    'coadmin_active'
+  );
+}
+
+export async function readCoadminCompletedCashoutTasks(
+  coadminUid: string,
+  limit = 50
+): Promise<CachedPlayerCashoutTask[] | null> {
+  const cleanCoadminUid = cleanText(coadminUid);
+  if (!cleanCoadminUid) {
+    return [];
+  }
+  return readPlayerCashoutTasksBySql(
+    `
+      SELECT *
+      FROM public.player_cashout_tasks_cache
+      WHERE deleted_at IS NULL
+        AND coadmin_uid = $1
+        AND LOWER(COALESCE(status, '')) = 'completed'
+      ORDER BY completed_at DESC NULLS LAST, created_at DESC NULLS LAST
+      LIMIT $2
+    `,
+    [cleanCoadminUid, Math.max(1, Math.min(200, limit))],
+    'coadmin_completed'
   );
 }
 

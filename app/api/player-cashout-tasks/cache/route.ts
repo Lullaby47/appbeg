@@ -15,6 +15,8 @@ import {
 import { logPlayerApiAuthOk } from '@/lib/server/playerApiAuthLog';
 import { extractPgErrorDetails } from '@/lib/server/sqlErrorDetails';
 import {
+  readCoadminActiveCashoutTasks,
+  readCoadminCompletedCashoutTasks,
   readPlayerCashoutTasksCacheByAssignedHandler,
   readPlayerCashoutTasksCacheByCoadmin,
   readPlayerCashoutTasksCacheByPlayer,
@@ -83,9 +85,9 @@ async function readFirestoreTasks(scope: Scope, uid: string, limit: number) {
   });
 }
 
-type StaffCashoutList = 'pending' | 'active' | 'completed';
+type CashoutTaskList = 'pending' | 'active' | 'completed';
 
-function resolveStaffList(request: Request): StaffCashoutList {
+function resolveCashoutTaskList(request: Request): CashoutTaskList {
   const list = cleanText(new URL(request.url).searchParams.get('list')).toLowerCase();
   if (list === 'active' || list === 'completed') {
     return list;
@@ -208,14 +210,25 @@ export async function GET(request: Request) {
     } else if (scope === 'player') {
       tasks = await readPlayerCashoutTasksCacheByPlayer(targetUid, limit);
     } else if (scope === 'coadmin' || scope === 'staff') {
-      const staffList = scope === 'staff' ? resolveStaffList(request) : 'pending';
+      const taskList = resolveCashoutTaskList(request);
       if (scope === 'staff') {
         await releaseExpiredPlayerCashoutTasksForCoadminInSql(targetUid);
       }
-      if (scope === 'staff' && staffList === 'active') {
-        tasks = await readStaffActiveCashoutTasks(targetUid, user.uid, limit);
-      } else if (scope === 'staff' && staffList === 'completed') {
-        tasks = await readStaffCompletedCashoutTasks(targetUid, user.uid, limit);
+      if (taskList === 'active') {
+        tasks =
+          scope === 'staff'
+            ? await readStaffActiveCashoutTasks(targetUid, user.uid, limit)
+            : await readCoadminActiveCashoutTasks(targetUid, limit);
+      } else if (taskList === 'completed') {
+        tasks =
+          scope === 'staff'
+            ? await readStaffCompletedCashoutTasks(targetUid, user.uid, limit)
+            : await readCoadminCompletedCashoutTasks(targetUid, limit);
+        console.info('[CASHOUT_COMPLETED_TASKS_CACHE]', scope === 'staff' ? 'staffScope' : 'coadminScope', {
+          coadminUid: targetUid,
+          staffUid: scope === 'staff' ? user.uid : null,
+          count: tasks?.length ?? 0,
+        });
       } else {
         tasks = await readStaffPendingCashoutTasks(targetUid, limit);
       }
@@ -223,7 +236,14 @@ export async function GET(request: Request) {
         console.info('[PLAYER_CASHOUT_TASKS_CACHE] staffScope', {
           staffUid: user.uid,
           coadminUid: targetUid,
-          list: staffList,
+          list: taskList,
+          count: tasks?.length ?? 0,
+        });
+      }
+      if (scope === 'coadmin' && (user.role === 'coadmin' || user.role === 'admin')) {
+        console.info('[PLAYER_CASHOUT_TASKS_CACHE] coadminScope', {
+          coadminUid: targetUid,
+          list: taskList,
           count: tasks?.length ?? 0,
         });
       }
