@@ -977,6 +977,7 @@ export async function completePlayerCashoutTaskInSql(
     await client.query('COMMIT');
     console.info('[CASHOUT_TASK_DONE] success', {
       taskId,
+      status: 'completed',
       actorUid,
       actorRole,
       coadminUid: taskScope,

@@ -68,6 +68,7 @@ export async function POST(request: Request) {
 
       return NextResponse.json({
         success: true,
+        status: 'completed',
         alreadyCompleted: result.alreadyCompleted,
         duplicate: result.duplicate,
         authority: 'sql',

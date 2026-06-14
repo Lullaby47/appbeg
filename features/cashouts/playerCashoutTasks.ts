@@ -18,6 +18,7 @@ import { auth, db } from '@/lib/firebase/client';
 import { evaluateWithdrawalPolicy } from '@/lib/economy/policy';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 import {
+  attachCoadminCashoutLifecyclePoll,
   attachPlayerCashoutTasksSqlPoll,
   attachStaffCashoutLifecyclePoll,
   isPlayerCashoutSqlReadEnabled,
@@ -453,7 +454,7 @@ export async function completePlayerCashoutTask(taskId: string) {
     });
     throw new Error(readApiError('Failed to complete cashout task.', payload));
   }
-  console.info('[CASHOUT_TASK_DONE] success', { taskId, status: response.status });
+  console.info('[CASHOUT_TASK_DONE] success', { taskId, status: 'completed' });
 }
 
 export async function releasePlayerCashoutTask(taskId: string) {
@@ -495,6 +496,39 @@ export function listenStaffCashoutTaskLifecycle(
   }
 
   const dispose = listenPlayerCashoutTasksForStaff(coadminUid, (tasks) => {
+    const pending = tasks.filter(
+      (task) => task.status === 'pending' && !task.assignedHandlerUid
+    );
+    handlers.onPendingChange(pending);
+    handlers.onActiveChange(
+      tasks.filter((task) => task.status === 'in_progress')
+    );
+    handlers.onCompletedChange(
+      tasks.filter((task) => task.status === 'completed')
+    );
+  }, handlers.onError);
+
+  return { dispose, refetchNow: () => {} };
+}
+
+export function listenCoadminCashoutTaskLifecycle(
+  coadminUid: string,
+  handlers: {
+    onPendingChange: (tasks: PlayerCashoutTask[]) => void;
+    onActiveChange: (tasks: PlayerCashoutTask[]) => void;
+    onCompletedChange: (tasks: PlayerCashoutTask[]) => void;
+    onError?: (error: Error) => void;
+  }
+): { dispose: () => void; refetchNow: () => void } {
+  if (isPlayerCashoutSqlReadEnabled()) {
+    return attachCoadminCashoutLifecyclePoll({
+      coadminUid,
+      limit: CASHOUT_ACTIVE_LISTENER_LIMIT,
+      ...handlers,
+    });
+  }
+
+  const dispose = listenPlayerCashoutTasksByCoadmin(coadminUid, (tasks) => {
     const pending = tasks.filter(
       (task) => task.status === 'pending' && !task.assignedHandlerUid
     );

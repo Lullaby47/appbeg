@@ -160,11 +160,6 @@ export async function GET(request: Request) {
       if (!targetUid) {
         return NextResponse.json({ tasks: [], source: 'postgres' });
       }
-      if (user.role === 'coadmin') {
-        console.info('[PLAYER_CASHOUT_TASKS_CACHE] coadminScope', {
-          coadminUid: targetUid,
-        });
-      }
       if (
         user.role !== 'admin' &&
         user.role !== 'coadmin' &&

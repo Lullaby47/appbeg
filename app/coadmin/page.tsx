@@ -100,7 +100,7 @@ import {
   getPlayerCashoutTaskCountdown,
   getPlayerCashoutPaymentDisplay,
   listenPlayerCashoutTasksByAssignedHandler,
-  listenPlayerCashoutTasksByCoadmin,
+  listenCoadminCashoutTaskLifecycle,
   PlayerCashoutTask,
   startPlayerCashoutTask,
 } from '@/features/cashouts/playerCashoutTasks';
@@ -613,7 +613,9 @@ export default function CoadminPage() {
   const [carerRechargeRedeemTotals, setCarerRechargeRedeemTotals] = useState<
     Record<string, CarerRechargeRedeemTotals>
   >({});
-  const [playerCashoutTasks, setPlayerCashoutTasks] = useState<PlayerCashoutTask[]>([]);
+  const [pendingCashoutTasks, setPendingCashoutTasks] = useState<PlayerCashoutTask[]>([]);
+  const [activeCashoutTasks, setActiveCashoutTasks] = useState<PlayerCashoutTask[]>([]);
+  const [completedCashoutTasks, setCompletedCashoutTasks] = useState<PlayerCashoutTask[]>([]);
   const [playerCashoutTaskLoadingId, setPlayerCashoutTaskLoadingId] = useState<string | null>(
     null
   );
@@ -630,6 +632,7 @@ export default function CoadminPage() {
   const bonusEventsLastEnsureAttemptAtMsRef = useRef(0);
   const bonusEventsLatestActiveCountRef = useRef(0);
   const bonusEventsLastMissingCountRef = useRef<number | null>(null);
+  const refetchCashoutTasksRef = useRef<(() => void) | null>(null);
   const BONUS_ENSURE_CLIENT_COOLDOWN_MS = 45_000;
 
   const activeChatUser =
@@ -724,7 +727,7 @@ export default function CoadminPage() {
     (request) => !dismissedPendingCarerRequestIds.includes(request.id)
   );
   const coadminCashoutViewerUid = coadminActorUid || auth.currentUser?.uid || '';
-  const visiblePlayerCashoutTasks = playerCashoutTasks
+  const visiblePlayerCashoutTasks = [...pendingCashoutTasks, ...activeCashoutTasks]
     .filter((task) => {
       if (isPlayerCashoutHandledBySomeoneElse(task, coadminCashoutViewerUid)) {
         return false;
@@ -736,12 +739,7 @@ export default function CoadminPage() {
       ...task,
       status: getEffectivePlayerCashoutTaskStatus(task),
     }));
-  const completedPlayerCashoutTasks = playerCashoutTasks
-    .map((task) => ({
-      ...task,
-      status: getEffectivePlayerCashoutTaskStatus(task),
-    }))
-    .filter((task) => task.status === 'completed');
+  const completedPlayerCashoutTasks = completedCashoutTasks;
   const selectedBehaviour = useMemo(
     () =>
       staffBehaviours.find((row) => row.staff.staffId === selectedBehaviourStaffId) ||
@@ -1713,7 +1711,7 @@ export default function CoadminPage() {
 
   useEffect(() => {
     let isCancelled = false;
-    let unsubscribe: (() => void) | undefined;
+    let disposeListener: (() => void) | undefined;
 
     async function startPlayerCashoutTaskListener() {
       try {
@@ -1723,19 +1721,31 @@ export default function CoadminPage() {
           return;
         }
 
-        unsubscribe = listenPlayerCashoutTasksByCoadmin(
-          coadminUid,
-          (tasks) => {
+        const lifecycle = listenCoadminCashoutTaskLifecycle(coadminUid, {
+          onPendingChange: (tasks) => {
             if (!isCancelled) {
-              setPlayerCashoutTasks(tasks);
+              setPendingCashoutTasks(tasks);
             }
           },
-          (error) => {
+          onActiveChange: (tasks) => {
+            if (!isCancelled) {
+              setActiveCashoutTasks(tasks);
+            }
+          },
+          onCompletedChange: (tasks) => {
+            if (!isCancelled) {
+              setCompletedCashoutTasks(tasks);
+              console.info('[COADMIN_COMPLETED_TASKS] loaded', { count: tasks.length });
+            }
+          },
+          onError: (error) => {
             if (!isCancelled) {
               setMessage(error.message || 'Failed to listen for player cashout tasks.');
             }
-          }
-        );
+          },
+        });
+        disposeListener = lifecycle.dispose;
+        refetchCashoutTasksRef.current = () => lifecycle.refetchNow();
       } catch (error: any) {
         if (!isCancelled) {
           setMessage(error.message || 'Failed to start player cashout task listener.');
@@ -1747,7 +1757,8 @@ export default function CoadminPage() {
 
     return () => {
       isCancelled = true;
-      unsubscribe?.();
+      refetchCashoutTasksRef.current = null;
+      disposeListener?.();
     };
   }, []);
 
@@ -2989,6 +3000,7 @@ export default function CoadminPage() {
     setMessage('');
     try {
       await startPlayerCashoutTask(taskId);
+      refetchCashoutTasksRef.current?.();
     } catch (error: any) {
       setMessage(error.message || 'Failed to start player cashout task.');
     } finally {
@@ -3001,6 +3013,7 @@ export default function CoadminPage() {
     setMessage('');
     try {
       await completePlayerCashoutTask(taskId);
+      refetchCashoutTasksRef.current?.();
       setMessage('Player cashout task completed.');
     } catch (error: any) {
       setMessage(error.message || 'Failed to complete player cashout task.');
@@ -4170,35 +4183,104 @@ export default function CoadminPage() {
           )}
 
           {activeView === 'view-tasks' && (
-            <div>
-              <h2 className="mb-6 text-3xl font-bold">Completed Tasks</h2>
+            <div className="space-y-6">
+              <div className="rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-5">
+                <h3 className="text-lg font-bold text-cyan-200">Pending Cashout Tasks</h3>
+                {pendingCashoutTasks.length === 0 ? (
+                  <p className="mt-3 text-sm text-cyan-100/70">No pending cashout tasks.</p>
+                ) : (
+                  <div className="mt-3 space-y-3">
+                    {pendingCashoutTasks.map((task) => (
+                      <div
+                        key={task.id}
+                        className="rounded-xl border border-cyan-400/25 bg-black/30 p-4"
+                      >
+                        <p className="text-sm font-semibold text-white">
+                          Player: {task.playerUsername}
+                        </p>
+                        <p className="text-sm text-cyan-100/85">
+                          Amount: {formatUsdFromNprDisplay(task.amountNpr || 0)}
+                        </p>
+                        {renderPlayerCashoutPayment(task)}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
-              {completedPlayerCashoutTasks.length === 0 ? (
-                <p className="text-sm text-neutral-400">No completed tasks yet.</p>
-              ) : (
-                <div className="space-y-3">
-                  {completedPlayerCashoutTasks.map((task) => (
-                    <div
-                      key={task.id}
-                      className="rounded-xl border border-cyan-400/25 bg-cyan-500/10 p-4"
-                    >
-                      <p className="text-sm font-semibold text-white">
-                        Player: {task.playerUsername}
-                      </p>
-                      <p className="text-sm text-cyan-100/85">
-                        Amount: {formatUsdFromNprDisplay(task.amountNpr || 0)}
-                      </p>
-                      {renderPlayerCashoutPayment(task)}
-                      <p className="mt-1 text-xs text-cyan-100/70">
-                        Completed: {task.completedAt?.toDate?.().toLocaleString?.() || 'Done'}
-                      </p>
-                      <p className="mt-1 text-xs text-cyan-100/70">
-                        Handler: {task.assignedHandlerUsername || 'Unknown'}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-5">
+                <h3 className="text-lg font-bold text-amber-200">Active / Claimed Cashout Tasks</h3>
+                {activeCashoutTasks.length === 0 ? (
+                  <p className="mt-3 text-sm text-amber-100/70">No active cashout tasks.</p>
+                ) : (
+                  <div className="mt-3 space-y-3">
+                    {activeCashoutTasks.map((task) => {
+                      const remainingMs = getPlayerCashoutTaskCountdown(task);
+                      return (
+                        <div
+                          key={task.id}
+                          className="rounded-xl border border-amber-400/25 bg-black/30 p-4"
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-4">
+                            <div>
+                              <p className="text-sm font-semibold text-white">
+                                Player: {task.playerUsername}
+                              </p>
+                              <p className="text-sm text-amber-100/85">
+                                Amount: {formatUsdFromNprDisplay(task.amountNpr || 0)}
+                              </p>
+                              {renderPlayerCashoutPayment(task)}
+                              <p className="mt-1 text-xs text-amber-100/70">
+                                Handler: {task.assignedHandlerUsername || 'Unknown'}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void handleCompletePlayerCashoutTask(task.id)}
+                              disabled={playerCashoutTaskLoadingId === task.id}
+                              className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-60"
+                            >
+                              {playerCashoutTaskLoadingId === task.id
+                                ? 'Saving...'
+                                : `Done (${formatCountdownMs(remainingMs + countdownTick * 0)})`}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-5">
+                <h3 className="text-lg font-bold text-emerald-200">Completed Tasks</h3>
+                {completedPlayerCashoutTasks.length === 0 ? (
+                  <p className="mt-3 text-sm text-emerald-100/70">No completed tasks yet.</p>
+                ) : (
+                  <div className="mt-3 space-y-3">
+                    {completedPlayerCashoutTasks.map((task) => (
+                      <div
+                        key={task.id}
+                        className="rounded-xl border border-emerald-400/25 bg-black/30 p-4"
+                      >
+                        <p className="text-sm font-semibold text-white">
+                          Player: {task.playerUsername}
+                        </p>
+                        <p className="text-sm text-emerald-100/85">
+                          Amount: {formatUsdFromNprDisplay(task.amountNpr || 0)}
+                        </p>
+                        {renderPlayerCashoutPayment(task)}
+                        <p className="mt-1 text-xs text-emerald-100/70">
+                          Completed: {task.completedAt?.toDate?.().toLocaleString?.() || 'Done'}
+                        </p>
+                        <p className="mt-1 text-xs text-emerald-100/70">
+                          Handler: {task.assignedHandlerUsername || 'Unknown'}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

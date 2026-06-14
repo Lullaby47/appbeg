@@ -736,6 +736,7 @@ export default function StaffPage() {
             if (!isCancelled) {
               setCompletedCashoutTasks(tasks);
               setPlayerCashoutTasksLoading(false);
+              console.info('[STAFF_COMPLETED_TASKS] loaded', { count: tasks.length });
             }
           },
           onError: (error) => {
@@ -1058,6 +1059,7 @@ export default function StaffPage() {
     setMessage('');
     try {
       await completePlayerCashoutTask(taskId);
+      refetchCashoutTasksRef.current?.();
       setMessage('Player cashout task completed.');
     } catch (error: any) {
       setMessage(error.message || 'Failed to complete player cashout task.');

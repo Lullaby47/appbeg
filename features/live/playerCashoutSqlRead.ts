@@ -13,7 +13,7 @@ const POLL_MS = 10_000;
 const SAFETY_REFETCH_MS = 45_000;
 
 type CashoutScope = 'player' | 'coadmin' | 'staff' | 'assigned_handler' | 'all';
-type StaffCashoutList = 'pending' | 'active' | 'completed';
+type CashoutTaskList = 'pending' | 'active' | 'completed';
 
 const CASHOUT_LIVE_EVENTS = [
   'cashout_create',
@@ -106,7 +106,7 @@ async function fetchCashoutTasks(
   scope: CashoutScope,
   uid: string,
   limit: number,
-  list?: StaffCashoutList
+  list?: CashoutTaskList
 ) {
   const params = new URLSearchParams({
     scope,
@@ -115,7 +115,7 @@ async function fetchCashoutTasks(
   if (scope !== 'all') {
     params.set('uid', uid);
   }
-  if (scope === 'staff' && list) {
+  if ((scope === 'staff' || scope === 'coadmin') && list) {
     params.set('list', list);
   }
 
@@ -347,6 +347,35 @@ export function attachStaffCashoutLifecyclePoll(input: {
   onCompletedChange: (tasks: PlayerCashoutTask[]) => void;
   onError?: (error: Error) => void;
 }): { dispose: () => void; refetchNow: () => void } {
+  return attachScopedCashoutLifecyclePoll({
+    scope: 'staff',
+    ...input,
+  });
+}
+
+export function attachCoadminCashoutLifecyclePoll(input: {
+  coadminUid: string;
+  limit?: number;
+  onPendingChange: (tasks: PlayerCashoutTask[]) => void;
+  onActiveChange: (tasks: PlayerCashoutTask[]) => void;
+  onCompletedChange: (tasks: PlayerCashoutTask[]) => void;
+  onError?: (error: Error) => void;
+}): { dispose: () => void; refetchNow: () => void } {
+  return attachScopedCashoutLifecyclePoll({
+    scope: 'coadmin',
+    ...input,
+  });
+}
+
+function attachScopedCashoutLifecyclePoll(input: {
+  scope: 'staff' | 'coadmin';
+  coadminUid: string;
+  limit?: number;
+  onPendingChange: (tasks: PlayerCashoutTask[]) => void;
+  onActiveChange: (tasks: PlayerCashoutTask[]) => void;
+  onCompletedChange: (tasks: PlayerCashoutTask[]) => void;
+  onError?: (error: Error) => void;
+}): { dispose: () => void; refetchNow: () => void } {
   const limit = input.limit || 50;
   let disposed = false;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -368,22 +397,25 @@ export function attachStaffCashoutLifecyclePoll(input: {
     refetchInFlight = true;
     try {
       const [pending, active, completed] = await Promise.all([
-        fetchCashoutTasks('staff', input.coadminUid, limit, 'pending'),
-        fetchCashoutTasks('staff', input.coadminUid, limit, 'active'),
-        fetchCashoutTasks('staff', input.coadminUid, limit, 'completed'),
+        fetchCashoutTasks(input.scope, input.coadminUid, limit, 'pending'),
+        fetchCashoutTasks(input.scope, input.coadminUid, limit, 'active'),
+        fetchCashoutTasks(input.scope, input.coadminUid, limit, 'completed'),
       ]);
       if (!disposed) {
         const sanitizedPending = sanitizePendingCashoutTasks(pending);
         input.onPendingChange(sanitizedPending);
         input.onActiveChange(active);
         input.onCompletedChange(completed);
+        const loadedLog =
+          input.scope === 'staff' ? '[STAFF_COMPLETED_TASKS] loaded' : '[COADMIN_COMPLETED_TASKS] loaded';
         console.info('[STAFF_CASHOUT_TASKS] pendingLoaded', {
+          scope: input.scope,
           count: sanitizedPending.length,
           rawCount: pending.length,
           reason,
         });
-        console.info('[STAFF_CASHOUT_TASKS] activeLoaded', { count: active.length, reason });
-        console.info('[STAFF_CASHOUT_TASKS] completedLoaded', { count: completed.length, reason });
+        console.info('[STAFF_CASHOUT_TASKS] activeLoaded', { scope: input.scope, count: active.length, reason });
+        console.info(loadedLog, { scope: input.scope, count: completed.length, reason });
       }
     } catch (error) {
       if (!disposed) {
@@ -458,7 +490,7 @@ export function attachStaffCashoutLifecyclePoll(input: {
       }
       try {
         const payload = JSON.parse(rawData) as Record<string, unknown>;
-        logScopeEventReceived('staff', eventName, payload);
+        logScopeEventReceived(input.scope, eventName, payload);
       } catch {
         // Ignore malformed SSE payloads; still refetch lists.
       }
