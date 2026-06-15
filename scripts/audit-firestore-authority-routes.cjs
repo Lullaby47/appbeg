@@ -43,6 +43,7 @@ const ROUTE_CLASSIFICATION = [
   { route: '/api/coadmin/workers/cut-reward', classification: 'migrate_now_sql_authority', status: 'sql_gated' },
   { route: '/api/bonus-events/list', classification: 'remove_legacy_firestore_branch', status: 'read_fallback_sql_blocked' },
   { route: '/api/coadmin/bonus-events/cache', classification: 'remove_legacy_firestore_branch', status: 'read_fallback_sql_blocked' },
+  { route: '/api/player/chat/mark-read', classification: 'legacy_flag_off_only', status: 'sql_authority_firestore_mirror_skipped' },
   { route: '/api/bonus-events/cache/mirror', classification: 'legacy_flag_off_only', status: 'mirror_firestore_read_when_flag_off' },
   { route: '/api/conversations/cache/mirror', classification: 'legacy_flag_off_only', status: 'mirror_firestore_read_when_flag_off' },
   { route: '/api/chat/messages/cache/mirror', classification: 'legacy_flag_off_only', status: 'mirror_firestore_read_when_flag_off' },
@@ -73,7 +74,9 @@ function scanFile(filePath) {
     /\.set\(|\.update\(|\.delete\(|runTransaction|batch\(|collection\(/.test(content) &&
     /adminDb/.test(content);
   const hasAuthorityGate =
-    /isAuthoritySqlWriteEnabled/.test(content) || /isCacheSqlAuthoritative/.test(content);
+    /isAuthoritySqlWriteEnabled/.test(content) ||
+    /isCacheSqlAuthoritative/.test(content) ||
+    /shouldBlockFirestoreFallback/.test(content);
   const hasFirestoreTouch = /logFirestoreTouch|FIRESTORE_TOUCH/.test(content);
   const classified = ROUTE_CLASSIFICATION.find((row) => row.route === route);
   return {

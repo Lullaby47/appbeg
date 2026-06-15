@@ -25,7 +25,7 @@ const FIRESTORE_RUNTIME_TOUCHPOINTS = [
     touch: 'client_write',
     sql_cache: 'conversations_cache',
     blocked_when_sql_read: 'read_only',
-    notes: 'Send/mark-read still writes Firestore; SQL cache updated via mirror API in SQL mode',
+    notes: 'Send still has legacy Firestore branch; mark-read skips Firestore mirror in SQL authority mode',
   },
   {
     collection: 'conversations/messages',

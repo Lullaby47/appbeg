@@ -18,7 +18,14 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const PLAYER_REQUEST_HISTORY_LIMIT = 40;
-const PLAYER_REQUEST_ACTIVE_STATUSES = ['pending', 'poked', 'pending_review'];
+const PLAYER_REQUEST_ACTIVE_STATUSES = [
+  'pending',
+  'poked',
+  'pending_review',
+  'waiting_player_exit',
+  'retry_requested',
+  'pending_automation',
+];
 
 const RECOMMENDED_SNAPSHOT_INDEXES = [
   'player_game_requests_cache(player_uid, created_at DESC) WHERE deleted_at IS NULL',
@@ -37,6 +44,9 @@ type SnapshotRequest = {
   pokeMessage: string | null;
   dismissReasonCode: string | null;
   dismissReasonMessage: string | null;
+  automationStatus: string | null;
+  playerMessage: string | null;
+  retryAttempt: number | null;
   createdAt: string | null;
   updatedAt: string | null;
   completedAt: string | null;
@@ -65,6 +75,16 @@ function mapSnapshotRow(row: Record<string, unknown>): SnapshotRequest {
       cleanText(row.dismiss_reason_code) || readRawField(row, 'dismissReasonCode'),
     dismissReasonMessage:
       cleanText(row.dismiss_reason_message) || readRawField(row, 'dismissReasonMessage'),
+    automationStatus: cleanText(row.automation_status) || readRawField(row, 'automationStatus'),
+    playerMessage:
+      readRawField(row, 'playerMessage') ||
+      cleanText(row.poke_message) ||
+      readRawField(row, 'pokeMessage'),
+    retryAttempt: Number.isFinite(Number(row.retry_attempt))
+      ? Number(row.retry_attempt)
+      : Number.isFinite(Number(readRawField(row, 'retryAttempt')))
+        ? Number(readRawField(row, 'retryAttempt'))
+        : null,
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
     completedAt: toIsoString(row.completed_at),

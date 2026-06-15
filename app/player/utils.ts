@@ -76,6 +76,15 @@ export function getRequestStatusLabel(status: PlayerGameRequest['status']) {
   if (status === 'pending_review') {
     return 'Pending review';
   }
+  if (status === 'waiting_player_exit') {
+    return 'Exit game needed';
+  }
+  if (status === 'retry_requested') {
+    return 'Retry requested';
+  }
+  if (status === 'pending_automation') {
+    return 'Waiting';
+  }
   return 'Pending';
 }
 
@@ -91,6 +100,12 @@ export function getRequestStatusClass(status: PlayerGameRequest['status']) {
   }
   if (status === 'pending_review') {
     return 'bg-sky-500/20 text-sky-200';
+  }
+  if (status === 'waiting_player_exit') {
+    return 'bg-amber-400/25 text-amber-100';
+  }
+  if (status === 'retry_requested' || status === 'pending_automation') {
+    return 'bg-violet-500/20 text-violet-100';
   }
 
   return 'bg-amber-500/20 text-amber-200';

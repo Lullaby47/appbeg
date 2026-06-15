@@ -37,6 +37,9 @@ export type PlayerRequestOutboxPayload = {
   gameName: string;
   amount: number | null;
   baseAmount: number | null;
+  automationStatus: string | null;
+  playerMessage: string | null;
+  retryAttempt: number | null;
   pokeMessage: string | null;
   updatedAt: string | null;
   mirroredAt: string | null;
@@ -313,6 +316,9 @@ export function buildPlayerRequestOutboxPayload(input: {
   gameName?: unknown;
   amount?: unknown;
   baseAmount?: unknown;
+  automationStatus?: unknown;
+  playerMessage?: unknown;
+  retryAttempt?: unknown;
   pokeMessage?: unknown;
   updatedAt?: unknown;
   mirroredAt?: unknown;
@@ -326,6 +332,9 @@ export function buildPlayerRequestOutboxPayload(input: {
     gameName: cleanText(input.gameName),
     amount: Number.isFinite(Number(input.amount)) ? Number(input.amount) : null,
     baseAmount: Number.isFinite(Number(input.baseAmount)) ? Number(input.baseAmount) : null,
+    automationStatus: cleanText(input.automationStatus) || null,
+    playerMessage: cleanText(input.playerMessage) || null,
+    retryAttempt: Number.isFinite(Number(input.retryAttempt)) ? Number(input.retryAttempt) : null,
     pokeMessage: cleanText(input.pokeMessage) || null,
     updatedAt: toIsoString(input.updatedAt),
     mirroredAt: toIsoString(input.mirroredAt) || new Date().toISOString(),
@@ -664,6 +673,9 @@ export async function emitPlayerRequestOutboxEvent(input: {
   gameName?: unknown;
   amount?: unknown;
   baseAmount?: unknown;
+  automationStatus?: unknown;
+  playerMessage?: unknown;
+  retryAttempt?: unknown;
   pokeMessage?: unknown;
   updatedAt?: unknown;
   mirroredAt?: unknown;

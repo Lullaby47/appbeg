@@ -359,6 +359,7 @@ export default function PlayerPage() {
   const [coinLoading, setCoinLoading] = useState(false);
   const [requestHistory, setRequestHistory] = useState<PlayerGameRequest[]>([]);
   const [dismissRedeemLoadingId, setDismissRedeemLoadingId] = useState<string | null>(null);
+  const [redeemRetryLoadingId, setRedeemRetryLoadingId] = useState<string | null>(null);
   const [redeemDismissSplashRequest, setRedeemDismissSplashRequest] =
     useState<PlayerGameRequest | null>(null);
   const [isBlockedPlayer, setIsBlockedPlayer] = useState(false);
@@ -1555,6 +1556,14 @@ export default function PlayerPage() {
     () => requestHistory.slice(0, MAX_REQUEST_HISTORY_DISPLAY),
     [requestHistory]
   );
+
+  function requestNeedsPlayerExit(request: PlayerGameRequest) {
+    return (
+      request.type === 'redeem' &&
+      (request.status === 'waiting_player_exit' ||
+        String(request.automationStatus || '').trim().toUpperCase() === 'PLAYER_ACTIVE_IN_GAME')
+    );
+  }
 
   useEffect(() => {
     if (!playerUid) {
@@ -3722,6 +3731,57 @@ export default function PlayerPage() {
     }
   }
 
+  async function handleRedeemReadyForRetry(request: PlayerGameRequest) {
+    if (!requestNeedsPlayerExit(request) || redeemRetryLoadingId === request.id) {
+      return;
+    }
+    setRedeemRetryLoadingId(request.id);
+    setMessage('');
+
+    try {
+      const response = await fetch('/api/player/game-requests/redeem-ready-for-retry', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(await getPlayerApiHeaders()),
+        },
+        body: JSON.stringify({ requestId: request.id }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        request?: PlayerGameRequest;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to retry redeem request.');
+      }
+      console.info('[PLAYER_EXIT_CONFIRMED_RETRY_REQUESTED]', { requestId: request.id });
+      setRequestHistory((current) =>
+        sortByNewest(
+          current.map((item) =>
+            item.id === request.id
+              ? {
+                  ...item,
+                  status: payload.request?.status || 'pending',
+                  automationStatus: payload.request?.automationStatus || 'retry_requested',
+                  playerMessage: null,
+                }
+              : item
+          )
+        )
+      );
+      setMessage('Thanks. Your redeem is ready to continue.');
+    } catch (error) {
+      reportPlayerUiError(
+        'redeem_ready_for_retry',
+        error,
+        setMessage,
+        'Failed to retry redeem request.'
+      );
+    } finally {
+      setRedeemRetryLoadingId(null);
+    }
+  }
+
   async function confirmDismissRedeemSplash() {
     const request = redeemDismissSplashRequest;
     if (!request) {
@@ -4652,8 +4712,9 @@ export default function PlayerPage() {
         ) : (
           <div className="space-y-4">
             {displayedRequestHistory.map((request) => {
+              const needsPlayerExit = requestNeedsPlayerExit(request);
               const canDismissRedeem =
-                request.type === 'redeem' && request.status === 'pending';
+                request.type === 'redeem' && request.status === 'pending' && !needsPlayerExit;
 
               return (
                 <motion.div
@@ -4689,6 +4750,26 @@ export default function PlayerPage() {
                         <p className="text-amber-100/60">Requested: <span className="text-white">{formatDateTime(request.createdAt)}</span></p>
                         <p className="text-amber-100/60">Completed: <span className="text-white">{formatDateTime(request.completedAt)}</span></p>
                       </div>
+                      {needsPlayerExit && (
+                        <div className="mt-4 rounded-2xl border border-amber-300/45 bg-amber-400/15 p-4 text-sm text-amber-50 shadow-[0_0_24px_-14px_rgba(251,191,36,0.9)]">
+                          <p className="text-base font-black text-amber-100">
+                            Exit the game to complete your redeem
+                          </p>
+                          <p className="mt-2 text-amber-50/80">
+                            Your redeem request is ready, but the game account appears to still be active. Please close/exit the game, then your redeem can continue.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => void handleRedeemReadyForRetry(request)}
+                            disabled={redeemRetryLoadingId === request.id}
+                            className="mt-3 min-h-[44px] rounded-xl bg-amber-300 px-4 py-2 text-sm font-black text-black shadow-lg shadow-amber-500/20 transition hover:brightness-110 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {redeemRetryLoadingId === request.id
+                              ? 'Retrying...'
+                              : 'I have exited the game'}
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex flex-wrap gap-2">

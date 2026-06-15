@@ -1,0 +1,146 @@
+
+> appbeg-new@0.1.0 start
+> next start -p 3105
+
+▲ Next.js 16.2.4
+- Local:         http://localhost:3105
+- Network:       http://10.5.0.2:3105
+✓ Ready in 131ms
+[APPBEG_SQL_ONLY_MODE] enabled=true
+[FIREBASE_RUNTIME_DISABLED] enabled=true
+[FIREBASE_RUNTIME_GUARD] migration_paths_allowed=scripts/firebase-backfill,lib/firebase/migrationOnly,app/api/admin/migration
+[APPBEG_SQL_ONLY_FLAGS] {
+  context: 'instrumentation',
+  appbeg_sql_only_mode: true,
+  allow_firebase_fallback: false,
+  auth_sql_only: true,
+  node_env: 'production',
+  production_default: true
+}
+[SQL_RUNTIME] {
+  context: 'instrumentation',
+  node_env: 'production',
+  database_url_configured: true,
+  auth_sql_read: true,
+  player_session_sql_read: true,
+  app_session_sql_read: true,
+  authority_sql_write: true,
+  appbeg_sql_only_mode: true,
+  allow_firebase_fallback: false,
+  sql_read_mode: true,
+  sql_authority_mode: true,
+  firestore_fallback_blocked: true,
+  authority_source: 'sql'
+}
+[SQL_POOL] created {
+  name: 'playerMirror',
+  max: 3,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+  statementTimeoutMillis: 15000
+}
+[SQL_POOL_AUDIT] known_pools {
+  playerMirror: {
+    scope: 'carerTasksCache,liveOutbox,playerGameRequestsCache,playersCache,playerSessionsCache,...',
+    shared: true,
+    max: 3,
+    env: 'PG_POOL_MAX'
+  },
+  gameLoginsCache: {
+    scope: 'game_logins_cache reads/writes',
+    shared: true,
+    uses: 'playerMirror'
+  },
+  automationJobsCache: {
+    scope: 'automation_jobs_cache',
+    shared: true,
+    uses: 'playerMirror'
+  },
+  coadminBonusSettingsCache: {
+    scope: 'coadmin_bonus_settings_cache',
+    shared: true,
+    uses: 'playerMirror'
+  },
+  note: 'carerTasksCache uses playerMirror; separate pools also hit DATABASE_URL under burst load',
+  vercel_pgbouncer: 'On Vercel/serverless prefer DATABASE_URL with ?pgbouncer=true and transaction pool mode; avoid holding clients across awaits/SSE; keep max pool modest per instance'
+}
+[SQL_RUNTIME_DB_AUDIT] {
+  context: 'instrumentation',
+  database_url_hash: 'd3871e91271c',
+  database_name: 'appbeg',
+  authority_sql_write: true,
+  auth_sql_read: true,
+  player_session_sql_read: true,
+  app_session_sql_read: true,
+  environment: 'production',
+  authority_operations_exists: true,
+  missing_authority_tables: []
+}
+[SQL_RUNTIME_READY] {
+  database_url_hash: 'd3871e91271c',
+  missingTables: [],
+  missingIndexes: [],
+  missingPermissions: [],
+  firebaseFirestoreBlocked: true,
+  runtimeSource: 'postgres',
+  context: 'instrumentation',
+  all_required_tables_present: true,
+  skipped: false,
+  reason: null
+}
+[SQL_RUNTIME_DB_AUDIT] {
+  context: 'instrumentation',
+  database_url_hash: 'd3871e91271c',
+  database_name: 'appbeg',
+  authority_sql_write: true,
+  auth_sql_read: true,
+  player_session_sql_read: true,
+  app_session_sql_read: true,
+  environment: 'production',
+  authority_operations_exists: true,
+  missing_authority_tables: []
+}
+[SQL_RUNTIME_READY] {
+  database_url_hash: 'd3871e91271c',
+  missingTables: [],
+  missingIndexes: [],
+  missingPermissions: [],
+  firebaseFirestoreBlocked: true,
+  runtimeSource: 'postgres',
+  context: 'instrumentation',
+  all_required_tables_present: true,
+  skipped: false,
+  reason: null
+}
+[AUTHORITY_SCHEMA_AUDIT] {
+  database_name: 'appbeg',
+  current_schema: 'public',
+  database_url_hash: 'd3871e91271c',
+  authority_sql_write: true,
+  missing_tables: [],
+  present_tables: [
+    'authority_operations',
+    'user_balance_events',
+    'financial_events_cache',
+    'user_balance_snapshots_cache',
+    'players_cache',
+    'player_game_requests_cache',
+    'carer_tasks_cache',
+    'automation_jobs_cache',
+    'player_cashout_tasks_cache',
+    'transfer_requests_cache',
+    'referral_reward_claims_cache',
+    'player_coin_rewards_cache',
+    'freeplay_pending_gifts_cache',
+    'freeplay_gifts_cache',
+    'coadmin_maintenance_cache',
+    'impersonation_logs_cache',
+    'bonus_events_cache',
+    'conversations_cache',
+    'user_presence_cache'
+  ],
+  all_required_tables_present: true,
+  context: 'instrumentation',
+  skipped: false,
+  reason: null
+}

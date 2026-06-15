@@ -31,6 +31,9 @@ type SqlSnapshotRequest = {
   pokeMessage?: string | null;
   dismissReasonCode?: string | null;
   dismissReasonMessage?: string | null;
+  automationStatus?: string | null;
+  playerMessage?: string | null;
+  retryAttempt?: number | null;
   createdAt?: string | null;
   updatedAt?: string | null;
   completedAt?: string | null;
@@ -221,6 +224,8 @@ type SqlRequestPayload = {
   playerMessage?: unknown;
   dismissReasonCode?: unknown;
   dismissReasonMessage?: unknown;
+  automationStatus?: unknown;
+  retryAttempt?: unknown;
   refunded?: unknown;
   createdAt?: unknown;
   updatedAt?: unknown;
@@ -347,7 +352,10 @@ function normalizeRequestStatus(status: unknown): PlayerGameRequestStatus {
     normalized === 'failed' ||
     normalized === 'poked' ||
     normalized === 'pending_review' ||
-    normalized === 'dismissed'
+    normalized === 'dismissed' ||
+    normalized === 'waiting_player_exit' ||
+    normalized === 'retry_requested' ||
+    normalized === 'pending_automation'
   ) {
     return normalized;
   }
@@ -388,6 +396,9 @@ function mapSnapshotRowToPlayerGameRequest(row: SqlSnapshotRequest, playerUid: s
     pokeMessage: cleanText(row.pokeMessage) || null,
     dismissReasonCode: cleanText(row.dismissReasonCode) || null,
     dismissReasonMessage: cleanText(row.dismissReasonMessage) || null,
+    automationStatus: cleanText(row.automationStatus) || null,
+    playerMessage: cleanText(row.playerMessage) || null,
+    retryAttempt: Number.isFinite(Number(row.retryAttempt)) ? Number(row.retryAttempt) : null,
     createdAt: isoToTimestamp(row.createdAt),
     completedAt: isoToTimestamp(row.completedAt),
     pokedAt: isoToTimestamp(row.pokedAt),
@@ -434,6 +445,18 @@ function mergePayloadIntoPlayerGameRequest(
       payload.dismissReasonMessage !== undefined
         ? cleanText(payload.dismissReasonMessage) || null
         : existing?.dismissReasonMessage ?? null,
+    automationStatus:
+      payload.automationStatus !== undefined
+        ? cleanText(payload.automationStatus) || null
+        : existing?.automationStatus ?? null,
+    playerMessage:
+      payload.playerMessage !== undefined
+        ? cleanText(payload.playerMessage) || null
+        : existing?.playerMessage ?? null,
+    retryAttempt:
+      payload.retryAttempt !== undefined && Number.isFinite(Number(payload.retryAttempt))
+        ? Number(payload.retryAttempt)
+        : existing?.retryAttempt ?? null,
     createdAt: existing?.createdAt ?? updatedAt,
     completedAt:
       nextStatus === 'completed' || nextStatus === 'dismissed'

@@ -139,6 +139,14 @@ export async function POST(request: Request) {
         reasonCode: 'PLAYER_IN_GAME',
       });
     }
+    if (action === 'mark_redeem_waiting_player_exit') {
+      console.info('[REDEEM_BLOCKED_PLAYER_IN_GAME]', {
+        jobId: jobId || null,
+        carerUid,
+        agentId,
+        reasonCode: 'PLAYER_ACTIVE_IN_GAME',
+      });
+    }
     if (action === 'complete_recharge_redeem') {
       console.info('[AGENT_JOBS_API_COMPLETE_ATTEMPT]', {
         jobId: jobId || null,

@@ -1902,6 +1902,212 @@ export async function agentDismissPlayerInGame(input: {
   };
 }
 
+export async function agentMarkRedeemWaitingPlayerExit(input: {
+  carerUid: string;
+  agentId: string;
+  jobId: string;
+  reason: string;
+  details?: Record<string, unknown> | null;
+  scopeUid?: string | null;
+}) {
+  const db = getPlayerMirrorPool();
+  if (!db) throw new Error('SQL pool unavailable.');
+  const details = input.details || {};
+  const playerMessage =
+    cleanText(details.playerMessage) ||
+    'Please exit the game first. Your redeem is waiting and will continue automatically.';
+  const agentMessage =
+    cleanText(input.reason) || cleanText(details.message) || 'Please exit the game to complete your redeem.';
+  const client = await db.connect();
+  let taskId = '';
+  let requestId = '';
+  let coadminUid = '';
+  let playerUid = '';
+  let gameName = '';
+  try {
+    await client.query('BEGIN');
+    const jobResult = await client.query(
+      `SELECT * FROM public.automation_jobs_cache WHERE job_id = $1 FOR UPDATE`,
+      [input.jobId]
+    );
+    if (!jobResult.rows.length) {
+      await client.query('COMMIT');
+      return { success: true as const, skipped: true };
+    }
+    const job = jobResult.rows[0] as SqlJobRow;
+    taskId = cleanText(job.task_id);
+    coadminUid = cleanText(job.coadmin_uid);
+    playerUid = cleanText(job.player_uid);
+    gameName = cleanText(job.game);
+    let task: Record<string, unknown> | null = null;
+    if (taskId) {
+      const taskRow = await client.query(
+        `SELECT * FROM public.carer_tasks_cache WHERE firebase_id = $1 FOR UPDATE`,
+        [taskId]
+      );
+      if (taskRow.rows.length) {
+        task = rowToTask(taskRow.rows[0] as SqlTaskRow) as Record<string, unknown>;
+        requestId = cleanText(task.requestId);
+        playerUid = playerUid || cleanText(task.playerUid);
+        coadminUid = coadminUid || cleanText(task.coadminUid);
+        gameName = gameName || cleanText(task.gameName);
+      }
+    }
+    if (!requestId && taskId.startsWith('request__')) {
+      requestId = taskId.slice('request__'.length);
+    }
+    if (cleanText(job.type).toUpperCase() !== 'REDEEM') {
+      throw new Error('PLAYER_ACTIVE_IN_GAME waiting state only applies to redeem jobs.');
+    }
+    if (!requestId) {
+      throw new Error('Linked redeem request not found.');
+    }
+
+    const nowIso = new Date().toISOString();
+    const requestRawPatch = {
+      status: 'waiting_player_exit',
+      automationStatus: 'PLAYER_ACTIVE_IN_GAME',
+      playerMessage,
+      pokeMessage: playerMessage,
+      retryableFailure: true,
+      retryPending: true,
+      updatedAt: nowIso,
+    };
+    await client.query(
+      `
+        UPDATE public.player_game_requests_cache SET
+          status = 'waiting_player_exit',
+          automation_status = 'PLAYER_ACTIVE_IN_GAME',
+          poke_message = $2,
+          retry_pending = TRUE,
+          retryable_failure = TRUE,
+          updated_at = $3::timestamptz,
+          raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || $4::jsonb,
+          source = 'authority_agent_jobs',
+          mirrored_at = now(),
+          deleted_at = NULL
+        WHERE firebase_id = $1
+      `,
+      [requestId, playerMessage, nowIso, JSON.stringify(requestRawPatch)]
+    );
+
+    const resultDetails = {
+      success: false,
+      status: 'waiting_player_exit',
+      code: 'PLAYER_ACTIVE_IN_GAME',
+      reasonCode: 'PLAYER_ACTIVE_IN_GAME',
+      message: agentMessage,
+      playerMessage,
+      retryable: true,
+      retryPending: true,
+      refund: false,
+      requestId,
+      ...details,
+    };
+    await patchAutomationJobInTxn(client, input.jobId, {
+      status: 'completed',
+      claimedStatus: 'completed',
+      completedAt: nowIso,
+      updatedAt: nowIso,
+      lastHeartbeatAt: nowIso,
+      ttlExpiresAt: ttlAfterDaysIso(AUTOMATION_JOB_TTL_DAYS),
+      error: null,
+      needsManualReview: false,
+      result: resultDetails,
+    });
+    if (taskId) {
+      await patchCarerTaskAgentInTxn(client, taskId, {
+        status: 'pending',
+        claimedStatus: '',
+        automationStatus: 'PLAYER_ACTIVE_IN_GAME',
+        automationError: agentMessage,
+        pokeMessage: playerMessage,
+        retryPending: true,
+        updatedAt: nowIso,
+      });
+      await client.query(
+        `
+          UPDATE public.carer_tasks_cache SET
+            claimed_status = NULL,
+            claimed_by_uid = NULL,
+            claimed_by_username = NULL,
+            automation_job_id = NULL,
+            linked_job_id = NULL,
+            raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb) || $2::jsonb
+          WHERE firebase_id = $1
+        `,
+        [
+          taskId,
+          JSON.stringify({
+            claimedStatus: null,
+            claimedByUid: null,
+            claimedByUsername: null,
+            automationJobId: null,
+            linkedJobId: null,
+          }),
+        ]
+      );
+      if (coadminUid) {
+        await writeTaskOutboxInTxn(client, {
+          coadminUid,
+          carerUid: input.carerUid,
+          taskId,
+          status: 'pending',
+          type: 'redeem',
+          gameName,
+          requestId,
+          updatedAt: nowIso,
+          eventType: 'task.waiting_player_exit',
+        });
+        await writeJobOutboxInTxn(client, {
+          coadminUid,
+          carerUid: input.carerUid,
+          jobId: input.jobId,
+          taskId,
+          status: 'completed',
+          type: 'REDEEM',
+          gameName,
+          requestId,
+          updatedAt: nowIso,
+          eventType: 'job.waiting_player_exit',
+        });
+      }
+    }
+    if (playerUid) {
+      await insertLiveOutboxEventWithClient(client, {
+        channel: playerRequestLiveChannel(playerUid),
+        eventType: 'request.upserted',
+        entityType: 'player_game_request',
+        entityId: requestId,
+        source: 'authority_agent_jobs',
+        mirroredAt: nowIso,
+        payload: {
+          entityId: requestId,
+          requestId,
+          playerUid,
+          gameName,
+          type: 'redeem',
+          status: 'waiting_player_exit',
+          automationStatus: 'PLAYER_ACTIVE_IN_GAME',
+          playerMessage,
+          pokeMessage: playerMessage,
+          updatedAt: nowIso,
+          source: 'authority_agent',
+        },
+      });
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+  console.info('[PLAYER_EXIT_REQUIRED_VISIBLE]', { requestId, playerUid, jobId: input.jobId });
+  console.info('[SQL_FIREBASE_BYPASS_CONFIRMED] operation=mark_redeem_waiting_player_exit jobId=%s', input.jobId);
+  return { success: true as const, requestId, playerUid };
+}
+
 export async function agentDismissFakeRedeem(input: {
   carerUid: string;
   agentId: string;
@@ -2387,6 +2593,15 @@ export async function runAgentJobAction(input: AgentJobActionInput) {
         agentId: input.agentId,
         jobId: cleanText(input.jobId),
         reason: cleanText(input.reason) || PLAYER_IN_GAME_MESSAGE,
+        details: input.details,
+        scopeUid: input.scopeUid,
+      });
+    case 'mark_redeem_waiting_player_exit':
+      return agentMarkRedeemWaitingPlayerExit({
+        carerUid: input.carerUid,
+        agentId: input.agentId,
+        jobId: cleanText(input.jobId),
+        reason: cleanText(input.reason) || 'Please exit the game to complete your redeem.',
         details: input.details,
         scopeUid: input.scopeUid,
       });

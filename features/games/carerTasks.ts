@@ -112,7 +112,14 @@ export type CarerTask = {
   pokeMessage?: string | null;
   completedByCarerUid?: string | null;
   completedByCarerUsername?: string | null;
-  automationStatus?: 'waiting' | 'running' | 'completed' | 'failed' | null;
+  automationStatus?:
+    | 'waiting'
+    | 'running'
+    | 'completed'
+    | 'failed'
+    | 'PLAYER_ACTIVE_IN_GAME'
+    | 'retry_requested'
+    | null;
   automationJobId?: string | null;
   automationUpdatedAt?: Timestamp | null;
   automationError?: string | null;

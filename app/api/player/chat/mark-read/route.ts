@@ -1,8 +1,7 @@
-import { FieldValue } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
-import { adminDb } from '@/lib/firebase/admin';
 import { apiError, requireApiUser } from '@/lib/firebase/apiAuth';
+import { shouldBlockFirestoreFallback } from '@/lib/server/sqlRuntime';
 import { clearConversationUnreadForUser } from '@/lib/sql/conversationsCache';
 
 export const runtime = 'nodejs';
@@ -72,6 +71,20 @@ async function persistFirestoreReadMarker(input: {
   playerUid: string;
   chatType: PlayerChatType;
 }) {
+  if (shouldBlockFirestoreFallback()) {
+    console.info('[PLAYER_CHAT_READ] firestoreMirrorSkipped', {
+      conversationId: input.conversationId,
+      playerUid: input.playerUid,
+      chatType: input.chatType,
+      reason: 'sql_authority_mode',
+    });
+    return { attempted: false };
+  }
+
+  const [{ FieldValue }, { adminDb }] = await Promise.all([
+    import('firebase-admin/firestore'),
+    import('@/lib/firebase/admin'),
+  ]);
   const collection = input.chatType === 'player_player' ? 'playerConversations' : 'conversations';
   await adminDb
     .collection(collection)
@@ -84,6 +97,7 @@ async function persistFirestoreReadMarker(input: {
       },
       { merge: true }
     );
+  return { attempted: true };
 }
 
 export async function POST(request: Request) {
@@ -127,8 +141,10 @@ export async function POST(request: Request) {
     return apiError('Unauthorized chat thread.', 403);
   }
 
+  let firestoreMirrorAttempted = false;
   try {
-    await persistFirestoreReadMarker({ conversationId, playerUid, chatType });
+    const firestoreMirror = await persistFirestoreReadMarker({ conversationId, playerUid, chatType });
+    firestoreMirrorAttempted = firestoreMirror.attempted;
   } catch (error) {
     console.warn('[PLAYER_CHAT_READ] persisted', {
       chatType,
@@ -145,5 +161,6 @@ export async function POST(request: Request) {
     conversationId,
     unreadCount: sqlResult.unreadCount,
     sqlPersisted: sqlResult.ok,
+    firestoreMirrorAttempted,
   });
 }

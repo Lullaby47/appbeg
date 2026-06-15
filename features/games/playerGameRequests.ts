@@ -40,7 +40,10 @@ export type PlayerGameRequestStatus =
   | 'failed'
   | 'poked'
   | 'pending_review'
-  | 'dismissed';
+  | 'dismissed'
+  | 'waiting_player_exit'
+  | 'retry_requested'
+  | 'pending_automation';
 
 export type PlayerGameRequest = {
   id: string;
@@ -71,6 +74,9 @@ export type PlayerGameRequest = {
   dismissType?: string | null;
   dismissReasonCode?: string | null;
   dismissReasonMessage?: string | null;
+  automationStatus?: string | null;
+  playerMessage?: string | null;
+  retryAttempt?: number | null;
 };
 
 type PlayerGameRedeemLimitReset = {
@@ -99,6 +105,9 @@ const PLAYER_REQUEST_ACTIVE_STATUSES: PlayerGameRequestStatus[] = [
   'pending',
   'poked',
   'pending_review',
+  'waiting_player_exit',
+  'retry_requested',
+  'pending_automation',
 ];
 
 function normalizeGameName(gameName: string) {

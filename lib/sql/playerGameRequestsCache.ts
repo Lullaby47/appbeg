@@ -202,6 +202,8 @@ export async function upsertPlayerGameRequestCache(input: PlayerGameRequestCache
       gameName: input.gameName || input.game,
       amount: input.amount,
       baseAmount: input.baseAmount,
+      automationStatus: input.automationStatus,
+      playerMessage: input.playerMessage,
       pokeMessage: input.pokeMessage,
       updatedAt: input.updatedAt,
       mirroredAt: new Date().toISOString(),
