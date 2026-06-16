@@ -19,6 +19,18 @@ function safeEmptyPayload() {
   return emptyPlayerBaseDataPayloadExport(new Date().toISOString());
 }
 
+function largestTimingStage(stages: Record<string, number>) {
+  return Object.entries(stages).reduce(
+    (largest, [stage, ms]) => (ms > largest.ms ? { stage, ms } : largest),
+    { stage: 'none', ms: 0 }
+  );
+}
+
+function authSqlSessionMs(timing: unknown) {
+  const value = (timing as { sql_session_ms?: unknown }).sql_session_ms;
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 export async function GET(request: Request) {
   const startedAt = Date.now();
   const headerSessions = sessionIdsFromRequest(request);
@@ -58,8 +70,12 @@ export async function GET(request: Request) {
     const playerUid = auth.user.uid;
 
     if (!coadminUid) {
+      const serializationStartedAt = Date.now();
+      const response = NextResponse.json(safeEmptyPayload());
       const timing = {
         auth_ms: authMs,
+        player_profile_lookup_ms: auth.timing.sql_profile_ms ?? 0,
+        player_session_ms: authSqlSessionMs(auth.timing) ?? 0,
         shared_client: false,
         parallel: true,
         client_acquire_ms: 0,
@@ -71,13 +87,36 @@ export async function GET(request: Request) {
         pool_waiting_max: 0,
         total_ms: Date.now() - startedAt,
       };
+      const serializationMs = Date.now() - serializationStartedAt;
+      console.info('[PLAYER_BASE_DATA_TIMING]', {
+        auth_session_validation_ms: timing.auth_ms,
+        player_profile_lookup_ms: timing.player_profile_lookup_ms,
+        player_session_ms: timing.player_session_ms,
+        staff_coadmin_lookup_ms: timing.staff_ms,
+        game_logins_ms: timing.game_logins_ms,
+        freeplay_pending_ms: timing.freeplay_ms,
+        referral_rewards_ms: timing.referral_rewards_ms,
+        serialization_ms: serializationMs,
+        total_sql_ms: timing.total_sql_ms,
+        total_ms: timing.total_ms,
+        dominant_stage: largestTimingStage({
+          auth_session_validation_ms: timing.auth_ms,
+          staff_coadmin_lookup_ms: timing.staff_ms,
+          game_logins_ms: timing.game_logins_ms,
+          freeplay_pending_ms: timing.freeplay_ms,
+          referral_rewards_ms: timing.referral_rewards_ms,
+          serialization_ms: serializationMs,
+        }),
+        counts: { staff: 0, gameLogins: 0, referralGroups: 0 },
+        source: 'postgres',
+      });
       console.info('[PLAYER_BASE_DATA]', {
         ...timing,
         counts: { staff: 0, gameLogins: 0, referralGroups: 0 },
         pendingGift: false,
         source: 'postgres',
       });
-      return NextResponse.json(safeEmptyPayload());
+      return response;
     }
 
     const { payload, timing } = await loadPlayerBaseData({
@@ -86,6 +125,41 @@ export async function GET(request: Request) {
       authMs,
       authPath: auth.authPath,
       role: auth.user.role,
+    });
+
+    const serializationStartedAt = Date.now();
+    const response = NextResponse.json(payload);
+    const serializationMs = Date.now() - serializationStartedAt;
+    const timingStages = {
+      auth_session_validation_ms: timing.auth_ms,
+      staff_coadmin_lookup_ms: timing.staff_ms,
+      game_logins_ms: timing.game_logins_ms,
+      freeplay_pending_ms: timing.freeplay_ms,
+      referral_rewards_ms: timing.referral_rewards_ms,
+      serialization_ms: serializationMs,
+    };
+    console.info('[PLAYER_BASE_DATA_TIMING]', {
+      auth_session_validation_ms: timing.auth_ms,
+      player_profile_lookup_ms: auth.timing.sql_profile_ms ?? null,
+      player_session_ms: authSqlSessionMs(auth.timing),
+      staff_coadmin_lookup_ms: timing.staff_ms,
+      game_logins_ms: timing.game_logins_ms,
+      freeplay_pending_ms: timing.freeplay_ms,
+      referral_rewards_ms: timing.referral_rewards_ms,
+      serialization_ms: serializationMs,
+      total_sql_ms: timing.total_sql_ms,
+      total_ms: Date.now() - startedAt,
+      parallel: timing.parallel,
+      shared_client: timing.shared_client,
+      client_acquire_ms: timing.client_acquire_ms,
+      pool_waiting_max: timing.pool_waiting_max,
+      dominant_stage: largestTimingStage(timingStages),
+      counts: {
+        staff: payload.staff.length,
+        gameLogins: payload.gameLogins.length,
+        referralGroups: payload.referralRewards.groups.length,
+      },
+      source: payload.source,
     });
 
     console.info('[PLAYER_BASE_DATA]', {
@@ -109,7 +183,7 @@ export async function GET(request: Request) {
       source: payload.source,
     });
 
-    return NextResponse.json(payload);
+    return response;
   } catch (error) {
     const pg = extractPgErrorDetails(error);
     console.error('[PLAYER_BASE_DATA_ERROR]', {

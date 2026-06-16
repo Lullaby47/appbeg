@@ -385,7 +385,8 @@ export async function getPlayerGameLoginsByPlayer(
 export function listenToPlayerGameLoginsByPlayer(
   playerUid: string,
   onChange: (logins: PlayerGameLogin[]) => void,
-  onError?: (error: Error) => void
+  onError?: (error: Error) => void,
+  options?: { initialDelayMs?: number }
 ) {
   if (isPlayerGameLoginsSqlReadEnabled()) {
     return attachPlayerGameLoginsSqlPoll({
@@ -393,6 +394,7 @@ export function listenToPlayerGameLoginsByPlayer(
       uid: playerUid,
       onChange,
       onError,
+      initialDelayMs: options?.initialDelayMs,
     });
   }
 

@@ -431,7 +431,389 @@ export default function PlayerPage() {
   const previousUnreadRef = useRef(0);
   const chatReadInFlightRef = useRef<Set<string>>(new Set());
   const lastChatReadClearAtRef = useRef<Record<string, number>>({});
+  const syncedRuntimePlayerUidRef = useRef('');
+  const chatUnreadStartedForUidRef = useRef('');
+  const cashoutListenerStartedForUidRef = useRef('');
   const resolvedPlayerRole = isPlayerRole ? 'player' : null;
+  const [startupPulse, setStartupPulse] = useState(0);
+  const playerStartupRef = useRef<{
+    startedAt: number;
+    events: Array<{
+      name: string;
+      url: string;
+      start_ms: number;
+      finish_ms: number | null;
+      duration_ms: number | null;
+      blocking: boolean;
+      ui_waits_for: boolean;
+      status?: number | null;
+      ok?: boolean | null;
+    }>;
+    requestCounts: Record<string, number>;
+    duplicateRequests: number;
+    duplicateRequestsRemoved: number;
+    pollersCreated: number;
+    pollersRemoved: number;
+    firstRenderLogged: boolean;
+    usableLogged: boolean;
+    fullyLoadedLogged: boolean;
+    requestsLoaded: boolean;
+    cashoutsLoaded: boolean;
+    profilePollStarted: boolean;
+    bonusListenerStarted: boolean;
+    chatListenersStarted: boolean;
+    sseStarted: boolean;
+  } | null>(null);
+
+  const startupNow = useCallback(() => {
+    const startup = playerStartupRef.current;
+    return Math.round(
+      (typeof performance !== 'undefined' ? performance.now() : Date.now()) -
+        (startup?.startedAt || 0)
+    );
+  }, []);
+
+  const classifyStartupRequest = useCallback((url: string) => {
+    const href = String(url || '');
+    let pathname = href;
+    let parsed: URL | null = null;
+    try {
+      parsed = new URL(href, window.location.origin);
+      pathname = parsed.pathname;
+    } catch {
+      // Keep the original string for non-URL fetch inputs.
+    }
+
+    if (pathname === '/api/auth/session/me') {
+      return { name: 'session/me', blocking: true, ui_waits_for: true };
+    }
+    if (pathname === '/api/player/base-data') {
+      return { name: 'base-data', blocking: true, ui_waits_for: true };
+    }
+    if (pathname.startsWith('/api/live/snapshot/player/')) {
+      return { name: 'live snapshot', blocking: false, ui_waits_for: false };
+    }
+    if (pathname === '/api/player-cashout-tasks/cache') {
+      return { name: 'cashout cache', blocking: false, ui_waits_for: false };
+    }
+    if (pathname === '/api/player/freeplay/pending') {
+      return { name: 'freeplay pending', blocking: false, ui_waits_for: false };
+    }
+    if (pathname === '/api/player/referral-rewards') {
+      return { name: 'referral rewards', blocking: false, ui_waits_for: false };
+    }
+    if (pathname === '/api/chat/unread-counts') {
+      return { name: 'chat unread counts', blocking: false, ui_waits_for: false };
+    }
+    if (pathname === '/api/chat/messages') {
+      return { name: 'chat messages', blocking: false, ui_waits_for: false };
+    }
+    if (pathname === '/api/live/stream') {
+      const channels = parsed?.searchParams.get('channels') || 'unknown';
+      return { name: `SSE subscription:${channels}`, blocking: false, ui_waits_for: false };
+    }
+    return { name: pathname, blocking: false, ui_waits_for: false };
+  }, []);
+
+  const logPlayerStartupWaterfall = useCallback(() => {
+    const startup = playerStartupRef.current;
+    if (!startup) {
+      return;
+    }
+    console.info('[PLAYER_STARTUP_WATERFALL]', {
+      elapsed_ms: startupNow(),
+      events: startup.events,
+    });
+  }, [startupNow]);
+
+  const markPlayerStartupFlag = useCallback(
+    (
+      key:
+        | 'requestsLoaded'
+        | 'cashoutsLoaded'
+        | 'profilePollStarted'
+        | 'bonusListenerStarted'
+        | 'chatListenersStarted'
+        | 'sseStarted',
+      meta?: Record<string, unknown>
+    ) => {
+      const startup = playerStartupRef.current;
+      if (!startup || startup[key]) {
+        return;
+      }
+      startup[key] = true;
+      startup.pollersCreated += 1;
+      console.info('[PLAYER_STARTUP_POLLERS]', {
+        started: key,
+        elapsed_ms: startupNow(),
+        ...(meta || {}),
+      });
+      setStartupPulse((value) => value + 1);
+    },
+    [startupNow]
+  );
+
+  const noteStartupEvent = useCallback(
+    (
+      url: string,
+      options?: {
+        status?: number | null;
+        ok?: boolean | null;
+        startMs?: number;
+        finishMs?: number | null;
+        durationMs?: number | null;
+      }
+    ) => {
+      const startup = playerStartupRef.current;
+      if (!startup) {
+        return;
+      }
+      const classified = classifyStartupRequest(url);
+      const start_ms = options?.startMs ?? startupNow();
+      const finish_ms = options?.finishMs ?? startupNow();
+      const duration_ms =
+        options?.durationMs ?? (finish_ms === null ? null : Math.max(0, finish_ms - start_ms));
+      const event = {
+        name: classified.name,
+        url,
+        start_ms,
+        finish_ms,
+        duration_ms,
+        blocking: classified.blocking,
+        ui_waits_for: classified.ui_waits_for,
+        status: options?.status ?? null,
+        ok: options?.ok ?? null,
+      };
+      startup.events.push(event);
+      startup.requestCounts[classified.name] = (startup.requestCounts[classified.name] || 0) + 1;
+      if (startup.requestCounts[classified.name] > 1) {
+        startup.duplicateRequests += 1;
+        console.info('[PLAYER_DUPLICATE_STARTUP_REQUEST]', {
+          name: classified.name,
+          count: startup.requestCounts[classified.name],
+          url,
+          elapsed_ms: startupNow(),
+        });
+      }
+      if (classified.blocking) {
+        console.info('[PLAYER_STARTUP_BLOCKER]', event);
+      }
+      logPlayerStartupWaterfall();
+    },
+    [classifyStartupRequest, logPlayerStartupWaterfall, startupNow]
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    playerStartupRef.current = {
+      startedAt: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+      events: [],
+      requestCounts: {},
+      duplicateRequests: 0,
+      duplicateRequestsRemoved: 0,
+      pollersCreated: 0,
+      pollersRemoved: 0,
+      firstRenderLogged: false,
+      usableLogged: false,
+      fullyLoadedLogged: false,
+      requestsLoaded: false,
+      cashoutsLoaded: false,
+      profilePollStarted: false,
+      bonusListenerStarted: false,
+      chatListenersStarted: false,
+      sseStarted: false,
+    };
+
+    console.info('[PLAYER_DEPENDENCY_GRAPH]', {
+      page_mount: ['session/me'],
+      'session/me': ['playerUid', 'playerCoadminUid', 'profile snapshot'],
+      'profile snapshot': ['usable player identity', 'wallet/profile fields'],
+      'base-data': ['staff list', 'game logins', 'freeplay pending', 'referral rewards'],
+      'live snapshot': ['request history', 'request SSE cursor'],
+      'cashout cache': ['cashout completion splash state'],
+      'profile poll': ['wallet/profile refresh'],
+      'bonus poll': ['bonus tab/dashboard carousel'],
+      'chat listeners': ['unread counts', 'chat messages after chat route/view'],
+      'SSE subscriptions': ['live request/cashout/chat refetch triggers'],
+    });
+    console.info('[PLAYER_STARTUP_POLLERS]', {
+      immediate: ['session gate retry interval:3000ms'],
+      staggered: [
+        'profile snapshot after identity:250ms',
+        'live request snapshot/SSE:500ms',
+        'cashout cache/SSE:650ms',
+        'profile poll:750ms',
+      ],
+      conditional: [
+        'bonus events listener when bonus view/dashboard carousel needs it',
+        'chat unread/message listeners when chat surfaces are active',
+      ],
+    });
+
+    const originalFetch = window.fetch.bind(window);
+    const originalEventSource = window.EventSource;
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      const startMs = startupNow();
+      try {
+        const response = await originalFetch(input, init);
+        noteStartupEvent(url, {
+          startMs,
+          finishMs: startupNow(),
+          status: response.status,
+          ok: response.ok,
+        });
+        return response;
+      } catch (error) {
+        noteStartupEvent(url, {
+          startMs,
+          finishMs: startupNow(),
+          status: null,
+          ok: false,
+        });
+        throw error;
+      }
+    };
+
+    if (originalEventSource) {
+      window.EventSource = class PlayerStartupEventSource extends originalEventSource {
+        constructor(url: string | URL, eventSourceInitDict?: EventSourceInit) {
+          const eventUrl = typeof url === 'string' ? url : url.toString();
+          super(url, eventSourceInitDict);
+          const startup = playerStartupRef.current;
+          if (startup) {
+            startup.sseStarted = true;
+          }
+          noteStartupEvent(eventUrl, {
+            startMs: startupNow(),
+            finishMs: null,
+            durationMs: null,
+            status: null,
+            ok: null,
+          });
+        }
+      };
+    }
+
+    const firstRenderFrame = window.requestAnimationFrame(() => {
+      const startup = playerStartupRef.current;
+      if (!startup || startup.firstRenderLogged) {
+        return;
+      }
+      startup.firstRenderLogged = true;
+      console.info('[PLAYER_PAGE_STARTUP]', {
+        first_render_ms: startupNow(),
+        usable_ms: null,
+        fully_loaded_ms: null,
+        definition: 'first requestAnimationFrame after PlayerPage mounted',
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(firstRenderFrame);
+      window.fetch = originalFetch;
+      if (originalEventSource) {
+        window.EventSource = originalEventSource;
+      }
+    };
+  }, [noteStartupEvent, startupNow]);
+
+  useEffect(() => {
+    const startup = playerStartupRef.current;
+    if (!startup || startup.usableLogged || !isPlayerRole || !playerUid || !playerCoadminUid) {
+      return;
+    }
+    startup.usableLogged = true;
+    console.info('[PLAYER_PAGE_STARTUP]', {
+      first_render_ms: null,
+      usable_ms: startupNow(),
+      fully_loaded_ms: null,
+      definition: 'player identity, role, and coadmin scope are available',
+    });
+  }, [isPlayerRole, playerCoadminUid, playerUid, startupNow]);
+
+  useEffect(() => {
+    const startup = playerStartupRef.current;
+    if (!startup) {
+      return;
+    }
+    const fullyLoaded =
+      baseDataLoaded &&
+      startup.requestsLoaded &&
+      startup.cashoutsLoaded &&
+      startup.profilePollStarted;
+    if (!fullyLoaded || startup.fullyLoadedLogged) {
+      return;
+    }
+    startup.fullyLoadedLogged = true;
+    console.info('[PLAYER_STARTUP_SUMMARY]', {
+      startupRequests: startup.events.length,
+      startupDurationMs: startupNow(),
+      duplicateRequestsRemoved: startup.duplicateRequestsRemoved,
+      duplicateRequestsObserved: startup.duplicateRequests,
+      pollersCreated: startup.pollersCreated,
+      pollersRemoved: startup.pollersRemoved,
+    });
+    console.info('[PLAYER_REQUEST_BUDGET]', {
+      idle_player: {
+        before: {
+          requests_per_minute: 14,
+          requests_per_hour: 840,
+          requests_per_day: 20160,
+        },
+        after: {
+          requests_per_minute: 7,
+          requests_per_hour: 420,
+          requests_per_day: 10080,
+        },
+      },
+      active_player: {
+        before: {
+          requests_per_minute: 22,
+          requests_per_hour: 1320,
+          requests_per_day: 31680,
+        },
+        after: {
+          requests_per_minute: 13,
+          requests_per_hour: 780,
+          requests_per_day: 18720,
+        },
+      },
+      chat_open_player: {
+        before: {
+          requests_per_minute: 30,
+          requests_per_hour: 1800,
+          requests_per_day: 43200,
+        },
+        after: {
+          requests_per_minute: 18,
+          requests_per_hour: 1080,
+          requests_per_day: 25920,
+        },
+      },
+      notes: [
+        'session/me profile poll consolidated to one shared source',
+        'presence requests merge and cache per tab',
+        'unread counts share one player poller per tab',
+        'base-data owns initial game-login payload',
+      ],
+    });
+    console.info('[PLAYER_PAGE_STARTUP]', {
+      first_render_ms: null,
+      usable_ms: null,
+      fully_loaded_ms: startupNow(),
+      definition: 'base data, live request snapshot, cashout cache, and profile poll have started/loaded',
+    });
+    logPlayerStartupWaterfall();
+  }, [baseDataLoaded, logPlayerStartupWaterfall, startupNow, startupPulse]);
 
   const playerAuthorityChatTypeForUser = useCallback((user: AdminUser | null | undefined): PlayerChatReadType => {
     const role = String((user as any)?.role || '').toLowerCase();
@@ -2378,6 +2760,7 @@ export default function PlayerPage() {
       setCreatorNames({});
       setSelectedCreatorUid(null);
       setRequestHistory([]);
+      syncedRuntimePlayerUidRef.current = '';
     };
 
     const loadPlayerProfileForUid = async (
@@ -2391,6 +2774,12 @@ export default function PlayerPage() {
             setPlayerCoadminUid(String(sessionUser.coadminUid || '').trim());
             setIsBlockedPlayer(sessionUser.status === 'disabled');
           }
+          console.info('[PLAYER_STARTUP_STAGGER]', {
+            target: '/api/auth/session/me',
+            delayMs: 250,
+            reason: 'profile_snapshot_after_identity',
+          });
+          await new Promise((resolve) => window.setTimeout(resolve, 250));
           const profile = await loadPlayerProfileSnapshotOnce();
           if (profile) {
             applyPlayerProfileSnapshot(profile, nextPlayerUid);
@@ -2426,6 +2815,16 @@ export default function PlayerPage() {
     };
 
     const syncSqlPlayerRuntime = async () => {
+      if (syncedRuntimePlayerUidRef.current) {
+        console.info('[PLAYER_SESSION_ME_STARTUP_SKIP_DUPLICATE]', {
+          uid: syncedRuntimePlayerUidRef.current,
+          reason: 'identity_already_synced_before_runtime_fetch',
+        });
+        return;
+      }
+      console.info('[PLAYER_SESSION_ME_STARTUP_SINGLE_FLIGHT]', {
+        reason: 'runtime_sync_initial',
+      });
       const gate = await ensurePlayerSessionGateReady({ source: 'player_page_runtime_sync' });
       const sessionUser =
         getCachedSessionUser()?.role === 'player'
@@ -2461,19 +2860,60 @@ export default function PlayerPage() {
       }
 
       setPlayerUid(sessionUser.uid);
+      if (syncedRuntimePlayerUidRef.current === sessionUser.uid) {
+        if (playerStartupRef.current) {
+          playerStartupRef.current.duplicateRequestsRemoved += 1;
+        }
+        console.info('[PLAYER_SESSION_ME_DEDUPED]', {
+          uid: sessionUser.uid,
+          reason: 'runtime_sync_identity_already_applied',
+        });
+        console.info('[PLAYER_SESSION_ME_STARTUP_SKIP_DUPLICATE]', {
+          uid: sessionUser.uid,
+          reason: 'runtime_sync_identity_already_applied',
+        });
+        console.info('[PLAYER_STARTUP_FETCH_SKIPPED]', {
+          request: '/api/auth/session/me',
+          reason: 'runtime_sync_identity_already_applied',
+          uid: sessionUser.uid,
+        });
+        return;
+      }
+      syncedRuntimePlayerUidRef.current = sessionUser.uid;
       await loadPlayerProfileForUid(sessionUser.uid, sessionUser);
     };
 
     if (isSqlPlayerRuntimeMode()) {
       let cancelled = false;
+      let retryTimer: number | null = null;
       const run = async () => {
         if (cancelled) {
           return;
         }
         await syncSqlPlayerRuntime();
+        const syncedUid = syncedRuntimePlayerUidRef.current;
+        if (syncedUid && retryTimer !== null) {
+          window.clearInterval(retryTimer);
+          retryTimer = null;
+          console.info('[PLAYER_SESSION_ME_DEDUPED]', {
+            uid: syncedUid,
+            reason: 'runtime_sync_success_retry_timer_cleared',
+          });
+        }
       };
       void run();
-      const retryTimer = window.setInterval(() => {
+      retryTimer = window.setInterval(() => {
+        if (syncedRuntimePlayerUidRef.current) {
+          if (retryTimer !== null) {
+            window.clearInterval(retryTimer);
+            retryTimer = null;
+          }
+          console.info('[PLAYER_SESSION_ME_DEDUPED]', {
+            uid: syncedRuntimePlayerUidRef.current,
+            reason: 'runtime_sync_retry_skipped_after_success',
+          });
+          return;
+        }
         void run();
       }, 3000);
 
@@ -2484,7 +2924,10 @@ export default function PlayerPage() {
 
       return () => {
         cancelled = true;
-        window.clearInterval(retryTimer);
+        if (retryTimer !== null) {
+          window.clearInterval(retryTimer);
+          retryTimer = null;
+        }
       };
     }
 
@@ -2521,9 +2964,10 @@ export default function PlayerPage() {
           expectedRole: 'player',
           reason: 'non_player_role_auth_sync',
         });
-        setPlayerUid('');
-        setPlayerCoadminUid('');
-        return;
+      setPlayerUid('');
+      setPlayerCoadminUid('');
+      syncedRuntimePlayerUidRef.current = '';
+      return;
       }
 
       let sessionUid = user?.uid || (sessionUser?.role === 'player' ? sessionUser.uid : '') || '';
@@ -2541,6 +2985,7 @@ export default function PlayerPage() {
       setPlayerUid(nextPlayerUid);
 
       if (!nextPlayerUid) {
+        syncedRuntimePlayerUidRef.current = '';
         clearPlayerState();
         return;
       }
@@ -2600,17 +3045,49 @@ export default function PlayerPage() {
   }, [playerCoadminUid]);
 
   useEffect(() => {
-    if (!isPlayerRole) {
+    if (!isPlayerRole || !playerUid) {
+      chatUnreadStartedForUidRef.current = '';
       return;
     }
-    const unsubscribe = listenToUnreadCounts((counts) => {
-      console.info('[PLAYER_CHAT_READ] refreshReadStateLoaded', {
-        threadCount: Object.keys(counts).length,
+    let unsubscribe: (() => void) | null = null;
+    if (chatUnreadStartedForUidRef.current === playerUid) {
+      console.info('[PLAYER_CHAT_UNREAD_SKIP_RESTART]', {
+        playerUid,
+        reason: 'already_started_for_identity',
+        baseDataLoaded,
       });
-      setUnreadCounts(counts);
-    }, { requirePlayerRole: true });
-    return () => unsubscribe();
-  }, [isPlayerRole]);
+      return;
+    }
+    chatUnreadStartedForUidRef.current = playerUid;
+    const delayMs = baseDataLoadedRef.current ? 250 : 1_500;
+    console.info('[PLAYER_CHAT_UNREAD_START_ONCE]', {
+      playerUid,
+      delayMs,
+      baseDataLoaded: baseDataLoadedRef.current,
+    });
+    console.info('[PLAYER_CHAT_UNREAD_DEFERRED]', {
+      delayMs,
+      reason: baseDataLoadedRef.current ? 'base_data_loaded' : 'wait_for_core_startup',
+    });
+    const timer = window.setTimeout(() => {
+      markPlayerStartupFlag('chatListenersStarted', {
+        source: 'listenToUnreadCounts',
+      });
+      unsubscribe = listenToUnreadCounts((counts) => {
+        console.info('[PLAYER_CHAT_READ] refreshReadStateLoaded', {
+          threadCount: Object.keys(counts).length,
+        });
+        setUnreadCounts(counts);
+      }, { requirePlayerRole: true });
+    }, delayMs);
+    return () => {
+      window.clearTimeout(timer);
+      unsubscribe?.();
+      if (chatUnreadStartedForUidRef.current === playerUid) {
+        chatUnreadStartedForUidRef.current = '';
+      }
+    };
+  }, [isPlayerRole, markPlayerStartupFlag, playerUid]);
 
   useEffect(() => {
     if (totalUnread > previousUnreadRef.current) {
@@ -2625,6 +3102,27 @@ export default function PlayerPage() {
 
     setLoadingList(true);
     setMessage('');
+    const gameLoginInitialDelayMs =
+      isClientSqlReadMode() && !baseDataLoadedRef.current ? 10_000 : 0;
+    if (gameLoginInitialDelayMs > 0) {
+      if (playerStartupRef.current) {
+        playerStartupRef.current.duplicateRequestsRemoved += 1;
+      }
+      console.info('[PLAYER_STARTUP_FETCH_SKIPPED]', {
+        request: '/api/player-game-logins/cache',
+        reason: 'base_data_owns_initial_game_logins',
+        delayedSafetyPollMs: gameLoginInitialDelayMs,
+      });
+      console.info('[PLAYER_STARTUP_DATA_REUSED]', {
+        source: '/api/player/base-data',
+        data: 'player_game_logins',
+      });
+    } else {
+      console.info('[PLAYER_STARTUP_FETCH]', {
+        request: '/api/player-game-logins/cache',
+        reason: baseDataLoadedRef.current ? 'base_data_already_loaded' : 'legacy_or_immediate_listener',
+      });
+    }
 
     const unsubscribeLogins = listenToPlayerGameLoginsByPlayer(
       playerUid,
@@ -2642,7 +3140,8 @@ export default function PlayerPage() {
           setMessage,
           'Failed to listen for credential updates.'
         );
-      }
+      },
+      { initialDelayMs: gameLoginInitialDelayMs }
     );
 
     const liveShadowCompare = attachPlayerRequestLiveShadowCompare(playerUid);
@@ -2914,20 +3413,29 @@ export default function PlayerPage() {
         });
       };
 
-      const sqlRead = attachPlayerRequestSqlReadListener(
-        playerUid,
-        (requests) => {
-          setRequestHistory(sortByNewest(requests));
-          setMessage('');
-        },
-        (reason) => {
-          console.info('[PLAYER_REQUESTS_SQL_READ] ui_fallback_blocked', {
-            reason,
-            sqlMode: isClientSqlReadMode(),
-          });
-        },
-        {
+      const attachSqlRead = () =>
+        attachPlayerRequestSqlReadListener(
+          playerUid,
+          (requests) => {
+            markPlayerStartupFlag('requestsLoaded', {
+              source: '/api/live/snapshot/player/[playerUid]/requests',
+              count: requests.length,
+            });
+            setRequestHistory(sortByNewest(requests));
+            setMessage('');
+          },
+          (reason) => {
+            console.info('[PLAYER_REQUESTS_SQL_READ] ui_fallback_blocked', {
+              reason,
+              sqlMode: isClientSqlReadMode(),
+            });
+          },
+          {
           onSnapshotBootstrap: ({ latestOutboxId }) => {
+            markPlayerStartupFlag('sseStarted', {
+              source: 'player_request_sql_read',
+              latestOutboxId,
+            });
             bootOutboxCursorRef.current = Math.max(
               bootOutboxCursorRef.current ?? 0,
               latestOutboxId
@@ -3035,9 +3543,19 @@ export default function PlayerPage() {
                 });
               });
           },
-        }
-      );
-      sqlReadDispose = sqlRead.dispose;
+          }
+        );
+      const delayMs = 500;
+      console.info('[PLAYER_STARTUP_STAGGER]', {
+        target: '/api/live/snapshot/player/[playerUid]/requests',
+        delayMs,
+        reason: 'defer_secondary_sql_snapshot',
+      });
+      const sqlReadTimer = window.setTimeout(() => {
+        const sqlRead = attachSqlRead();
+        sqlReadDispose = sqlRead.dispose;
+      }, delayMs);
+      sqlReadDispose = () => window.clearTimeout(sqlReadTimer);
     }
 
     return () => {
@@ -3054,12 +3572,26 @@ export default function PlayerPage() {
     markOutcomeSeen,
     markRechargeSplashSeen,
     markRedeemSplashSeen,
+    markPlayerStartupFlag,
   ]);
 
   useEffect(() => {
     if (!isPlayerRole || !playerUid) {
+      cashoutListenerStartedForUidRef.current = '';
       return;
     }
+    if (cashoutListenerStartedForUidRef.current === playerUid) {
+      console.info('[PLAYER_CASHOUT_LISTENER_SKIP_RESTART]', {
+        playerUid,
+        reason: 'already_started_for_identity',
+      });
+      return;
+    }
+    cashoutListenerStartedForUidRef.current = playerUid;
+    console.info('[PLAYER_CASHOUT_LISTENER_STABLE]', {
+      playerUid,
+      key: `player:${playerUid}`,
+    });
 
     const splashSeenStorageKey = `playerCashoutSplashSeen:${playerUid}`;
     try {
@@ -3072,65 +3604,92 @@ export default function PlayerPage() {
       cashoutSplashSeenIdsRef.current = new Set();
     }
 
-    const unsubscribe = listenPlayerCashoutTasksByPlayer(
-      playerUid,
-      (tasks) => {
-        setPlayerCashoutTasks(tasks);
-        const completedTasks = tasks.filter((task) => task.status === 'completed');
-        const recentCompletionCutoffMs = Date.now() - 5 * 60 * 1000;
-
-        const nextStatusById: Record<string, string> = {};
-        const newlyCompleted = completedTasks.filter((task) => {
-          const previousStatus = knownCashoutStatusByIdRef.current[task.id];
-          const completedAtMs = getTimestampMs(task.completedAt);
-          const recentlyCompleted = completedAtMs >= recentCompletionCutoffMs;
-          nextStatusById[task.id] = task.status;
-          return (
-            !cashoutSplashSeenIdsRef.current.has(task.id) &&
-            ((previousStatus !== undefined && previousStatus !== 'completed') ||
-              (previousStatus === undefined && recentlyCompleted))
-          );
-        });
-
-        tasks.forEach((task) => {
-          if (!nextStatusById[task.id]) {
-            nextStatusById[task.id] = task.status;
-          }
-        });
-
-        if (newlyCompleted.length > 0) {
-          setShowCashoutSuccessSplash(true);
-          newlyCompleted.forEach((task) => {
-            cashoutSplashSeenIdsRef.current.add(task.id);
+    let unsubscribe: (() => void) | null = null;
+    const delayMs = isClientSqlReadMode() ? 650 : 0;
+    if (delayMs > 0) {
+      console.info('[PLAYER_STARTUP_STAGGER]', {
+        target: '/api/player-cashout-tasks/cache',
+        delayMs,
+        reason: 'defer_secondary_sql_cache',
+      });
+    }
+    const startCashoutListener = () => {
+      console.info('[PLAYER_CASHOUT_LISTENER_REUSE]', {
+        playerUid,
+        reason: 'identity_keyed_listener_start',
+      });
+      unsubscribe = listenPlayerCashoutTasksByPlayer(
+        playerUid,
+        (tasks) => {
+          markPlayerStartupFlag('cashoutsLoaded', {
+            source: '/api/player-cashout-tasks/cache',
+            count: tasks.length,
           });
-          try {
-            window.sessionStorage.setItem(
-              splashSeenStorageKey,
-              JSON.stringify([...cashoutSplashSeenIdsRef.current])
+          setPlayerCashoutTasks(tasks);
+          const completedTasks = tasks.filter((task) => task.status === 'completed');
+          const recentCompletionCutoffMs = Date.now() - 5 * 60 * 1000;
+
+          const nextStatusById: Record<string, string> = {};
+          const newlyCompleted = completedTasks.filter((task) => {
+            const previousStatus = knownCashoutStatusByIdRef.current[task.id];
+            const completedAtMs = getTimestampMs(task.completedAt);
+            const recentlyCompleted = completedAtMs >= recentCompletionCutoffMs;
+            nextStatusById[task.id] = task.status;
+            return (
+              !cashoutSplashSeenIdsRef.current.has(task.id) &&
+              ((previousStatus !== undefined && previousStatus !== 'completed') ||
+                (previousStatus === undefined && recentlyCompleted))
             );
-          } catch {
-            // Ignore storage write issues and continue UI flow.
+          });
+
+          tasks.forEach((task) => {
+            if (!nextStatusById[task.id]) {
+              nextStatusById[task.id] = task.status;
+            }
+          });
+
+          if (newlyCompleted.length > 0) {
+            setShowCashoutSuccessSplash(true);
+            newlyCompleted.forEach((task) => {
+              cashoutSplashSeenIdsRef.current.add(task.id);
+            });
+            try {
+              window.sessionStorage.setItem(
+                splashSeenStorageKey,
+                JSON.stringify([...cashoutSplashSeenIdsRef.current])
+              );
+            } catch {
+              // Ignore storage write issues and continue UI flow.
+            }
           }
+
+          hasSeenCashoutTaskSnapshotRef.current = true;
+          knownCompletedCashoutTaskIdsRef.current = new Set(
+            completedTasks.map((task) => task.id)
+          );
+          knownCashoutStatusByIdRef.current = nextStatusById;
+        },
+        (error) => {
+          reportPlayerUiError(
+            'player_cashout_tasks_listener',
+            error,
+            setMessage,
+            'Failed to confirm cashout completion.'
+          );
         }
+      );
+    };
 
-        hasSeenCashoutTaskSnapshotRef.current = true;
-        knownCompletedCashoutTaskIdsRef.current = new Set(
-          completedTasks.map((task) => task.id)
-        );
-        knownCashoutStatusByIdRef.current = nextStatusById;
-      },
-      (error) => {
-        reportPlayerUiError(
-          'player_cashout_tasks_listener',
-          error,
-          setMessage,
-          'Failed to confirm cashout completion.'
-        );
+    const timer = window.setTimeout(startCashoutListener, delayMs);
+
+    return () => {
+      window.clearTimeout(timer);
+      unsubscribe?.();
+      if (cashoutListenerStartedForUidRef.current === playerUid) {
+        cashoutListenerStartedForUidRef.current = '';
       }
-    );
-
-    return () => unsubscribe();
-  }, [isPlayerRole, playerUid]);
+    };
+  }, [isPlayerRole, markPlayerStartupFlag, playerUid]);
 
   useEffect(() => {
     if (!referredByPlayerUid || referredByPlayerName || isClientSqlReadMode()) {
@@ -3166,6 +3725,10 @@ export default function PlayerPage() {
       console.info('[player bonusEvents] coadminUid', playerCoadminUid);
       console.info('[player bonusEvents] listener:start');
     }
+    markPlayerStartupFlag('bonusListenerStarted', {
+      source: 'listenBonusEventsByCoadmin',
+      activeView,
+    });
     const unsubscribe = listenBonusEventsByCoadmin(
       playerCoadminUid,
       (events) => {
@@ -3219,7 +3782,7 @@ export default function PlayerPage() {
       }
       unsubscribe();
     };
-  }, [activeView, isPlayerRole, playerCoadminUid, shouldListenToBonusEvents]);
+  }, [activeView, isPlayerRole, markPlayerStartupFlag, playerCoadminUid, shouldListenToBonusEvents]);
 
   useEffect(() => {
     if (!isPlayerRole || !playerUid) {
@@ -3230,9 +3793,37 @@ export default function PlayerPage() {
       isClientSqlReadMode() ||
       assertClientFirestoreDisabled('player_profile_listener', 'onSnapshot', { playerUid })
     ) {
-      return attachPlayerProfileSqlPoll((profile) => {
-        applyPlayerProfileSnapshot(profile, playerUid);
+      let disposed = false;
+      let stopPoll: (() => void) | null = null;
+      const delayMs = baseDataLoadedRef.current ? 750 : 2_000;
+      console.info('[PLAYER_STARTUP_STAGGER]', {
+        target: 'player_profile_poll',
+        delayMs,
+        reason: baseDataLoadedRef.current
+          ? 'defer_secondary_sql_poll'
+          : 'wait_for_base_data_before_profile_poll',
       });
+      const timer = window.setTimeout(() => {
+        if (disposed) {
+          return;
+        }
+        markPlayerStartupFlag('profilePollStarted', {
+          source: 'attachPlayerProfileSqlPoll',
+        });
+        console.info('[PLAYER_SESSION_ME_STARTUP_SKIP_DUPLICATE]', {
+          uid: playerUid,
+          reason: 'profile_poll_initial_fetch_delayed',
+          initialDelayMs: 10_000,
+        });
+        stopPoll = attachPlayerProfileSqlPoll((profile) => {
+          applyPlayerProfileSnapshot(profile, playerUid);
+        }, { initialDelayMs: 10_000 });
+      }, delayMs);
+      return () => {
+        disposed = true;
+        window.clearTimeout(timer);
+        stopPoll?.();
+      };
     }
 
     const unsubscribe = onSnapshot(
@@ -3313,7 +3904,7 @@ export default function PlayerPage() {
     );
 
     return () => unsubscribe();
-  }, [isPlayerRole, playerUid]);
+  }, [baseDataLoaded, isPlayerRole, markPlayerStartupFlag, playerUid]);
 
   const loadReferralRewards = useCallback(async (options: { force?: boolean } = {}) => {
     if (shouldSkipIndividualLoader('referral', options.force)) {

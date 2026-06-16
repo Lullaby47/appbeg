@@ -8,9 +8,12 @@ import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
 import { getCachedSessionUser } from '@/features/auth/sessionUser';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
+import { subscribePlayerCashoutLiveFromPlayerStream } from '@/features/live/playerRequestSqlRead';
 
 const POLL_MS = 10_000;
 const SAFETY_REFETCH_MS = 45_000;
+const STARTUP_CASHOUT_CACHE_COOLDOWN_MS = 2_500;
+const activeCashoutLiveStreamKeys = new Set<string>();
 
 type CashoutScope = 'player' | 'coadmin' | 'staff' | 'assigned_handler' | 'all';
 type CashoutTaskList = 'pending' | 'active' | 'completed';
@@ -168,20 +171,50 @@ function attachCashoutSqlPoll(input: {
     uid: input.uid,
     liveChannel: input.liveChannel || null,
   });
+  console.info('[POLLER_RETAINED]', {
+    pollName: 'player_cashout_tasks',
+    scope: input.scope,
+    reason: input.liveChannel
+      ? 'SSE triggers immediate refetch; safety poll retained for missed events/reconnects'
+      : 'no live channel available for this scope',
+    safetyRefetchMs: input.liveChannel ? SAFETY_REFETCH_MS : null,
+  });
 
   let disposed = false;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let safetyTimer: ReturnType<typeof setInterval> | null = null;
   let eventSource: EventSource | null = null;
+  let sharedStreamUnsubscribe: (() => void) | null = null;
   let lastEventId = 0;
   let refetchInFlight = false;
   let refetchQueued = false;
+  let lastFetchFinishedAt = 0;
+  let activeLiveStreamKey: string | null = null;
+  const startedAt = Date.now();
+
+  const isStartupCooldownActive = () =>
+    Date.now() - startedAt < STARTUP_CASHOUT_CACHE_COOLDOWN_MS;
+
+  const logCashoutCacheDeduped = (reason: string, detail: string) => {
+    console.info('[PLAYER_CASHOUT_CACHE_DEDUPED]', {
+      scope: input.scope,
+      uid: input.scope === 'all' ? null : input.uid,
+      reason,
+      detail,
+      lastEventId,
+      startupAgeMs: Date.now() - startedAt,
+    });
+  };
 
   const runPoll = async (reason: string) => {
     if (disposed) {
       return;
     }
     if (refetchInFlight) {
+      if (isStartupCooldownActive()) {
+        logCashoutCacheDeduped(reason, 'in_flight_startup_refetch_suppressed');
+        return;
+      }
       refetchQueued = true;
       return;
     }
@@ -204,8 +237,18 @@ function attachCashoutSqlPoll(input: {
       }
     } finally {
       refetchInFlight = false;
+      lastFetchFinishedAt = Date.now();
       if (!disposed && refetchQueued) {
         refetchQueued = false;
+        if (isStartupCooldownActive()) {
+          logCashoutCacheDeduped('queued', 'queued_startup_refetch_suppressed');
+          if (!disposed) {
+            pollTimer = setTimeout(() => {
+              void runPoll('poll_interval');
+            }, POLL_MS);
+          }
+          return;
+        }
         void runPoll('queued');
         return;
       }
@@ -221,6 +264,14 @@ function attachCashoutSqlPoll(input: {
     if (disposed) {
       return;
     }
+    if (
+      isStartupCooldownActive() &&
+      lastFetchFinishedAt > 0 &&
+      Date.now() - lastFetchFinishedAt < STARTUP_CASHOUT_CACHE_COOLDOWN_MS
+    ) {
+      logCashoutCacheDeduped(reason, 'recent_startup_fetch_suppressed');
+      return;
+    }
     console.info('[CASHOUT_LIVE_EVENT_RECEIVED]', {
       scope: input.scope,
       uid: input.scope === 'all' ? null : input.uid,
@@ -234,15 +285,70 @@ function attachCashoutSqlPoll(input: {
     void runPoll(reason);
   };
 
+  const handleLiveEvent = (eventName: string, rawData: string, outboxId: number) => {
+    if (eventName === 'ping') {
+      return;
+    }
+    if (outboxId > 0) {
+      lastEventId = Math.max(lastEventId, outboxId);
+    }
+    try {
+      const payload = JSON.parse(rawData) as Record<string, unknown>;
+      logScopeEventReceived(input.scope, eventName, payload);
+      console.info('[CASHOUT_LIVE_EVENT_RECEIVED]', {
+        eventType: eventName,
+        taskId: cleanText(payload.taskId || payload.entityId),
+        coadminUid: cleanText(payload.coadminUid),
+        playerUid: cleanText(payload.playerUid),
+        status: cleanText(payload.status),
+        outboxId,
+      });
+    } catch {
+      console.info('[CASHOUT_LIVE_EVENT_RECEIVED]', {
+        eventType: eventName,
+        outboxId,
+      });
+    }
+    scheduleImmediateRefetch(`live:${eventName}`);
+  };
+
   const closeEventSource = () => {
     if (eventSource) {
       eventSource.close();
       eventSource = null;
     }
+    if (activeLiveStreamKey) {
+      activeCashoutLiveStreamKeys.delete(activeLiveStreamKey);
+      activeLiveStreamKey = null;
+    }
   };
 
   const connectEventSource = () => {
     if (!input.liveChannel || disposed) {
+      return;
+    }
+
+    if (input.scope === 'player') {
+      if (sharedStreamUnsubscribe) {
+        console.info('[PLAYER_LIVE_STREAM_SINGLETON_REUSED]', {
+          playerUid: input.uid,
+          subscriber: 'cashout',
+          reason: 'already_registered',
+        });
+        return;
+      }
+      sharedStreamUnsubscribe = subscribePlayerCashoutLiveFromPlayerStream(input.uid, ({
+        eventName,
+        rawData,
+        outboxId,
+      }) => {
+        handleLiveEvent(eventName, rawData, outboxId);
+      });
+      console.info('[PLAYER_LIVE_STREAM_SINGLETON_REUSED]', {
+        playerUid: input.uid,
+        subscriber: 'cashout',
+        channel: input.liveChannel,
+      });
       return;
     }
 
@@ -255,43 +361,21 @@ function attachCashoutSqlPoll(input: {
     if (appSessionId) {
       params.set('appSessionId', appSessionId);
     }
-    if (input.scope === 'player') {
-      const playerSessionId = cleanText(getLocalPlayerSessionId());
-      if (playerSessionId) {
-        params.set('playerSessionId', playerSessionId);
-      }
-    }
-
     const url = `/api/live/stream?${params.toString()}`;
+    const streamKey = `cashout:${input.scope}:${input.liveChannel}`;
+    if (activeCashoutLiveStreamKeys.has(streamKey)) {
+      console.info('[PLAYER_SSE_DEDUPED]', {
+        streamKey,
+        scope: input.scope,
+        uid: input.scope === 'all' ? null : input.uid,
+        reason: 'cashout_live_stream_already_active',
+      });
+      return;
+    }
+    activeCashoutLiveStreamKeys.add(streamKey);
+    activeLiveStreamKey = streamKey;
     const source = new EventSource(url);
     eventSource = source;
-
-    const handleLiveEvent = (eventName: string, rawData: string, outboxId: number) => {
-      if (eventName === 'ping') {
-        return;
-      }
-      if (outboxId > 0) {
-        lastEventId = Math.max(lastEventId, outboxId);
-      }
-      try {
-        const payload = JSON.parse(rawData) as Record<string, unknown>;
-        logScopeEventReceived(input.scope, eventName, payload);
-        console.info('[CASHOUT_LIVE_EVENT_RECEIVED]', {
-          eventType: eventName,
-          taskId: cleanText(payload.taskId || payload.entityId),
-          coadminUid: cleanText(payload.coadminUid),
-          playerUid: cleanText(payload.playerUid),
-          status: cleanText(payload.status),
-          outboxId,
-        });
-      } catch {
-        console.info('[CASHOUT_LIVE_EVENT_RECEIVED]', {
-          eventType: eventName,
-          outboxId,
-        });
-      }
-      scheduleImmediateRefetch(`live:${eventName}`);
-    };
 
     source.addEventListener('ping', (ev: Event) => {
       const message = ev as MessageEvent<string>;
@@ -336,6 +420,8 @@ function attachCashoutSqlPoll(input: {
       safetyTimer = null;
     }
     closeEventSource();
+    sharedStreamUnsubscribe?.();
+    sharedStreamUnsubscribe = null;
   };
 }
 

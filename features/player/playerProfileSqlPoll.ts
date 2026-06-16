@@ -1,7 +1,10 @@
 'use client';
 
-import { getAppSessionRequestHeaders } from '@/features/auth/appSession';
-import { createPlayerScopedPoll } from '@/lib/client/playerPollGuard';
+import {
+  getSessionMeOnce,
+  subscribeSessionMe,
+  type SessionMePayload,
+} from '@/features/auth/sessionUser';
 import { logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
 export type PlayerProfileSqlSnapshot = {
@@ -19,28 +22,9 @@ export type PlayerProfileSqlSnapshot = {
   referralBonusNoticeAt: string | null;
 };
 
-type SessionMeResponse = {
-  ok?: boolean;
-  uid?: string;
-  username?: string;
-  status?: string | null;
-  coadminUid?: string | null;
-  player?: {
-    coin?: number;
-    cash?: number;
-    referralCode?: string | null;
-    referredByUid?: string | null;
-    referredByUsername?: string | null;
-    dismissedPaymentDetailsNoticeVersion?: number;
-    coadminPaymentDetailsNoticeVersion?: number;
-    referralBonusNotice?: string | null;
-    referralBonusNoticeAt?: string | null;
-  };
-};
-
 const DEFAULT_POLL_INTERVAL_MS = 12_000;
 
-function mapSessionMeToProfile(payload: SessionMeResponse): PlayerProfileSqlSnapshot | null {
+function mapSessionMeToProfile(payload: SessionMePayload): PlayerProfileSqlSnapshot | null {
   if (!payload.ok || !payload.uid) {
     return null;
   }
@@ -66,39 +50,31 @@ function mapSessionMeToProfile(payload: SessionMeResponse): PlayerProfileSqlSnap
   };
 }
 
-async function fetchPlayerProfileSnapshot(): Promise<PlayerProfileSqlSnapshot | null> {
-  const response = await fetch('/api/auth/session/me', {
-    method: 'GET',
-    headers: getAppSessionRequestHeaders(),
-    cache: 'no-store',
-  });
-  if (!response.ok) {
-    return null;
-  }
-  const payload = (await response.json().catch(() => ({}))) as SessionMeResponse;
-  return mapSessionMeToProfile(payload);
-}
-
 export function attachPlayerProfileSqlPoll(
   onChange: (profile: PlayerProfileSqlSnapshot) => void,
-  options?: { intervalMs?: number }
+  options?: { intervalMs?: number; initialDelayMs?: number }
 ) {
   logClientFirestoreSkipped('player_profile_poll', { route: '/api/auth/session/me' });
   const intervalMs = Math.max(4_000, Number(options?.intervalMs || DEFAULT_POLL_INTERVAL_MS));
+  const initialDelayMs = Math.max(0, Number(options?.initialDelayMs || 0));
 
-  return createPlayerScopedPoll({
-    pollName: 'player_profile',
-    intervalMs,
-    onTick: async () => {
-      const profile = await fetchPlayerProfileSnapshot();
+  return subscribeSessionMe(
+    'player_profile',
+    (payload) => {
+      const profile = mapSessionMeToProfile(payload);
       if (profile) {
         onChange(profile);
       }
     },
-  });
+    {
+      intervalMs,
+      initialDelayMs,
+    }
+  );
 }
 
 export async function loadPlayerProfileSnapshotOnce(): Promise<PlayerProfileSqlSnapshot | null> {
   logClientFirestoreSkipped('player_profile_once', { route: '/api/auth/session/me' });
-  return fetchPlayerProfileSnapshot();
+  const payload = await getSessionMeOnce({ maxAgeMs: 1_000 });
+  return payload ? mapSessionMeToProfile(payload) : null;
 }

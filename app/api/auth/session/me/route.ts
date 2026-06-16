@@ -3,14 +3,123 @@ import { NextResponse } from 'next/server';
 import { verifyAppSessionFromRequest } from '@/lib/firebase/apiAuth';
 import { logSqlAuthNoFirestore, logSqlAuthProfileRead, logSqlAuthSessionRead } from '@/lib/server/appbegSqlOnlyMode';
 import { readSessionMePlayerExtras } from '@/lib/server/sessionMeExtras';
+import { cleanText } from '@/lib/sql/playerMirrorCommon';
 
 export const runtime = 'nodejs';
 
 export const dynamic = 'force-dynamic';
 
+const SESSION_ME_ROUTE_CACHE_TTL_MS = 20_000;
+
+type SessionMeStableBody = {
+  ok: true;
+  uid: string;
+  role: string;
+  coadminUid: string | null;
+  username: string;
+  status: string | null;
+  expiresAt: string;
+  appSessionId: string;
+  sessionSource: 'sql';
+  playerSessionId?: string;
+  canonicalSessionId?: string;
+};
+
+type SessionMeRouteCacheEntry = {
+  expiresAt: number;
+  cachedAt: number;
+  body: SessionMeStableBody;
+};
+
+const globalSessionMeCache = globalThis as typeof globalThis & {
+  __appbegSessionMeRouteCache?: Map<string, SessionMeRouteCacheEntry>;
+};
+
+function sessionMeRouteCache() {
+  if (!globalSessionMeCache.__appbegSessionMeRouteCache) {
+    globalSessionMeCache.__appbegSessionMeRouteCache = new Map();
+  }
+  return globalSessionMeCache.__appbegSessionMeRouteCache;
+}
+
+function sessionIdFromRequest(request: Request) {
+  return cleanText(request.headers.get('X-App-Session-Id'));
+}
+
+function buildSessionMeCacheKey(input: { sessionId: string; uid: string; role: string }) {
+  return `${cleanText(input.sessionId)}:${cleanText(input.uid)}:${cleanText(input.role).toLowerCase()}`;
+}
+
+function readSessionMeRouteCache(input: {
+  sessionId: string;
+  uid: string;
+  role: string;
+  expiresAt: string;
+}) {
+  const cacheKey = buildSessionMeCacheKey(input);
+  const cached = sessionMeRouteCache().get(cacheKey);
+  if (!cached) {
+    console.info('[SESSION_ME_CACHE_MISS]', {
+      uid: input.uid,
+      role: input.role,
+      sessionIdPrefix: input.sessionId.slice(0, 8),
+      reason: 'empty',
+    });
+    return null;
+  }
+  if (
+    cached.expiresAt <= Date.now() ||
+    new Date(input.expiresAt).getTime() <= Date.now()
+  ) {
+    sessionMeRouteCache().delete(cacheKey);
+    console.info('[SESSION_ME_CACHE_MISS]', {
+      uid: input.uid,
+      role: input.role,
+      sessionIdPrefix: input.sessionId.slice(0, 8),
+      reason: 'expired',
+    });
+    return null;
+  }
+  console.info('[SESSION_ME_CACHE_HIT]', {
+    uid: input.uid,
+    role: input.role,
+    sessionIdPrefix: input.sessionId.slice(0, 8),
+    ageMs: Date.now() - cached.cachedAt,
+    expiresInMs: cached.expiresAt - Date.now(),
+  });
+  return cached.body;
+}
+
+function writeSessionMeRouteCache(input: {
+  sessionId: string;
+  uid: string;
+  role: string;
+  body: SessionMeStableBody;
+}) {
+  const cacheKey = buildSessionMeCacheKey(input);
+  const now = Date.now();
+  sessionMeRouteCache().set(cacheKey, {
+    cachedAt: now,
+    expiresAt: now + SESSION_ME_ROUTE_CACHE_TTL_MS,
+    body: input.body,
+  });
+  console.info('[SESSION_ME_CACHE_STORE]', {
+    uid: input.uid,
+    role: input.role,
+    sessionIdPrefix: input.sessionId.slice(0, 8),
+    expiresInMs: SESSION_ME_ROUTE_CACHE_TTL_MS,
+    cachedFields: 'stable_session_profile_metadata',
+  });
+}
+
+function responseSizeBytes(body: unknown) {
+  return Buffer.byteLength(JSON.stringify(body), 'utf8');
+}
+
 export async function GET(request: Request) {
 
   const totalStartedAt = Date.now();
+  const sessionId = sessionIdFromRequest(request);
 
   const auth = await verifyAppSessionFromRequest(request, {
     acquireContext: { context: 'app_session_auth', route: '/api/auth/session/me' },
@@ -83,6 +192,23 @@ export async function GET(request: Request) {
       ),
 
     });
+    console.info('[SESSION_ME_TIMING]', {
+      ok: false,
+      reason: auth.reason,
+      session_lookup_ms: authTiming.session_lookup_ms,
+      auth_validation_ms: authTiming.total_ms,
+      profile_lookup_ms: authTiming.profile_lookup_ms,
+      player_session_ms: 0,
+      cache_lookup_ms: authTiming.cache_lookup_ms,
+      player_extras_ms: 0,
+      serialization_ms: 0,
+      response_ms: 0,
+      total_ms,
+    });
+    console.info('[SESSION_ME_RESPONSE_SIZE]', {
+      ok: false,
+      bytes: responseSizeBytes({ ok: false, reason: auth.reason }),
+    });
 
     return NextResponse.json(
 
@@ -94,7 +220,33 @@ export async function GET(request: Request) {
 
   }
 
-  const serializationStartedAt = Date.now();
+  const cacheReadStartedAt = Date.now();
+  const cachedStableBody = readSessionMeRouteCache({
+    sessionId,
+    uid: auth.uid,
+    role: auth.role,
+    expiresAt: auth.session.expiresAt,
+  });
+  const sessionMeCacheLookupMs = Date.now() - cacheReadStartedAt;
+
+  if (cachedStableBody) {
+    console.info('[SESSION_ME_PROFILE_REUSED]', {
+      uid: auth.uid,
+      role: auth.role,
+      source: 'session_me_route_cache',
+    });
+  }
+
+  if (auth.role === 'player') {
+    console.info('[SESSION_ME_DUPLICATE_READ]', {
+      uid: auth.uid,
+      table: 'players_cache',
+      reason: 'player_extras_requires_live_balance_and_notice_fields',
+      profileReused: Boolean(cachedStableBody),
+    });
+  }
+
+  const playerExtrasStartedAt = Date.now();
 
   const playerExtras =
     auth.role === 'player'
@@ -103,39 +255,56 @@ export async function GET(request: Request) {
           coadminUid: auth.coadminUid,
         })
       : null;
+  const player_extras_ms = Date.now() - playerExtrasStartedAt;
 
   const playerSessionId =
     auth.role === 'player'
       ? String(auth.profile.activeSessionId || '').trim() || null
       : null;
 
+  const stableBody =
+    cachedStableBody ||
+    ({
+
+      ok: true as const,
+
+      uid: auth.uid,
+
+      role: auth.role,
+
+      coadminUid: auth.coadminUid,
+
+      username: auth.username,
+
+      status: auth.profile.status,
+
+      expiresAt: auth.session.expiresAt,
+
+      appSessionId: auth.sessionId,
+
+      sessionSource: 'sql' as const,
+
+      ...(playerSessionId
+        ? {
+            playerSessionId,
+            canonicalSessionId: playerSessionId,
+          }
+        : {}),
+
+    } satisfies SessionMeStableBody);
+
+  if (!cachedStableBody) {
+    writeSessionMeRouteCache({
+      sessionId,
+      uid: auth.uid,
+      role: auth.role,
+      body: stableBody,
+    });
+  }
+
+  const serializationStartedAt = Date.now();
   const body = {
-
-    ok: true as const,
-
-    uid: auth.uid,
-
-    role: auth.role,
-
-    coadminUid: auth.coadminUid,
-
-    username: auth.username,
-
-    status: auth.profile.status,
-
-    expiresAt: auth.session.expiresAt,
-
-    appSessionId: auth.sessionId,
-
-    sessionSource: 'sql' as const,
-
-    ...(playerSessionId
-      ? {
-          playerSessionId,
-          canonicalSessionId: playerSessionId,
-        }
-      : {}),
-
+    ...stableBody,
     ...(playerExtras
       ? {
           player: playerExtras,
@@ -145,6 +314,7 @@ export async function GET(request: Request) {
   };
 
   const serialization_ms = Date.now() - serializationStartedAt;
+  const response_size_bytes = responseSizeBytes(body);
 
   const responseStartedAt = Date.now();
 
@@ -234,8 +404,37 @@ export async function GET(request: Request) {
     ),
 
   });
+  console.info('[SESSION_ME_TIMING]', {
+    ok: true,
+    uid: auth.uid,
+    role: auth.role,
+    session_lookup_ms: authTiming.session_lookup_ms,
+    auth_validation_ms: authTiming.total_ms,
+    profile_lookup_ms: authTiming.profile_lookup_ms,
+    player_session_ms: 0,
+    cache_lookup_ms: authTiming.cache_lookup_ms + sessionMeCacheLookupMs,
+    player_extras_ms,
+    serialization_ms,
+    response_ms,
+    total_ms,
+    unaccounted_ms: Math.max(
+      0,
+      total_ms -
+        authTiming.total_ms -
+        sessionMeCacheLookupMs -
+        player_extras_ms -
+        serialization_ms -
+        response_ms
+    ),
+  });
+  console.info('[SESSION_ME_RESPONSE_SIZE]', {
+    ok: true,
+    uid: auth.uid,
+    role: auth.role,
+    bytes: response_size_bytes,
+    hasPlayerExtras: Boolean(playerExtras),
+  });
 
   return response;
 
 }
-

@@ -88,6 +88,59 @@ const PLAYER_LIVE_SSE_EVENTS = [
   'task.dismissed',
 ] as const;
 
+const PLAYER_CASHOUT_LIVE_EVENTS = [
+  'cashout_create',
+  'cashout_task_created',
+  'cashout_start',
+  'cashout_complete',
+  'cashout_decline',
+] as const;
+
+const PLAYER_STREAM_SSE_EVENTS = [
+  ...PLAYER_LIVE_SSE_EVENTS,
+  ...PLAYER_CASHOUT_LIVE_EVENTS,
+] as const;
+
+type PlayerCashoutSharedLiveHandler = (input: {
+  eventName: string;
+  rawData: string;
+  outboxId: number;
+}) => void;
+
+const playerCashoutSharedLiveHandlers = new Map<string, Set<PlayerCashoutSharedLiveHandler>>();
+
+function playerCashoutLiveChannel(playerUid: string) {
+  return `player:${cleanText(playerUid)}:cashouts`;
+}
+
+export function subscribePlayerCashoutLiveFromPlayerStream(
+  playerUid: string,
+  handler: PlayerCashoutSharedLiveHandler
+) {
+  const cleanPlayerUid = cleanText(playerUid);
+  if (!cleanPlayerUid) {
+    return () => {};
+  }
+  const existing = playerCashoutSharedLiveHandlers.get(cleanPlayerUid) || new Set();
+  existing.add(handler);
+  playerCashoutSharedLiveHandlers.set(cleanPlayerUid, existing);
+  console.info('[PLAYER_LIVE_STREAM_SINGLETON_REUSED]', {
+    playerUid: cleanPlayerUid,
+    subscriber: 'cashout',
+    subscriberCount: existing.size,
+  });
+  return () => {
+    const current = playerCashoutSharedLiveHandlers.get(cleanPlayerUid);
+    if (!current) {
+      return;
+    }
+    current.delete(handler);
+    if (!current.size) {
+      playerCashoutSharedLiveHandlers.delete(cleanPlayerUid);
+    }
+  };
+}
+
 export const PLAYER_RECHARGE_SENT_MESSAGE = 'Recharge successfully sent.';
 export const PLAYER_REDEEM_SENT_MESSAGE = 'Redeem request successfully sent.';
 export const PLAYER_RECHARGE_SUCCESS_MESSAGE = 'Your game is recharged. Enjoy!';
@@ -200,6 +253,9 @@ const INITIAL_RECONNECT_MS = 1_000;
 const MAX_RECONNECT_MS = 15_000;
 const SAFETY_REFETCH_MS = 30_000;
 const STALL_TIMEOUT_MS = 90_000;
+const RECONNECT_BOOTSTRAP_COOLDOWN_MS = 1_500;
+const activePlayerRequestLiveStreamKeys = new Set<string>();
+let playerRequestLiveListenerSeq = 0;
 
 type SqlSnapshotResponse = {
   requests?: SqlSnapshotRequest[];
@@ -710,21 +766,36 @@ export function attachPlayerRequestSqlReadListener(
   }
 ) {
   const cleanPlayerUid = cleanText(playerUid);
+  const listenerInstanceId = `player-request-live-${++playerRequestLiveListenerSeq}`;
   const streamChannels = [
     playerRequestLiveChannel(cleanPlayerUid),
     playerFreeplayLiveChannel(cleanPlayerUid),
+    playerCashoutLiveChannel(cleanPlayerUid),
   ];
+  console.info('[POLLER_RETAINED]', {
+    pollName: 'player_request_snapshot_safety',
+    channels: streamChannels,
+    reason: 'SSE is primary; safety refetch and stall watch retained for missed events/reconnects',
+    safetyRefetchMs: SAFETY_REFETCH_MS,
+  });
   let lastEventId = 0;
   let eventSource: EventSource | null = null;
   let disposed = false;
   let fellBack = false;
   let refetchInFlight = false;
+  let snapshotFetchPromise: Promise<boolean> | null = null;
+  let snapshotFetchReason: string | null = null;
+  let lastSnapshotFetchFinishedAt = 0;
   let reconnectAttempt = 0;
   let reconnectBackoffMs = INITIAL_RECONNECT_MS;
+  let reconnectCycleId = 0;
+  let lastReconnectBootstrapAt = 0;
+  let reconnectBootstrapInFlight = false;
   let lastSseActivityAt = Date.now();
   let safetyRefetchTimer: ReturnType<typeof setInterval> | null = null;
   let stallWatchTimer: ReturnType<typeof setInterval> | null = null;
   let streamConnectResolve: (() => void) | null = null;
+  let activeLiveStreamKey: string | null = null;
   const requestsById = new Map<string, PlayerGameRequest>();
 
   const emitRequests = () => {
@@ -737,6 +808,16 @@ export function attachPlayerRequestSqlReadListener(
   const refetchSnapshotNow = async (reason: string, priority = false) => {
     if (fellBack || disposed) {
       return false;
+    }
+    if (snapshotFetchPromise) {
+      console.info('[PLAYER_REQUEST_SNAPSHOT_FETCH_DEDUPED]', {
+        reason,
+        inFlightReason: snapshotFetchReason,
+        playerUid: cleanPlayerUid,
+        listenerInstanceId,
+        priority,
+      });
+      return snapshotFetchPromise;
     }
     if (refetchInFlight) {
       if (!priority) {
@@ -752,13 +833,22 @@ export function attachPlayerRequestSqlReadListener(
 
     refetchInFlight = true;
     const startedAt = Date.now();
+    snapshotFetchReason = reason;
+    console.info('[PLAYER_REQUEST_SNAPSHOT_FETCH_START]', {
+      reason,
+      playerUid: cleanPlayerUid,
+      listenerInstanceId,
+      priority,
+      lastEventId,
+    });
     console.info('[PLAYER_REQUESTS_REFETCH_START]', {
       reason,
       playerUid: cleanPlayerUid,
       priority,
       lastEventId,
     });
-    try {
+    snapshotFetchPromise = (async () => {
+      try {
       const headers = await getPlayerApiHeaders(false);
       const snapshotResponse = await fetch(
         `/api/live/snapshot/player/${encodeURIComponent(cleanPlayerUid)}/requests`,
@@ -822,7 +912,18 @@ export function attachPlayerRequestSqlReadListener(
       return false;
     } finally {
       refetchInFlight = false;
+      lastSnapshotFetchFinishedAt = Date.now();
+      console.info('[PLAYER_REQUEST_SNAPSHOT_FETCH_DONE]', {
+        reason,
+        playerUid: cleanPlayerUid,
+        listenerInstanceId,
+        durationMs: lastSnapshotFetchFinishedAt - startedAt,
+      });
+      snapshotFetchPromise = null;
+      snapshotFetchReason = null;
     }
+    })();
+    return snapshotFetchPromise;
   };
 
   const handleOutcomeLiveEvent = (
@@ -939,6 +1040,24 @@ export function attachPlayerRequestSqlReadListener(
 
     const payloadPlayerUid = cleanText(payload.playerUid);
     if (payloadPlayerUid && payloadPlayerUid !== cleanPlayerUid) {
+      return;
+    }
+
+    if ((PLAYER_CASHOUT_LIVE_EVENTS as readonly string[]).includes(eventName)) {
+      const handlers = playerCashoutSharedLiveHandlers.get(cleanPlayerUid);
+      if (handlers?.size) {
+        for (const handler of handlers) {
+          try {
+            handler({ eventName, rawData, outboxId });
+          } catch (error) {
+            console.info('[PLAYER_LIVE_STREAM_DUPLICATE_BLOCKED]', {
+              playerUid: cleanPlayerUid,
+              eventName,
+              reason: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      }
       return;
     }
 
@@ -1066,15 +1185,83 @@ export function attachPlayerRequestSqlReadListener(
     if (!eventSource) {
       return;
     }
+    const previousReadyState = eventSource.readyState;
     eventSource.close();
     eventSource = null;
+    if (activeLiveStreamKey) {
+      activePlayerRequestLiveStreamKeys.delete(activeLiveStreamKey);
+      activeLiveStreamKey = null;
+    }
+    console.info('[PLAYER_LIVE_STREAM_CLIENT_CLOSE]', {
+      reason,
+      playerUid: cleanPlayerUid,
+      channels: streamChannels,
+      lastEventId,
+      previousReadyState,
+      reconnectAttempt,
+      listenerInstanceId,
+    });
     console.info('[PLAYER_LIVE_STREAM_CLOSE]', {
       reason,
       playerUid: cleanPlayerUid,
       lastEventId,
+      channels: streamChannels,
+      previousReadyState,
+      reconnectAttempt,
+      listenerInstanceId,
     });
     streamConnectResolve?.();
     streamConnectResolve = null;
+  };
+
+  const runReconnectBootstrap = async (reason: string, cycleId: number) => {
+    if (disposed || fellBack) {
+      return false;
+    }
+    const now = Date.now();
+    if (reconnectBootstrapInFlight) {
+      console.info('[PLAYER_LIVE_STREAM_RECONNECT_BOOTSTRAP_SKIPPED]', {
+        reason,
+        playerUid: cleanPlayerUid,
+        channels: streamChannels,
+        listenerInstanceId,
+        reconnectAttempt,
+        reconnectCycleId: cycleId,
+        skipReason: 'bootstrap_in_flight',
+      });
+      return false;
+    }
+    if (now - lastReconnectBootstrapAt < RECONNECT_BOOTSTRAP_COOLDOWN_MS) {
+      console.info('[PLAYER_LIVE_STREAM_RECONNECT_BOOTSTRAP_SKIPPED]', {
+        reason,
+        playerUid: cleanPlayerUid,
+        channels: streamChannels,
+        listenerInstanceId,
+        reconnectAttempt,
+        reconnectCycleId: cycleId,
+        cooldownMs: RECONNECT_BOOTSTRAP_COOLDOWN_MS,
+        elapsedMs: now - lastReconnectBootstrapAt,
+        skipReason: 'recent_bootstrap',
+      });
+      return false;
+    }
+    reconnectBootstrapInFlight = true;
+    lastReconnectBootstrapAt = now;
+    console.info('[PLAYER_LIVE_STREAM_RECONNECT_BOOTSTRAP_RUN]', {
+      reason,
+      playerUid: cleanPlayerUid,
+      channels: streamChannels,
+      listenerInstanceId,
+      reconnectAttempt,
+      reconnectCycleId: cycleId,
+      lastEventId,
+    });
+    try {
+      return await refetchSnapshotNow(reason, true);
+    } finally {
+      reconnectBootstrapInFlight = false;
+      lastReconnectBootstrapAt = Date.now();
+    }
   };
 
   const connectEventSource = () =>
@@ -1088,6 +1275,30 @@ export function attachPlayerRequestSqlReadListener(
       streamConnectResolve = resolve;
 
       const url = buildStreamUrl();
+      const streamKey = `player:${cleanPlayerUid}:${streamChannels.join(',')}`;
+      if (activePlayerRequestLiveStreamKeys.has(streamKey)) {
+        console.info('[PLAYER_LIVE_STREAM_DUPLICATE_BLOCKED]', {
+          streamKey,
+          playerUid: cleanPlayerUid,
+          channels: streamChannels,
+          reason: 'player_request_live_stream_already_active',
+        });
+        console.info('[PLAYER_SSE_DEDUPED]', {
+          streamKey,
+          playerUid: cleanPlayerUid,
+          channels: streamChannels,
+          reason: 'player_request_live_stream_already_active',
+        });
+        resolve();
+        return;
+      }
+      activePlayerRequestLiveStreamKeys.add(streamKey);
+      activeLiveStreamKey = streamKey;
+      console.info('[PLAYER_LIVE_STREAM_SINGLETON_CREATED]', {
+        streamKey,
+        playerUid: cleanPlayerUid,
+        channels: streamChannels,
+      });
       console.info('[PLAYER_LIVE_STREAM_SUBSCRIBE]', {
         playerUid: cleanPlayerUid,
         channels: streamChannels,
@@ -1115,7 +1326,7 @@ export function attachPlayerRequestSqlReadListener(
         handleStreamMessage('ping', String(message.data || ''), Number(message.lastEventId) || 0);
       });
 
-      for (const eventName of PLAYER_LIVE_SSE_EVENTS) {
+      for (const eventName of PLAYER_STREAM_SSE_EVENTS) {
         source.addEventListener(eventName, (ev: Event) => {
           const message = ev as MessageEvent<string>;
           handleStreamMessage(
@@ -1131,16 +1342,45 @@ export function attachPlayerRequestSqlReadListener(
       };
 
       source.onerror = () => {
-        console.info('[PLAYER_LIVE_STREAM_ERROR]', {
+        const readyState = source.readyState;
+        console.info('[PLAYER_LIVE_STREAM_CLIENT_ERROR]', {
           playerUid: cleanPlayerUid,
-          readyState: source.readyState,
+          channels: streamChannels,
+          readyState,
           lastEventId,
           idleMs: Date.now() - lastSseActivityAt,
+          reconnectAttempt,
+          listenerInstanceId,
+        });
+        console.info('[PLAYER_LIVE_STREAM_ERROR]', {
+          playerUid: cleanPlayerUid,
+          readyState,
+          lastEventId,
+          idleMs: Date.now() - lastSseActivityAt,
+          reconnectAttempt,
+          listenerInstanceId,
+        });
+        if (readyState !== EventSource.CLOSED) {
+          console.info('[PLAYER_LIVE_STREAM_TRANSIENT_ERROR_IGNORED]', {
+            playerUid: cleanPlayerUid,
+            channels: streamChannels,
+            readyState,
+            lastEventId,
+            reconnectAttempt,
+            listenerInstanceId,
+          });
+          return;
+        }
+        console.info('[PLAYER_LIVE_STREAM_ERROR_CLOSED_RECONNECT]', {
+          playerUid: cleanPlayerUid,
+          channels: streamChannels,
+          readyState,
+          lastEventId,
+          reconnectAttempt,
+          listenerInstanceId,
         });
         closeEventSource('sse_error');
-        void refetchSnapshotNow('sse_error', true).finally(() => {
-          resolve();
-        });
+        resolve();
       };
     });
 
@@ -1151,15 +1391,29 @@ export function attachPlayerRequestSqlReadListener(
         break;
       }
       reconnectAttempt += 1;
+      reconnectCycleId += 1;
+      const cycleId = reconnectCycleId;
       console.info('[PLAYER_LIVE_STREAM_RECONNECT]', {
         playerUid: cleanPlayerUid,
         attempt: reconnectAttempt,
         backoffMs: reconnectBackoffMs,
         lastEventId,
+        channels: streamChannels,
+        listenerInstanceId,
+        reconnectCycleId: cycleId,
+      });
+      console.info('[PLAYER_LIVE_STREAM_RECONNECT_SCHEDULED]', {
+        playerUid: cleanPlayerUid,
+        channels: streamChannels,
+        attempt: reconnectAttempt,
+        backoffMs: reconnectBackoffMs,
+        lastEventId,
+        listenerInstanceId,
+        reconnectCycleId: cycleId,
       });
       await new Promise((resolve) => setTimeout(resolve, reconnectBackoffMs));
       reconnectBackoffMs = Math.min(reconnectBackoffMs * 2, MAX_RECONNECT_MS);
-      await refetchSnapshotNow(`reconnect_attempt_${reconnectAttempt}`, true);
+      await runReconnectBootstrap(`reconnect_attempt_${reconnectAttempt}`, cycleId);
     }
   };
 
@@ -1183,9 +1437,13 @@ export function attachPlayerRequestSqlReadListener(
       reason: 'stall_timeout',
       idleMs,
       lastEventId,
+      channels: streamChannels,
+      reconnectAttempt,
+      listenerInstanceId,
     });
     closeEventSource('stall_timeout');
-    void refetchSnapshotNow('stall_timeout', true);
+    reconnectCycleId += 1;
+    void runReconnectBootstrap('stall_timeout', reconnectCycleId);
   };
 
   const handleVisibilityRefresh = () => {
@@ -1195,6 +1453,19 @@ export function attachPlayerRequestSqlReadListener(
     reconnectAttempt = 0;
     reconnectBackoffMs = INITIAL_RECONNECT_MS;
     closeEventSource('visibility_refresh');
+    const elapsedMs = Date.now() - Math.max(lastSnapshotFetchFinishedAt, lastReconnectBootstrapAt);
+    if (reconnectBootstrapInFlight || elapsedMs < RECONNECT_BOOTSTRAP_COOLDOWN_MS) {
+      console.info('[PLAYER_REQUEST_SNAPSHOT_VISIBILITY_SKIPPED_RECENT]', {
+        playerUid: cleanPlayerUid,
+        channels: streamChannels,
+        listenerInstanceId,
+        reconnectAttempt,
+        reconnectBootstrapInFlight,
+        elapsedMs,
+        cooldownMs: RECONNECT_BOOTSTRAP_COOLDOWN_MS,
+      });
+      return;
+    }
     void refetchSnapshotNow('visibility', true);
   };
 

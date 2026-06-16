@@ -98,6 +98,8 @@ export function createPlayerScopedPoll(input: {
   intervalMs: number;
   onTick: () => Promise<void>;
   onError?: (error: Error) => void;
+  pauseWhenHidden?: boolean;
+  initialDelayMs?: number;
 }) {
   let cancelled = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -123,6 +125,26 @@ export function createPlayerScopedPoll(input: {
     const sessionUser = await checkPlayerPollRole(input.pollName);
     if (!sessionUser) {
       stop();
+      return;
+    }
+
+    if (input.pauseWhenHidden !== false && typeof document !== 'undefined' && document.hidden) {
+      console.info('[PLAYER_POLL_PAUSED]', {
+        pollName: input.pollName,
+        reason: 'document_hidden',
+      });
+      const onVisible = () => {
+        if (document.hidden || cancelled) {
+          return;
+        }
+        document.removeEventListener('visibilitychange', onVisible);
+        console.info('[PLAYER_POLL_RESUMED]', {
+          pollName: input.pollName,
+          reason: 'document_visible',
+        });
+        void tick();
+      };
+      document.addEventListener('visibilitychange', onVisible);
       return;
     }
 
@@ -159,6 +181,13 @@ export function createPlayerScopedPoll(input: {
     if (!sessionUser || cancelled) {
       return;
     }
+    const initialDelayMs = Math.max(0, Number(input.initialDelayMs || 0));
+    if (initialDelayMs > 0) {
+      timer = setTimeout(() => {
+        void tick();
+      }, initialDelayMs);
+      return;
+    }
     await tick();
   })();
 
@@ -172,6 +201,7 @@ export function startPlayerRoleGuardedInterval(input: {
   pollName: string;
   intervalMs: number;
   onTick: () => void;
+  pauseWhenHidden?: boolean;
 }) {
   let cancelled = false;
   let intervalId: ReturnType<typeof setInterval> | null = null;
@@ -199,7 +229,7 @@ export function startPlayerRoleGuardedInterval(input: {
       return;
     }
 
-    intervalId = setInterval(() => {
+      intervalId = setInterval(() => {
       void (async () => {
         if (
           cancelled ||
@@ -211,6 +241,17 @@ export function startPlayerRoleGuardedInterval(input: {
         const current = await checkPlayerPollRole(input.pollName);
         if (!current) {
           stop();
+          return;
+        }
+        if (
+          input.pauseWhenHidden !== false &&
+          typeof document !== 'undefined' &&
+          document.hidden
+        ) {
+          console.info('[PLAYER_POLL_PAUSED]', {
+            pollName: input.pollName,
+            reason: 'document_hidden',
+          });
           return;
         }
         input.onTick();

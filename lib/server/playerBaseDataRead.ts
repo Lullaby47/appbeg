@@ -111,8 +111,8 @@ type ParallelReadResult<T> =
   | { ok: false; error: unknown; timing: ParallelReadTiming };
 
 const PLAYER_BASE_DATA_ROUTE = '/api/player/base-data';
-const PLAYER_BASE_DATA_PARALLEL_MIN_IDLE = 4;
 const PLAYER_BASE_DATA_PARALLEL_MIN_TOTAL = 4;
+const PLAYER_BASE_DATA_PARALLEL_REQUIRED_CLIENTS = 4;
 
 function resolvePlayerBaseDataParallelMode(stats: PlayerMirrorPoolStats | null): {
   mode: PlayerBaseDataMode;
@@ -132,10 +132,13 @@ function resolvePlayerBaseDataParallelMode(stats: PlayerMirrorPoolStats | null):
   if (stats.waitingCount > 0) {
     return { mode: 'sequential', reason: 'waiting' };
   }
-  if (stats.idleCount < PLAYER_BASE_DATA_PARALLEL_MIN_IDLE) {
+  const maxCount = Math.max(stats.max || 0, stats.totalCount || 0);
+  const openCapacity = Math.max(0, maxCount - stats.totalCount);
+  const availableCapacity = stats.idleCount + openCapacity;
+  if (availableCapacity < PLAYER_BASE_DATA_PARALLEL_REQUIRED_CLIENTS) {
     return { mode: 'sequential', reason: 'low_idle' };
   }
-  if (stats.totalCount < PLAYER_BASE_DATA_PARALLEL_MIN_TOTAL) {
+  if (maxCount < PLAYER_BASE_DATA_PARALLEL_MIN_TOTAL) {
     return { mode: 'sequential', reason: 'cold_pool' };
   }
 

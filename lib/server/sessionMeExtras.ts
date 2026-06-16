@@ -49,18 +49,22 @@ export async function readSessionMePlayerExtras(input: {
               p.referral_code,
               p.referred_by_uid,
               p.raw_firestore_data,
-              r.username AS referred_by_username
+              r.username AS referred_by_username,
+              c.raw_firestore_data AS coadmin_raw_firestore_data
             FROM public.players_cache p
             LEFT JOIN public.players_cache r
               ON r.uid = p.referred_by_uid
              AND r.deleted_at IS NULL
              AND r.role = 'player'
              AND LOWER(COALESCE(r.status, '')) = 'active'
+            LEFT JOIN public.players_cache c
+              ON c.uid = $2
+             AND c.deleted_at IS NULL
             WHERE p.uid = $1
               AND p.deleted_at IS NULL
             LIMIT 1
           `,
-          [uid]
+          [uid, cleanText(input.coadminUid)]
         );
 
         if (!rows.length) {
@@ -69,29 +73,9 @@ export async function readSessionMePlayerExtras(input: {
 
         const row = rows[0];
         const raw = row.raw_firestore_data;
-        const coadminUid = cleanText(input.coadminUid);
-        let coadminPaymentDetailsNoticeVersion = 0;
-
-        if (coadminUid) {
-          trackQuery();
-          const coadminResult = await runMirrorClientQuery<Record<string, unknown>>(
-            client,
-            `
-              SELECT raw_firestore_data
-              FROM public.players_cache
-              WHERE uid = $1
-                AND deleted_at IS NULL
-              LIMIT 1
-            `,
-            [coadminUid]
-          );
-          if (coadminResult.rows.length) {
-            const coadminRaw = coadminResult.rows[0].raw_firestore_data;
-            coadminPaymentDetailsNoticeVersion = Number(
-              readRawField(coadminRaw, 'paymentDetailsNoticeVersion') || 0
-            );
-          }
-        }
+        const coadminPaymentDetailsNoticeVersion = Number(
+          readRawField(row.coadmin_raw_firestore_data, 'paymentDetailsNoticeVersion') || 0
+        );
 
         return {
           coin: Number(row.coin ?? readRawField(raw, 'coin') ?? 0),

@@ -36,6 +36,21 @@ import {
   setLoginUiProgressStep,
   startLoginUiProgress,
 } from '@/lib/client/loginUiProgress';
+import {
+  isPublicFirebaseRuntimeDisabled,
+  isPublicLegacyFirebaseFallbackEnabled,
+  isPublicSqlPlayerLoginEnabled,
+} from '@/lib/client/sqlPublicFlags';
+
+function canUseLegacyFirebaseLoginFallback() {
+  return (
+    !isSqlLoginFirstEnabled() &&
+    !isClientSqlReadMode() &&
+    isPublicLegacyFirebaseFallbackEnabled() &&
+    !isPublicFirebaseRuntimeDisabled() &&
+    Boolean(db)
+  );
+}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -61,10 +76,10 @@ export default function LoginPage() {
 
   useEffect(() => {
     async function checkAdminExists() {
-      const sqlMode = isSqlLoginFirstEnabled() || isClientSqlReadMode();
-      if (sqlMode) {
+      const legacyFirebaseAllowed = canUseLegacyFirebaseLoginFallback();
+      if (!legacyFirebaseAllowed) {
         console.info('[LOGIN_ADMIN_STATUS_CHECK]', {
-          sqlMode: true,
+          sqlMode: isSqlLoginFirstEnabled() || isClientSqlReadMode(),
           skippedFirebase: true,
           source: 'login_page_mount',
           ok: true,
@@ -83,7 +98,7 @@ export default function LoginPage() {
         const snapshot = await getDocs(adminQuery);
         const exists = !snapshot.empty;
         console.info('[LOGIN_ADMIN_STATUS_CHECK]', {
-          sqlMode: false,
+          sqlMode: isSqlLoginFirstEnabled() || isClientSqlReadMode(),
           skippedFirebase: false,
           source: 'login_page_mount',
           ok: true,
@@ -93,7 +108,7 @@ export default function LoginPage() {
       } catch (err) {
         console.error(err);
         console.info('[LOGIN_ADMIN_STATUS_CHECK]', {
-          sqlMode: false,
+          sqlMode: isSqlLoginFirstEnabled() || isClientSqlReadMode(),
           skippedFirebase: false,
           source: 'login_page_mount',
           ok: false,
@@ -140,7 +155,7 @@ export default function LoginPage() {
       }
     })();
 
-    if (isSqlLoginFirstEnabled()) {
+    if (!canUseLegacyFirebaseLoginFallback()) {
       return;
     }
 
@@ -188,6 +203,15 @@ export default function LoginPage() {
   }, [router]);
 
   async function findLoginUserDoc(cleanUsername: string) {
+    if (!canUseLegacyFirebaseLoginFallback()) {
+      console.info('[LOGIN_FIREBASE_FALLBACK_SUPPRESSED]', {
+        reason: 'legacy_firestore_lookup_blocked',
+        sqlLoginFirst: isSqlLoginFirstEnabled(),
+        sqlReadMode: isClientSqlReadMode(),
+      });
+      return null;
+    }
+
     const candidates = Array.from(
       new Set([cleanUsername, cleanUsername.toLowerCase()].filter(Boolean))
     );
@@ -215,6 +239,15 @@ export default function LoginPage() {
   }
 
   async function performFirebaseLogin(cleanUsername: string) {
+    if (!canUseLegacyFirebaseLoginFallback()) {
+      console.info('[LOGIN_FIREBASE_FALLBACK_SUPPRESSED]', {
+        reason: 'perform_firebase_login_blocked',
+        sqlLoginFirst: isSqlLoginFirstEnabled(),
+        sqlReadMode: isClientSqlReadMode(),
+      });
+      throw new Error('Firebase fallback is disabled.');
+    }
+
     const progress = readLoginProgressContext(cleanUsername);
 
     setLoginUiProgressStep('verifying_password', {
@@ -297,12 +330,31 @@ export default function LoginPage() {
     e.preventDefault();
 
     if (loginInProgressRef.current || loading) {
+      console.info('[LOGIN_CLIENT_DIAG_THROW_BEFORE_API]', {
+        reason: loginInProgressRef.current ? 'login_already_in_progress' : 'login_loading',
+      });
       return;
     }
 
     const cleanUsername = username.trim();
 
+    console.info('[LOGIN_CLIENT_DIAG_FLAGS]', {
+      sqlLoginFirst: isSqlLoginFirstEnabled(),
+      sqlPlayerLogin: isPublicSqlPlayerLoginEnabled(),
+      sqlReadMode: isClientSqlReadMode(),
+      firebaseFallbackAllowed: canUseLegacyFirebaseLoginFallback(),
+      publicFirebaseFallbackAllowed: isPublicLegacyFirebaseFallbackEnabled(),
+      firebaseRuntimeDisabled: isPublicFirebaseRuntimeDisabled(),
+    });
+    console.info('[LOGIN_CLIENT_DIAG_SUBMIT]', {
+      usernameEntered: username,
+      usernameNormalized: cleanUsername.toLowerCase(),
+    });
+
     if (!cleanUsername) {
+      console.info('[LOGIN_CLIENT_DIAG_THROW_BEFORE_API]', {
+        reason: 'username_required',
+      });
       setError('Username is required.');
       return;
     }
@@ -317,6 +369,11 @@ export default function LoginPage() {
 
     try {
       if (isSqlLoginFirstEnabled()) {
+        console.info('[LOGIN_SQL_ONLY_MODE]', {
+          sqlLoginFirst: true,
+          sqlReadMode: isClientSqlReadMode(),
+          firebaseFallbackAllowed: canUseLegacyFirebaseLoginFallback(),
+        });
         setLoginUiProgressStep('verifying_password', {
           startedAt,
           username: cleanUsername,
@@ -330,23 +387,40 @@ export default function LoginPage() {
 
         if (sqlLoginResult.ok) {
           if (sqlLoginResult.bootstrapExpected) {
-            console.info('[SQL_AUTH_LOGIN] client_bootstrap_firebase', {
+            console.info('[LOGIN_FIREBASE_FALLBACK_BLOCKED]', {
+              reason: 'sql_bootstrap_expected_blocked',
               uid: sqlLoginResult.uid,
               role: sqlLoginResult.role,
+              sqlLoginFirst: true,
+              sqlReadMode: isClientSqlReadMode(),
             });
-            setLoginUiProgressStep('creating_secure_session', {
-              startedAt,
-              username: cleanUsername,
+            console.info('[LOGIN_SQL_FAILED]', {
+              reason: 'bootstrap_expected_blocked',
               role: sqlLoginResult.role,
-              reason: 'sql_bootstrap_expected',
             });
-            await performFirebaseLogin(cleanUsername);
-            loginSucceeded = true;
+            console.info('[LOGIN_CLIENT_DIAG_THROW_AFTER_API]', {
+              reason: 'bootstrap_expected_blocked',
+            });
+            failLoginUiProgress('login_failed');
+            setError('Invalid username or password.');
+            loginInProgressRef.current = false;
+            setLoading(false);
             return;
           }
 
           if (!isValidRole(sqlLoginResult.role)) {
-            throw new Error('Invalid role.');
+            console.info('[LOGIN_SQL_FAILED]', {
+              reason: 'invalid_role',
+              role: sqlLoginResult.role,
+            });
+            console.info('[LOGIN_CLIENT_DIAG_THROW_AFTER_API]', {
+              reason: 'invalid_role',
+            });
+            failLoginUiProgress('login_failed');
+            setError('Invalid username or password.');
+            loginInProgressRef.current = false;
+            setLoading(false);
+            return;
           }
 
           setLoginUiProgressStep('creating_secure_session', {
@@ -373,24 +447,56 @@ export default function LoginPage() {
             role: sqlLoginResult.role,
             reason: 'sql_login_success',
           });
+          console.info('[LOGIN_SQL_SUCCESS]', {
+            uid: sqlLoginResult.uid,
+            role: sqlLoginResult.role,
+            playerSessionSource: sqlLoginResult.playerSessionSource || null,
+          });
           router.replace(to);
           loginSucceeded = true;
           return;
         }
 
-        if (!sqlLoginResult.fallbackToFirebase) {
-          throw new Error('Invalid username or password.');
+        console.info('[LOGIN_SQL_FAILED]', {
+          reason: sqlLoginResult.reason,
+          fallbackRequested: sqlLoginResult.fallbackToFirebase,
+        });
+        if (sqlLoginResult.fallbackToFirebase) {
+          console.info('[LOGIN_FIREBASE_FALLBACK_BLOCKED]', {
+            reason: sqlLoginResult.reason,
+            sqlLoginFirst: true,
+            sqlReadMode: isClientSqlReadMode(),
+          });
         }
-
-        console.info('[SQL_AUTH_LOGIN] client_fallback_firebase', {
+        console.info('[LOGIN_CLIENT_DIAG_THROW_AFTER_API]', {
           reason: sqlLoginResult.reason,
         });
+        failLoginUiProgress('login_failed');
+        setError('Invalid username or password.');
+        loginInProgressRef.current = false;
+        setLoading(false);
+        return;
+      }
+
+      if (!canUseLegacyFirebaseLoginFallback()) {
+        console.info('[LOGIN_CLIENT_DIAG_THROW_BEFORE_API]', {
+          reason: 'direct_legacy_login_blocked',
+        });
+        console.info('[LOGIN_FIREBASE_FALLBACK_BLOCKED]', {
+          reason: 'direct_legacy_login_blocked',
+          sqlLoginFirst: isSqlLoginFirstEnabled(),
+          sqlReadMode: isClientSqlReadMode(),
+        });
+        throw new Error('Invalid username or password.');
       }
 
       await performFirebaseLogin(cleanUsername);
       loginSucceeded = true;
     } catch (err) {
       console.error(err);
+      console.info('[LOGIN_CLIENT_DIAG_THROW_AFTER_API]', {
+        reason: err instanceof Error ? err.message : String(err || 'login_failed'),
+      });
       failLoginUiProgress('login_failed');
       setError('Invalid username or password.');
       loginInProgressRef.current = false;

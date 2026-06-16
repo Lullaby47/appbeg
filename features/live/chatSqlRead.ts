@@ -16,6 +16,8 @@ import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sql
 
 const POLL_MS = 8_000;
 const SAFETY_REFETCH_MS = 45_000;
+const UNREAD_CACHE_MS = 5_000;
+const UNREAD_SHARED_POLL_MS = 15_000;
 
 const MESSAGE_LIVE_EVENTS = [
   'chat_message_created',
@@ -23,6 +25,17 @@ const MESSAGE_LIVE_EVENTS = [
   'chat.message.upserted',
   'chat.message.deleted',
 ] as const;
+
+type UnreadSharedState = {
+  subscribers: Map<number, (counts: Record<string, number>) => void>;
+  counts: Record<string, number> | null;
+  cachedAt: number;
+  cleanup: (() => void) | null;
+  inflight: Promise<Record<string, number>> | null;
+};
+
+const unreadSharedStates = new Map<string, UnreadSharedState>();
+let nextUnreadSubscriberId = 1;
 
 function cleanText(value: unknown) {
   return String(value || '').trim();
@@ -164,6 +177,128 @@ export async function fetchSqlUnreadCounts(options?: { preferStaffSession?: bool
     totalUnread: Object.values(counts).reduce((sum, value) => sum + value, 0),
   });
   return counts;
+}
+
+function unreadSharedKey(options?: { preferStaffSession?: boolean; requirePlayerRole?: boolean }) {
+  return `${options?.requirePlayerRole ? 'player' : 'staff'}:${options?.preferStaffSession ? 'staff' : 'default'}`;
+}
+
+async function fetchUnreadShared(
+  state: UnreadSharedState,
+  options?: { preferStaffSession?: boolean }
+) {
+  if (state.counts && Date.now() - state.cachedAt <= UNREAD_CACHE_MS) {
+    console.info('[UNREAD_FETCH_REUSED]', {
+      source: 'cache',
+      ageMs: Date.now() - state.cachedAt,
+      subscriberCount: state.subscribers.size,
+    });
+    return state.counts;
+  }
+  if (state.inflight) {
+    console.info('[UNREAD_FETCH_REUSED]', {
+      source: 'inflight',
+      subscriberCount: state.subscribers.size,
+    });
+    return state.inflight;
+  }
+  state.inflight = fetchSqlUnreadCounts(options).then((counts) => {
+    state.counts = counts;
+    state.cachedAt = Date.now();
+    return counts;
+  }).finally(() => {
+    state.inflight = null;
+  });
+  return state.inflight;
+}
+
+function notifyUnreadShared(state: UnreadSharedState, counts: Record<string, number>) {
+  for (const subscriber of state.subscribers.values()) {
+    subscriber(counts);
+  }
+}
+
+function subscribeUnreadShared(
+  onChange: (counts: Record<string, number>) => void,
+  onError?: (error: Error) => void,
+  options?: { requirePlayerRole?: boolean; preferStaffSession?: boolean }
+) {
+  const key = unreadSharedKey(options);
+  let state = unreadSharedStates.get(key);
+  if (!state) {
+    state = {
+      subscribers: new Map(),
+      counts: null,
+      cachedAt: 0,
+      cleanup: null,
+      inflight: null,
+    };
+    unreadSharedStates.set(key, state);
+  }
+
+  const id = nextUnreadSubscriberId++;
+  state.subscribers.set(id, onChange);
+  console.info('[UNREAD_SHARED_STATE]', {
+    action: 'subscriber_added',
+    key,
+    subscriberCount: state.subscribers.size,
+  });
+
+  if (state.counts && Date.now() - state.cachedAt <= UNREAD_CACHE_MS) {
+    console.info('[UNREAD_FETCH_REUSED]', {
+      source: 'initial_cache',
+      key,
+      subscriberCount: state.subscribers.size,
+    });
+    onChange(state.counts);
+  }
+
+  if (!state.cleanup) {
+    const currentState = state;
+    console.info('[UNREAD_SHARED_STATE]', {
+      action: 'poller_created',
+      key,
+      subscriberCount: currentState.subscribers.size,
+    });
+    currentState.cleanup = createPlayerScopedPoll({
+      pollName: options?.requirePlayerRole ? 'player_chat_unread_counts' : 'chat_unread_counts',
+      intervalMs: options?.requirePlayerRole ? UNREAD_SHARED_POLL_MS : POLL_MS,
+      onTick: async () => {
+        const counts = await fetchUnreadShared(currentState, {
+          preferStaffSession: options?.preferStaffSession,
+        });
+        notifyUnreadShared(currentState, counts);
+      },
+      onError,
+    });
+  } else {
+    console.info('[UNREAD_SHARED_STATE]', {
+      action: 'poller_reused',
+      key,
+      subscriberCount: state.subscribers.size,
+    });
+  }
+
+  return () => {
+    const currentState = unreadSharedStates.get(key);
+    if (!currentState) {
+      return;
+    }
+    currentState.subscribers.delete(id);
+    console.info('[UNREAD_SHARED_STATE]', {
+      action: 'subscriber_removed',
+      key,
+      subscriberCount: currentState.subscribers.size,
+    });
+    if (!currentState.subscribers.size) {
+      currentState.cleanup?.();
+      unreadSharedStates.delete(key);
+      console.info('[UNREAD_SHARED_STATE]', {
+        action: 'poller_removed',
+        key,
+      });
+    }
+  };
 }
 
 export async function fetchSqlChatMessages(
@@ -386,14 +521,8 @@ export function attachSqlUnreadCountsPoll(
   logClientFirestoreSkipped('chat_unread_counts_listener');
 
   if (options?.requirePlayerRole) {
-    return createPlayerScopedPoll({
-      pollName: 'player_chat_unread_counts',
-      intervalMs: POLL_MS,
-      onTick: async () => {
-        const counts = await fetchSqlUnreadCounts();
-        onChange(counts);
-      },
-      onError,
+    return subscribeUnreadShared(onChange, onError, {
+      requirePlayerRole: true,
     });
   }
 

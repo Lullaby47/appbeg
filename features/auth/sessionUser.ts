@@ -22,9 +22,52 @@ export type SessionUser = {
   sessionSource?: string | null;
 };
 
+export type SessionMePayload = {
+  ok?: boolean;
+  reason?: string;
+  uid?: string;
+  role?: string;
+  coadminUid?: string | null;
+  username?: string;
+  status?: string | null;
+  expiresAt?: string;
+  appSessionId?: string;
+  playerSessionId?: string;
+  canonicalSessionId?: string;
+  sessionSource?: string;
+  player?: {
+    coin?: number;
+    cash?: number;
+    referralCode?: string | null;
+    referredByUid?: string | null;
+    referredByUsername?: string | null;
+    dismissedPaymentDetailsNoticeVersion?: number;
+    coadminPaymentDetailsNoticeVersion?: number;
+    referralBonusNotice?: string | null;
+    referralBonusNoticeAt?: string | null;
+  };
+};
+
 let cachedUser: SessionUser | null = null;
 let cachedSessionId: string | null = null;
 let inflightPromise: Promise<SessionUser | null> | null = null;
+let cachedSessionMePayload: SessionMePayload | null = null;
+let cachedSessionMeAt = 0;
+let sessionMeInflightPromise: Promise<SessionMePayload | null> | null = null;
+let sessionMePollTimer: ReturnType<typeof setTimeout> | null = null;
+let sessionMePollerActive = false;
+
+const sessionMeSubscribers = new Map<
+  number,
+  {
+    label: string;
+    intervalMs: number;
+    initialDelayMs: number;
+    onChange: (payload: SessionMePayload) => void;
+    onError?: (error: Error) => void;
+  }
+>();
+let nextSessionMeSubscriberId = 1;
 
 function readLocalAppSessionId() {
   if (typeof window === 'undefined') {
@@ -116,7 +159,7 @@ function mapPayloadToSessionUser(payload: {
   };
 }
 
-async function fetchSessionUserFromApi(): Promise<SessionUser | null> {
+async function fetchSessionMePayloadFromApi(): Promise<SessionMePayload | null> {
   clearExpiredAppSessionStorage();
 
   const sessionId = readLocalAppSessionId();
@@ -132,20 +175,7 @@ async function fetchSessionUserFromApi(): Promise<SessionUser | null> {
       cache: 'no-store',
     });
 
-    const payload = (await response.json().catch(() => ({}))) as {
-      ok?: boolean;
-      reason?: string;
-      uid?: string;
-      role?: string;
-      coadminUid?: string | null;
-      username?: string;
-      status?: string | null;
-      expiresAt?: string;
-      appSessionId?: string;
-      playerSessionId?: string;
-      canonicalSessionId?: string;
-      sessionSource?: string;
-    };
+    const payload = (await response.json().catch(() => ({}))) as SessionMePayload;
 
     if (!response.ok || !payload.ok) {
       const meReason = payload.reason || `http_${response.status}`;
@@ -182,23 +212,209 @@ async function fetchSessionUserFromApi(): Promise<SessionUser | null> {
         }
       }
       clearCachedSessionUser(payload.reason || 'fetch_invalid');
-      return null;
+      cachedSessionMePayload = payload;
+      cachedSessionMeAt = Date.now();
+      return payload;
     }
 
     const user = mapPayloadToSessionUser(payload);
     if (!user) {
       clearLocalAppSessionStorage();
       clearCachedSessionUser('payload_invalid');
-      return null;
+      cachedSessionMePayload = payload;
+      cachedSessionMeAt = Date.now();
+      return payload;
     }
 
     cachedUser = user;
     cachedSessionId = sessionId;
-    return user;
+    cachedSessionMePayload = payload;
+    cachedSessionMeAt = Date.now();
+    return payload;
   } catch {
     clearCachedSessionUser('fetch_failed');
     return null;
   }
+}
+
+export function getCachedSessionMePayload(maxAgeMs = 1_000): SessionMePayload | null {
+  clearExpiredAppSessionStorage();
+  if (!cachedSessionMePayload || Date.now() - cachedSessionMeAt > maxAgeMs) {
+    return null;
+  }
+  return cachedSessionMePayload;
+}
+
+export async function getSessionMeOnce(options?: {
+  maxAgeMs?: number;
+  force?: boolean;
+}): Promise<SessionMePayload | null> {
+  const maxAgeMs = Math.max(0, Number(options?.maxAgeMs ?? 1_000));
+  const sessionId = readLocalAppSessionId();
+  if (!sessionId) {
+    clearCachedSessionUser('missing_session_id');
+    return null;
+  }
+
+  if (!options?.force && cachedSessionMePayload && Date.now() - cachedSessionMeAt <= maxAgeMs) {
+    console.info('[SESSION_ME_POLLER_REUSED]', {
+      source: 'cached_payload',
+      ageMs: Date.now() - cachedSessionMeAt,
+      subscriberCount: sessionMeSubscribers.size,
+    });
+    return cachedSessionMePayload;
+  }
+
+  if (sessionMeInflightPromise) {
+    console.info('[SESSION_ME_POLLER_REUSED]', {
+      source: 'inflight_fetch',
+      subscriberCount: sessionMeSubscribers.size,
+    });
+    return sessionMeInflightPromise;
+  }
+
+  sessionMeInflightPromise = fetchSessionMePayloadFromApi().finally(() => {
+    sessionMeInflightPromise = null;
+  });
+  return sessionMeInflightPromise;
+}
+
+async function fetchSessionUserFromApi(): Promise<SessionUser | null> {
+  const payload = await getSessionMeOnce({ force: true });
+  if (!payload?.ok) {
+    return null;
+  }
+  return mapPayloadToSessionUser(payload);
+}
+
+function notifySessionMeSubscribers(payload: SessionMePayload) {
+  for (const subscriber of sessionMeSubscribers.values()) {
+    try {
+      subscriber.onChange(payload);
+    } catch (error) {
+      subscriber.onError?.(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+}
+
+function nextSessionMePollIntervalMs() {
+  if (!sessionMeSubscribers.size) {
+    return 0;
+  }
+  return Math.max(
+    4_000,
+    Math.min(...[...sessionMeSubscribers.values()].map((subscriber) => subscriber.intervalMs))
+  );
+}
+
+function stopSessionMePoller(reason: string) {
+  if (sessionMePollTimer) {
+    clearTimeout(sessionMePollTimer);
+    sessionMePollTimer = null;
+  }
+  if (sessionMePollerActive) {
+    console.info('[SESSION_ME_POLLER_REMOVED]', {
+      reason,
+      subscriberCount: sessionMeSubscribers.size,
+      pollerCount: 0,
+    });
+  }
+  sessionMePollerActive = false;
+}
+
+function scheduleSessionMePoller(reason: string) {
+  if (sessionMePollTimer || !sessionMeSubscribers.size) {
+    if (sessionMeSubscribers.size) {
+      console.info('[SESSION_ME_POLLER_REUSED]', {
+        reason,
+        subscriberCount: sessionMeSubscribers.size,
+        pollerCount: sessionMePollerActive ? 1 : 0,
+      });
+    }
+    return;
+  }
+
+  if (!sessionMePollerActive) {
+    sessionMePollerActive = true;
+    console.info('[SESSION_ME_POLLER_CREATED]', {
+      reason,
+      subscriberCount: sessionMeSubscribers.size,
+      pollerCount: 1,
+    });
+  }
+
+  const tick = async () => {
+    sessionMePollTimer = null;
+    if (!sessionMeSubscribers.size) {
+      stopSessionMePoller('no_subscribers');
+      return;
+    }
+    try {
+      const payload = await getSessionMeOnce({ force: true });
+      if (payload) {
+        notifySessionMeSubscribers(payload);
+      }
+    } catch (error) {
+      for (const subscriber of sessionMeSubscribers.values()) {
+        subscriber.onError?.(error instanceof Error ? error : new Error(String(error)));
+      }
+    } finally {
+      const intervalMs = nextSessionMePollIntervalMs();
+      if (intervalMs > 0 && sessionMeSubscribers.size) {
+        sessionMePollTimer = setTimeout(tick, intervalMs);
+      } else {
+        stopSessionMePoller('no_interval');
+      }
+    }
+  };
+
+  const initialDelayMs =
+    reason === 'subscriber_added'
+      ? Math.max(
+          0,
+          Math.min(...[...sessionMeSubscribers.values()].map((subscriber) => subscriber.initialDelayMs))
+        )
+      : 0;
+  sessionMePollTimer = setTimeout(tick, initialDelayMs);
+}
+
+export function subscribeSessionMe(
+  label: string,
+  onChange: (payload: SessionMePayload) => void,
+  options?: { intervalMs?: number; initialDelayMs?: number; onError?: (error: Error) => void }
+) {
+  const id = nextSessionMeSubscriberId++;
+  const intervalMs = Math.max(4_000, Number(options?.intervalMs || 12_000));
+  const initialDelayMs = Math.max(0, Number(options?.initialDelayMs || 0));
+  sessionMeSubscribers.set(id, {
+    label,
+    intervalMs,
+    initialDelayMs,
+    onChange,
+    onError: options?.onError,
+  });
+  console.info('[SESSION_ME_SUBSCRIBER]', {
+    action: 'added',
+    id,
+    label,
+    intervalMs,
+    initialDelayMs,
+    subscriberCount: sessionMeSubscribers.size,
+  });
+  scheduleSessionMePoller('subscriber_added');
+
+  return () => {
+    sessionMeSubscribers.delete(id);
+    console.info('[SESSION_ME_SUBSCRIBER]', {
+      action: 'removed',
+      id,
+      label,
+      subscriberCount: sessionMeSubscribers.size,
+    });
+    if (!sessionMeSubscribers.size) {
+      stopSessionMePoller('last_subscriber_removed');
+    }
+  };
 }
 
 export function getCachedSessionUser(): SessionUser | null {
@@ -250,6 +466,9 @@ export function clearCachedSessionUser(reason: string) {
   cachedUser = null;
   cachedSessionId = null;
   inflightPromise = null;
+  cachedSessionMePayload = null;
+  cachedSessionMeAt = 0;
+  sessionMeInflightPromise = null;
   console.info('[SESSION_USER_CACHE] clear', { reason });
 }
 

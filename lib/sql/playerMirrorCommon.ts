@@ -27,6 +27,27 @@ function resolvePlayerMirrorPoolMax() {
 
 const PLAYER_MIRROR_POOL_MAX = resolvePlayerMirrorPoolMax();
 
+function playerMirrorPoolEnvironment() {
+  if (process.env.VERCEL === '1') {
+    return 'vercel';
+  }
+  if (process.env.NODE_ENV === 'production') {
+    return 'production';
+  }
+  return 'local_dev';
+}
+
+function recommendedPlayerMirrorPoolMax() {
+  const environment = playerMirrorPoolEnvironment();
+  if (environment === 'vercel') {
+    return 3;
+  }
+  if (environment === 'production') {
+    return 8;
+  }
+  return 8;
+}
+
 function resolvePlayerMirrorPoolWarmMin() {
   const fromEnv = Number(process.env.PLAYER_MIRROR_POOL_WARM_MIN || 0);
   if (!Number.isFinite(fromEnv)) {
@@ -592,6 +613,12 @@ export function getPlayerMirrorPool(poolTiming?: PlayerMirrorPoolTiming) {
     idleTimeoutMillis: PLAYER_MIRROR_IDLE_TIMEOUT_MS,
     connectionTimeoutMillis: SQL_CONNECTION_TIMEOUT_MS,
     statementTimeoutMillis: SQL_STATEMENT_TIMEOUT_MS,
+  });
+  console.info('[SQL_POOL_RECOMMENDED]', {
+    name: 'playerMirror',
+    current: PLAYER_MIRROR_POOL_MAX,
+    recommended: recommendedPlayerMirrorPoolMax(),
+    environment: playerMirrorPoolEnvironment(),
   });
   logSqlPoolAudit();
   void warmPlayerMirrorPool('pool_created');

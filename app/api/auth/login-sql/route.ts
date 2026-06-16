@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { verifyPassword } from '@/lib/auth/passwordHash';
 import { isPlayerSessionSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { isAppbegSqlOnlyMode, isFirebaseFallbackAllowed } from '@/lib/server/appbegSqlOnlyMode';
 import { mirrorPlayerSessionStartToFirestore } from '@/lib/server/playerSessionFirestoreMirror';
 import { logSqlLoginNoFirestoreMirror } from '@/lib/server/sqlSessionNoFirestoreMirror';
 import { createPlayerLoginSessionsInSql } from '@/lib/server/sqlPlayerLoginSessions';
@@ -26,6 +27,23 @@ type LoginSqlBody = {
   deviceId?: unknown;
 };
 
+type LoginSqlDiagReason =
+  | 'invalid_json'
+  | 'invalid_input'
+  | 'profile_lookup_unavailable'
+  | 'profile_not_found'
+  | 'profile_deleted'
+  | 'status_not_allowed'
+  | 'credentials_not_found'
+  | 'password_algo_mismatch'
+  | 'password_verify_failed'
+  | 'bootstrap_expected'
+  | 'firebase_fallback_suppressed'
+  | 'player_session_unavailable'
+  | 'session_create_failed'
+  | 'success'
+  | 'unknown_error';
+
 function isLoginAllowedStatus(status: string | null, role: string) {
   const normalizedStatus = cleanText(status).toLowerCase();
   const normalizedRole = cleanText(role).toLowerCase();
@@ -34,13 +52,84 @@ function isLoginAllowedStatus(status: string | null, role: string) {
   return isActive || isBlockedPlayer;
 }
 
+function logLoginSqlDiagStart(values: { usernameNormalized: string; roleExpected?: string | null }) {
+  console.info('[LOGIN_SQL_DIAG_START]', {
+    usernameNormalized: values.usernameNormalized,
+    roleExpected: values.roleExpected ?? null,
+  });
+}
+
+function logLoginSqlDiagProfile(values: {
+  found: boolean;
+  uid?: string | null;
+  role?: string | null;
+  status?: string | null;
+  deleted?: boolean | null;
+}) {
+  console.info('[LOGIN_SQL_DIAG_PROFILE]', {
+    found: values.found,
+    uid: values.uid ?? null,
+    role: values.role ?? null,
+    status: values.status ?? null,
+    deleted: values.deleted ?? null,
+  });
+}
+
+function logLoginSqlDiagCredentials(values: {
+  found: boolean;
+  passwordAlgo?: string | null;
+  mustReset?: boolean | null;
+}) {
+  console.info('[LOGIN_SQL_DIAG_CREDENTIALS]', {
+    found: values.found,
+    passwordAlgo: values.passwordAlgo ?? null,
+    mustReset: values.mustReset ?? null,
+  });
+}
+
+function logLoginSqlDiagPassword(values: { verifyAttempted: boolean; verifyPassed: boolean }) {
+  console.info('[LOGIN_SQL_DIAG_PASSWORD]', values);
+}
+
+function logLoginSqlDiagSession(values: { sessionAttempted: boolean; sessionCreated: boolean }) {
+  console.info('[LOGIN_SQL_DIAG_SESSION]', values);
+}
+
+function logLoginSqlDiagResult(values: { success: boolean; reason: LoginSqlDiagReason }) {
+  console.info('[LOGIN_SQL_DIAG_RESULT]', values);
+}
+
+function canReturnFirebaseFallback() {
+  return !isAppbegSqlOnlyMode() && isFirebaseFallbackAllowed();
+}
+
+function logFirebaseFallbackSuppressed(
+  reason: string,
+  details?: Record<string, unknown>
+) {
+  console.info('[SQL_LOGIN_FIREBASE_FALLBACK_SUPPRESSED]', {
+    reason,
+    appbeg_sql_only_mode: isAppbegSqlOnlyMode(),
+    allow_firebase_fallback: isFirebaseFallbackAllowed(),
+    ...(details || {}),
+  });
+}
+
 function failureResponse(
   reason: 'credentials_missing' | 'invalid_credentials' | 'server_unavailable',
   options?: { fallbackToFirebase?: boolean; status?: number }
 ) {
-  const fallbackToFirebase =
+  const requestedFallbackToFirebase =
     options?.fallbackToFirebase ??
     (reason === 'credentials_missing' || reason === 'server_unavailable');
+  const fallbackToFirebase = requestedFallbackToFirebase && canReturnFirebaseFallback();
+
+  if (requestedFallbackToFirebase && !fallbackToFirebase) {
+    logFirebaseFallbackSuppressed(reason, {
+      response_reason: reason,
+    });
+  }
+
   return NextResponse.json(
     {
       ok: false,
@@ -100,6 +189,8 @@ export async function POST(request: Request) {
   try {
     body = (await request.json()) as LoginSqlBody;
   } catch {
+    logLoginSqlDiagStart({ usernameNormalized: '', roleExpected: null });
+    logLoginSqlDiagResult({ success: false, reason: 'invalid_json' });
     console.info(
       '[SQL_AUTH_LOGIN] ok=false uid=null role=null reason=invalid_json rate_limit=not_implemented lookup_ms=0 verify_ms=0 session_create_ms=0 total_ms=%s',
       Date.now() - totalStartedAt
@@ -111,7 +202,10 @@ export async function POST(request: Request) {
   const password = String(body.password || '');
   const deviceId = cleanText(body.deviceId) || null;
 
+  logLoginSqlDiagStart({ usernameNormalized: username, roleExpected: null });
+
   if (!username || password.length < 6) {
+    logLoginSqlDiagResult({ success: false, reason: 'invalid_input' });
     console.info(
       '[SQL_AUTH_LOGIN] ok=false uid=null role=null reason=invalid_input rate_limit=not_implemented lookup_ms=0 verify_ms=0 session_create_ms=0 total_ms=%s',
       Date.now() - totalStartedAt
@@ -133,6 +227,8 @@ export async function POST(request: Request) {
       lookupMs,
       Date.now() - totalStartedAt
     );
+    logLoginSqlDiagProfile({ found: false, deleted: null });
+    logLoginSqlDiagResult({ success: false, reason: 'profile_lookup_unavailable' });
     return failureResponse('server_unavailable', { fallbackToFirebase: true, status: 503 });
   }
 
@@ -142,10 +238,19 @@ export async function POST(request: Request) {
       lookupMs,
       Date.now() - totalStartedAt
     );
+    logLoginSqlDiagProfile({ found: false, deleted: null });
+    logLoginSqlDiagResult({ success: false, reason: 'profile_not_found' });
     return failureResponse('credentials_missing', { fallbackToFirebase: true });
   }
 
   const profile = profileLookup.profile;
+  logLoginSqlDiagProfile({
+    found: true,
+    uid: profile.uid,
+    role: profile.role,
+    status: profile.status,
+    deleted: false,
+  });
   if (!isLoginAllowedStatus(profile.status, profile.role)) {
     console.info(
       '[SQL_AUTH_LOGIN] ok=false uid=%s role=%s reason=invalid_credentials rate_limit=not_implemented lookup_ms=%s verify_ms=0 session_create_ms=0 total_ms=%s',
@@ -154,6 +259,7 @@ export async function POST(request: Request) {
       lookupMs,
       Date.now() - totalStartedAt
     );
+    logLoginSqlDiagResult({ success: false, reason: 'status_not_allowed' });
     return failureResponse('invalid_credentials', { fallbackToFirebase: false });
   }
 
@@ -166,8 +272,17 @@ export async function POST(request: Request) {
       lookupMs,
       Date.now() - totalStartedAt
     );
+    logLoginSqlDiagCredentials({ found: false });
+    logLoginSqlDiagPassword({ verifyAttempted: false, verifyPassed: false });
+    logLoginSqlDiagResult({ success: false, reason: 'credentials_not_found' });
     return failureResponse('credentials_missing', { fallbackToFirebase: true });
   }
+
+  logLoginSqlDiagCredentials({
+    found: true,
+    passwordAlgo: credentials.passwordAlgo,
+    mustReset: credentials.mustReset,
+  });
 
   const verifyStartedAt = Date.now();
   let passwordValid = false;
@@ -177,6 +292,7 @@ export async function POST(request: Request) {
     passwordValid = false;
   }
   const verifyMs = Date.now() - verifyStartedAt;
+  logLoginSqlDiagPassword({ verifyAttempted: true, verifyPassed: passwordValid });
 
   if (!passwordValid) {
     console.info(
@@ -187,6 +303,10 @@ export async function POST(request: Request) {
       verifyMs,
       Date.now() - totalStartedAt
     );
+    logLoginSqlDiagResult({
+      success: false,
+      reason: credentials.passwordAlgo !== 'bcrypt' ? 'password_algo_mismatch' : 'password_verify_failed',
+    });
     return failureResponse('invalid_credentials', { fallbackToFirebase: false });
   }
 
@@ -199,6 +319,39 @@ export async function POST(request: Request) {
     });
 
     if (sessionDecision.decision === 'bootstrap_expected') {
+      if (!canReturnFirebaseFallback()) {
+        logLoginSqlDiagSession({ sessionAttempted: false, sessionCreated: false });
+        logLoginSqlDecision({
+          uid: profile.uid,
+          role: profile.role,
+          authenticated: true,
+          playerSessionRequired: true,
+          playerSessionExists: sessionDecision.playerSessionExists,
+          bootstrapExpected: false,
+          decision: 'deny',
+          reason: 'bootstrap_expected_firebase_fallback_suppressed',
+        });
+        logFirebaseFallbackSuppressed('bootstrap_expected', {
+          uid: profile.uid,
+          role: profile.role,
+          session_decision_reason: sessionDecision.reason,
+        });
+
+        console.info(
+          '[SQL_AUTH_LOGIN] ok=false uid=%s role=player reason=bootstrap_expected_fallback_suppressed rate_limit=not_implemented lookup_ms=%s verify_ms=%s session_create_ms=0 total_ms=%s',
+          profile.uid,
+          lookupMs,
+          verifyMs,
+          Date.now() - totalStartedAt
+        );
+
+        logLoginSqlDiagResult({ success: false, reason: 'firebase_fallback_suppressed' });
+        return failureResponse('server_unavailable', {
+          fallbackToFirebase: true,
+          status: 503,
+        });
+      }
+
       logLoginSqlDecision({
         uid: profile.uid,
         role: profile.role,
@@ -218,6 +371,8 @@ export async function POST(request: Request) {
         Date.now() - totalStartedAt
       );
 
+      logLoginSqlDiagSession({ sessionAttempted: false, sessionCreated: false });
+      logLoginSqlDiagResult({ success: true, reason: 'bootstrap_expected' });
       return NextResponse.json({
         ok: true,
         authenticated: true,
@@ -238,6 +393,8 @@ export async function POST(request: Request) {
         verifyMs,
         Date.now() - totalStartedAt
       );
+      logLoginSqlDiagSession({ sessionAttempted: false, sessionCreated: false });
+      logLoginSqlDiagResult({ success: false, reason: 'player_session_unavailable' });
       return failureResponse('server_unavailable', { fallbackToFirebase: true, status: 503 });
     }
 
@@ -258,6 +415,7 @@ export async function POST(request: Request) {
     }
 
     try {
+      logLoginSqlDiagSession({ sessionAttempted: true, sessionCreated: false });
       logLoginSqlDecision({
         uid: profile.uid,
         role: profile.role,
@@ -323,6 +481,8 @@ export async function POST(request: Request) {
         total_ms: Date.now() - totalStartedAt,
       });
 
+      logLoginSqlDiagSession({ sessionAttempted: true, sessionCreated: true });
+      logLoginSqlDiagResult({ success: true, reason: 'success' });
       return NextResponse.json({
         ok: true,
         sessionId: session.sessionId,
@@ -346,12 +506,15 @@ export async function POST(request: Request) {
         error: error instanceof Error ? error.message : String(error),
         durationMs: Date.now() - totalStartedAt,
       });
+      logLoginSqlDiagSession({ sessionAttempted: true, sessionCreated: false });
+      logLoginSqlDiagResult({ success: false, reason: 'session_create_failed' });
       return failureResponse('server_unavailable', { fallbackToFirebase: true, status: 503 });
     }
   }
 
   const sessionCreateStartedAt = Date.now();
   try {
+    logLoginSqlDiagSession({ sessionAttempted: true, sessionCreated: false });
     const session = await createAppSessionForUser({
       uid: profile.uid,
       role: profile.role,
@@ -376,6 +539,8 @@ export async function POST(request: Request) {
       Date.now() - totalStartedAt
     );
 
+    logLoginSqlDiagSession({ sessionAttempted: true, sessionCreated: true });
+    logLoginSqlDiagResult({ success: true, reason: 'success' });
     return NextResponse.json({
       ok: true,
       sessionId: session.sessionId,
@@ -397,6 +562,8 @@ export async function POST(request: Request) {
       Date.now() - totalStartedAt,
       error instanceof Error ? error.message : String(error)
     );
+    logLoginSqlDiagSession({ sessionAttempted: true, sessionCreated: false });
+    logLoginSqlDiagResult({ success: false, reason: 'session_create_failed' });
     return failureResponse('server_unavailable', { fallbackToFirebase: true, status: 503 });
   }
 }

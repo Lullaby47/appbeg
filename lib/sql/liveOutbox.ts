@@ -766,6 +766,45 @@ export type LatestOutboxLookupResult = {
   timing: PlayerMirrorSqlTiming;
 };
 
+function shouldLogLiveOutboxQueryPlan(timing: PlayerMirrorSqlTiming) {
+  void timing;
+  return (
+    process.env.LIVE_OUTBOX_QUERY_PLAN_DEBUG === '1' ||
+    process.env.SQL_QUERY_PLAN_DEBUG === '1'
+  );
+}
+
+async function logLiveOutboxQueryPlan(input: {
+  sql: string;
+  params: unknown[];
+  mirrorClient?: PoolClient;
+  acquireContext?: PlayerMirrorAcquireContext;
+}) {
+  const explainSql = `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${input.sql}`;
+  try {
+    const result = input.mirrorClient
+      ? await runMirrorClientQuery<Record<string, unknown>>(
+          input.mirrorClient,
+          explainSql,
+          input.params
+        )
+      : await runMirrorPoolQuery<Record<string, unknown>>(
+          getPlayerMirrorPool()!,
+          explainSql,
+          input.params,
+          input.acquireContext
+        );
+    console.info('[LIVE_OUTBOX_QUERY_PLAN]', {
+      plan: result.rows[0]?.['QUERY PLAN'] ?? null,
+      timing: result.timing,
+    });
+  } catch (error) {
+    console.info('[LIVE_OUTBOX_QUERY_PLAN]', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 export async function getLatestOutboxIdForChannels(
   channels: string[],
   options?: { mirrorClient?: PoolClient; acquireContext?: PlayerMirrorAcquireContext }
@@ -778,57 +817,49 @@ export async function getLatestOutboxIdForChannels(
   }
 
   const latestSql = `
-    SELECT outbox_id
+    SELECT COALESCE(MAX(outbox_id), 0)::bigint AS outbox_id
     FROM public.live_outbox
-    WHERE channel = $1
+    WHERE channel = ANY($1::text[])
       AND deleted_at IS NULL
-    ORDER BY outbox_id DESC
-    LIMIT 1
   `;
 
   try {
-    const lookupChannel = async (channel: string) => {
+    const lookupLatest = async () => {
       if (options?.mirrorClient) {
         return runMirrorClientQuery<{ outbox_id?: unknown }>(
           options.mirrorClient,
           latestSql,
-          [channel]
+          [cleanChannels]
         );
       }
       return runMirrorPoolQuery<{ outbox_id?: unknown }>(
         db,
         latestSql,
-        [channel],
+        [cleanChannels],
         options?.acquireContext
       );
     };
 
-    if (cleanChannels.length === 1) {
-      const { rows, timing } = await lookupChannel(cleanChannels[0]);
-      console.info(
-        '[LIVE_OUTBOX_LATEST_TIMING] channel=%s pool_acquire_ms=%s query_exec_ms=%s total_ms=%s shared_client=%s',
-        cleanChannels[0],
-        timing.pool_acquire_ms,
-        timing.query_exec_ms,
-        timing.total_ms,
-        Boolean(options?.mirrorClient)
-      );
-      return {
-        latestOutboxId: Number(rows[0]?.outbox_id || 0),
-        timing,
-      };
+    const { rows, timing } = await lookupLatest();
+    if (shouldLogLiveOutboxQueryPlan(timing)) {
+      await logLiveOutboxQueryPlan({
+        sql: latestSql,
+        params: [cleanChannels],
+        mirrorClient: options?.mirrorClient,
+        acquireContext: options?.acquireContext,
+      });
     }
-
-    const results = await Promise.all(cleanChannels.map((channel) => lookupChannel(channel)));
-    const timing = createPlayerMirrorSqlTiming({
-      pool_acquire_ms: results.reduce((sum, item) => sum + item.timing.pool_acquire_ms, 0),
-      query_exec_ms: results.reduce((sum, item) => sum + item.timing.query_exec_ms, 0),
-      total_ms: results.reduce((sum, item) => sum + item.timing.total_ms, 0),
+    const latestOutboxId = Number(rows[0]?.outbox_id || 0);
+    console.info('[LIVE_OUTBOX_LATEST_OPTIMIZED]', {
+      channels: cleanChannels,
+      channelCount: cleanChannels.length,
+      latestOutboxId,
+      pool_acquire_ms: timing.pool_acquire_ms,
+      query_exec_ms: timing.query_exec_ms,
+      total_ms: timing.total_ms,
+      shared_client: Boolean(options?.mirrorClient),
+      query: 'max_outbox_id_by_channels_active',
     });
-    const latestOutboxId = Math.max(
-      0,
-      ...results.map((item) => Number(item.rows[0]?.outbox_id || 0))
-    );
     console.info(
       '[LIVE_OUTBOX_LATEST_TIMING] channels=%s pool_acquire_ms=%s query_exec_ms=%s total_ms=%s shared_client=%s',
       cleanChannels.join(','),

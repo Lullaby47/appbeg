@@ -2,6 +2,11 @@ import { verifyAgentTickSecret } from '@/lib/automation/agentApiAuth';
 import { apiError } from '@/lib/firebase/apiAuth';
 import { isAuthoritySqlWriteEnabled } from '@/lib/server/authoritySqlWrite';
 import { verifyAgentLinkedToCarerInSql } from '@/lib/sql/authorityAgentJobs';
+import {
+  getLiveOutboxFanoutStats,
+  subscribeLiveOutboxFanout,
+  type LiveOutboxFanoutSubscription,
+} from '@/lib/sql/liveOutboxFanout';
 import { agentJobLiveChannel, getLiveOutboxRowsAfter, type LiveOutboxRow } from '@/lib/sql/liveOutbox';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 
@@ -26,6 +31,182 @@ function formatPingEvent(channel: string) {
     now: new Date().toISOString(),
     channel,
   })}\n\n`;
+}
+
+function isAgentFanoutEnabled() {
+  return (
+    String(process.env.LIVE_OUTBOX_FANOUT_ENABLED || '').trim() === '1' &&
+    String(process.env.LIVE_OUTBOX_FANOUT_AGENT_ENABLED || '').trim() === '1'
+  );
+}
+
+function logAgentStreamDelivered(row: LiveOutboxRow, phase: 'poll' | 'replay' | 'fanout') {
+  if (row.event_type !== 'job_available') return;
+  console.info('[AGENT_STREAM_EVENT_DELIVERED]', {
+    outboxId: row.outbox_id,
+    channel: row.channel,
+    eventType: row.event_type,
+    entityId: row.entity_id,
+    jobId: row.payload?.jobId || null,
+    taskId: row.payload?.taskId || null,
+    phase,
+  });
+}
+
+function createFanoutAgentStreamResponse(input: {
+  request: Request;
+  carerUid: string;
+  agentId: string;
+  channel: string;
+  lastEventId: number;
+}) {
+  const { request, carerUid, agentId, channel, lastEventId } = input;
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let closed = false;
+      let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+      let subscription: LiveOutboxFanoutSubscription | null = null;
+
+      const clearHeartbeatTimer = () => {
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+        }
+      };
+
+      const closeStream = (reason: string) => {
+        if (closed) return;
+        closed = true;
+        clearHeartbeatTimer();
+        subscription?.unsubscribe(reason);
+        const stats = getLiveOutboxFanoutStats();
+        console.info('[AGENT_STREAM_CLOSE]', {
+          carerUid,
+          agentId,
+          channel,
+          lastEventId: subscription?.getCursor() ?? lastEventId,
+          reason,
+          mode: 'fanout',
+          activeAgentSubscribers: stats.activeSubscribers,
+          cleanupCount: stats.cleanupCount,
+        });
+        try {
+          controller.close();
+        } catch {
+          // Ignore close races.
+        }
+      };
+
+      const enqueue = (chunk: string) => {
+        if (closed) return false;
+        try {
+          controller.enqueue(encoder.encode(chunk));
+          return true;
+        } catch (error) {
+          console.info('[AGENT_STREAM_ERROR]', {
+            phase: 'enqueue',
+            carerUid,
+            agentId,
+            channel,
+            error,
+          });
+          closeStream('enqueue_failed');
+          return false;
+        }
+      };
+
+      const sendRow = (row: LiveOutboxRow, phase: 'replay' | 'fanout') => {
+        if (closed) return false;
+        if (subscription && row.outbox_id <= subscription.getCursor()) return true;
+        const ok = enqueue(formatSseEvent(row));
+        if (!ok) return false;
+        subscription?.advanceCursor(row.outbox_id);
+        logAgentStreamDelivered(row, phase);
+        return true;
+      };
+
+      const sendHeartbeat = (phase: 'initial' | 'interval') => {
+        if (closed) return;
+        enqueue(formatPingEvent(channel));
+        console.info('[AGENT_STREAM_HEARTBEAT]', {
+          carerUid,
+          agentId,
+          channel,
+          lastEventId: subscription?.getCursor() ?? lastEventId,
+          phase,
+          mode: 'fanout',
+        });
+      };
+
+      subscription = subscribeLiveOutboxFanout({
+        channels: [channel],
+        cursor: lastEventId,
+        route: 'carer_agent_stream',
+        enqueue: (row) => sendRow(row, 'fanout'),
+      });
+
+      const pump = async () => {
+        try {
+          const replayRows = await getLiveOutboxRowsAfter(
+            [channel],
+            subscription?.getCursor() ?? lastEventId,
+            100
+          );
+          console.info('[AGENT_STREAM_REPLAY]', {
+            carerUid,
+            agentId,
+            channel,
+            replayCount: replayRows.length,
+            mode: 'fanout',
+          });
+          for (const row of replayRows) {
+            if (!sendRow(row, 'replay')) break;
+          }
+        } catch (error) {
+          console.info('[AGENT_STREAM_ERROR]', {
+            phase: 'replay',
+            carerUid,
+            agentId,
+            channel,
+            lastEventId: subscription?.getCursor() ?? lastEventId,
+            mode: 'fanout',
+            error,
+          });
+        }
+
+        sendHeartbeat('initial');
+        heartbeatTimer = setInterval(() => {
+          sendHeartbeat('interval');
+        }, HEARTBEAT_INTERVAL_MS);
+      };
+
+      request.signal.addEventListener('abort', () => closeStream('client_abort'), { once: true });
+      void pump().catch((error) => {
+        console.info('[AGENT_STREAM_ERROR]', {
+          phase: 'fanout_pump',
+          carerUid,
+          agentId,
+          channel,
+          error,
+        });
+        closeStream('pump_failed');
+      });
+    },
+    cancel() {
+      // Abort is wired once on request.signal.
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
+  });
 }
 
 export async function GET(request: Request) {
@@ -58,7 +239,18 @@ export async function GET(request: Request) {
     agentId,
     channel,
     lastEventId,
+    mode: isAgentFanoutEnabled() ? 'fanout' : 'poll',
   });
+
+  if (isAgentFanoutEnabled()) {
+    return createFanoutAgentStreamResponse({
+      request,
+      carerUid,
+      agentId,
+      channel,
+      lastEventId,
+    });
+  }
 
   const encoder = new TextEncoder();
 
@@ -139,16 +331,7 @@ export async function GET(request: Request) {
         try {
           const rows = await getLiveOutboxRowsAfter([channel], cursor, 50);
           for (const row of rows) {
-            if (row.event_type === 'job_available') {
-              console.info('[AGENT_STREAM_EVENT_DELIVERED]', {
-                outboxId: row.outbox_id,
-                channel: row.channel,
-                eventType: row.event_type,
-                entityId: row.entity_id,
-                jobId: row.payload?.jobId || null,
-                taskId: row.payload?.taskId || null,
-              });
-            }
+            logAgentStreamDelivered(row, 'poll');
             enqueue(formatSseEvent(row));
             cursor = Math.max(cursor, row.outbox_id);
           }
@@ -170,17 +353,7 @@ export async function GET(request: Request) {
         try {
           const replayRows = await getLiveOutboxRowsAfter([channel], cursor, 100);
           for (const row of replayRows) {
-            if (row.event_type === 'job_available') {
-              console.info('[AGENT_STREAM_EVENT_DELIVERED]', {
-                outboxId: row.outbox_id,
-                channel: row.channel,
-                eventType: row.event_type,
-                entityId: row.entity_id,
-                jobId: row.payload?.jobId || null,
-                taskId: row.payload?.taskId || null,
-                phase: 'replay',
-              });
-            }
+            logAgentStreamDelivered(row, 'replay');
             enqueue(formatSseEvent(row));
             cursor = Math.max(cursor, row.outbox_id);
           }

@@ -9,7 +9,11 @@ import {
 } from '@/features/auth/playerSession';
 import { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
 import { seedSessionUserCache } from '@/features/auth/sessionUser';
-import { isPublicSqlLoginFirstEnabled } from '@/lib/client/sqlPublicFlags';
+import {
+  isPublicLegacyFirebaseFallbackEnabled,
+  isPublicSqlLoginFirstEnabled,
+  isPublicSqlPlayerLoginEnabled,
+} from '@/lib/client/sqlPublicFlags';
 
 export { isSqlPlayerLoginEnabled } from '@/features/auth/sqlPlayerLoginFlags';
 
@@ -60,6 +64,13 @@ export async function attemptSqlLogin(input: {
   }
 
   try {
+    console.info('[LOGIN_CLIENT_DIAG_ATTEMPT_SQL]', {
+      callingApi: true,
+      usernameNormalized: username,
+      sqlLoginFirst: isPublicSqlLoginFirstEnabled(),
+      sqlPlayerLogin: isPublicSqlPlayerLoginEnabled(),
+      firebaseFallbackAllowed: isPublicLegacyFirebaseFallbackEnabled(),
+    });
     const response = await fetch('/api/auth/login-sql', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -87,6 +98,13 @@ export async function attemptSqlLogin(input: {
       playerSessionSource?: 'sql';
       firestoreMirrorOk?: boolean;
     };
+
+    console.info('[LOGIN_CLIENT_DIAG_SQL_RESPONSE]', {
+      ok: response.ok,
+      status: response.status,
+      success: payload.ok === true,
+      reason: payload.reason || (payload.ok ? 'ok' : null),
+    });
 
     if (payload.ok && payload.uid && payload.role) {
       if (payload.bootstrapExpected) {
@@ -207,6 +225,9 @@ export async function attemptSqlLogin(input: {
       fallbackToFirebase,
     };
   } catch (error) {
+    console.info('[LOGIN_CLIENT_DIAG_THROW_AFTER_API]', {
+      reason: error instanceof Error ? error.message : String(error || 'network_error'),
+    });
     console.warn('[SQL_AUTH_LOGIN] client_failed', {
       reason: 'network_error',
       error: error instanceof Error ? error.message : String(error),

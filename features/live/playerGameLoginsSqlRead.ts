@@ -48,6 +48,7 @@ export function attachPlayerGameLoginsSqlPoll(input: {
   uid: string;
   onChange: (logins: PlayerGameLogin[]) => void;
   onError?: (error: Error) => void;
+  initialDelayMs?: number;
 }) {
   logClientFirestoreSkipped('player_game_logins_listener', {
     scope: input.scope,
@@ -60,11 +61,17 @@ export function attachPlayerGameLoginsSqlPoll(input: {
   };
 
   if (input.scope === 'player') {
+    console.info('[POLLER_RETAINED]', {
+      pollName: 'player_game_logins',
+      reason: 'safety_refresh_for_credential_updates_not_covered_by_initial_base_data',
+      initialDelayMs: Math.max(0, Number(input.initialDelayMs || 0)),
+    });
     return createPlayerScopedPoll({
       pollName: 'player_game_logins',
       intervalMs: POLL_MS,
       onTick: runPoll,
       onError: input.onError,
+      initialDelayMs: input.initialDelayMs,
     });
   }
 

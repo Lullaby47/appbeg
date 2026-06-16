@@ -32,6 +32,38 @@ async function runInstrumentationSqlAudit() {
   }
 }
 
+function isEnabledEnv(value: string | undefined) {
+  const raw = String(value || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true';
+}
+
+function logSqlPublicEnvMismatch() {
+  const sqlOnlyMode = isEnabledEnv(process.env.APPBEG_SQL_ONLY_MODE);
+  if (!sqlOnlyMode) {
+    return;
+  }
+
+  const publicSqlLoginFirst = isEnabledEnv(process.env.NEXT_PUBLIC_SQL_LOGIN_FIRST);
+  const publicSqlPlayerLogin = isEnabledEnv(process.env.NEXT_PUBLIC_SQL_PLAYER_LOGIN);
+  const publicSqlReadMode =
+    isEnabledEnv(process.env.NEXT_PUBLIC_SQL_READ_MODE) ||
+    publicSqlLoginFirst ||
+    publicSqlPlayerLogin;
+
+  if (publicSqlLoginFirst && publicSqlPlayerLogin && publicSqlReadMode) {
+    return;
+  }
+
+  console.warn('[SQL_ENV_MISMATCH]', {
+    appbegSqlOnlyMode: true,
+    nextPublicSqlLoginFirst: publicSqlLoginFirst,
+    nextPublicSqlPlayerLogin: publicSqlPlayerLogin,
+    nextPublicSqlReadMode: publicSqlReadMode,
+    explanation:
+      'APPBEG_SQL_ONLY_MODE=1 requires browser SQL flags. Set NEXT_PUBLIC_SQL_LOGIN_FIRST=1, NEXT_PUBLIC_SQL_PLAYER_LOGIN=1, and NEXT_PUBLIC_SQL_READ_MODE=1, then restart Next.js.',
+  });
+}
+
 export async function registerNodeInstrumentation() {
   const { assertSqlRuntimeReady, SqlRuntimeMisconfiguredError } = await import(
     '@/lib/server/sqlRuntime'
@@ -39,6 +71,7 @@ export async function registerNodeInstrumentation() {
   const { logAppbegSqlOnlyModeStartup } = await import('@/lib/server/appbegSqlOnlyMode');
 
   logAppbegSqlOnlyModeStartup('instrumentation');
+  logSqlPublicEnvMismatch();
 
   try {
     assertSqlRuntimeReady('instrumentation');

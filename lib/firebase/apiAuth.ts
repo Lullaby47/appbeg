@@ -174,6 +174,13 @@ function writeAppSessionAuthCache(sessionId: string, result: AppSessionAuthCache
     expiresAt: Date.now() + APP_SESSION_AUTH_CACHE_TTL_MS,
     result,
   });
+  console.info('[AUTH_CACHE_STORE]', {
+    cache: 'app_session_auth',
+    uid: result.uid,
+    role: result.role,
+    sessionIdPrefix: cleanSessionId.slice(0, 8),
+    expiresInMs: APP_SESSION_AUTH_CACHE_TTL_MS,
+  });
 }
 
 function mirrorAcquireContextFromRequest(
@@ -210,6 +217,12 @@ export async function verifyAppSessionFromRequest(
 
   if (cachedAuth) {
     timing.total_ms = Date.now() - verifyStartedAt;
+    console.info('[AUTH_CACHE_HIT]', {
+      cache: 'app_session_auth',
+      uid: cachedAuth.uid,
+      role: cachedAuth.role,
+      sessionIdPrefix: sessionId.slice(0, 8),
+    });
     console.info('[APP_SESSION_AUTH_CACHE]', {
       hit: true,
       uid: cachedAuth.uid,
@@ -226,6 +239,10 @@ export async function verifyAppSessionFromRequest(
     };
   }
 
+  console.info('[AUTH_CACHE_MISS]', {
+    cache: 'app_session_auth',
+    sessionIdPrefix: sessionId.slice(0, 8),
+  });
   console.info('[APP_SESSION_AUTH_CACHE]', {
     hit: false,
     uid: null,
@@ -456,6 +473,13 @@ export type PlayerLiveAuthTiming = {
   token_cache_hit: boolean;
   request_session_id?: string | null;
   active_session_id?: string | null;
+};
+
+type PlayerLiveAuthSuccess = {
+  ok: true;
+  uid: string;
+  timing: PlayerLiveAuthTiming;
+  profile?: ApiUserSqlProfileLookup | null;
 };
 
 function playerSessionBlockedResponse() {
@@ -928,7 +952,7 @@ export async function requirePlayerOwnedLiveAuth(
   request: Request,
   expectedPlayerUid: string
 ): Promise<
-  | { ok: true; uid: string; timing: PlayerLiveAuthTiming }
+  | PlayerLiveAuthSuccess
   | { ok: false; response: NextResponse; timing: PlayerLiveAuthTiming }
 > {
   const authStartedAt = Date.now();
@@ -987,7 +1011,8 @@ export async function requirePlayerOwnedLiveAuth(
     uid: string,
     authPath: PlayerLiveAuthPath,
     sessionSource: 'sql' | 'firestore',
-    activeSessionId?: string | null
+    activeSessionId?: string | null,
+    profile?: ApiUserSqlProfileLookup | null
   ) => {
     timing.auth_path = authPath;
     timing.session_source = sessionSource;
@@ -1007,7 +1032,7 @@ export async function requirePlayerOwnedLiveAuth(
       sql_read_mode: sqlReadMode,
     });
     timing.auth_ms = Date.now() - authStartedAt;
-    return { ok: true as const, uid, timing };
+    return { ok: true as const, uid, timing, profile: profile ?? null };
   };
 
   const attemptAppSessionPlayerAuth = async () => {
@@ -1083,7 +1108,9 @@ export async function requirePlayerOwnedLiveAuth(
       sessionValidation.sessionSource === 'sql'
         ? 'app_session_sql_session_sql'
         : 'app_session_sql_session_firestore',
-      sessionValidation.sessionSource
+      sessionValidation.sessionSource,
+      undefined,
+      appSessionAuth.profile
     );
   };
 
@@ -1870,7 +1897,32 @@ export async function requirePlayerApiUser(
     return { response: auth.response, timing: auth.timing };
   }
 
-  let profileLookup = await lookupApiUserProfileFromSqlCache(auth.uid);
+  const reusedProfile = auth.profile?.role === 'player' ? auth.profile : null;
+  let profileLookup: Awaited<ReturnType<typeof lookupApiUserProfileFromSqlCache>>;
+  if (reusedProfile) {
+    console.info('[AUTH_PROFILE_REUSED]', {
+      uid: auth.uid,
+      role: reusedProfile.role,
+      source: 'requirePlayerOwnedLiveAuth',
+      route: 'requirePlayerApiUser',
+    });
+    profileLookup = {
+      profile: reusedProfile,
+      timing: {
+        pool_acquire_ms: 0,
+        query_exec_ms: 0,
+        total_ms: 0,
+      },
+      missReason: null,
+    };
+  } else {
+    console.info('[AUTH_PROFILE_SQL_LOOKUP]', {
+      uid: auth.uid,
+      reason: 'profile_not_available_from_live_auth',
+      route: 'requirePlayerApiUser',
+    });
+    profileLookup = await lookupApiUserProfileFromSqlCache(auth.uid);
+  }
   if (!profileLookup.profile && !isAppbegSqlOnlyMode()) {
     try {
       await mirrorPlayerById(auth.uid, 'player_api_auth_hydrate');
@@ -1880,6 +1932,11 @@ export async function requirePlayerApiUser(
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    console.info('[AUTH_PROFILE_SQL_LOOKUP]', {
+      uid: auth.uid,
+      reason: 'post_hydrate_retry',
+      route: 'requirePlayerApiUser',
+    });
     profileLookup = await lookupApiUserProfileFromSqlCache(auth.uid);
   }
 

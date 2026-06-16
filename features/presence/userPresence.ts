@@ -24,6 +24,8 @@ import { db } from '@/lib/firebase/client';
 export const PRESENCE_TTL_MS = 120_000;
 
 const PRESENCE_POLL_MS = 15_000;
+const PRESENCE_CACHE_MS = 15_000;
+const PRESENCE_MERGE_DELAY_MS = 40;
 
 export function isPresenceTimeOnline(
   lastSeenMs: number | null | undefined,
@@ -43,7 +45,77 @@ function stableUidListKey(uids: string[]) {
   );
 }
 
+const presenceCache = new Map<string, { lastSeenMs: number | null; cachedAt: number }>();
+let pendingPresenceUids = new Set<string>();
+let pendingPresenceTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingPresencePromise: Promise<Record<string, number | null>> | null = null;
+let pendingPresenceResolve:
+  | ((value: Record<string, number | null> | PromiseLike<Record<string, number | null>>) => void)
+  | null = null;
+
 async function fetchPresenceBatch(uids: string[], options?: { logAsChatApi?: boolean }) {
+  if (!uids.length) {
+    return {} as Record<string, number | null>;
+  }
+  const now = Date.now();
+  const out: Record<string, number | null> = {};
+  const missing: string[] = [];
+  for (const uid of uids) {
+    const cached = presenceCache.get(uid);
+    if (cached && now - cached.cachedAt <= PRESENCE_CACHE_MS) {
+      out[uid] = cached.lastSeenMs;
+      console.info('[PRESENCE_CACHE_HIT]', {
+        uid,
+        ageMs: now - cached.cachedAt,
+      });
+    } else {
+      missing.push(uid);
+    }
+  }
+  if (!missing.length) {
+    return out;
+  }
+
+  for (const uid of missing) {
+    pendingPresenceUids.add(uid);
+  }
+  console.info('[PRESENCE_BATCH_MERGE]', {
+    requested: missing.length,
+    pending: pendingPresenceUids.size,
+  });
+
+  if (!pendingPresencePromise) {
+    pendingPresencePromise = new Promise((resolve) => {
+      pendingPresenceResolve = resolve;
+    });
+  }
+  if (!pendingPresenceTimer) {
+    pendingPresenceTimer = setTimeout(async () => {
+      const batchUids = [...pendingPresenceUids];
+      pendingPresenceUids = new Set();
+      pendingPresenceTimer = null;
+      const resolve = pendingPresenceResolve;
+      pendingPresenceResolve = null;
+      const promise = pendingPresencePromise;
+      pendingPresencePromise = null;
+      try {
+        const batch = await fetchPresenceBatchNetwork(batchUids, options);
+        resolve?.(batch);
+      } catch {
+        resolve?.({});
+      }
+      void promise;
+    }, PRESENCE_MERGE_DELAY_MS);
+  }
+
+  const merged = await pendingPresencePromise;
+  for (const uid of missing) {
+    out[uid] = merged[uid] ?? null;
+  }
+  return out;
+}
+
+async function fetchPresenceBatchNetwork(uids: string[], options?: { logAsChatApi?: boolean }) {
   if (!uids.length) {
     return {} as Record<string, number | null>;
   }
@@ -87,6 +159,18 @@ async function fetchPresenceBatch(uids: string[], options?: { logAsChatApi?: boo
     const ms = row.lastSeenAt ? Date.parse(row.lastSeenAt) : NaN;
     if (uid) {
       out[uid] = Number.isFinite(ms) ? ms : null;
+      presenceCache.set(uid, {
+        lastSeenMs: out[uid],
+        cachedAt: Date.now(),
+      });
+    }
+  }
+  for (const uid of uids) {
+    if (!presenceCache.has(uid)) {
+      presenceCache.set(uid, {
+        lastSeenMs: null,
+        cachedAt: Date.now(),
+      });
     }
   }
   return out;
@@ -127,10 +211,29 @@ export function usePresenceOnlineMap(
       logClientFirestoreSkipped('user_presence_listener', { count: uniqueSorted.length });
       let cancelled = false;
       let timer: ReturnType<typeof setTimeout> | null = null;
+      let pausedForHidden = false;
 
       const poll = async () => {
         if (cancelled) {
           return;
+        }
+        if (typeof document !== 'undefined' && document.hidden) {
+          pausedForHidden = true;
+          console.info('[PLAYER_POLL_PAUSED]', {
+            pollName: 'presence',
+            reason: 'document_hidden',
+          });
+          timer = setTimeout(() => {
+            void poll();
+          }, PRESENCE_POLL_MS);
+          return;
+        }
+        if (pausedForHidden) {
+          pausedForHidden = false;
+          console.info('[PLAYER_POLL_RESUMED]', {
+            pollName: 'presence',
+            reason: 'document_visible',
+          });
         }
         if (options?.requirePlayerRole) {
           const sessionUser = await checkPlayerPollRole('player_presence');
