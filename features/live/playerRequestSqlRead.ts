@@ -117,8 +117,11 @@ type PlayerCashoutSharedLiveHandler = (input: {
   rawData: string;
   outboxId: number;
 }) => void;
+type PlayerCashoutSharedHealthHandler = (healthy: boolean, reason: string) => void;
 
 const playerCashoutSharedLiveHandlers = new Map<string, Set<PlayerCashoutSharedLiveHandler>>();
+const playerCashoutSharedHealthHandlers = new Map<string, Set<PlayerCashoutSharedHealthHandler>>();
+const playerCashoutSharedHealthState = new Map<string, boolean>();
 
 function playerCashoutLiveChannel(playerUid: string) {
   return `player:${cleanText(playerUid)}:cashouts`;
@@ -148,6 +151,49 @@ export function subscribePlayerCashoutLiveFromPlayerStream(
     current.delete(handler);
     if (!current.size) {
       playerCashoutSharedLiveHandlers.delete(cleanPlayerUid);
+    }
+  };
+}
+
+function notifyPlayerCashoutSharedHealth(playerUid: string, healthy: boolean, reason: string) {
+  const cleanPlayerUid = cleanText(playerUid);
+  if (!cleanPlayerUid) {
+    return;
+  }
+  playerCashoutSharedHealthState.set(cleanPlayerUid, healthy);
+  const handlers = playerCashoutSharedHealthHandlers.get(cleanPlayerUid);
+  if (!handlers?.size) {
+    return;
+  }
+  for (const handler of handlers) {
+    try {
+      handler(healthy, reason);
+    } catch {
+      // Best-effort health fanout only.
+    }
+  }
+}
+
+export function subscribePlayerCashoutLiveHealthFromPlayerStream(
+  playerUid: string,
+  handler: PlayerCashoutSharedHealthHandler
+) {
+  const cleanPlayerUid = cleanText(playerUid);
+  if (!cleanPlayerUid) {
+    return () => {};
+  }
+  const existing = playerCashoutSharedHealthHandlers.get(cleanPlayerUid) || new Set();
+  existing.add(handler);
+  playerCashoutSharedHealthHandlers.set(cleanPlayerUid, existing);
+  handler(playerCashoutSharedHealthState.get(cleanPlayerUid) === true, 'subscribe');
+  return () => {
+    const current = playerCashoutSharedHealthHandlers.get(cleanPlayerUid);
+    if (!current) {
+      return;
+    }
+    current.delete(handler);
+    if (!current.size) {
+      playerCashoutSharedHealthHandlers.delete(cleanPlayerUid);
     }
   };
 }
@@ -1255,6 +1301,7 @@ export function attachPlayerRequestSqlReadListener(
       reconnectAttempt,
       listenerInstanceId,
     });
+    notifyPlayerCashoutSharedHealth(cleanPlayerUid, false, reason);
     streamConnectResolve?.();
     streamConnectResolve = null;
   };
@@ -1363,6 +1410,7 @@ export function attachPlayerRequestSqlReadListener(
         lastSseActivityAt = Date.now();
         reconnectAttempt = 0;
         reconnectBackoffMs = INITIAL_RECONNECT_MS;
+        notifyPlayerCashoutSharedHealth(cleanPlayerUid, true, 'open');
         console.info('[PLAYER_LIVE_STREAM_OPEN]', {
           playerUid: cleanPlayerUid,
           channels: streamChannels,

@@ -3,6 +3,7 @@ import 'server-only';
 import { createHash } from 'crypto';
 import type { PoolClient } from 'pg';
 
+import { isLiveVerboseLogs, SNAPSHOT_SLOW_MS } from '@/lib/server/verboseLogs';
 import {
   cleanText,
   createPlayerMirrorSqlTiming,
@@ -850,24 +851,26 @@ export async function getLatestOutboxIdForChannels(
       });
     }
     const latestOutboxId = Number(rows[0]?.outbox_id || 0);
-    console.info('[LIVE_OUTBOX_LATEST_OPTIMIZED]', {
-      channels: cleanChannels,
-      channelCount: cleanChannels.length,
-      latestOutboxId,
-      pool_acquire_ms: timing.pool_acquire_ms,
-      query_exec_ms: timing.query_exec_ms,
-      total_ms: timing.total_ms,
-      shared_client: Boolean(options?.mirrorClient),
-      query: 'max_outbox_id_by_channels_active',
-    });
-    console.info(
-      '[LIVE_OUTBOX_LATEST_TIMING] channels=%s pool_acquire_ms=%s query_exec_ms=%s total_ms=%s shared_client=%s',
-      cleanChannels.join(','),
-      timing.pool_acquire_ms,
-      timing.query_exec_ms,
-      timing.total_ms,
-      Boolean(options?.mirrorClient)
-    );
+    if (isLiveVerboseLogs() || timing.total_ms >= SNAPSHOT_SLOW_MS) {
+      console.info('[LIVE_OUTBOX_LATEST_OPTIMIZED]', {
+        channels: cleanChannels,
+        channelCount: cleanChannels.length,
+        latestOutboxId,
+        pool_acquire_ms: timing.pool_acquire_ms,
+        query_exec_ms: timing.query_exec_ms,
+        total_ms: timing.total_ms,
+        shared_client: Boolean(options?.mirrorClient),
+        query: 'max_outbox_id_by_channels_active',
+      });
+      console.info(
+        '[LIVE_OUTBOX_LATEST_TIMING] channels=%s pool_acquire_ms=%s query_exec_ms=%s total_ms=%s shared_client=%s',
+        cleanChannels.join(','),
+        timing.pool_acquire_ms,
+        timing.query_exec_ms,
+        timing.total_ms,
+        Boolean(options?.mirrorClient)
+      );
+    }
     return { latestOutboxId, timing };
   } catch (error) {
     console.info('[LIVE_OUTBOX] failed', { reason: 'get_latest_outbox_id', error });

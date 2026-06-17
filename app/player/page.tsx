@@ -348,6 +348,10 @@ function FloatingCasinoBackdrop() {
   );
 }
 
+function playerStartupJitterMs(minMs: number, maxMs: number) {
+  return minMs + Math.floor(Math.random() * (maxMs - minMs + 1));
+}
+
 
 export default function PlayerPage() {
   const router = useRouter();
@@ -513,6 +517,32 @@ export default function PlayerPage() {
         (startup?.startedAt || 0)
     );
   }, []);
+
+  const logPlayerStartupPhase = useCallback(
+    (phase: number, target: string, delayMs: number, reason: string) => {
+      console.info('[PLAYER_STARTUP_PHASE]', {
+        phase,
+        target,
+        delayMs,
+        reason,
+        elapsed_ms: startupNow(),
+      });
+      if (delayMs > 0) {
+        console.info('[PLAYER_STARTUP_DEFERRED_FETCH]', {
+          phase,
+          target,
+          delayMs,
+          reason,
+        });
+      }
+      console.info('[PLAYER_STARTUP_BURST_REDUCED]', {
+        phase,
+        target,
+        delayMs,
+      });
+    },
+    [startupNow]
+  );
 
   const classifyStartupRequest = useCallback((url: string) => {
     const href = String(url || '');
@@ -3112,15 +3142,16 @@ export default function PlayerPage() {
       return;
     }
     chatUnreadStartedForUidRef.current = playerUid;
-    const delayMs = baseDataLoadedRef.current ? 250 : 1_500;
+    const delayMs = playerStartupJitterMs(750, 1_500);
     console.info('[PLAYER_CHAT_UNREAD_START_ONCE]', {
       playerUid,
       delayMs,
       baseDataLoaded: baseDataLoadedRef.current,
     });
+    logPlayerStartupPhase(3, '/api/chat/unread-counts', delayMs, 'phase_3_chat_unread');
     console.info('[PLAYER_CHAT_UNREAD_DEFERRED]', {
       delayMs,
-      reason: baseDataLoadedRef.current ? 'base_data_loaded' : 'wait_for_core_startup',
+      reason: 'phase_3_after_core_startup',
     });
     const timer = window.setTimeout(() => {
       markPlayerStartupFlag('chatListenersStarted', {
@@ -3140,7 +3171,7 @@ export default function PlayerPage() {
         chatUnreadStartedForUidRef.current = '';
       }
     };
-  }, [isPlayerRole, markPlayerStartupFlag, playerUid, startupNow]);
+  }, [isPlayerRole, logPlayerStartupPhase, markPlayerStartupFlag, playerUid, startupNow]);
 
   useEffect(() => {
     if (totalUnread > previousUnreadRef.current) {
@@ -3154,6 +3185,14 @@ export default function PlayerPage() {
     if (!isPlayerRole || !playerUid) {
       return;
     }
+
+    const playDataDelayMs = shouldPollPlayData ? 0 : playerStartupJitterMs(750, 1_500);
+    logPlayerStartupPhase(
+      shouldPollPlayData ? 1 : 3,
+      '/api/player/play-data',
+      playDataDelayMs,
+      shouldPollPlayData ? 'active_play_tab_immediate' : 'phase_3_deferred_play_data'
+    );
 
     if (shouldPollPlayData) {
       setLoadingList(true);
@@ -3186,13 +3225,13 @@ export default function PlayerPage() {
           'Failed to listen for credential updates.'
         );
       },
-      { initialDelayMs: 0, pollEnabled: shouldPollPlayData }
+      { initialDelayMs: playDataDelayMs, pollEnabled: shouldPollPlayData }
     );
 
     return () => {
       unsubscribeLogins();
     };
-  }, [isPlayerRole, playerUid, shouldPollPlayData, syncCredentialSidecarsForPlayer, startupNow]);
+  }, [isPlayerRole, logPlayerStartupPhase, playerUid, shouldPollPlayData, syncCredentialSidecarsForPlayer, startupNow]);
 
   useEffect(() => {
     if (!isPlayerRole || !playerUid) return;
@@ -3598,7 +3637,13 @@ export default function PlayerPage() {
           },
           }
         );
-      const delayMs = 500;
+      const delayMs = playerStartupJitterMs(250, 750);
+      logPlayerStartupPhase(
+        2,
+        '/api/live/snapshot/player/[playerUid]/requests',
+        delayMs,
+        'phase_2_live_snapshot'
+      );
       console.info('[PLAYER_STARTUP_STAGGER]', {
         target: '/api/live/snapshot/player/[playerUid]/requests',
         delayMs,
@@ -3624,6 +3669,7 @@ export default function PlayerPage() {
     markRechargeSplashSeen,
     markRedeemSplashSeen,
     markPlayerStartupFlag,
+    logPlayerStartupPhase,
     startupNow,
   ]);
 
@@ -3657,8 +3703,14 @@ export default function PlayerPage() {
     }
 
     let unsubscribe: (() => void) | null = null;
-    const delayMs = isClientSqlReadMode() ? 650 : 0;
+    const delayMs = isClientSqlReadMode() ? playerStartupJitterMs(250, 750) : 0;
     if (delayMs > 0) {
+      logPlayerStartupPhase(
+        2,
+        '/api/player-cashout-tasks/cache',
+        delayMs,
+        'phase_2_cashout_cache'
+      );
       console.info('[PLAYER_STARTUP_STAGGER]', {
         target: '/api/player-cashout-tasks/cache',
         delayMs,
@@ -3741,7 +3793,7 @@ export default function PlayerPage() {
         cashoutListenerStartedForUidRef.current = '';
       }
     };
-  }, [isPlayerRole, markPlayerStartupFlag, playerUid]);
+  }, [isPlayerRole, logPlayerStartupPhase, markPlayerStartupFlag, playerUid]);
 
   useEffect(() => {
     if (!referredByPlayerUid || referredByPlayerName || isClientSqlReadMode()) {

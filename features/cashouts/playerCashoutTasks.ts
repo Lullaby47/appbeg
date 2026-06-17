@@ -352,6 +352,20 @@ function readApiError(messageFallback: string, payload: unknown) {
   return messageFallback;
 }
 
+function requestPlayerCashoutRefresh(reason: string, taskId?: string | null) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.dispatchEvent(
+    new CustomEvent('appbeg:player-cashout-refetch', {
+      detail: {
+        reason,
+        taskId: taskId || null,
+      },
+    })
+  );
+}
+
 export async function createPlayerCashoutTask(values: {
   coadminUid: string;
   paymentDetails: string;
@@ -404,6 +418,7 @@ export async function createPlayerCashoutTask(values: {
     duplicate: payload.duplicate ?? false,
     success: payload.success ?? true,
   });
+  requestPlayerCashoutRefresh('create', payload.taskId || null);
 
   return payload;
 }
@@ -455,6 +470,7 @@ export async function completePlayerCashoutTask(taskId: string) {
     throw new Error(readApiError('Failed to complete cashout task.', payload));
   }
   console.info('[CASHOUT_TASK_DONE] success', { taskId, status: 'completed' });
+  requestPlayerCashoutRefresh('complete', taskId);
 }
 
 export async function releasePlayerCashoutTask(taskId: string) {
@@ -582,6 +598,7 @@ export async function declinePlayerCashoutTaskByCoadmin(taskId: string) {
     throw new Error(readApiError('Failed to decline cashout task.', payload));
   }
   console.info('[CASHOUT_TASK_SEND] success', { action, taskId, status: response.status });
+  requestPlayerCashoutRefresh('decline', taskId);
 }
 
 function sortByNewest(tasks: PlayerCashoutTask[]) {

@@ -1,0 +1,413 @@
+
+> appbeg-new@0.1.0 dev
+> next dev --hostname 127.0.0.1 --port 3000
+
+▲ Next.js 16.2.4 (Turbopack)
+- Local:         http://127.0.0.1:3000
+- Network:       http://127.0.0.1:3000
+- Environments: .env.local
+✓ Ready in 356ms
+[APPBEG_SQL_ONLY_MODE] enabled=true
+[FIREBASE_RUNTIME_DISABLED] enabled=true
+[FIREBASE_RUNTIME_GUARD] migration_paths_allowed=scripts/firebase-backfill,lib/firebase/migrationOnly,app/api/admin/migration
+[APPBEG_SQL_ONLY_FLAGS] {
+  context: 'instrumentation',
+  appbeg_sql_only_mode: true,
+  allow_firebase_fallback: false,
+  auth_sql_only: true,
+  node_env: 'development',
+  production_default: false
+}
+[ENV_SQL_ONLY_VERIFIED] {
+  appbegSqlOnlyMode: true,
+  allowFirebaseFallback: false,
+  authSqlRead: true,
+  appSessionSqlRead: true,
+  playerSessionSqlRead: true,
+  nextPublicSqlLoginFirst: true,
+  nextPublicSqlPlayerLogin: true,
+  databaseUrlConfigured: true
+}
+[SQL_RUNTIME] {
+  context: 'instrumentation',
+  node_env: 'development',
+  database_url_configured: true,
+  auth_sql_read: true,
+  player_session_sql_read: true,
+  app_session_sql_read: true,
+  authority_sql_write: true,
+  appbeg_sql_only_mode: true,
+  allow_firebase_fallback: false,
+  sql_read_mode: true,
+  sql_authority_mode: true,
+  firestore_fallback_blocked: true,
+  authority_source: 'sql'
+}
+[SQL_POOL] created {
+  name: 'playerMirror',
+  max: 8,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+  statementTimeoutMillis: 15000
+}
+[SQL_POOL_RECOMMENDED] {
+  name: 'playerMirror',
+  current: 8,
+  recommended: 8,
+  environment: 'local_dev'
+}
+[SQL_POOL_AUDIT] known_pools {
+  playerMirror: {
+    scope: 'carerTasksCache,liveOutbox,playerGameRequestsCache,playersCache,playerSessionsCache,...',
+    shared: true,
+    max: 8,
+    env: 'PG_POOL_MAX'
+  },
+  gameLoginsCache: {
+    scope: 'game_logins_cache reads/writes',
+    shared: true,
+    uses: 'playerMirror'
+  },
+  automationJobsCache: {
+    scope: 'automation_jobs_cache',
+    shared: true,
+    uses: 'playerMirror'
+  },
+  coadminBonusSettingsCache: {
+    scope: 'coadmin_bonus_settings_cache',
+    shared: true,
+    uses: 'playerMirror'
+  },
+  note: 'carerTasksCache uses playerMirror; separate pools also hit DATABASE_URL under burst load',
+  vercel_pgbouncer: 'On Vercel/serverless prefer DATABASE_URL with ?pgbouncer=true and transaction pool mode; avoid holding clients across awaits/SSE; keep max pool modest per instance'
+}
+
+[SQL_RUNTIME_DB_AUDIT] {
+  context: 'instrumentation',
+  database_url_hash: 'd3871e91271c',
+  database_name: 'appbeg',
+  authority_sql_write: true,
+  auth_sql_read: true,
+  player_session_sql_read: true,
+  app_session_sql_read: true,
+  environment: 'development',
+  authority_operations_exists: true,
+  missing_authority_tables: []
+}
+[SQL_RUNTIME_READY] {
+  database_url_hash: 'd3871e91271c',
+  missingTables: [],
+  missingIndexes: [],
+  missingPermissions: [],
+  firebaseFirestoreBlocked: true,
+  runtimeSource: 'postgres',
+  context: 'instrumentation',
+  all_required_tables_present: true,
+  skipped: false,
+  reason: null
+}
+[SQL_RUNTIME_DB_AUDIT] {
+  context: 'instrumentation',
+  database_url_hash: 'd3871e91271c',
+  database_name: 'appbeg',
+  authority_sql_write: true,
+  auth_sql_read: true,
+  player_session_sql_read: true,
+  app_session_sql_read: true,
+  environment: 'development',
+  authority_operations_exists: true,
+  missing_authority_tables: []
+}
+[SQL_RUNTIME_READY] {
+  database_url_hash: 'd3871e91271c',
+  missingTables: [],
+  missingIndexes: [],
+  missingPermissions: [],
+  firebaseFirestoreBlocked: true,
+  runtimeSource: 'postgres',
+  context: 'instrumentation',
+  all_required_tables_present: true,
+  skipped: false,
+  reason: null
+}
+[AUTHORITY_SCHEMA_AUDIT] {
+  database_name: 'appbeg',
+  current_schema: 'public',
+  database_url_hash: 'd3871e91271c',
+  authority_sql_write: true,
+  missing_tables: [],
+  present_tables: [
+    'authority_operations',
+    'user_balance_events',
+    'financial_events_cache',
+    'user_balance_snapshots_cache',
+    'players_cache',
+    'player_game_requests_cache',
+    'carer_tasks_cache',
+    'automation_jobs_cache',
+    'player_cashout_tasks_cache',
+    'transfer_requests_cache',
+    'referral_reward_claims_cache',
+    'player_coin_rewards_cache',
+    'freeplay_pending_gifts_cache',
+    'freeplay_gifts_cache',
+    'coadmin_maintenance_cache',
+    'impersonation_logs_cache',
+    'bonus_events_cache',
+    'conversations_cache',
+    'user_presence_cache'
+  ],
+  all_required_tables_present: true,
+  context: 'instrumentation',
+  skipped: false,
+  reason: null
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1114,
+  totalCount: 1,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/session/me',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[APP_SESSION_AUTH] hit=false uid=null role=null sessionId=manual-log-gating-loadtest reason=invalid_or_expired lookup_ms=279 pool_acquire_ms=1114 session_lookup_ms=279 client_release_ms=1 total_ms=1403
+[APP_SESSION_ME] { ok: false, reason: 'invalid_or_expired', durationMs: 1405 }
+[APP_SESSION_ME_TIMING] {
+  ok: false,
+  reason: 'invalid_or_expired',
+  cookie_parse_ms: 0,
+  session_lookup_ms: 279,
+  profile_lookup_ms: 0,
+  pool_acquire_ms: 1114,
+  cache_lookup_ms: 0,
+  client_release_ms: 1,
+  auth_finalize_ms: 0,
+  auth_total_ms: 1403,
+  serialization_ms: 0,
+  response_ms: 0,
+  total_ms: 1405,
+  unaccounted_ms: 11
+}
+[SESSION_ME_TIMING] {
+  ok: false,
+  reason: 'invalid_or_expired',
+  session_lookup_ms: 279,
+  auth_validation_ms: 1403,
+  profile_lookup_ms: 0,
+  player_session_ms: 0,
+  cache_lookup_ms: 0,
+  player_extras_ms: 0,
+  serialization_ms: 0,
+  response_ms: 0,
+  total_ms: 1405
+}
+[SESSION_ME_RESPONSE_SIZE] { ok: false, bytes: 42 }
+ GET /api/auth/session/me 401 in 2.2s (next.js: 752ms, application-code: 1431ms)
+[APP_SESSION_AUTH] hit=false uid=null role=null sessionId=manual-log-gating-loadtest reason=invalid_or_expired lookup_ms=276 pool_acquire_ms=1 session_lookup_ms=276 client_release_ms=0 total_ms=277
+[APP_SESSION_ME] { ok: false, reason: 'invalid_or_expired', durationMs: 278 }
+[APP_SESSION_ME_TIMING] {
+  ok: false,
+  reason: 'invalid_or_expired',
+  cookie_parse_ms: 0,
+  session_lookup_ms: 276,
+  profile_lookup_ms: 0,
+  pool_acquire_ms: 1,
+  cache_lookup_ms: 0,
+  client_release_ms: 0,
+  auth_finalize_ms: 0,
+  auth_total_ms: 277,
+  serialization_ms: 0,
+  response_ms: 0,
+  total_ms: 278,
+  unaccounted_ms: 1
+}
+[SESSION_ME_TIMING] {
+  ok: false,
+  reason: 'invalid_or_expired',
+  session_lookup_ms: 276,
+  auth_validation_ms: 277,
+  profile_lookup_ms: 0,
+  player_session_ms: 0,
+  cache_lookup_ms: 0,
+  player_extras_ms: 0,
+  serialization_ms: 0,
+  response_ms: 0,
+  total_ms: 278
+}
+[SESSION_ME_RESPONSE_SIZE] { ok: false, bytes: 42 }
+ GET /api/auth/session/me 401 in 291ms (next.js: 5ms, application-code: 286ms)
+[APP_SESSION_AUTH] hit=false uid=null role=null sessionId=manual-log-gating-loadtest reason=invalid_or_expired lookup_ms=276 pool_acquire_ms=0 session_lookup_ms=276 client_release_ms=0 total_ms=276
+[APP_SESSION_ME] { ok: false, reason: 'invalid_or_expired', durationMs: 277 }
+[APP_SESSION_ME_TIMING] {
+  ok: false,
+  reason: 'invalid_or_expired',
+  cookie_parse_ms: 0,
+  session_lookup_ms: 276,
+  profile_lookup_ms: 0,
+  pool_acquire_ms: 0,
+  cache_lookup_ms: 0,
+  client_release_ms: 0,
+  auth_finalize_ms: 0,
+  auth_total_ms: 276,
+  serialization_ms: 0,
+  response_ms: 0,
+  total_ms: 277,
+  unaccounted_ms: 1
+}
+[SESSION_ME_TIMING] {
+  ok: false,
+  reason: 'invalid_or_expired',
+  session_lookup_ms: 276,
+  auth_validation_ms: 276,
+  profile_lookup_ms: 0,
+  player_session_ms: 0,
+  cache_lookup_ms: 0,
+  player_extras_ms: 0,
+  serialization_ms: 0,
+  response_ms: 0,
+  total_ms: 277
+}
+[SESSION_ME_RESPONSE_SIZE] { ok: false, bytes: 42 }
+ GET /api/auth/session/me 401 in 284ms (next.js: 1809µs, application-code: 282ms)
+[AUTH_CACHE_SUMMARY] { hits: 0, misses: 4, hitRate: 0, route: 'app_session_auth' }
+[SQL_POOL_SUMMARY] {
+  name: 'playerMirror',
+  max: 8,
+  totalCount: 1,
+  idleCount: 0,
+  waitingCount: 0,
+  slowAcquireCount: 2,
+  maxAcquireMs: 1114
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1085,
+  totalCount: 1,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/session/me',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[APP_SESSION_AUTH] hit=false uid=null role=null sessionId=manual-log-gating-loadtest reason=invalid_or_expired lookup_ms=276 pool_acquire_ms=1085 session_lookup_ms=276 client_release_ms=1 total_ms=1365
+[ROUTE_METRICS_SUMMARY] {
+  route: '/api/auth/session/me',
+  count: 4,
+  avgMs: 832,
+  p95Ms: 1405,
+  maxMs: 1405,
+  errors: 4,
+  slowCount: 2
+}
+[APP_SESSION_ME] { ok: false, reason: 'invalid_or_expired', durationMs: 1366 }
+[APP_SESSION_ME_TIMING] {
+  ok: false,
+  reason: 'invalid_or_expired',
+  cookie_parse_ms: 0,
+  session_lookup_ms: 276,
+  profile_lookup_ms: 0,
+  pool_acquire_ms: 1085,
+  cache_lookup_ms: 0,
+  client_release_ms: 1,
+  auth_finalize_ms: 0,
+  auth_total_ms: 1365,
+  serialization_ms: 0,
+  response_ms: 0,
+  total_ms: 1366,
+  unaccounted_ms: 4
+}
+[SESSION_ME_TIMING] {
+  ok: false,
+  reason: 'invalid_or_expired',
+  session_lookup_ms: 276,
+  auth_validation_ms: 1365,
+  profile_lookup_ms: 0,
+  player_session_ms: 0,
+  cache_lookup_ms: 0,
+  player_extras_ms: 0,
+  serialization_ms: 0,
+  response_ms: 0,
+  total_ms: 1366
+}
+[SESSION_ME_RESPONSE_SIZE] { ok: false, bytes: 42 }
+ GET /api/auth/session/me 401 in 1377ms (next.js: 5ms, application-code: 1372ms)
+[APP_SESSION_AUTH] hit=false uid=null role=null sessionId=manual-log-gating-loadtest reason=invalid_or_expired lookup_ms=272 pool_acquire_ms=0 session_lookup_ms=272 client_release_ms=0 total_ms=272
+[APP_SESSION_ME] { ok: false, reason: 'invalid_or_expired', durationMs: 273 }
+[APP_SESSION_ME_TIMING] {
+  ok: false,
+  reason: 'invalid_or_expired',
+  cookie_parse_ms: 0,
+  session_lookup_ms: 272,
+  profile_lookup_ms: 0,
+  pool_acquire_ms: 0,
+  cache_lookup_ms: 0,
+  client_release_ms: 0,
+  auth_finalize_ms: 0,
+  auth_total_ms: 272,
+  serialization_ms: 0,
+  response_ms: 0,
+  total_ms: 273,
+  unaccounted_ms: 1
+}
+[SESSION_ME_TIMING] {
+  ok: false,
+  reason: 'invalid_or_expired',
+  session_lookup_ms: 272,
+  auth_validation_ms: 272,
+  profile_lookup_ms: 0,
+  player_session_ms: 0,
+  cache_lookup_ms: 0,
+  player_extras_ms: 0,
+  serialization_ms: 0,
+  response_ms: 0,
+  total_ms: 273
+}
+[SESSION_ME_RESPONSE_SIZE] { ok: false, bytes: 42 }
+ GET /api/auth/session/me 401 in 282ms (next.js: 3ms, application-code: 279ms)
+[APP_SESSION_AUTH] hit=false uid=null role=null sessionId=manual-log-gating-loadtest reason=invalid_or_expired lookup_ms=272 pool_acquire_ms=1 session_lookup_ms=272 client_release_ms=0 total_ms=273
+[APP_SESSION_ME] { ok: false, reason: 'invalid_or_expired', durationMs: 274 }
+[APP_SESSION_ME_TIMING] {
+  ok: false,
+  reason: 'invalid_or_expired',
+  cookie_parse_ms: 0,
+  session_lookup_ms: 272,
+  profile_lookup_ms: 0,
+  pool_acquire_ms: 1,
+  cache_lookup_ms: 0,
+  client_release_ms: 0,
+  auth_finalize_ms: 0,
+  auth_total_ms: 273,
+  serialization_ms: 0,
+  response_ms: 0,
+  total_ms: 274,
+  unaccounted_ms: 1
+}
+[SESSION_ME_TIMING] {
+  ok: false,
+  reason: 'invalid_or_expired',
+  session_lookup_ms: 272,
+  auth_validation_ms: 273,
+  profile_lookup_ms: 0,
+  player_session_ms: 0,
+  cache_lookup_ms: 0,
+  player_extras_ms: 0,
+  serialization_ms: 0,
+  response_ms: 0,
+  total_ms: 274
+}
+[SESSION_ME_RESPONSE_SIZE] { ok: false, bytes: 42 }
+ GET /api/auth/session/me 401 in 282ms (next.js: 1572µs, application-code: 281ms)
+ GET /login 200 in 492ms (next.js: 147ms, application-code: 345ms)
+ GET /player 200 in 234ms (next.js: 28ms, application-code: 205ms)
+ GET /api/health 200 in 305ms (next.js: 27ms, application-code: 278ms)
+[?25h

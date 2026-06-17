@@ -11,6 +11,8 @@ import {
 } from '@/lib/server/cacheSqlRead';
 import { extractPgErrorDetails } from '@/lib/server/sqlErrorDetails';
 import { logRouteSessionValidation, sessionIdsFromRequest } from '@/lib/server/sessionAuthLog';
+import { recordRouteMetric } from '@/lib/server/logMetrics';
+import { API_ROUTE_SLOW_MS, isPlayerVerboseLogs } from '@/lib/server/verboseLogs';
 import {
   readPlayerGameLoginsCacheFullByPlayer,
   type CachedPlayerGameLogin,
@@ -70,6 +72,19 @@ function emptyPayload(source: 'postgres' | 'firestore' | 'none' = 'postgres') {
   };
 }
 
+function logPlayerPlayDataSuccess(details: Record<string, unknown> & { total_ms: number }) {
+  recordRouteMetric({
+    route: ROUTE,
+    durationMs: details.total_ms,
+    ok: true,
+    slowThresholdMs: API_ROUTE_SLOW_MS,
+  });
+  if (!isPlayerVerboseLogs() && details.total_ms < API_ROUTE_SLOW_MS) {
+    return;
+  }
+  console.info('[PLAYER_PLAY_DATA]', details);
+}
+
 export async function GET(request: Request) {
   const startedAt = Date.now();
   const headerSessions = sessionIdsFromRequest(request);
@@ -110,7 +125,7 @@ export async function GET(request: Request) {
       if (cached !== null) {
         const durationMs = Date.now() - startedAt;
         logCacheSqlRead(ROUTE, { playerUid, count: cached.length, durationMs });
-        console.info('[PLAYER_PLAY_DATA]', {
+        logPlayerPlayDataSuccess({
           source: 'postgres',
           count: cached.length,
           total_ms: durationMs,
@@ -138,7 +153,7 @@ export async function GET(request: Request) {
       .map(mapFirestorePlayerGameLogin)
       .filter((login): login is CachedPlayerGameLogin => Boolean(login));
     const durationMs = Date.now() - startedAt;
-    console.info('[PLAYER_PLAY_DATA]', {
+    logPlayerPlayDataSuccess({
       source: 'firestore',
       count: gameLogins.length,
       total_ms: durationMs,

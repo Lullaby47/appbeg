@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 
 import { verifyAppSessionFromRequest } from '@/lib/firebase/apiAuth';
+import { recordRouteMetric } from '@/lib/server/logMetrics';
 import { logSqlAuthNoFirestore, logSqlAuthProfileRead, logSqlAuthSessionRead } from '@/lib/server/appbegSqlOnlyMode';
-import { isSqlAuthVerboseLogs } from '@/lib/server/verboseLogs';
+import { AUTH_SLOW_MS, isSqlAuthVerboseLogs } from '@/lib/server/verboseLogs';
 import { readSessionMePlayerExtras } from '@/lib/server/sessionMeExtras';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 
@@ -60,12 +61,14 @@ function readSessionMeRouteCache(input: {
   const cacheKey = buildSessionMeCacheKey(input);
   const cached = sessionMeRouteCache().get(cacheKey);
   if (!cached) {
-    console.info('[SESSION_ME_CACHE_MISS]', {
-      uid: input.uid,
-      role: input.role,
-      sessionIdPrefix: input.sessionId.slice(0, 8),
-      reason: 'empty',
-    });
+    if (isSqlAuthVerboseLogs()) {
+      console.info('[SESSION_ME_CACHE_MISS]', {
+        uid: input.uid,
+        role: input.role,
+        sessionIdPrefix: input.sessionId.slice(0, 8),
+        reason: 'empty',
+      });
+    }
     return null;
   }
   if (
@@ -73,21 +76,25 @@ function readSessionMeRouteCache(input: {
     new Date(input.expiresAt).getTime() <= Date.now()
   ) {
     sessionMeRouteCache().delete(cacheKey);
-    console.info('[SESSION_ME_CACHE_MISS]', {
+    if (isSqlAuthVerboseLogs()) {
+      console.info('[SESSION_ME_CACHE_MISS]', {
+        uid: input.uid,
+        role: input.role,
+        sessionIdPrefix: input.sessionId.slice(0, 8),
+        reason: 'expired',
+      });
+    }
+    return null;
+  }
+  if (isSqlAuthVerboseLogs()) {
+    console.info('[SESSION_ME_CACHE_HIT]', {
       uid: input.uid,
       role: input.role,
       sessionIdPrefix: input.sessionId.slice(0, 8),
-      reason: 'expired',
+      ageMs: Date.now() - cached.cachedAt,
+      expiresInMs: cached.expiresAt - Date.now(),
     });
-    return null;
   }
-  console.info('[SESSION_ME_CACHE_HIT]', {
-    uid: input.uid,
-    role: input.role,
-    sessionIdPrefix: input.sessionId.slice(0, 8),
-    ageMs: Date.now() - cached.cachedAt,
-    expiresInMs: cached.expiresAt - Date.now(),
-  });
   return cached.body;
 }
 
@@ -104,13 +111,15 @@ function writeSessionMeRouteCache(input: {
     expiresAt: now + SESSION_ME_ROUTE_CACHE_TTL_MS,
     body: input.body,
   });
-  console.info('[SESSION_ME_CACHE_STORE]', {
-    uid: input.uid,
-    role: input.role,
-    sessionIdPrefix: input.sessionId.slice(0, 8),
-    expiresInMs: SESSION_ME_ROUTE_CACHE_TTL_MS,
-    cachedFields: 'stable_session_profile_metadata',
-  });
+  if (isSqlAuthVerboseLogs()) {
+    console.info('[SESSION_ME_CACHE_STORE]', {
+      uid: input.uid,
+      role: input.role,
+      sessionIdPrefix: input.sessionId.slice(0, 8),
+      expiresInMs: SESSION_ME_ROUTE_CACHE_TTL_MS,
+      cachedFields: 'stable_session_profile_metadata',
+    });
+  }
 }
 
 function responseSizeBytes(body: unknown) {
@@ -131,6 +140,12 @@ export async function GET(request: Request) {
   if (!auth.hit) {
 
     const total_ms = Date.now() - totalStartedAt;
+    recordRouteMetric({
+      route: '/api/auth/session/me',
+      durationMs: total_ms,
+      ok: false,
+      slowThresholdMs: AUTH_SLOW_MS,
+    });
 
     console.info('[APP_SESSION_ME]', {
 
@@ -231,20 +246,24 @@ export async function GET(request: Request) {
   const sessionMeCacheLookupMs = Date.now() - cacheReadStartedAt;
 
   if (cachedStableBody) {
-    console.info('[SESSION_ME_PROFILE_REUSED]', {
-      uid: auth.uid,
-      role: auth.role,
-      source: 'session_me_route_cache',
-    });
+    if (isSqlAuthVerboseLogs()) {
+      console.info('[SESSION_ME_PROFILE_REUSED]', {
+        uid: auth.uid,
+        role: auth.role,
+        source: 'session_me_route_cache',
+      });
+    }
   }
 
   if (auth.role === 'player') {
-    console.info('[SESSION_ME_DUPLICATE_READ]', {
-      uid: auth.uid,
-      table: 'players_cache',
-      reason: 'player_extras_requires_live_balance_and_notice_fields',
-      profileReused: Boolean(cachedStableBody),
-    });
+    if (isSqlAuthVerboseLogs()) {
+      console.info('[SESSION_ME_DUPLICATE_READ]', {
+        uid: auth.uid,
+        table: 'players_cache',
+        reason: 'player_extras_requires_live_balance_and_notice_fields',
+        profileReused: Boolean(cachedStableBody),
+      });
+    }
   }
 
   const playerExtrasStartedAt = Date.now();
@@ -324,8 +343,14 @@ export async function GET(request: Request) {
   const response_ms = Date.now() - responseStartedAt;
 
   const total_ms = Date.now() - totalStartedAt;
+  recordRouteMetric({
+    route: '/api/auth/session/me',
+    durationMs: total_ms,
+    ok: true,
+    slowThresholdMs: AUTH_SLOW_MS,
+  });
 
-  if (isSqlAuthVerboseLogs()) {
+  if (isSqlAuthVerboseLogs() || total_ms >= AUTH_SLOW_MS) {
   console.info('[APP_SESSION_ME]', {
 
     ok: true,

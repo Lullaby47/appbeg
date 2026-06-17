@@ -4,6 +4,8 @@ import { requirePlayerApiUser } from '@/lib/firebase/apiAuth';
 import { logPlayerApiAuthOk } from '@/lib/server/playerApiAuthLog';
 import { readCompletedUsernameCarersByPlayer } from '@/lib/sql/completedUsernameCarersRead';
 import { logRouteSessionValidation, sessionIdsFromRequest } from '@/lib/server/sessionAuthLog';
+import { recordRouteMetric } from '@/lib/server/logMetrics';
+import { API_ROUTE_SLOW_MS, isPlayerVerboseLogs } from '@/lib/server/verboseLogs';
 
 export const runtime = 'nodejs';
 
@@ -44,11 +46,20 @@ export async function GET(request: Request) {
   });
 
   const mapping = (await readCompletedUsernameCarersByPlayer(auth.user.uid)) ?? {};
-  console.info('[COMPLETED_USERNAME_CARERS_API]', {
-    uid: auth.user.uid,
-    gameCount: Object.keys(mapping).length,
-    durationMs: Date.now() - startedAt,
+  const durationMs = Date.now() - startedAt;
+  recordRouteMetric({
+    route: ROUTE,
+    durationMs,
+    ok: true,
+    slowThresholdMs: API_ROUTE_SLOW_MS,
   });
+  if (isPlayerVerboseLogs() || durationMs >= API_ROUTE_SLOW_MS) {
+    console.info('[COMPLETED_USERNAME_CARERS_API]', {
+      uid: auth.user.uid,
+      gameCount: Object.keys(mapping).length,
+      durationMs,
+    });
+  }
 
   return NextResponse.json({ mapping, source: 'postgres' });
 }

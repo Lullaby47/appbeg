@@ -8,6 +8,7 @@ import {
   isAuthoritySqlWriteEnabled,
   isAuthSqlReadEnabled,
 } from '@/lib/server/sqlRuntime';
+import { isBonusVerboseLogs } from '@/lib/server/verboseLogs';
 
 function cleanText(value: unknown) {
   return String(value || '').trim();
@@ -166,6 +167,9 @@ export function logBonusEventsListSqlFilter(values: {
   sampleRows: BonusEventsListSqlFilterSampleRow[];
   reason: string;
 }) {
+  if (!isBonusVerboseLogs()) {
+    return;
+  }
   console.info('[BONUS_EVENTS_LIST_SQL_FILTER]', {
     route: values.route,
     coadminUid: values.coadminUid,

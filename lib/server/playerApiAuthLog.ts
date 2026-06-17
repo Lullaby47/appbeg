@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { sessionIdsFromRequest } from '@/lib/server/sessionAuthLog';
+import { isSqlAuthVerboseLogs } from '@/lib/server/verboseLogs';
 
 export function logPlayerApiAuthOk(
   request: Request,
@@ -11,6 +12,9 @@ export function logPlayerApiAuthOk(
     authPath: string;
   }
 ) {
+  if (!isSqlAuthVerboseLogs()) {
+    return;
+  }
   const sessions = sessionIdsFromRequest(request);
   console.info('[PLAYER_API_AUTH_OK]', {
     route: input.route,

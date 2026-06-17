@@ -4,6 +4,7 @@ import type { DocumentSnapshot } from 'firebase-admin/firestore';
 
 import { adminDb } from '@/lib/firebase/admin';
 import { extractPgErrorDetails } from '@/lib/server/sqlErrorDetails';
+import { isSqlCacheVerboseLogs, SQL_QUERY_SLOW_MS } from '@/lib/server/verboseLogs';
 import {
   cleanText,
   getPlayerMirrorPool,
@@ -252,11 +253,14 @@ async function readPlayerCashoutTasksBySql(
     const tasks = rows
       .map((row) => mapCachedPlayerCashoutTaskRow(row))
       .filter((task): task is CachedPlayerCashoutTask => Boolean(task));
-    console.info('[PLAYER_CASHOUT_TASKS_CACHE] read ok', {
-      label,
-      count: tasks.length,
-      durationMs: Date.now() - startedAt,
-    });
+    const durationMs = Date.now() - startedAt;
+    if (isSqlCacheVerboseLogs() || durationMs >= SQL_QUERY_SLOW_MS) {
+      console.info('[PLAYER_CASHOUT_TASKS_CACHE] read ok', {
+        label,
+        count: tasks.length,
+        durationMs,
+      });
+    }
     return tasks;
   } catch (error) {
     const pg = extractPgErrorDetails(error);

@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 
 import { requireApiUser } from '@/lib/firebase/apiAuth';
 import { isCacheSqlAuthoritative, logCacheSqlRead } from '@/lib/server/cacheSqlRead';
+import { recordRouteMetric } from '@/lib/server/logMetrics';
+import { API_ROUTE_SLOW_MS, isPresenceVerboseLogs } from '@/lib/server/verboseLogs';
 import { upsertUserPresenceCache } from '@/lib/sql/userPresenceCache';
 
 export const runtime = 'nodejs';
@@ -43,16 +45,24 @@ export async function POST(request: Request) {
   const shouldWrite = shouldWritePresenceHeartbeat(auth.user.uid);
   const ok = shouldWrite ? await upsertUserPresenceCache(auth.user.uid) : true;
   const durationMs = Date.now() - startedAt;
+  recordRouteMetric({
+    route: ROUTE,
+    durationMs,
+    ok,
+    slowThresholdMs: API_ROUTE_SLOW_MS,
+  });
 
   if (sqlReadMode) {
-    console.info('[PRESENCE_SQL_HEARTBEAT]', {
-      uid: auth.user.uid,
-      role: auth.user.role,
-      source: 'sql',
-      firestoreAttempted: false,
-      durationMs,
-      deduped: !shouldWrite,
-    });
+    if (isPresenceVerboseLogs() || durationMs >= API_ROUTE_SLOW_MS || !ok) {
+      console.info('[PRESENCE_SQL_HEARTBEAT]', {
+        uid: auth.user.uid,
+        role: auth.user.role,
+        source: 'sql',
+        firestoreAttempted: false,
+        durationMs,
+        deduped: !shouldWrite,
+      });
+    }
     return NextResponse.json({
       ok,
       source: 'sql',

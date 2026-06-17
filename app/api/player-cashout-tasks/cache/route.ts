@@ -12,6 +12,7 @@ import {
   logCacheFirestoreFallbackBlocked,
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
+import { API_ROUTE_SLOW_MS, isSqlCacheVerboseLogs } from '@/lib/server/verboseLogs';
 import { logPlayerApiAuthOk } from '@/lib/server/playerApiAuthLog';
 import { extractPgErrorDetails } from '@/lib/server/sqlErrorDetails';
 import {
@@ -85,11 +86,11 @@ async function readFirestoreTasks(scope: Scope, uid: string, limit: number) {
   });
 }
 
-type CashoutTaskList = 'pending' | 'active' | 'completed';
+type CashoutTaskList = 'pending' | 'active' | 'completed' | 'lifecycle';
 
 function resolveCashoutTaskList(request: Request): CashoutTaskList {
   const list = cleanText(new URL(request.url).searchParams.get('list')).toLowerCase();
-  if (list === 'active' || list === 'completed') {
+  if (list === 'active' || list === 'completed' || list === 'lifecycle') {
     return list;
   }
   return 'pending';
@@ -209,7 +210,64 @@ export async function GET(request: Request) {
       if (scope === 'staff') {
         await releaseExpiredPlayerCashoutTasksForCoadminInSql(targetUid);
       }
-      if (taskList === 'active') {
+      if (taskList === 'lifecycle') {
+        const [pending, active, completed] = await Promise.all([
+          readStaffPendingCashoutTasks(targetUid, limit),
+          scope === 'staff'
+            ? readStaffActiveCashoutTasks(targetUid, user.uid, limit)
+            : readCoadminActiveCashoutTasks(targetUid, limit),
+          scope === 'staff'
+            ? readStaffCompletedCashoutTasks(targetUid, user.uid, limit)
+            : readCoadminCompletedCashoutTasks(targetUid, limit),
+        ]);
+
+        if (pending !== null && active !== null && completed !== null) {
+          const lifecycle = {
+            pending,
+            active,
+            completed,
+          };
+          const durationMs = Date.now() - startedAt;
+          if (isSqlCacheVerboseLogs() || durationMs >= API_ROUTE_SLOW_MS) {
+            console.info('[CASHOUT_LIFECYCLE_QUERY]', {
+              scope,
+              uid: targetUid,
+              pendingCount: pending.length,
+              activeCount: active.length,
+              completedCount: completed.length,
+              sqlMode: sqlReadMode,
+              durationMs,
+            });
+          }
+          if (sqlReadMode) {
+            logCacheSqlRead(ROUTE, {
+              scope,
+              uid: targetUid,
+              list: taskList,
+              count: pending.length + active.length + completed.length,
+              durationMs,
+            });
+          }
+          return NextResponse.json({
+            tasks: pending,
+            lifecycle,
+            source: 'postgres',
+          });
+        }
+
+        if (sqlReadMode) {
+          logCacheFirestoreFallbackBlocked(ROUTE, 'playerCashoutTasks', {
+            scope,
+            uid: targetUid,
+            list: taskList,
+          });
+          return NextResponse.json({
+            tasks: [],
+            lifecycle: { pending: [], active: [], completed: [] },
+            source: 'postgres',
+          });
+        }
+      } else if (taskList === 'active') {
         tasks =
           scope === 'staff'
             ? await readStaffActiveCashoutTasks(targetUid, user.uid, limit)
@@ -219,46 +277,56 @@ export async function GET(request: Request) {
           scope === 'staff'
             ? await readStaffCompletedCashoutTasks(targetUid, user.uid, limit)
             : await readCoadminCompletedCashoutTasks(targetUid, limit);
-        console.info('[CASHOUT_COMPLETED_TASKS_CACHE]', scope === 'staff' ? 'staffScope' : 'coadminScope', {
-          coadminUid: targetUid,
-          staffUid: scope === 'staff' ? user.uid : null,
-          count: tasks?.length ?? 0,
-        });
+        if (isSqlCacheVerboseLogs()) {
+          console.info('[CASHOUT_COMPLETED_TASKS_CACHE]', scope === 'staff' ? 'staffScope' : 'coadminScope', {
+            coadminUid: targetUid,
+            staffUid: scope === 'staff' ? user.uid : null,
+            count: tasks?.length ?? 0,
+          });
+        }
       } else {
         tasks = await readStaffPendingCashoutTasks(targetUid, limit);
       }
       if (scope === 'staff' && user.role === 'staff') {
-        console.info('[PLAYER_CASHOUT_TASKS_CACHE] staffScope', {
-          staffUid: user.uid,
-          coadminUid: targetUid,
-          list: taskList,
-          count: tasks?.length ?? 0,
-        });
+        if (isSqlCacheVerboseLogs()) {
+          console.info('[PLAYER_CASHOUT_TASKS_CACHE] staffScope', {
+            staffUid: user.uid,
+            coadminUid: targetUid,
+            list: taskList,
+            count: tasks?.length ?? 0,
+          });
+        }
       }
       if (scope === 'coadmin' && (user.role === 'coadmin' || user.role === 'admin')) {
-        console.info('[PLAYER_CASHOUT_TASKS_CACHE] coadminScope', {
-          coadminUid: targetUid,
-          list: taskList,
-          count: tasks?.length ?? 0,
-        });
+        if (isSqlCacheVerboseLogs()) {
+          console.info('[PLAYER_CASHOUT_TASKS_CACHE] coadminScope', {
+            coadminUid: targetUid,
+            list: taskList,
+            count: tasks?.length ?? 0,
+          });
+        }
       }
     } else {
       tasks = await readPlayerCashoutTasksCacheByAssignedHandler(targetUid, limit);
     }
 
     if (tasks !== null) {
-      console.info('[CASHOUT_LIST_QUERY]', {
-        scope,
-        uid: scope === 'all' ? null : targetUid,
-        count: tasks.length,
-        sqlMode: sqlReadMode,
-      });
+      const durationMs = Date.now() - startedAt;
+      if (isSqlCacheVerboseLogs() || durationMs >= API_ROUTE_SLOW_MS) {
+        console.info('[CASHOUT_LIST_QUERY]', {
+          scope,
+          uid: scope === 'all' ? null : targetUid,
+          count: tasks.length,
+          sqlMode: sqlReadMode,
+          durationMs,
+        });
+      }
       if (sqlReadMode) {
         logCacheSqlRead(ROUTE, {
           scope,
           uid: scope === 'all' ? 'all' : targetUid,
           count: tasks.length,
-          durationMs: Date.now() - startedAt,
+          durationMs,
         });
         return NextResponse.json({ tasks, source: 'postgres' });
       }

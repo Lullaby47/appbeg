@@ -4,13 +4,23 @@ import { NextResponse } from 'next/server';
 
 import { shouldBlockFirestoreFallback } from '@/lib/server/sqlRuntime';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
-import { isSqlCacheVerboseLogs } from '@/lib/server/verboseLogs';
+import { API_ROUTE_SLOW_MS, isSqlCacheVerboseLogs } from '@/lib/server/verboseLogs';
+import { recordRouteMetric } from '@/lib/server/logMetrics';
 
 export function isCacheSqlAuthoritative() {
   return shouldBlockFirestoreFallback();
 }
 
 export function logCacheSqlRead(route: string, details: Record<string, unknown> = {}) {
+  const durationMs = Number(details.durationMs);
+  if (Number.isFinite(durationMs)) {
+    recordRouteMetric({
+      route,
+      durationMs,
+      ok: true,
+      slowThresholdMs: API_ROUTE_SLOW_MS,
+    });
+  }
   if (!isSqlCacheVerboseLogs()) {
     return;
   }

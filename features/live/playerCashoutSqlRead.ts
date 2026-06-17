@@ -17,7 +17,10 @@ import {
 } from '@/lib/client/hiddenTabPoll';
 import { scheduleSafetyInterval } from '@/lib/client/snapshotPollJitter';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
-import { subscribePlayerCashoutLiveFromPlayerStream } from '@/features/live/playerRequestSqlRead';
+import {
+  subscribePlayerCashoutLiveFromPlayerStream,
+  subscribePlayerCashoutLiveHealthFromPlayerStream,
+} from '@/features/live/playerRequestSqlRead';
 
 const POLL_MS = 30_000;
 const SAFETY_REFETCH_MS = 60_000;
@@ -26,6 +29,11 @@ const activeCashoutLiveStreamKeys = new Set<string>();
 
 type CashoutScope = 'player' | 'coadmin' | 'staff' | 'assigned_handler' | 'all';
 type CashoutTaskList = 'pending' | 'active' | 'completed';
+type CashoutLifecycleLists = {
+  pending: PlayerCashoutTask[];
+  active: PlayerCashoutTask[];
+  completed: PlayerCashoutTask[];
+};
 
 const CASHOUT_LIVE_EVENTS = [
   'cashout_create',
@@ -159,6 +167,61 @@ async function fetchCashoutTasks(
   return tasks;
 }
 
+async function fetchCashoutLifecycleTasks(
+  scope: 'staff' | 'coadmin',
+  uid: string,
+  limit: number
+): Promise<CashoutLifecycleLists | null> {
+  const params = new URLSearchParams({
+    scope,
+    uid,
+    limit: String(limit),
+    list: 'lifecycle',
+  });
+
+  console.info('[CASHOUT_LIFECYCLE_QUERY]', {
+    scope,
+    uid,
+    limit,
+    mode: 'combined',
+  });
+
+  const response = await fetch(`/api/player-cashout-tasks/cache?${params.toString()}`, {
+    method: 'GET',
+    headers: await getSqlApiReadHeaders(false),
+    cache: 'no-store',
+  });
+  const payload = (await response.json().catch(() => ({}))) as {
+    lifecycle?: {
+      pending?: Array<Record<string, unknown>>;
+      active?: Array<Record<string, unknown>>;
+      completed?: Array<Record<string, unknown>>;
+    };
+    error?: string;
+  };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to load cashout lifecycle tasks.');
+  }
+  if (!payload.lifecycle) {
+    return null;
+  }
+
+  const lists = {
+    pending: (payload.lifecycle.pending || []).map(mapCachedTask),
+    active: (payload.lifecycle.active || []).map(mapCachedTask),
+    completed: (payload.lifecycle.completed || []).map(mapCachedTask),
+  };
+  console.info('[CASHOUT_LIFECYCLE_RESULT]', {
+    scope,
+    uid,
+    pendingCount: lists.pending.length,
+    activeCount: lists.active.length,
+    completedCount: lists.completed.length,
+    mode: 'combined',
+  });
+  return lists;
+}
+
 function sanitizePendingCashoutTasks(tasks: PlayerCashoutTask[]): PlayerCashoutTask[] {
   return tasks.filter(
     (task) =>
@@ -194,6 +257,8 @@ function attachCashoutSqlPoll(input: {
   let safetyRefetchStop: (() => void) | null = null;
   let eventSource: EventSource | null = null;
   let sharedStreamUnsubscribe: (() => void) | null = null;
+  let sharedStreamHealthUnsubscribe: (() => void) | null = null;
+  let cashoutStreamHealthy = false;
   let lastEventId = 0;
   let refetchInFlight = false;
   let refetchQueued = false;
@@ -213,6 +278,33 @@ function attachCashoutSqlPoll(input: {
       lastEventId,
       startupAgeMs: Date.now() - startedAt,
     });
+  };
+
+  const isCashoutSafetyOnlyMode = () =>
+    input.scope === 'player' &&
+    Boolean(sharedStreamUnsubscribe) &&
+    cashoutStreamHealthy;
+
+  const scheduleNextCashoutPoll = () => {
+    if (disposed) {
+      return;
+    }
+    if (isCashoutSafetyOnlyMode()) {
+      console.info('[CASHOUT_STREAM_HEALTHY_SAFETY_ONLY]', {
+        scope: input.scope,
+        uid: input.uid,
+        safetyRefetchMs: SAFETY_REFETCH_MS,
+      });
+      return;
+    }
+    console.info('[CASHOUT_POLL_FAST_MODE]', {
+      scope: input.scope,
+      uid: input.scope === 'all' ? null : input.uid,
+      intervalMs: resolveVisiblePollIntervalMs(POLL_MS),
+    });
+    pollTimer = setTimeout(() => {
+      void runPoll('poll_interval');
+    }, resolveVisiblePollIntervalMs(POLL_MS));
   };
 
   const runPoll = async (reason: string) => {
@@ -265,20 +357,14 @@ function attachCashoutSqlPoll(input: {
         if (isStartupCooldownActive()) {
           logCashoutCacheDeduped('queued', 'queued_startup_refetch_suppressed');
           if (!disposed) {
-            pollTimer = setTimeout(() => {
-              void runPoll('poll_interval');
-            }, POLL_MS);
+            scheduleNextCashoutPoll();
           }
           return;
         }
         void runPoll('queued');
         return;
       }
-      if (!disposed) {
-        pollTimer = setTimeout(() => {
-          void runPoll('poll_interval');
-        }, resolveVisiblePollIntervalMs(POLL_MS));
-      }
+      scheduleNextCashoutPoll();
     }
   };
 
@@ -366,6 +452,33 @@ function attachCashoutSqlPoll(input: {
       }) => {
         handleLiveEvent(eventName, rawData, outboxId);
       });
+      sharedStreamHealthUnsubscribe = subscribePlayerCashoutLiveHealthFromPlayerStream(
+        input.uid,
+        (healthy, reason) => {
+          const wasHealthy = cashoutStreamHealthy;
+          cashoutStreamHealthy = healthy;
+          if (healthy) {
+            console.info('[CASHOUT_STREAM_HEALTHY_SAFETY_ONLY]', {
+              scope: input.scope,
+              uid: input.uid,
+              reason,
+              safetyRefetchMs: SAFETY_REFETCH_MS,
+            });
+            if (pollTimer) {
+              clearTimeout(pollTimer);
+              pollTimer = null;
+            }
+          } else if (wasHealthy) {
+            console.info('[CASHOUT_STREAM_UNHEALTHY_RESUME_POLL]', {
+              scope: input.scope,
+              uid: input.uid,
+              reason,
+              intervalMs: POLL_MS,
+            });
+            scheduleNextCashoutPoll();
+          }
+        }
+      );
       console.info('[PLAYER_LIVE_STREAM_SINGLETON_REUSED]', {
         playerUid: input.uid,
         subscriber: 'cashout',
@@ -428,6 +541,16 @@ function attachCashoutSqlPoll(input: {
   const detachHiddenResume = attachHiddenTabPollResume('player_cashout_tasks', () => {
     scheduleImmediateRefetch('hidden_tab_resume');
   });
+  const onActionRefetch = (event: Event) => {
+    if (input.scope !== 'player') {
+      return;
+    }
+    const detail = (event as CustomEvent<{ reason?: string }>).detail || {};
+    scheduleImmediateRefetch(`action:${cleanText(detail.reason) || 'cashout'}`);
+  };
+  if (typeof window !== 'undefined') {
+    window.addEventListener('appbeg:player-cashout-refetch', onActionRefetch);
+  }
   void runPoll('initial');
   connectEventSource();
   safetyRefetchStop = scheduleSafetyInterval({
@@ -438,6 +561,11 @@ function attachCashoutSqlPoll(input: {
         logHiddenTabPollPaused('player_cashout_safety');
         return;
       }
+      console.info('[CASHOUT_SAFETY_REFETCH]', {
+        scope: input.scope,
+        uid: input.scope === 'all' ? null : input.uid,
+        streamHealthy: cashoutStreamHealthy,
+      });
       scheduleImmediateRefetch('safety_interval');
     },
   });
@@ -445,6 +573,9 @@ function attachCashoutSqlPoll(input: {
   return () => {
     disposed = true;
     detachHiddenResume();
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('appbeg:player-cashout-refetch', onActionRefetch);
+    }
     if (pollTimer) {
       clearTimeout(pollTimer);
       pollTimer = null;
@@ -452,8 +583,11 @@ function attachCashoutSqlPoll(input: {
     safetyRefetchStop?.();
     safetyRefetchStop = null;
     closeEventSource();
+    sharedStreamHealthUnsubscribe?.();
+    sharedStreamHealthUnsubscribe = null;
     sharedStreamUnsubscribe?.();
     sharedStreamUnsubscribe = null;
+    cashoutStreamHealthy = false;
   };
 }
 
@@ -523,11 +657,26 @@ function attachScopedCashoutLifecyclePoll(input: {
     }
     refetchInFlight = true;
     try {
-      const [pending, active, completed] = await Promise.all([
-        fetchCashoutTasks(input.scope, input.coadminUid, limit, 'pending'),
-        fetchCashoutTasks(input.scope, input.coadminUid, limit, 'active'),
-        fetchCashoutTasks(input.scope, input.coadminUid, limit, 'completed'),
-      ]);
+      const combined = await fetchCashoutLifecycleTasks(
+        input.scope,
+        input.coadminUid,
+        limit
+      ).catch((error) => {
+        console.warn('[CASHOUT_LIFECYCLE_FALLBACK]', {
+          scope: input.scope,
+          uid: input.coadminUid,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      });
+      const [pending, active, completed] =
+        combined
+          ? [combined.pending, combined.active, combined.completed]
+          : await Promise.all([
+              fetchCashoutTasks(input.scope, input.coadminUid, limit, 'pending'),
+              fetchCashoutTasks(input.scope, input.coadminUid, limit, 'active'),
+              fetchCashoutTasks(input.scope, input.coadminUid, limit, 'completed'),
+            ]);
       if (!disposed) {
         const sanitizedPending = sanitizePendingCashoutTasks(pending);
         input.onPendingChange(sanitizedPending);

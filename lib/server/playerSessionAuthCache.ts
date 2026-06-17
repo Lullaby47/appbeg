@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { isSqlAuthVerboseLogs } from '@/lib/server/verboseLogs';
+import { recordAuthCacheMetric } from '@/lib/server/logMetrics';
 
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 
@@ -156,24 +157,28 @@ export function getCachedPlayerSessionValidation(input: {
   | { hit: false; validation: null } {
   const entry = lookupCachedEntry(input);
   if (!entry) {
-    console.info('[AUTH_CACHE_MISS]', {
-      cache: 'player_session_validation',
-      uid: input.uid,
-      sessionId: input.playerSessionId,
-    });
-    console.info('[PLAYER_SESSION_AUTH_CACHE]', {
-      hit: false,
-      uid: input.uid,
-      sessionId: input.playerSessionId,
-      cacheKey: buildCanonicalPlayerSessionAuthCacheKey(
-        cleanText(input.playerSessionId),
-        cleanText(input.uid)
-      ),
-    });
+    recordAuthCacheMetric({ route: 'player_session_validation', hit: false });
+    if (isSqlAuthVerboseLogs()) {
+      console.info('[AUTH_CACHE_MISS]', {
+        cache: 'player_session_validation',
+        uid: input.uid,
+        sessionId: input.playerSessionId,
+      });
+      console.info('[PLAYER_SESSION_AUTH_CACHE]', {
+        hit: false,
+        uid: input.uid,
+        sessionId: input.playerSessionId,
+        cacheKey: buildCanonicalPlayerSessionAuthCacheKey(
+          cleanText(input.playerSessionId),
+          cleanText(input.uid)
+        ),
+      });
+    }
     return { hit: false, validation: null };
   }
 
   const now = Date.now();
+  recordAuthCacheMetric({ route: 'player_session_validation', hit: true });
   if (isSqlAuthVerboseLogs()) {
     console.info('[AUTH_CACHE_HIT]', {
       cache: 'player_session_validation',
@@ -218,23 +223,25 @@ export function writePlayerSessionAuthCache(
     expiresAt,
     result,
   });
-  console.info('[AUTH_CACHE_STORE]', {
-    cache: 'player_session_validation',
-    reason: options?.reason || 'status_sql_success',
-    uid,
-    sessionId: playerSessionId,
-    ok: result.ok,
-    source: result.source || 'sql',
-    expiresInMs: PLAYER_SESSION_AUTH_CACHE_TTL_MS,
-  });
-  console.info('[PLAYER_SESSION_STATUS_CACHE]', {
-    cache_set: true,
-    reason: options?.reason || 'status_sql_success',
-    cacheKey,
-    uid,
-    sessionId: playerSessionId,
-    expiresInMs: PLAYER_SESSION_AUTH_CACHE_TTL_MS,
-  });
+  if (isSqlAuthVerboseLogs()) {
+    console.info('[AUTH_CACHE_STORE]', {
+      cache: 'player_session_validation',
+      reason: options?.reason || 'status_sql_success',
+      uid,
+      sessionId: playerSessionId,
+      ok: result.ok,
+      source: result.source || 'sql',
+      expiresInMs: PLAYER_SESSION_AUTH_CACHE_TTL_MS,
+    });
+    console.info('[PLAYER_SESSION_STATUS_CACHE]', {
+      cache_set: true,
+      reason: options?.reason || 'status_sql_success',
+      cacheKey,
+      uid,
+      sessionId: playerSessionId,
+      expiresInMs: PLAYER_SESSION_AUTH_CACHE_TTL_MS,
+    });
+  }
 }
 
 export function invalidatePlayerSessionAuthCache(input?: {

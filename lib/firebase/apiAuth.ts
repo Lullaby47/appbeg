@@ -25,6 +25,7 @@ import {
   getCachedPlayerSessionValidation,
   writePlayerSessionAuthCache,
 } from '@/lib/server/playerSessionAuthCache';
+import { recordAuthCacheMetric } from '@/lib/server/logMetrics';
 import {
   lookupPlayerSessionFromSqlCache,
   lookupPlayerSessionOwnerFromSql,
@@ -224,6 +225,7 @@ export async function verifyAppSessionFromRequest(
 
   if (cachedAuth) {
     timing.total_ms = Date.now() - verifyStartedAt;
+    recordAuthCacheMetric({ route: 'app_session_auth', hit: true });
     logVerboseApiAuth('[AUTH_CACHE_HIT]', {
       cache: 'app_session_auth',
       uid: cachedAuth.uid,
@@ -246,11 +248,12 @@ export async function verifyAppSessionFromRequest(
     };
   }
 
-  console.info('[AUTH_CACHE_MISS]', {
+  recordAuthCacheMetric({ route: 'app_session_auth', hit: false });
+  logVerboseApiAuth('[AUTH_CACHE_MISS]', {
     cache: 'app_session_auth',
     sessionIdPrefix: sessionId.slice(0, 8),
   });
-  console.info('[APP_SESSION_AUTH_CACHE]', {
+  logVerboseApiAuth('[APP_SESSION_AUTH_CACHE]', {
     hit: false,
     uid: null,
     role: null,
@@ -413,7 +416,7 @@ export async function verifyAppSessionFromRequest(
   timing.total_ms = Date.now() - verifyStartedAt;
   scheduleAppSessionTouchIfDue(sessionId, { role });
 
-  console.info(
+  logVerboseApiAuth(
     '[APP_SESSION_AUTH] hit=true uid=%s role=%s sessionId=%s lookup_ms=%s profile_ms=%s shared_client=%s pool_acquire_ms=%s session_lookup_ms=%s profile_lookup_ms=%s client_release_ms=%s auth_finalize_ms=%s total_ms=%s',
     session.uid,
     role,

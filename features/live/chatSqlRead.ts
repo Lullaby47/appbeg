@@ -386,7 +386,33 @@ function attachChatSqlPoll(input: {
   let eventSource: EventSource | null = null;
   let lastEventId = 0;
   let refetchInFlight = false;
+  let streamHealthy = false;
   const pollName = 'chat_sql_poll';
+
+  const isSafetyOnlyMode = () =>
+    input.enableLive === true && streamHealthy && eventSource?.readyState === EventSource.OPEN;
+
+  const scheduleNextPoll = () => {
+    if (disposed) {
+      return;
+    }
+    if (isSafetyOnlyMode()) {
+      console.info('[CHAT_SSE_HEALTHY_SAFETY_ONLY]', {
+        pollName,
+        selfUid: input.selfUid,
+        safetyRefetchMs: SAFETY_REFETCH_MS,
+      });
+      return;
+    }
+    console.info('[CHAT_POLL_FAST_MODE]', {
+      pollName,
+      selfUid: input.selfUid,
+      intervalMs: resolveVisiblePollIntervalMs(input.pollMs || POLL_MS),
+    });
+    pollTimer = setTimeout(() => {
+      void runPoll('poll_interval');
+    }, resolveVisiblePollIntervalMs(input.pollMs || POLL_MS));
+  };
 
   const runPoll = async (reason: string) => {
     if (disposed || refetchInFlight) {
@@ -408,11 +434,7 @@ function attachChatSqlPoll(input: {
       }
     } finally {
       refetchInFlight = false;
-      if (!disposed) {
-        pollTimer = setTimeout(() => {
-          void runPoll('poll_interval');
-        }, resolveVisiblePollIntervalMs(input.pollMs || POLL_MS));
-      }
+      scheduleNextPoll();
     }
   };
 
@@ -432,6 +454,7 @@ function attachChatSqlPoll(input: {
       eventSource.close();
       eventSource = null;
     }
+    streamHealthy = false;
   };
 
   const connectEventSource = () => {
@@ -458,10 +481,25 @@ function attachChatSqlPoll(input: {
     const source = new EventSource(url);
     eventSource = source;
 
+    source.onopen = () => {
+      streamHealthy = true;
+      console.info('[CHAT_SSE_HEALTHY_SAFETY_ONLY]', {
+        pollName,
+        selfUid: input.selfUid,
+        safetyRefetchMs: SAFETY_REFETCH_MS,
+      });
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+    };
+
     const handleLiveEvent = (eventName: string, rawData: string, outboxId: number) => {
       if (eventName === 'ping') {
+        streamHealthy = true;
         return;
       }
+      streamHealthy = true;
       if (outboxId > 0) {
         lastEventId = Math.max(lastEventId, outboxId);
       }
@@ -506,6 +544,16 @@ function attachChatSqlPoll(input: {
     };
 
     source.onerror = () => {
+      const wasHealthy = streamHealthy;
+      streamHealthy = false;
+      if (wasHealthy) {
+        console.info('[CHAT_STREAM_UNHEALTHY_RESUME_POLL]', {
+          pollName,
+          selfUid: input.selfUid,
+          reason: 'sse_error',
+          intervalMs: input.pollMs || POLL_MS,
+        });
+      }
       closeEventSource();
       scheduleImmediateRefetch('sse_error');
     };
@@ -524,6 +572,11 @@ function attachChatSqlPoll(input: {
         logHiddenTabPollPaused(`${pollName}_safety`);
         return;
       }
+      console.info('[CHAT_SAFETY_REFETCH]', {
+        pollName,
+        selfUid: input.selfUid,
+        streamHealthy,
+      });
       scheduleImmediateRefetch('safety_interval');
     },
   });
@@ -599,23 +652,40 @@ export function attachSqlChatMessagesPoll(
   });
 
   if (options?.requirePlayerRole) {
-    return createPlayerScopedPoll({
-      pollName: 'player_chat_messages',
-      intervalMs: POLL_MS,
-      onTick: async () => {
-        const messages = await fetchSqlChatMessages(peerUid, options?.limit || 50, {
-          conversationId: options?.conversationId,
-        });
-        onChange(messages);
-        console.info('[CHAT_RECEIVER_UI_UPDATED]', {
-          kind: 'messages',
-          peerUid,
-          count: messages.length,
-          reason: 'player_poll',
-        });
-      },
-      onError,
-    });
+    let disposed = false;
+    let cleanupLive: (() => void) | null = null;
+
+    void (async () => {
+      const selfUid = await resolveSelfUid();
+      if (disposed) {
+        return;
+      }
+      cleanupLive = attachChatSqlPoll({
+        selfUid,
+        enableLive: Boolean(selfUid),
+        onRefetch: async (reason) => {
+          const messages = await fetchSqlChatMessages(peerUid, options?.limit || 50, {
+            conversationId: options?.conversationId,
+          });
+          if (!disposed) {
+            onChange(messages);
+            console.info('[CHAT_RECEIVER_UI_UPDATED]', {
+              kind: 'messages',
+              peerUid,
+              count: messages.length,
+              reason,
+            });
+          }
+        },
+        onError,
+      });
+    })();
+
+    return () => {
+      disposed = true;
+      cleanupLive?.();
+      cleanupLive = null;
+    };
   }
 
   let disposed = false;

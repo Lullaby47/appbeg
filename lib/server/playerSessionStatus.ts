@@ -20,7 +20,9 @@ import {
   shouldAuthUseSqlOnly,
 } from '@/lib/server/appbegSqlOnlyMode';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
+import { recordRouteMetric } from '@/lib/server/logMetrics';
 import { requireFirebasePlayerUser } from '@/lib/server/playerSessionRouteAuth';
+import { AUTH_SLOW_MS, isSqlAuthVerboseLogs } from '@/lib/server/verboseLogs';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 import {
   lookupApiUserProfileFromSqlCache,
@@ -47,6 +49,16 @@ function playerSessionIdFromRequest(request: Request) {
 
 function appSessionIdFromRequest(request: Request) {
   return cleanText(request.headers.get('X-App-Session-Id'));
+}
+
+function logPlayerSessionStatusSuccess(
+  label: string,
+  details: Record<string, unknown> & { durationMs?: number }
+) {
+  const durationMs = typeof details.durationMs === 'number' ? details.durationMs : 0;
+  if (isSqlAuthVerboseLogs() || durationMs >= AUTH_SLOW_MS) {
+    console.info(label, details);
+  }
 }
 
 async function resolvePlayerUidFromRequest(request: Request) {
@@ -305,7 +317,7 @@ export async function resolvePlayerSessionStatus(request: Request) {
   if (cachedEntry) {
     const now = Date.now();
     const cached = cachedEntry.result;
-    console.info('[PLAYER_SESSION_STATUS_CACHE]', {
+    logPlayerSessionStatusSuccess('[PLAYER_SESSION_STATUS_CACHE]', {
       hit: true,
       uid,
       sessionId,
@@ -316,7 +328,7 @@ export async function resolvePlayerSessionStatus(request: Request) {
       expiresInMs: cachedEntry.expiresAt - now,
       durationMs: now - startedAt,
     });
-    console.info('[PLAYER_SESSION_STATUS]', {
+    logPlayerSessionStatusSuccess('[PLAYER_SESSION_STATUS]', {
       source: cached.source || 'sql',
       uid,
       sessionId,
@@ -326,17 +338,25 @@ export async function resolvePlayerSessionStatus(request: Request) {
       durationMs: now - startedAt,
       cache_hit: true,
     });
+    recordRouteMetric({
+      route: '/api/auth/player-session/status',
+      durationMs: now - startedAt,
+      ok: true,
+      slowThresholdMs: AUTH_SLOW_MS,
+    });
     return { status: 200, result: cached };
   }
 
-  console.info('[PLAYER_SESSION_STATUS_CACHE]', {
-    hit: false,
-    uid,
-    sessionId,
-    appSessionId: appSessionId || null,
-    cacheKey: buildPlayerSessionAuthCacheKey(appSessionId, sessionId, uid),
-    durationMs: Date.now() - startedAt,
-  });
+  if (isSqlAuthVerboseLogs()) {
+    console.info('[PLAYER_SESSION_STATUS_CACHE]', {
+      hit: false,
+      uid,
+      sessionId,
+      appSessionId: appSessionId || null,
+      cacheKey: buildPlayerSessionAuthCacheKey(appSessionId, sessionId, uid),
+      durationMs: Date.now() - startedAt,
+    });
+  }
 
   try {
     const sqlStatus = await readPlayerSessionStatusFromSql(
@@ -350,7 +370,7 @@ export async function resolvePlayerSessionStatus(request: Request) {
         sqlStatus.result,
         { reason: 'status_sql_success' }
       );
-      console.info('[PLAYER_SESSION_STATUS]', {
+      logPlayerSessionStatusSuccess('[PLAYER_SESSION_STATUS]', {
         source: sqlStatus.result.source || 'sql',
         uid,
         sessionId,
@@ -359,6 +379,12 @@ export async function resolvePlayerSessionStatus(request: Request) {
         reason: sqlStatus.result.reason || null,
         durationMs: Date.now() - startedAt,
         cache_hit: false,
+      });
+      recordRouteMetric({
+        route: '/api/auth/player-session/status',
+        durationMs: Date.now() - startedAt,
+        ok: true,
+        slowThresholdMs: AUTH_SLOW_MS,
       });
       return { status: 200, result: sqlStatus.result };
     }
@@ -424,7 +450,7 @@ export async function resolvePlayerSessionStatus(request: Request) {
     result,
     { reason: 'status_firestore_success' }
   );
-  console.info('[PLAYER_SESSION_STATUS]', {
+  logPlayerSessionStatusSuccess('[PLAYER_SESSION_STATUS]', {
     source: result.source || 'firestore_fallback',
     uid,
     sessionId,
@@ -433,6 +459,12 @@ export async function resolvePlayerSessionStatus(request: Request) {
     reason: result.reason || null,
     durationMs: Date.now() - startedAt,
     cache_hit: false,
+  });
+  recordRouteMetric({
+    route: '/api/auth/player-session/status',
+    durationMs: Date.now() - startedAt,
+    ok: true,
+    slowThresholdMs: AUTH_SLOW_MS,
   });
   return { status: 200, result };
 }

@@ -8,6 +8,8 @@ import {
 } from '@/lib/server/playerBaseDataRead';
 import { extractPgErrorDetails } from '@/lib/server/sqlErrorDetails';
 import { logRouteSessionValidation, sessionIdsFromRequest } from '@/lib/server/sessionAuthLog';
+import { recordRouteMetric } from '@/lib/server/logMetrics';
+import { API_ROUTE_SLOW_MS, isPlayerVerboseLogs } from '@/lib/server/verboseLogs';
 
 export const runtime = 'nodejs';
 
@@ -29,6 +31,24 @@ function largestTimingStage(stages: Record<string, number>) {
 function authSqlSessionMs(timing: unknown) {
   const value = (timing as { sql_session_ms?: unknown }).sql_session_ms;
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function logPlayerBaseDataSuccess(details: {
+  timingLog: Record<string, unknown>;
+  summaryLog: Record<string, unknown>;
+  totalMs: number;
+}) {
+  recordRouteMetric({
+    route: ROUTE,
+    durationMs: details.totalMs,
+    ok: true,
+    slowThresholdMs: API_ROUTE_SLOW_MS,
+  });
+  if (!isPlayerVerboseLogs() && details.totalMs < API_ROUTE_SLOW_MS) {
+    return;
+  }
+  console.info('[PLAYER_BASE_DATA_TIMING]', details.timingLog);
+  console.info('[PLAYER_BASE_DATA]', details.summaryLog);
 }
 
 export async function GET(request: Request) {
@@ -88,7 +108,9 @@ export async function GET(request: Request) {
         total_ms: Date.now() - startedAt,
       };
       const serializationMs = Date.now() - serializationStartedAt;
-      console.info('[PLAYER_BASE_DATA_TIMING]', {
+      logPlayerBaseDataSuccess({
+        totalMs: timing.total_ms,
+        timingLog: {
         auth_session_validation_ms: timing.auth_ms,
         player_profile_lookup_ms: timing.player_profile_lookup_ms,
         player_session_ms: timing.player_session_ms,
@@ -109,12 +131,13 @@ export async function GET(request: Request) {
         }),
         counts: { staff: 0, gameLogins: 0, referralGroups: 0 },
         source: 'postgres',
-      });
-      console.info('[PLAYER_BASE_DATA]', {
+        },
+        summaryLog: {
         ...timing,
         counts: { staff: 0, gameLogins: 0, referralGroups: 0 },
         pendingGift: false,
         source: 'postgres',
+        },
       });
       return response;
     }
@@ -138,7 +161,10 @@ export async function GET(request: Request) {
       referral_rewards_ms: timing.referral_rewards_ms,
       serialization_ms: serializationMs,
     };
-    console.info('[PLAYER_BASE_DATA_TIMING]', {
+    const routeTotalMs = Date.now() - startedAt;
+    logPlayerBaseDataSuccess({
+      totalMs: routeTotalMs,
+      timingLog: {
       auth_session_validation_ms: timing.auth_ms,
       player_profile_lookup_ms: auth.timing.sql_profile_ms ?? null,
       player_session_ms: authSqlSessionMs(auth.timing),
@@ -160,9 +186,8 @@ export async function GET(request: Request) {
         referralGroups: payload.referralRewards.groups.length,
       },
       source: payload.source,
-    });
-
-    console.info('[PLAYER_BASE_DATA]', {
+      },
+      summaryLog: {
       auth_ms: timing.auth_ms,
       shared_client: timing.shared_client,
       parallel: timing.parallel,
@@ -181,6 +206,7 @@ export async function GET(request: Request) {
       },
       pendingGift: payload.pendingGift.hasPendingGift,
       source: payload.source,
+      },
     });
 
     return response;

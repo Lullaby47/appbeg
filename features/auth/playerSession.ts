@@ -28,6 +28,10 @@ import {
 } from '@/lib/client/chatLogoutDiagnostics';
 import { resetConsecutiveInvalidSessionStatus } from '@/lib/client/playerSessionInvalidGuard';
 import {
+  recordPlayerSessionStatusHealth,
+  shouldSkipPlayerSessionStatusForRecentSessionMe,
+} from '@/lib/client/playerAuthHealth';
+import {
   isPlayerSessionStale,
   markPlayerSessionStale,
   registerPlayerSessionStatusPollStop,
@@ -1317,6 +1321,17 @@ async function verifyActivePlayerSessionViaApi(
     };
   }
 
+  if (shouldSkipPlayerSessionStatusForRecentSessionMe(localSessionId)) {
+    recordPlayerSessionStatusHealth({
+      uid: cachedSessionUser?.uid || null,
+      playerSessionId: localSessionId,
+    });
+    return {
+      ok: true,
+      source: 'sql',
+    };
+  }
+
   try {
     const headers = await buildPlayerSessionRequestHeaders();
     headers['X-Player-Session-Id'] = localSessionId;
@@ -1354,6 +1369,10 @@ async function verifyActivePlayerSessionViaApi(
     };
 
     if (payload.ok) {
+      recordPlayerSessionStatusHealth({
+        uid: cachedSessionUser?.uid || null,
+        playerSessionId: localSessionId,
+      });
       return {
         ok: true,
         source: payload.source === 'firestore_fallback' ? 'firestore_fallback' : 'sql',

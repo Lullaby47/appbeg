@@ -10,6 +10,7 @@ import { deleteChatMessageInSql, sendChatMessageInSql } from '@/lib/sql/authorit
 import { readChatMessagesCacheByConversation } from '@/lib/sql/chatMessagesCache';
 import { cleanText, getPlayerMirrorPool } from '@/lib/sql/playerMirrorCommon';
 import { isDatabaseUrlConfigured } from '@/lib/server/sqlRuntime';
+import { isChatVerboseLogs } from '@/lib/server/verboseLogs';
 
 export const runtime = 'nodejs';
 
@@ -196,20 +197,23 @@ export async function GET(request: Request) {
     }
   }
 
-  console.info('[CHAT_MESSAGES_API]', {
-    conversationId,
-    currentUid: auth.user.uid,
-    totalMessages: messages?.length || 0,
-    messageIds: (messages || []).slice(0, 5).map((message) => message.id),
-    messages: (messages || []).slice(0, 5).map((message) => ({
-      id: message.id,
-      senderUid: message.senderUid,
-      text: message.text,
-      deletedForAll: message.deletedForEveryone,
-      deletedForUsers: message.deletedFor,
-      createdAt: message.createdAt,
-    })),
-  });
+  if (isChatVerboseLogs()) {
+    console.info('[CHAT_MESSAGES_API]', {
+      conversationId,
+      currentUid: auth.user.uid,
+      totalMessages: messages?.length || 0,
+      messageIds: (messages || []).slice(0, 5).map((message) => message.id),
+      messages: (messages || []).slice(0, 5).map((message) => ({
+        id: message.id,
+        senderUid: message.senderUid,
+        hasText: Boolean(message.text),
+        textLength: String(message.text || '').length,
+        deletedForAll: message.deletedForEveryone,
+        deletedForUsers: message.deletedFor,
+        createdAt: message.createdAt,
+      })),
+    });
+  }
 
   return NextResponse.json({
     messages: (messages || []).map((message) => ({

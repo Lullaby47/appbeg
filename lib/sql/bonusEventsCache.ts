@@ -3,6 +3,7 @@ import 'server-only';
 import type { DocumentSnapshot } from 'firebase-admin/firestore';
 
 import { logBonusEventsListSqlFilter } from '@/lib/server/bonusEventsAudit';
+import { isBonusVerboseLogs, SQL_QUERY_SLOW_MS } from '@/lib/server/verboseLogs';
 import {
   cleanText,
   getPlayerMirrorPool,
@@ -284,14 +285,17 @@ export async function readActiveBonusEventsByCoadmin(
             : 'bonus_events_cache_no_rows_for_coadmin',
     });
 
-    console.info('[BONUS_EVENTS_CACHE] read ok', {
-      coadminUid: cleanCoadminUid,
-      totalRows: totalRows.length,
-      activeRows: activeRows.length,
-      returnedCount: events.length,
-      includeInactive,
-      durationMs: Date.now() - startedAt,
-    });
+    const durationMs = Date.now() - startedAt;
+    if (isBonusVerboseLogs() || durationMs >= SQL_QUERY_SLOW_MS) {
+      console.info('[BONUS_EVENTS_CACHE] read ok', {
+        coadminUid: cleanCoadminUid,
+        totalRows: totalRows.length,
+        activeRows: activeRows.length,
+        returnedCount: events.length,
+        includeInactive,
+        durationMs,
+      });
+    }
 
     return events;
   } catch (error) {

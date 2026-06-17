@@ -1,6 +1,8 @@
 import 'server-only';
 
 import { Pool, type PoolClient } from 'pg';
+import { recordSqlPoolMetric } from '@/lib/server/logMetrics';
+import { isSqlCacheVerboseLogs, POOL_ACQUIRE_SLOW_MS, SQL_QUERY_SLOW_MS } from '@/lib/server/verboseLogs';
 
 const SQL_CONNECTION_TIMEOUT_MS = resolvePositiveInt(
   process.env.PG_CONNECTION_TIMEOUT_MS,
@@ -159,9 +161,9 @@ export type PlayerMirrorAcquireContext = {
 function shouldLogPoolAcquire(acquireMs: number, waitingBefore: number, idleBefore: number) {
   return (
     process.env.SQL_POOL_DEBUG === '1' ||
-    acquireMs >= 50 ||
+    acquireMs >= POOL_ACQUIRE_SLOW_MS ||
     waitingBefore > 0 ||
-    idleBefore === 0
+    (idleBefore === 0 && acquireMs >= Math.min(50, POOL_ACQUIRE_SLOW_MS))
   );
 }
 
@@ -186,6 +188,14 @@ function logSqlPoolAcquire(
     waitingCount: pool.waitingCount,
     max: PLAYER_MIRROR_POOL_MAX,
   };
+  recordSqlPoolMetric({
+    name: 'playerMirror',
+    max: stats.max,
+    totalCount: stats.totalCount,
+    idleCount: stats.idleCount,
+    waitingCount: stats.waitingCount,
+    acquireMs,
+  });
   console.info('[SQL_POOL_ACQUIRE]', {
     name: 'playerMirror',
     context: acquireContext?.context ?? 'unspecified',
@@ -195,9 +205,9 @@ function logSqlPoolAcquire(
     route: acquireContext?.route ?? null,
     idle_before: statsBefore.idleCount,
     waiting_before: statsBefore.waitingCount,
-    slow_acquire: acquireMs >= 50,
+    slow_acquire: acquireMs >= POOL_ACQUIRE_SLOW_MS,
   });
-  if (acquireMs >= 100 || statsBefore.waitingCount > 0 || stats.waitingCount > 0) {
+  if (acquireMs >= POOL_ACQUIRE_SLOW_MS || statsBefore.waitingCount > 0 || stats.waitingCount > 0) {
     logPlayerMirrorPoolStats(`slow_acquire:${acquireContext?.context ?? 'unspecified'}`);
   }
 }
@@ -251,6 +261,12 @@ export async function runMirrorClientQuery<T extends Record<string, unknown>>(
   const queryStartedAt = Date.now();
   const result = await client.query(sql, params);
   const query_exec_ms = Date.now() - queryStartedAt;
+  if (query_exec_ms >= SQL_QUERY_SLOW_MS) {
+    console.warn('[SQL_QUERY_SLOW]', {
+      query_exec_ms,
+      total_ms: Date.now() - totalStartedAt,
+    });
+  }
   return {
     rows: result.rows as T[],
     timing: createPlayerMirrorSqlTiming({
@@ -284,6 +300,15 @@ export async function runMirrorPoolQuery<T extends Record<string, unknown>>(
     const queryStartedAt = Date.now();
     const result = await client.query(sql, params);
     const query_exec_ms = Date.now() - queryStartedAt;
+    if (query_exec_ms >= SQL_QUERY_SLOW_MS || acquireTiming.pool_acquire_ms >= POOL_ACQUIRE_SLOW_MS) {
+      console.warn('[SQL_QUERY_SLOW]', {
+        context: acquireContext?.context ?? null,
+        route: acquireContext?.route ?? null,
+        pool_acquire_ms: acquireTiming.pool_acquire_ms,
+        query_exec_ms,
+        total_ms: Date.now() - totalStartedAt,
+      });
+    }
     return {
       rows: result.rows as T[],
       timing: createPlayerMirrorSqlTiming({
@@ -486,7 +511,13 @@ export function getPlayerMirrorPoolStats(): PlayerMirrorPoolStats | null {
 export function logPlayerMirrorPoolStats(context: string) {
   const stats = getPlayerMirrorPoolStats();
   if (!stats) {
-    console.info('[SQL_POOL] stats unavailable', { name: 'playerMirror', context });
+    if (isSqlCacheVerboseLogs()) {
+      console.info('[SQL_POOL] stats unavailable', { name: 'playerMirror', context });
+    }
+    return;
+  }
+  recordSqlPoolMetric({ name: 'playerMirror', ...stats });
+  if (!isSqlCacheVerboseLogs()) {
     return;
   }
   console.info('[SQL_POOL] stats', {

@@ -2,6 +2,10 @@
 
 import { playerDebugLog } from '@/lib/client/playerDebugLogs';
 import { recordPlayerRequest } from '@/lib/client/playerRequestSummary';
+import {
+  recordSessionMeAuthHealth,
+  shouldReuseSessionMeForRecentStatus,
+} from '@/lib/client/playerAuthHealth';
 
 import { isValidRole } from '@/lib/auth/roles';
 import {
@@ -235,6 +239,12 @@ async function fetchSessionMePayloadFromApi(): Promise<SessionMePayload | null> 
     cachedSessionId = sessionId;
     cachedSessionMePayload = payload;
     cachedSessionMeAt = Date.now();
+    recordSessionMeAuthHealth({
+      uid: payload.uid,
+      role: payload.role,
+      playerSessionId: payload.playerSessionId,
+      canonicalSessionId: payload.canonicalSessionId,
+    });
     return payload;
   } catch {
     clearCachedSessionUser('fetch_failed');
@@ -264,6 +274,27 @@ export async function getSessionMeOnce(options?: {
   if (!options?.force && cachedSessionMePayload && Date.now() - cachedSessionMeAt <= maxAgeMs) {
     console.info('[SESSION_ME_POLLER_REUSED]', {
       source: 'cached_payload',
+      ageMs: Date.now() - cachedSessionMeAt,
+      subscriberCount: sessionMeSubscribers.size,
+    });
+    return cachedSessionMePayload;
+  }
+
+  if (
+    options?.force &&
+    cachedSessionMePayload?.ok &&
+    cachedSessionMePayload.role === 'player' &&
+    shouldReuseSessionMeForRecentStatus({
+      uid: cachedSessionMePayload.uid,
+      playerSessionId:
+        cachedSessionMePayload.playerSessionId ||
+        cachedSessionMePayload.canonicalSessionId ||
+        null,
+      cachedPayloadAgeMs: Date.now() - cachedSessionMeAt,
+    })
+  ) {
+    console.info('[SESSION_ME_POLLER_REUSED]', {
+      source: 'recent_player_session_status',
       ageMs: Date.now() - cachedSessionMeAt,
       subscriberCount: sessionMeSubscribers.size,
     });

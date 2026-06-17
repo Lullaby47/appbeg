@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { normalizeGameName } from '@/lib/sql/authorityGameRequestHelpers';
+import { isPlayerVerboseLogs, SQL_QUERY_SLOW_MS } from '@/lib/server/verboseLogs';
 import {
   cleanText,
   getPlayerMirrorPool,
@@ -84,13 +85,16 @@ export async function readCompletedUsernameCarersByPlayer(
       { context: 'completed_username_carers_read' }
     );
     const mapping = buildCompletedUsernameCarersMap(rows);
-    console.info('[COMPLETED_USERNAME_CARERS_SQL_READ]', {
-      playerUid: cleanPlayerUid,
-      source: 'sql',
-      count: Object.keys(mapping).length,
-      firestoreAttempted: false,
-      durationMs: Date.now() - startedAt,
-    });
+    const durationMs = Date.now() - startedAt;
+    if (isPlayerVerboseLogs() || durationMs >= SQL_QUERY_SLOW_MS) {
+      console.info('[COMPLETED_USERNAME_CARERS_SQL_READ]', {
+        playerUid: cleanPlayerUid,
+        source: 'sql',
+        count: Object.keys(mapping).length,
+        firestoreAttempted: false,
+        durationMs,
+      });
+    }
     return mapping;
   } catch (error) {
     console.warn('[COMPLETED_USERNAME_CARERS_SQL_READ]', {

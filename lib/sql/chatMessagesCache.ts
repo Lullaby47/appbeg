@@ -9,6 +9,7 @@ import {
   runMirrorPoolQuery,
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
+import { isChatVerboseLogs } from '@/lib/server/verboseLogs';
 
 export type CachedChatMessage = {
   id: string;
@@ -195,19 +196,22 @@ export async function readChatMessagesCacheByConversation(
       .map(mapChatMessageRow)
       .filter((row): row is CachedChatMessage => Boolean(row))
       .reverse();
-    console.info('[CHAT_MESSAGES_DB]', {
-      conversationId: cleanConversationId,
-      totalMessages: messages.length,
-      messageIds: messages.slice(0, 5).map((message) => message.id),
-      messages: messages.slice(0, 5).map((message) => ({
-        id: message.id,
-        senderUid: message.senderUid,
-        text: message.text,
-        deletedForAll: message.deletedForEveryone,
-        deletedForUsers: message.deletedFor,
-        createdAt: message.createdAt,
-      })),
-    });
+    if (isChatVerboseLogs()) {
+      console.info('[CHAT_MESSAGES_DB]', {
+        conversationId: cleanConversationId,
+        totalMessages: messages.length,
+        messageIds: messages.slice(0, 5).map((message) => message.id),
+        messages: messages.slice(0, 5).map((message) => ({
+          id: message.id,
+          senderUid: message.senderUid,
+          hasText: Boolean(message.text),
+          textLength: message.text?.length ?? 0,
+          deletedForAll: message.deletedForEveryone,
+          deletedForUsers: message.deletedFor,
+          createdAt: message.createdAt,
+        })),
+      });
+    }
     return messages;
   } catch (error) {
     console.warn('[CHAT_MESSAGES_CACHE] read failed', {

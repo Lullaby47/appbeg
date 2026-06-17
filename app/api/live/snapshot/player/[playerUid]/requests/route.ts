@@ -12,6 +12,7 @@ import {
   logSnapshotPayloadSize,
   trySnapshotNoChangeResponse,
 } from '@/lib/server/snapshotNoChange';
+import { isLiveVerboseLogs, SNAPSHOT_SLOW_MS } from '@/lib/server/verboseLogs';
 import {
   getLatestOutboxIdForChannels,
   playerCashoutLiveChannel,
@@ -143,6 +144,10 @@ function sortByNewest(rows: SnapshotRequest[]) {
 }
 
 function logSnapshotTiming(details: Record<string, unknown>) {
+  const totalMs = Number(details.total_ms ?? details.totalMs ?? 0);
+  if (!isLiveVerboseLogs() && totalMs < SNAPSHOT_SLOW_MS) {
+    return;
+  }
   console.info('[LIVE_SNAPSHOT_TIMING]', {
     recommendedIndexes: RECOMMENDED_SNAPSHOT_INDEXES,
     ...details,
@@ -157,6 +162,10 @@ function largestTimingStage(stages: Record<string, number>) {
 }
 
 function logPlayerRequestSnapshotSqlTiming(details: SnapshotSqlTiming & Record<string, unknown>) {
+  const totalMs = Number(details.total_ms ?? details.totalMs ?? 0);
+  if (!isLiveVerboseLogs() && totalMs < SNAPSHOT_SLOW_MS) {
+    return;
+  }
   console.info('[PLAYER_REQUEST_SNAPSHOT_SQL_TIMING]', details);
 }
 
