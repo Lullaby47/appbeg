@@ -11,6 +11,17 @@ import {
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 import { checkPlayerPollRole } from '@/lib/client/playerPollGuard';
 import {
+  buildLiveSnapshotPath,
+  parseLiveSnapshotResponse,
+  snapshotFetchRequiresFullBody,
+} from '@/lib/client/liveSnapshotFetch';
+import {
+  reconnectRecoveryDelayMs,
+  scheduleSafetyInterval,
+  visibilityRefetchDelayMs,
+  waitMs,
+} from '@/lib/client/snapshotPollJitter';
+import {
   handleStalePlayerFetchError,
   isPlayerSessionStale,
   registerPlayerRuntimeStopper,
@@ -792,7 +803,7 @@ export function attachPlayerRequestSqlReadListener(
   let lastReconnectBootstrapAt = 0;
   let reconnectBootstrapInFlight = false;
   let lastSseActivityAt = Date.now();
-  let safetyRefetchTimer: ReturnType<typeof setInterval> | null = null;
+  let safetyRefetchStop: (() => void) | null = null;
   let stallWatchTimer: ReturnType<typeof setInterval> | null = null;
   let streamConnectResolve: (() => void) | null = null;
   let activeLiveStreamKey: string | null = null;
@@ -850,14 +861,48 @@ export function attachPlayerRequestSqlReadListener(
     snapshotFetchPromise = (async () => {
       try {
       const headers = await getPlayerApiHeaders(false);
-      const snapshotResponse = await fetch(
+      const requireFull = snapshotFetchRequiresFullBody(reason);
+      const snapshotPath = buildLiveSnapshotPath(
         `/api/live/snapshot/player/${encodeURIComponent(cleanPlayerUid)}/requests`,
         {
-          headers,
-          cache: 'no-store',
+          latestOutboxId: lastEventId,
+          requireFull,
         }
       );
-      const snapshot = (await snapshotResponse.json()) as SqlSnapshotResponse;
+      if (!requireFull && lastEventId > 0) {
+        headers['If-None-Match'] = `"${lastEventId}"`;
+      }
+      const snapshotResponse = await fetch(snapshotPath, {
+        headers,
+        cache: 'no-store',
+      });
+      const parsed = await parseLiveSnapshotResponse<SqlSnapshotResponse>(snapshotResponse);
+      if (parsed.unchanged) {
+        const unchangedOutboxId = Number(
+          parsed.snapshot?.latestOutboxId ?? lastEventId
+        );
+        lastEventId = Math.max(lastEventId, unchangedOutboxId);
+        console.info('[PLAYER_REQUESTS_REFETCH_DONE]', {
+          reason,
+          ok: true,
+          unchanged: true,
+          playerUid: cleanPlayerUid,
+          count: requestsById.size,
+          latestOutboxId: lastEventId,
+          durationMs: Date.now() - startedAt,
+        });
+        return true;
+      }
+      const snapshot = parsed.snapshot;
+      if (!snapshot) {
+        console.info('[PLAYER_REQUESTS_REFETCH_DONE]', {
+          reason,
+          ok: false,
+          playerUid: cleanPlayerUid,
+          durationMs: Date.now() - startedAt,
+        });
+        return false;
+      }
       const source = cleanText(snapshot.source);
       if (
         !snapshotResponse.ok ||
@@ -1247,6 +1292,11 @@ export function attachPlayerRequestSqlReadListener(
     }
     reconnectBootstrapInFlight = true;
     lastReconnectBootstrapAt = now;
+    await waitMs(reconnectRecoveryDelayMs());
+    if (disposed || fellBack) {
+      reconnectBootstrapInFlight = false;
+      return false;
+    }
     console.info('[PLAYER_LIVE_STREAM_RECONNECT_BOOTSTRAP_RUN]', {
       reason,
       playerUid: cleanPlayerUid,
@@ -1474,24 +1524,32 @@ export function attachPlayerRequestSqlReadListener(
       });
       return;
     }
-    void refetchSnapshotNow('visibility', true);
+    void (async () => {
+      await waitMs(visibilityRefetchDelayMs());
+      if (disposed || fellBack) {
+        return;
+      }
+      void refetchSnapshotNow('visibility', true);
+    })();
   };
 
   const startMaintenanceTimers = () => {
     if (typeof window === 'undefined') {
       return;
     }
-    safetyRefetchTimer = setInterval(runSafetyRefetch, SAFETY_REFETCH_MS);
+    safetyRefetchStop = scheduleSafetyInterval({
+      baseMs: SAFETY_REFETCH_MS,
+      pollName: 'player_request_snapshot_safety',
+      onTick: runSafetyRefetch,
+    });
     stallWatchTimer = setInterval(checkStreamStall, 15_000);
     document.addEventListener('visibilitychange', handleVisibilityRefresh);
     window.addEventListener('focus', handleVisibilityRefresh);
   };
 
   const stopMaintenanceTimers = () => {
-    if (safetyRefetchTimer) {
-      clearInterval(safetyRefetchTimer);
-      safetyRefetchTimer = null;
-    }
+    safetyRefetchStop?.();
+    safetyRefetchStop = null;
     if (stallWatchTimer) {
       clearInterval(stallWatchTimer);
       stallWatchTimer = null;

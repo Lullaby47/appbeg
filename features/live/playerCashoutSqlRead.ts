@@ -7,6 +7,15 @@ import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
 import { getCachedSessionUser } from '@/features/auth/sessionUser';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import {
+  attachHiddenTabPollResume,
+  HIDDEN_THROTTLED_POLL_MS,
+  isDocumentHidden,
+  logHiddenTabPollPaused,
+  logHiddenTabPollThrottled,
+  resolveVisiblePollIntervalMs,
+} from '@/lib/client/hiddenTabPoll';
+import { scheduleSafetyInterval } from '@/lib/client/snapshotPollJitter';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { subscribePlayerCashoutLiveFromPlayerStream } from '@/features/live/playerRequestSqlRead';
 
@@ -182,7 +191,7 @@ function attachCashoutSqlPoll(input: {
 
   let disposed = false;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
-  let safetyTimer: ReturnType<typeof setInterval> | null = null;
+  let safetyRefetchStop: (() => void) | null = null;
   let eventSource: EventSource | null = null;
   let sharedStreamUnsubscribe: (() => void) | null = null;
   let lastEventId = 0;
@@ -212,14 +221,14 @@ function attachCashoutSqlPoll(input: {
     }
     if (
       input.scope === 'player' &&
-      typeof document !== 'undefined' &&
-      document.hidden &&
+      isDocumentHidden() &&
       sharedStreamUnsubscribe
     ) {
+      logHiddenTabPollThrottled('player_cashout_tasks', HIDDEN_THROTTLED_POLL_MS);
       if (!disposed) {
         pollTimer = setTimeout(() => {
           void runPoll('poll_interval_hidden_wait');
-        }, POLL_MS);
+        }, HIDDEN_THROTTLED_POLL_MS);
       }
       return;
     }
@@ -268,7 +277,7 @@ function attachCashoutSqlPoll(input: {
       if (!disposed) {
         pollTimer = setTimeout(() => {
           void runPoll('poll_interval');
-        }, POLL_MS);
+        }, resolveVisiblePollIntervalMs(POLL_MS));
       }
     }
   };
@@ -416,30 +425,32 @@ function attachCashoutSqlPoll(input: {
     };
   };
 
+  const detachHiddenResume = attachHiddenTabPollResume('player_cashout_tasks', () => {
+    scheduleImmediateRefetch('hidden_tab_resume');
+  });
   void runPoll('initial');
   connectEventSource();
-  safetyTimer = setInterval(() => {
-    if (
-      input.scope === 'player' &&
-      typeof document !== 'undefined' &&
-      document.hidden &&
-      sharedStreamUnsubscribe
-    ) {
-      return;
-    }
-    scheduleImmediateRefetch('safety_interval');
-  }, SAFETY_REFETCH_MS);
+  safetyRefetchStop = scheduleSafetyInterval({
+    baseMs: SAFETY_REFETCH_MS,
+    pollName: 'player_cashout_safety',
+    onTick: () => {
+      if (input.scope === 'player' && isDocumentHidden() && sharedStreamUnsubscribe) {
+        logHiddenTabPollPaused('player_cashout_safety');
+        return;
+      }
+      scheduleImmediateRefetch('safety_interval');
+    },
+  });
 
   return () => {
     disposed = true;
+    detachHiddenResume();
     if (pollTimer) {
       clearTimeout(pollTimer);
       pollTimer = null;
     }
-    if (safetyTimer) {
-      clearInterval(safetyTimer);
-      safetyTimer = null;
-    }
+    safetyRefetchStop?.();
+    safetyRefetchStop = null;
     closeEventSource();
     sharedStreamUnsubscribe?.();
     sharedStreamUnsubscribe = null;
@@ -486,15 +497,24 @@ function attachScopedCashoutLifecyclePoll(input: {
   const limit = input.limit || 50;
   let disposed = false;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
-  let safetyTimer: ReturnType<typeof setInterval> | null = null;
+  let safetyRefetchStop: (() => void) | null = null;
   let eventSource: EventSource | null = null;
   let lastEventId = 0;
   let refetchInFlight = false;
   let refetchQueued = false;
   const liveChannel = coadminCashoutLiveChannel(input.coadminUid);
 
+  const pollName = `${input.scope}_cashout_lifecycle`;
+
   const runPoll = async (reason: string) => {
     if (disposed) {
+      return;
+    }
+    if (isDocumentHidden() && eventSource?.readyState === EventSource.OPEN) {
+      logHiddenTabPollThrottled(pollName, HIDDEN_THROTTLED_POLL_MS);
+      pollTimer = setTimeout(() => {
+        void runPoll('hidden_throttled');
+      }, HIDDEN_THROTTLED_POLL_MS);
       return;
     }
     if (refetchInFlight) {
@@ -538,7 +558,7 @@ function attachScopedCashoutLifecyclePoll(input: {
       if (!disposed) {
         pollTimer = setTimeout(() => {
           void runPoll('poll_interval');
-        }, POLL_MS);
+        }, resolveVisiblePollIntervalMs(POLL_MS));
       }
     }
   };
@@ -630,22 +650,32 @@ function attachScopedCashoutLifecyclePoll(input: {
     };
   };
 
+  const detachScopedHiddenResume = attachHiddenTabPollResume(pollName, () => {
+    refetchNow('hidden_tab_resume');
+  });
   void runPoll('initial');
   connectEventSource();
-  safetyTimer = setInterval(() => {
-    scheduleImmediateRefetch('safety_interval');
-  }, SAFETY_REFETCH_MS);
+  safetyRefetchStop = scheduleSafetyInterval({
+    baseMs: SAFETY_REFETCH_MS,
+    pollName: `${pollName}_safety`,
+    onTick: () => {
+      if (isDocumentHidden() && eventSource?.readyState === EventSource.OPEN) {
+        logHiddenTabPollPaused(`${pollName}_safety`);
+        return;
+      }
+      scheduleImmediateRefetch('safety_interval');
+    },
+  });
 
   const dispose = () => {
     disposed = true;
+    detachScopedHiddenResume();
     if (pollTimer) {
       clearTimeout(pollTimer);
       pollTimer = null;
     }
-    if (safetyTimer) {
-      clearInterval(safetyTimer);
-      safetyTimer = null;
-    }
+    safetyRefetchStop?.();
+    safetyRefetchStop = null;
     closeEventSource();
   };
 

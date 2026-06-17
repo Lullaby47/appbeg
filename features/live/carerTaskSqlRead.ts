@@ -9,6 +9,17 @@ import {
 import { logCarerPageStartup, markCarerPageStartupStreamConnected } from '@/features/carer/carerStartupLogs';
 import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import {
+  buildLiveSnapshotPath,
+  parseLiveSnapshotResponse,
+  snapshotFetchRequiresFullBody,
+} from '@/lib/client/liveSnapshotFetch';
+import {
+  reconnectRecoveryDelayMs,
+  scheduleSafetyInterval,
+  visibilityRefetchDelayMs,
+  waitMs,
+} from '@/lib/client/snapshotPollJitter';
 import { isPublicCarerTasksSqlReadEnabled } from '@/lib/client/sqlPublicFlags';
 
 export const CARER_TASKS_SQL_READ_ENABLED = isPublicCarerTasksSqlReadEnabled();
@@ -286,7 +297,7 @@ export function attachCarerTaskSqlReadListener(
   let reconnectAttempt = 0;
   let reconnectBackoffMs = INITIAL_RECONNECT_MS;
   let lastSseActivityAt = Date.now();
-  let safetyRefetchTimer: ReturnType<typeof setInterval> | null = null;
+  let safetyRefetchStop: (() => void) | null = null;
   let stallWatchTimer: ReturnType<typeof setInterval> | null = null;
   let streamConnectResolve: (() => void) | null = null;
   const tasksById = new Map<string, CarerTask>();
@@ -341,14 +352,44 @@ export function attachCarerTaskSqlReadListener(
       coadminUid: cleanCoadminUid,
       lastEventId,
     });
-    const snapshotResponse = await fetch(
+    const requireFull = snapshotFetchRequiresFullBody(reason);
+    const snapshotPath = buildLiveSnapshotPath(
       `/api/live/snapshot/carer/${encodeURIComponent(cleanCarerUid)}/tasks`,
       {
-        headers,
-        cache: 'no-store',
+        latestOutboxId: lastEventId,
+        requireFull,
       }
     );
-    const snapshot = (await snapshotResponse.json()) as SqlSnapshotResponse;
+    const snapshotHeaders = {
+      ...headers,
+      ...(!requireFull && lastEventId > 0 ? { 'If-None-Match': `"${lastEventId}"` } : {}),
+    };
+    const snapshotResponse = await fetch(snapshotPath, {
+      headers: snapshotHeaders,
+      cache: 'no-store',
+    });
+    const parsed = await parseLiveSnapshotResponse<SqlSnapshotResponse>(snapshotResponse);
+    if (parsed.unchanged) {
+      const unchangedOutboxId = Number(parsed.snapshot?.latestOutboxId ?? lastEventId);
+      lastEventId = Math.max(lastEventId, unchangedOutboxId);
+      console.info('[CARER_TASKS_LIVE_REFETCH_RESULT]', {
+        reason,
+        ok: true,
+        unchanged: true,
+        count: tasksById.size,
+        latestOutboxId: lastEventId,
+      });
+      return true;
+    }
+    const snapshot = parsed.snapshot;
+    if (!snapshot) {
+      console.info('[CARER_TASKS_LIVE_REFETCH_RESULT]', {
+        reason,
+        ok: false,
+        status: snapshotResponse.status,
+      });
+      return false;
+    }
     const source = cleanText(snapshot.source);
     const ok =
       snapshotResponse.ok &&
@@ -770,14 +811,20 @@ export function attachCarerTaskSqlReadListener(
     reconnectAttempt = 0;
     reconnectBackoffMs = INITIAL_RECONNECT_MS;
     closeEventSource('visibility_refresh');
-    void refetchSnapshotNow('visibility', true).then(() => {
-      console.info('[CARER_LIVE_STREAM_RECONNECT]', {
-        phase: 'visibility',
-        carerUid: cleanCarerUid,
-        coadminUid: cleanCoadminUid,
-        lastEventId,
+    void (async () => {
+      await waitMs(visibilityRefetchDelayMs());
+      if (disposed || fellBack) {
+        return;
+      }
+      void refetchSnapshotNow('visibility', true).then(() => {
+        console.info('[CARER_LIVE_STREAM_RECONNECT]', {
+          phase: 'visibility',
+          carerUid: cleanCarerUid,
+          coadminUid: cleanCoadminUid,
+          lastEventId,
+        });
       });
-    });
+    })();
   };
 
   const runLiveStreamLoop = async () => {
@@ -797,6 +844,7 @@ export function attachCarerTaskSqlReadListener(
       });
       await new Promise((resolve) => setTimeout(resolve, reconnectBackoffMs));
       reconnectBackoffMs = Math.min(reconnectBackoffMs * 2, MAX_RECONNECT_MS);
+      await waitMs(reconnectRecoveryDelayMs());
       await refetchSnapshotNow(`reconnect_attempt_${reconnectAttempt}`, true);
     }
   };
@@ -805,17 +853,19 @@ export function attachCarerTaskSqlReadListener(
     if (typeof window === 'undefined') {
       return;
     }
-    safetyRefetchTimer = setInterval(runSafetyRefetch, SAFETY_REFETCH_MS);
+    safetyRefetchStop = scheduleSafetyInterval({
+      baseMs: SAFETY_REFETCH_MS,
+      pollName: 'carer_task_snapshot_safety',
+      onTick: runSafetyRefetch,
+    });
     stallWatchTimer = setInterval(checkStreamStall, 15_000);
     document.addEventListener('visibilitychange', handleVisibilityRefresh);
     window.addEventListener('focus', handleVisibilityRefresh);
   };
 
   const stopMaintenanceTimers = () => {
-    if (safetyRefetchTimer) {
-      clearInterval(safetyRefetchTimer);
-      safetyRefetchTimer = null;
-    }
+    safetyRefetchStop?.();
+    safetyRefetchStop = null;
     if (stallWatchTimer) {
       clearInterval(stallWatchTimer);
       stallWatchTimer = null;

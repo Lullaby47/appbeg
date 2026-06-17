@@ -8,6 +8,11 @@ import {
   withPlayerMirrorClient,
 } from '@/lib/sql/playerMirrorCommon';
 import {
+  logSnapshotColumnPruned,
+  logSnapshotPayloadSize,
+  trySnapshotNoChangeResponse,
+} from '@/lib/server/snapshotNoChange';
+import {
   getLatestOutboxIdForChannels,
   playerCashoutLiveChannel,
   playerFreeplayLiveChannel,
@@ -27,6 +32,25 @@ const PLAYER_REQUEST_ACTIVE_STATUSES = [
   'retry_requested',
   'pending_automation',
 ];
+
+const PLAYER_REQUEST_SNAPSHOT_COLUMNS = `
+  firebase_id,
+  player_uid,
+  game_name,
+  type,
+  status,
+  amount,
+  base_amount,
+  poke_message,
+  dismiss_reason_code,
+  dismiss_reason_message,
+  automation_status,
+  retry_attempt,
+  created_at,
+  updated_at,
+  completed_at,
+  poked_at
+`;
 
 const RECOMMENDED_SNAPSHOT_INDEXES = [
   'player_game_requests_cache(player_uid, created_at DESC) WHERE deleted_at IS NULL',
@@ -136,7 +160,10 @@ function logPlayerRequestSnapshotSqlTiming(details: SnapshotSqlTiming & Record<s
   console.info('[PLAYER_REQUEST_SNAPSHOT_SQL_TIMING]', details);
 }
 
-async function fetchSnapshotRowsOnClient(playerUid: string) {
+async function fetchSnapshotRowsOnClient(
+  playerUid: string,
+  options?: { knownLatestOutboxId?: number | null }
+) {
   const startedAt = Date.now();
   const channels = [
     playerRequestLiveChannel(playerUid),
@@ -144,10 +171,16 @@ async function fetchSnapshotRowsOnClient(playerUid: string) {
     playerCashoutLiveChannel(playerUid),
   ];
   const latestOutboxStartedAt = Date.now();
-  const latestOutboxPromise = getLatestOutboxIdForChannels(channels).then((pack) => ({
-    pack,
-    ms: Date.now() - latestOutboxStartedAt,
-  }));
+  const latestOutboxPromise =
+    options?.knownLatestOutboxId != null
+      ? Promise.resolve({
+          pack: { latestOutboxId: options.knownLatestOutboxId, timing: { total_ms: 0, pool_acquire_ms: 0, query_exec_ms: 0 } },
+          ms: 0,
+        })
+      : getLatestOutboxIdForChannels(channels).then((pack) => ({
+          pack,
+          ms: Date.now() - latestOutboxStartedAt,
+        }));
   let requestsQueryMs = 0;
   const { result, summary } = await withPlayerMirrorClient(
     {
@@ -161,7 +194,7 @@ async function fetchSnapshotRowsOnClient(playerUid: string) {
         client,
         `
           WITH recent AS (
-            SELECT *, true AS snapshot_recent, false AS snapshot_active
+            SELECT ${PLAYER_REQUEST_SNAPSHOT_COLUMNS}, true AS snapshot_recent, false AS snapshot_active
             FROM public.player_game_requests_cache
             WHERE player_uid = $1
               AND deleted_at IS NULL
@@ -169,7 +202,7 @@ async function fetchSnapshotRowsOnClient(playerUid: string) {
             LIMIT $2
           ),
           active AS (
-            SELECT *, false AS snapshot_recent, true AS snapshot_active
+            SELECT ${PLAYER_REQUEST_SNAPSHOT_COLUMNS}, false AS snapshot_recent, true AS snapshot_active
             FROM public.player_game_requests_cache
             WHERE player_uid = $1
               AND deleted_at IS NULL
@@ -182,7 +215,7 @@ async function fetchSnapshotRowsOnClient(playerUid: string) {
             SELECT * FROM active
           ),
           ranked AS (
-            SELECT *,
+            SELECT merged.*,
               bool_or(snapshot_recent) OVER (PARTITION BY firebase_id) AS was_recent,
               bool_or(snapshot_active) OVER (PARTITION BY firebase_id) AS was_active,
               row_number() OVER (
@@ -191,7 +224,7 @@ async function fetchSnapshotRowsOnClient(playerUid: string) {
               ) AS snapshot_rank
             FROM merged
           )
-          SELECT *
+          SELECT ranked.*
           FROM ranked
           WHERE snapshot_rank = 1
           ORDER BY created_at DESC NULLS LAST
@@ -279,8 +312,29 @@ export async function GET(
   }
 
   try {
+    const route = '/api/live/snapshot/player/[playerUid]/requests';
+    const channels = [
+      playerRequestLiveChannel(playerUid),
+      playerFreeplayLiveChannel(playerUid),
+      playerCashoutLiveChannel(playerUid),
+    ];
+    const noChange = await trySnapshotNoChangeResponse({
+      request,
+      route,
+      channels,
+      playerUid,
+    });
+    if (noChange instanceof Response) {
+      return noChange;
+    }
+
     const sqlStartedAt = Date.now();
-    const snapshotPack = await fetchSnapshotRowsOnClient(playerUid);
+    const snapshotPack = await fetchSnapshotRowsOnClient(playerUid, {
+      knownLatestOutboxId:
+        noChange.kind === 'full' && noChange.latestOutboxId != null
+          ? noChange.latestOutboxId
+          : null,
+    });
     if (!snapshotPack) {
       logSnapshotTiming({
         ...auth.timing,
@@ -301,11 +355,28 @@ export async function GET(
     const requests = sortByNewest(snapshotPack.rows.map(mapSnapshotRow).filter((row) => row.id));
     const sqlDurationMs = Date.now() - sqlStartedAt;
     const serializationStartedAt = Date.now();
-    const response = NextResponse.json({
+    const responseBody = {
       requests,
       snapshotAt: new Date().toISOString(),
       latestOutboxId: snapshotPack.latestOutboxId,
       source: 'postgres_snapshot',
+    };
+    logSnapshotColumnPruned({
+      route,
+      playerUid,
+      excludedColumns: ['raw_firestore_data'],
+    });
+    logSnapshotPayloadSize({
+      route,
+      playerUid,
+      rowCount: requests.length,
+      payloadBytes: Buffer.byteLength(JSON.stringify(responseBody), 'utf8'),
+    });
+    const response = NextResponse.json(responseBody, {
+      headers: {
+        ETag: `"${snapshotPack.latestOutboxId}"`,
+        'Cache-Control': 'no-cache, no-transform',
+      },
     });
     const serializationMs = Date.now() - serializationStartedAt;
     const sqlTiming = {

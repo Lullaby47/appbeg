@@ -11,6 +11,15 @@ import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { getStaffAppSessionApiHeaders } from '@/lib/client/staffApiHeaders';
 import { getPlayerApiHeaders } from '@/features/auth/playerSession';
 import { createPlayerScopedPoll } from '@/lib/client/playerPollGuard';
+import {
+  attachHiddenTabPollResume,
+  HIDDEN_THROTTLED_POLL_MS,
+  isDocumentHidden,
+  logHiddenTabPollPaused,
+  logHiddenTabPollThrottled,
+  resolveVisiblePollIntervalMs,
+} from '@/lib/client/hiddenTabPoll';
+import { scheduleSafetyInterval } from '@/lib/client/snapshotPollJitter';
 import { auth } from '@/lib/firebase/client';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
@@ -373,13 +382,21 @@ function attachChatSqlPoll(input: {
 }) {
   let disposed = false;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
-  let safetyTimer: ReturnType<typeof setInterval> | null = null;
+  let safetyRefetchStop: (() => void) | null = null;
   let eventSource: EventSource | null = null;
   let lastEventId = 0;
   let refetchInFlight = false;
+  const pollName = 'chat_sql_poll';
 
   const runPoll = async (reason: string) => {
     if (disposed || refetchInFlight) {
+      return;
+    }
+    if (isDocumentHidden() && eventSource?.readyState === EventSource.OPEN) {
+      logHiddenTabPollThrottled(pollName, HIDDEN_THROTTLED_POLL_MS);
+      pollTimer = setTimeout(() => {
+        void runPoll('hidden_throttled');
+      }, HIDDEN_THROTTLED_POLL_MS);
       return;
     }
     refetchInFlight = true;
@@ -394,7 +411,7 @@ function attachChatSqlPoll(input: {
       if (!disposed) {
         pollTimer = setTimeout(() => {
           void runPoll('poll_interval');
-        }, input.pollMs || POLL_MS);
+        }, resolveVisiblePollIntervalMs(input.pollMs || POLL_MS));
       }
     }
   };
@@ -494,22 +511,32 @@ function attachChatSqlPoll(input: {
     };
   };
 
+  const detachHiddenResume = attachHiddenTabPollResume(pollName, () => {
+    scheduleImmediateRefetch('hidden_tab_resume');
+  });
   void runPoll('initial');
   connectEventSource();
-  safetyTimer = setInterval(() => {
-    scheduleImmediateRefetch('safety_interval');
-  }, SAFETY_REFETCH_MS);
+  safetyRefetchStop = scheduleSafetyInterval({
+    baseMs: SAFETY_REFETCH_MS,
+    pollName: `${pollName}_safety`,
+    onTick: () => {
+      if (isDocumentHidden() && eventSource?.readyState === EventSource.OPEN) {
+        logHiddenTabPollPaused(`${pollName}_safety`);
+        return;
+      }
+      scheduleImmediateRefetch('safety_interval');
+    },
+  });
 
   return () => {
     disposed = true;
+    detachHiddenResume();
     if (pollTimer) {
       clearTimeout(pollTimer);
       pollTimer = null;
     }
-    if (safetyTimer) {
-      clearInterval(safetyTimer);
-      safetyTimer = null;
-    }
+    safetyRefetchStop?.();
+    safetyRefetchStop = null;
     closeEventSource();
   };
 }

@@ -9,6 +9,7 @@ import {
 } from '@/lib/sql/liveOutboxFanout';
 import { agentJobLiveChannel, getLiveOutboxRowsAfter, type LiveOutboxRow } from '@/lib/sql/liveOutbox';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
+import { warnIfFanoutRequiredButDisabled } from '@/lib/server/liveStreamFanoutGuard';
 
 export const runtime = 'nodejs';
 
@@ -224,6 +225,7 @@ function createFanoutAgentStreamResponse(input: {
 }
 
 export async function GET(request: Request) {
+  warnIfFanoutRequiredButDisabled('agent_stream');
   const url = new URL(request.url);
   const carerUid = cleanText(url.searchParams.get('carerUid'));
   const agentId = cleanText(url.searchParams.get('agentId'));

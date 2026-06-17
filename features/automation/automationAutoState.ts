@@ -6,6 +6,12 @@ import { auth, getClientDb } from '@/lib/firebase/client';
 import { logCarerPageRequestAudit } from '@/lib/client/carerPageRequestAudit';
 import { logClientFirestoreSkipped, isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import {
+  attachHiddenTabPollResume,
+  isDocumentHidden,
+  logHiddenTabPollResumed,
+} from '@/lib/client/hiddenTabPoll';
+import { safetyIntervalWithJitter } from '@/lib/client/snapshotPollJitter';
 
 export const AUTOMATION_AUTO_STATE_COLLECTION = 'automation_auto_state';
 
@@ -19,7 +25,51 @@ export type CarerAutomationAutoStateDoc = {
   tickLeaseExpiresAt?: unknown;
 };
 
-const AUTO_STATE_SQL_POLL_MS = 5_000;
+const AUTO_STATE_VISIBLE_POLL_MS = 5_000;
+const AUTO_STATE_HIDDEN_POLL_MS = 60_000;
+
+function resolveAutoStatePollDelayMs() {
+  if (isDocumentHidden()) {
+    const delayMs = safetyIntervalWithJitter(AUTO_STATE_HIDDEN_POLL_MS);
+    return { delayMs, throttled: true as const };
+  }
+  return {
+    delayMs: safetyIntervalWithJitter(AUTO_STATE_VISIBLE_POLL_MS),
+    throttled: false as const,
+  };
+}
+
+const autoStatePollResumes = new Map<string, Set<() => void>>();
+
+function registerAutoStatePollResume(carerUid: string, resume: () => void) {
+  const key = String(carerUid || '').trim();
+  if (!key) {
+    return () => {};
+  }
+  const bucket = autoStatePollResumes.get(key) || new Set();
+  bucket.add(resume);
+  autoStatePollResumes.set(key, bucket);
+  return () => {
+    bucket.delete(resume);
+    if (!bucket.size) {
+      autoStatePollResumes.delete(key);
+    }
+  };
+}
+
+function notifyAutoStatePollResume(carerUid: string) {
+  const key = String(carerUid || '').trim();
+  if (!key) {
+    return;
+  }
+  const bucket = autoStatePollResumes.get(key);
+  if (!bucket) {
+    return;
+  }
+  for (const resume of bucket) {
+    resume();
+  }
+}
 
 function logCarerStopAutomationAudit(input: {
   action: 'start_automation' | 'stop_automation';
@@ -99,32 +149,93 @@ export function subscribeCarerAutomationAutoState(
     logClientFirestoreSkipped('automation_auto_state', { carerUid });
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let automationEnabled = false;
+    let pollStarted = false;
 
-    const tick = async () => {
+    const scheduleNext = (reason: string) => {
+      if (cancelled || !automationEnabled) {
+        return;
+      }
+      const { delayMs, throttled } = resolveAutoStatePollDelayMs();
+      if (throttled) {
+        console.info('[CARER_AUTO_STATE_POLL_THROTTLED]', {
+          carerUid,
+          delayMs,
+          reason,
+        });
+      }
+      timer = setTimeout(() => {
+        void tick('interval');
+      }, delayMs);
+    };
+
+    const tick = async (reason: string) => {
       if (cancelled) {
         return;
       }
+      if (!pollStarted) {
+        pollStarted = true;
+        console.info('[CARER_AUTO_STATE_POLL_STARTED]', { carerUid, reason });
+      }
       try {
         const state = await fetchCarerAutomationAutoStateSql(carerUid);
-        if (!cancelled) {
-          onData(state);
+        if (cancelled) {
+          return;
+        }
+        automationEnabled = state?.enabled === true;
+        onData(state);
+        if (!automationEnabled) {
+          console.info('[CARER_AUTO_STATE_POLL_SKIPPED]', {
+            carerUid,
+            reason: 'automation_disabled',
+          });
+          if (timer != null) {
+            clearTimeout(timer);
+            timer = null;
+          }
+          return;
         }
       } catch (error) {
         if (!cancelled) {
           onError(error instanceof Error ? error : new Error(String(error)));
         }
       } finally {
-        if (!cancelled) {
-          timer = setTimeout(() => {
-            void tick();
-          }, AUTO_STATE_SQL_POLL_MS);
+        if (!cancelled && automationEnabled) {
+          scheduleNext(reason);
         }
       }
     };
 
-    void tick();
+    const detachHiddenResume = attachHiddenTabPollResume('carer_automation_auto_state', () => {
+      if (cancelled || !automationEnabled) {
+        return;
+      }
+      logHiddenTabPollResumed('carer_automation_auto_state');
+      console.info('[CARER_AUTO_STATE_POLL_RESUMED]', { carerUid, reason: 'hidden_tab' });
+      if (timer != null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      void tick('hidden_tab_resume');
+    });
+    const detachPollResume = registerAutoStatePollResume(carerUid, () => {
+      if (cancelled) {
+        return;
+      }
+      console.info('[CARER_AUTO_STATE_POLL_RESUMED]', { carerUid, reason: 'automation_enabled' });
+      automationEnabled = true;
+      if (timer != null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      void tick('automation_enabled');
+    });
+
+    void tick('initial');
     return () => {
       cancelled = true;
+      detachHiddenResume();
+      detachPollResume();
       if (timer != null) {
         clearTimeout(timer);
         timer = null;
@@ -220,6 +331,10 @@ export async function setCarerAutomationAutoEnabled(input: {
         throw new Error('Session changed. Please refresh.');
       }
       throw new Error(payload.error || 'Failed to save automation auto state.');
+    }
+
+    if (input.enabled) {
+      notifyAutoStatePollResume(carerUidFromProfile || uidFromSessionMe || input.carerUid);
     }
 
     console.info('[CARER_AUTOMATION_STATE_SQL_WRITE]', {

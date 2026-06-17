@@ -15,6 +15,7 @@ import {
   type LiveOutboxFanoutSubscription,
 } from '@/lib/sql/liveOutboxFanout';
 import { getLiveOutboxRowsAfter, type LiveOutboxRow } from '@/lib/sql/liveOutbox';
+import { warnIfFanoutRequiredButDisabled } from '@/lib/server/liveStreamFanoutGuard';
 
 export const runtime = 'nodejs';
 
@@ -426,6 +427,7 @@ async function authorizeCarerJobStream(
 }
 
 export async function GET(request: Request) {
+  warnIfFanoutRequiredButDisabled('browser_live_stream');
   const liveRequest = requestWithAppSessionQuery(request);
   const url = new URL(liveRequest.url);
   const channels = parseChannels(url.searchParams.get('channels'));

@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 
 import { apiError, requireCarerOwnedLiveAuth } from '@/lib/firebase/apiAuth';
+import {
+  logSnapshotFullQueryRun,
+  trySnapshotNoChangeResponse,
+} from '@/lib/server/snapshotNoChange';
 import { acquireAutomationJobsClient } from '@/lib/sql/automationJobsCache';
 import { carerJobLiveChannel, getLatestOutboxIdForChannels } from '@/lib/sql/liveOutbox';
 import {
@@ -340,20 +344,42 @@ export async function GET(
   const clientAcquireMs = jobsPoolAcquire.pool_acquire_ms;
 
   try {
+    const route = '/api/live/snapshot/carer/[carerUid]/jobs';
     const channel = carerJobLiveChannel(carerUid);
+
+    const noChange = await trySnapshotNoChangeResponse({
+      request,
+      route,
+      channels: [channel],
+      carerUid,
+    });
+    if (noChange instanceof Response) {
+      return noChange;
+    }
 
     const jobsSqlStartedAt = Date.now();
     const snapshotPack = await fetchSnapshotRowsWithClient(client, carerUid);
     const jobsSqlMs = Date.now() - jobsSqlStartedAt;
 
     const outboxSqlStartedAt = Date.now();
-    const outboxPack = await getLatestOutboxIdForChannels([channel], {
-      acquireContext: {
-        context: 'live_automation_jobs_outbox',
-        route: '/api/live/snapshot/carer/[carerUid]/jobs',
-      },
-    });
+    const outboxPack =
+      noChange.kind === 'full' && noChange.latestOutboxId != null
+        ? {
+            latestOutboxId: noChange.latestOutboxId,
+            timing: { total_ms: 0, pool_acquire_ms: 0, query_exec_ms: 0 },
+          }
+        : await getLatestOutboxIdForChannels([channel], {
+            acquireContext: {
+              context: 'live_automation_jobs_outbox',
+              route,
+            },
+          });
     const outboxSqlMs = Date.now() - outboxSqlStartedAt;
+    logSnapshotFullQueryRun({
+      route,
+      carerUid,
+      reusedOutboxLookup: noChange.latestOutboxId != null,
+    });
 
     const mergeStartedAt = Date.now();
     const jobs = sortByNewest(snapshotPack.rows.map(mapSnapshotRow).filter((row) => row.id));
@@ -388,6 +414,11 @@ export async function GET(
       snapshotAt: new Date().toISOString(),
       latestOutboxId: outboxPack.latestOutboxId,
       source: 'postgres_snapshot',
+    }, {
+      headers: {
+        ETag: `"${outboxPack.latestOutboxId}"`,
+        'Cache-Control': 'no-cache, no-transform',
+      },
     });
   } catch (error) {
     console.info('[LIVE_OUTBOX] failed', { reason: 'automation_jobs_snapshot', carerUid, error });

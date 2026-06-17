@@ -2,6 +2,10 @@ import { NextResponse } from 'next/server';
 
 import { apiError, requireCarerOwnedLiveAuth } from '@/lib/firebase/apiAuth';
 import {
+  logSnapshotFullQueryRun,
+  trySnapshotNoChangeResponse,
+} from '@/lib/server/snapshotNoChange';
+import {
   carerTaskLiveChannel,
   coadminTaskLiveChannel,
   getLatestOutboxIdForChannels,
@@ -343,14 +347,37 @@ export async function GET(
   const sqlConnectionAcquireMs = acquired.timing.pool_acquire_ms;
 
   try {
+    const route = '/api/live/snapshot/carer/[carerUid]/tasks';
     const streamChannels = [
       carerTaskLiveChannel(carerUid),
       coadminTaskLiveChannel(auth.coadminUid),
     ];
 
+    const noChange = await trySnapshotNoChangeResponse({
+      request,
+      route,
+      channels: streamChannels,
+      carerUid,
+    });
+    if (noChange instanceof Response) {
+      return noChange;
+    }
+
     const snapshotPack = await fetchSnapshotRowsWithClient(client, auth.coadminUid);
-    const outboxPack = await getLatestOutboxIdForChannels(streamChannels, {
-      mirrorClient: client,
+    const outboxPack =
+      noChange.kind === 'full' && noChange.latestOutboxId != null
+        ? {
+            latestOutboxId: noChange.latestOutboxId,
+            timing: { total_ms: 0, pool_acquire_ms: 0, query_exec_ms: 0 },
+          }
+        : await getLatestOutboxIdForChannels(streamChannels, {
+            mirrorClient: client,
+          });
+    logSnapshotFullQueryRun({
+      route,
+      carerUid,
+      coadminUid: auth.coadminUid,
+      reusedOutboxLookup: noChange.latestOutboxId != null,
     });
 
     const mergeStartedAt = Date.now();
@@ -400,6 +427,11 @@ export async function GET(
       snapshotAt: new Date().toISOString(),
       latestOutboxId: outboxPack.latestOutboxId,
       source: 'postgres_snapshot',
+    }, {
+      headers: {
+        ETag: `"${outboxPack.latestOutboxId}"`,
+        'Cache-Control': 'no-cache, no-transform',
+      },
     });
   } catch (error) {
     console.info('[LIVE_OUTBOX] failed', { reason: 'carer_tasks_snapshot', carerUid, error });

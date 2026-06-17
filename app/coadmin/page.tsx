@@ -34,6 +34,13 @@ import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessio
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { clientGetDocs } from '@/lib/client/clientFirestoreQuery';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
+import {
+  attachHiddenTabPollResume,
+  HIDDEN_THROTTLED_POLL_MS,
+  isDocumentHidden,
+  logHiddenTabPollThrottled,
+  resolveVisiblePollIntervalMs,
+} from '@/lib/client/hiddenTabPoll';
 import { auth, db } from '@/lib/firebase/client';
 import { getApiAuthHeaders, getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
 import {
@@ -1259,8 +1266,16 @@ export default function CoadminPage() {
 
     if (isClientSqlReadMode()) {
       logClientFirestoreSkipped('staff_live_cash_box', { staffUid: uid });
+      const STAFF_CASH_BOX_POLL_MS = 12_000;
       const pollStaffCashBox = async () => {
         if (cancelled) {
+          return;
+        }
+        if (isDocumentHidden()) {
+          logHiddenTabPollThrottled('coadmin_staff_cash_box', HIDDEN_THROTTLED_POLL_MS);
+          staffProfilePollTimer = setTimeout(() => {
+            void pollStaffCashBox();
+          }, HIDDEN_THROTTLED_POLL_MS);
           return;
         }
         try {
@@ -1286,12 +1301,19 @@ export default function CoadminPage() {
           if (!cancelled) {
             staffProfilePollTimer = setTimeout(() => {
               void pollStaffCashBox();
-            }, 12_000);
+            }, resolveVisiblePollIntervalMs(STAFF_CASH_BOX_POLL_MS));
           }
         }
       };
+      const detachStaffCashBoxHiddenResume = attachHiddenTabPollResume(
+        'coadmin_staff_cash_box',
+        () => {
+          void pollStaffCashBox();
+        }
+      );
       void pollStaffCashBox();
       unsubscribeStaffProfile = () => {
+        detachStaffCashBoxHiddenResume();
         if (staffProfilePollTimer != null) {
           clearTimeout(staffProfilePollTimer);
           staffProfilePollTimer = null;
