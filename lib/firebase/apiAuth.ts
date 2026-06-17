@@ -40,7 +40,14 @@ import {
   logSqlAuthSessionRead,
   shouldAuthUseSqlOnly,
 } from '@/lib/server/appbegSqlOnlyMode';
+import { isSqlAuthVerboseLogs } from '@/lib/server/verboseLogs';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
+
+function logVerboseApiAuth(...args: Parameters<typeof console.info>) {
+  if (isSqlAuthVerboseLogs()) {
+    console.info(...args);
+  }
+}
 
 export type ApiRole = 'admin' | 'coadmin' | 'staff' | 'carer' | 'player';
 
@@ -217,13 +224,13 @@ export async function verifyAppSessionFromRequest(
 
   if (cachedAuth) {
     timing.total_ms = Date.now() - verifyStartedAt;
-    console.info('[AUTH_CACHE_HIT]', {
+    logVerboseApiAuth('[AUTH_CACHE_HIT]', {
       cache: 'app_session_auth',
       uid: cachedAuth.uid,
       role: cachedAuth.role,
       sessionIdPrefix: sessionId.slice(0, 8),
     });
-    console.info('[APP_SESSION_AUTH_CACHE]', {
+    logVerboseApiAuth('[APP_SESSION_AUTH_CACHE]', {
       hit: true,
       uid: cachedAuth.uid,
       role: cachedAuth.role,
@@ -930,7 +937,7 @@ async function authenticateApiUserFromAppSession(
     timing.session_source = sessionValidation.sessionSource;
 
     const user = apiUserFromSqlProfile(profile);
-    console.info('[API_AUTH] player request allowed', {
+    logVerboseApiAuth('[API_AUTH] player request allowed', {
       uid: session.uid,
       reason: 'session_match',
       auth_path: authPath,
@@ -1017,7 +1024,7 @@ export async function requirePlayerOwnedLiveAuth(
     timing.auth_path = authPath;
     timing.session_source = sessionSource;
     timing.active_session_id = activeSessionId ?? sessionId ?? null;
-    console.info('[API_AUTH] player request allowed', {
+    logVerboseApiAuth('[API_AUTH] player request allowed', {
       uid,
       reason: 'session_match',
       auth_path: timing.auth_path,
@@ -1900,7 +1907,7 @@ export async function requirePlayerApiUser(
   const reusedProfile = auth.profile?.role === 'player' ? auth.profile : null;
   let profileLookup: Awaited<ReturnType<typeof lookupApiUserProfileFromSqlCache>>;
   if (reusedProfile) {
-    console.info('[AUTH_PROFILE_REUSED]', {
+    logVerboseApiAuth('[AUTH_PROFILE_REUSED]', {
       uid: auth.uid,
       role: reusedProfile.role,
       source: 'requirePlayerOwnedLiveAuth',
@@ -2029,7 +2036,7 @@ export async function requireApiUser(
     }
     const carerTiming = carerLiveAuthTimingToApiUserTiming(carerAuth.timing);
     carerTiming.auth_ms = Date.now() - authStartedAt;
-    console.info('[API_AUTH] request allowed', {
+    logVerboseApiAuth('[API_AUTH] request allowed', {
       uid: carerAuth.user.uid,
       role: carerAuth.user.role,
       auth_path: carerAuth.authPath,
@@ -2062,7 +2069,7 @@ export async function requireApiUser(
     const playerTiming = playerLiveAuthTimingToApiUserTiming(playerAuth.timing);
     playerTiming.auth_path = playerAuth.authPath;
     playerTiming.auth_ms = Date.now() - authStartedAt;
-    console.info('[API_AUTH] request allowed', {
+    logVerboseApiAuth('[API_AUTH] request allowed', {
       uid: playerAuth.user.uid,
       role: playerAuth.user.role,
       auth_path: playerAuth.authPath,
@@ -2095,7 +2102,7 @@ export async function requireApiUser(
       return { response: appSessionAuthResult.response, timing };
     }
     timing.auth_ms = Date.now() - authStartedAt;
-    console.info('[API_AUTH] request allowed', {
+    logVerboseApiAuth('[API_AUTH] request allowed', {
       uid: appSessionAuthResult.user.uid,
       role: appSessionAuthResult.user.role,
       auth_path: appSessionAuthResult.authPath,
@@ -2330,7 +2337,7 @@ export async function requireApiUser(
       timing.auth_path = 'api_user_sql_session_firestore';
     }
 
-    console.info('[API_AUTH] player request allowed', {
+    logVerboseApiAuth('[API_AUTH] player request allowed', {
       uid: identityUid,
       reason: 'session_match',
       auth_path: timing.auth_path,
@@ -2348,7 +2355,7 @@ export async function requireApiUser(
     role: user.role,
     auth_path: timing.auth_path,
   });
-  console.info('[API_AUTH] request allowed', {
+  logVerboseApiAuth('[API_AUTH] request allowed', {
     uid: user.uid,
     role: user.role,
     auth_path: timing.auth_path,

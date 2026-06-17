@@ -642,7 +642,7 @@ export default function ProtectedRoute({
     };
 
     const stopPolling = startPlayerSessionStatusPolling({
-      intervalMs: 12_000,
+      intervalMs: 15_000,
       redirect: (url) => router.replace(url),
       onReplaced: handlePollKick,
       onInactive: handlePollKick,

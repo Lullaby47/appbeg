@@ -1,11 +1,12 @@
 'use client';
 
 import type { PlayerGameLogin } from '@/features/games/playerGameLogins';
+import { playerDebugLog } from '@/lib/client/playerDebugLogs';
 import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { createPlayerScopedPoll } from '@/lib/client/playerPollGuard';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 
-const POLL_MS = 10_000;
+const POLL_MS = 20_000;
 
 function mapCachedLogin(row: Record<string, unknown>): PlayerGameLogin {
   return {
@@ -24,10 +25,23 @@ function mapCachedLogin(row: Record<string, unknown>): PlayerGameLogin {
 }
 
 async function fetchPlayerGameLogins(scope: 'player' | 'coadmin', uid: string) {
-  const query =
-    scope === 'player'
-      ? `playerUid=${encodeURIComponent(uid)}`
-      : `coadminUid=${encodeURIComponent(uid)}`;
+  if (scope === 'player') {
+    const response = await fetch('/api/player/play-data', {
+      method: 'GET',
+      headers: await getSqlApiReadHeaders(false),
+      cache: 'no-store',
+    });
+    const payload = (await response.json().catch(() => ({}))) as {
+      gameLogins?: Array<Record<string, unknown>>;
+      error?: string;
+    };
+    if (!response.ok) {
+      throw new Error(payload.error || 'Failed to load player play data.');
+    }
+    return (payload.gameLogins || []).map(mapCachedLogin);
+  }
+
+  const query = `coadminUid=${encodeURIComponent(uid)}`;
   const response = await fetch(`/api/player-game-logins/cache?${query}`, {
     method: 'GET',
     headers: await getSqlApiReadHeaders(false),
@@ -49,6 +63,7 @@ export function attachPlayerGameLoginsSqlPoll(input: {
   onChange: (logins: PlayerGameLogin[]) => void;
   onError?: (error: Error) => void;
   initialDelayMs?: number;
+  pollEnabled?: boolean;
 }) {
   logClientFirestoreSkipped('player_game_logins_listener', {
     scope: input.scope,
@@ -61,14 +76,16 @@ export function attachPlayerGameLoginsSqlPoll(input: {
   };
 
   if (input.scope === 'player') {
-    console.info('[POLLER_RETAINED]', {
+    const pollEnabled = input.pollEnabled !== false;
+    playerDebugLog('[POLLER_RETAINED]', {
       pollName: 'player_game_logins',
-      reason: 'safety_refresh_for_credential_updates_not_covered_by_initial_base_data',
+      reason: pollEnabled ? 'play_view_active_poll' : 'initial_fetch_only',
       initialDelayMs: Math.max(0, Number(input.initialDelayMs || 0)),
     });
     return createPlayerScopedPoll({
       pollName: 'player_game_logins',
-      intervalMs: POLL_MS,
+      intervalMs: pollEnabled ? POLL_MS : 0,
+      summaryRoute: '/api/player/play-data',
       onTick: runPoll,
       onError: input.onError,
       initialDelayMs: input.initialDelayMs,

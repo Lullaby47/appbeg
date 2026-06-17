@@ -832,6 +832,13 @@ export async function ensureBonusCapacityInSql(
   const callerUid = cleanText(input.callerUid);
   if (!coadminUid) throw new Error('coadminUid is required.');
 
+  console.info('[BONUS_ENSURE_ENTRY]', {
+    source: 'ensureBonusCapacityInSql',
+    coadminUid,
+    activeCountHint: input.activeCountHint ?? null,
+    desiredCapacity: MAX_ACTIVE_BONUS_EVENTS,
+  });
+
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL authority unavailable.');
 
@@ -874,6 +881,12 @@ export async function ensureBonusCapacityInSql(
       nowMs - leaseFields.lastEnsuredAtMs < BONUS_ENSURE_STATE_CACHE_MS
     ) {
       await client.query('ROLLBACK');
+      console.info('[BONUS_ENSURE_COOLDOWN_BLOCK]', {
+        source: 'ensureBonusCapacityInSql',
+        reason: 'server-cooldown-last-active-full',
+        coadminUid,
+        lastActiveCount: leaseFields.lastActiveCount,
+      });
       return {
         autoCreatedCount: 0,
         totalActive: leaseFields.lastActiveCount,
@@ -900,6 +913,11 @@ export async function ensureBonusCapacityInSql(
       nowMs - leaseFields.lastEnsuredAtMs < BONUS_ENSURE_COOLDOWN_MS
     ) {
       await client.query('ROLLBACK');
+      console.info('[BONUS_ENSURE_COOLDOWN_BLOCK]', {
+        source: 'ensureBonusCapacityInSql',
+        reason: 'cooldown',
+        coadminUid,
+      });
       return {
         autoCreatedCount: 0,
         totalActive: leaseFields.lastActiveCount,
@@ -921,21 +939,54 @@ export async function ensureBonusCapacityInSql(
 
     const activeEvents = await readActiveBonusEventsInTxn(client, coadminUid);
     const activeStateHash = buildActiveStateHash(activeEvents);
+    const missingCapacity = Math.max(0, MAX_ACTIVE_BONUS_EVENTS - activeEvents.length);
+    const expiredRowsNotInActiveSet = true;
+    console.info('[BONUS_ENSURE_ACTIVE_COUNT]', {
+      source: 'ensureBonusCapacityInSql',
+      coadminUid,
+      activeRows: activeEvents.length,
+      desiredCapacity: MAX_ACTIVE_BONUS_EVENTS,
+      expiredRowsNotInActiveSet,
+    });
+    console.info('[BONUS_ENSURE_MISSING]', {
+      source: 'ensureBonusCapacityInSql',
+      coadminUid,
+      missingCapacity,
+      desiredCapacity: MAX_ACTIVE_BONUS_EVENTS,
+    });
 
     if (
       leaseFields.lastEnsuredStateHash &&
       leaseFields.lastEnsuredStateHash === activeStateHash &&
       leaseFields.lastEnsuredAtMs > 0 &&
-      nowMs - leaseFields.lastEnsuredAtMs < BONUS_ENSURE_STATE_CACHE_MS
+      nowMs - leaseFields.lastEnsuredAtMs < BONUS_ENSURE_STATE_CACHE_MS &&
+      !(activeEvents.length === 0 && missingCapacity > 0)
     ) {
       markEnsured = true;
       ensuredActiveCount = activeEvents.length;
       ensuredStateHash = activeStateHash;
+      console.info('[BONUS_EVENTS_ENSURE_UNCHANGED_ACTIVE_STATE]', {
+        coadminUid,
+        activeCount: activeEvents.length,
+      });
+      console.info('[BONUS_ENSURE_EXIT]', {
+        source: 'ensureBonusCapacityInSql',
+        coadminUid,
+        skipped: 'unchanged-active-state',
+        autoCreatedCount: 0,
+      });
       return {
         autoCreatedCount: 0,
         totalActive: activeEvents.length,
         skipped: 'unchanged-active-state',
       };
+    }
+
+    if (activeEvents.length === 0 && missingCapacity > 0) {
+      console.info('[BONUS_EVENTS_ENSURE_EMPTY_ACTIVE_CREATE]', {
+        coadminUid,
+        missing: missingCapacity,
+      });
     }
 
     if (activeEvents.length >= MAX_ACTIVE_BONUS_EVENTS) {
@@ -967,7 +1018,7 @@ export async function ensureBonusCapacityInSql(
 
     const nowIso = new Date().toISOString();
     const endIso = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    const missing = MAX_ACTIVE_BONUS_EVENTS - activeEvents.length;
+    const missing = missingCapacity;
     let autoCreatedCount = 0;
     let attempts = 0;
 
@@ -1029,6 +1080,27 @@ export async function ensureBonusCapacityInSql(
     ensuredActiveCount = activeEvents.length + autoCreatedCount;
     ensuredStateHash = autoCreatedCount > 0 ? undefined : activeStateHash;
     await client.query('COMMIT');
+
+    if (autoCreatedCount > 0) {
+      console.info('[BONUS_EVENTS_ENSURE_CREATED]', {
+        coadminUid,
+        autoCreatedCount,
+        totalActive: activeEvents.length + autoCreatedCount,
+      });
+      console.info('[BONUS_ENSURE_CREATED]', {
+        source: 'ensureBonusCapacityInSql',
+        coadminUid,
+        autoCreatedCount,
+        totalActive: activeEvents.length + autoCreatedCount,
+      });
+    }
+
+    console.info('[BONUS_ENSURE_EXIT]', {
+      source: 'ensureBonusCapacityInSql',
+      coadminUid,
+      autoCreatedCount,
+      totalActive: activeEvents.length + autoCreatedCount,
+    });
 
     return {
       autoCreatedCount,

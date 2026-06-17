@@ -358,6 +358,14 @@ export async function GET(request: Request) {
       events,
       source: 'postgres',
       firestore_fallback: false,
+      filterReason:
+        events.length > 0
+          ? 'active'
+          : rawEvents.length > 0
+            ? 'active_filter_empty'
+            : coadminUid
+              ? 'no_rows_for_coadmin'
+              : 'missing_coadmin_scope',
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to load bonus events.';

@@ -14,6 +14,7 @@ type LiveOutboxFanoutSubscriber = {
   channels: Set<string>;
   route: string;
   cursor: number;
+  autoAdvance: boolean;
   closed: boolean;
   enqueue: (row: LiveOutboxRow) => boolean;
 };
@@ -29,16 +30,23 @@ export type LiveOutboxFanoutSubscribeInput = {
   channels: string[];
   cursor: number;
   route: string;
+  autoAdvance?: boolean;
   enqueue: (row: LiveOutboxRow) => boolean;
 };
 
 type LiveOutboxFanoutStats = {
   activeSubscribers: number;
+  activeAgentSubscribers: number;
+  activeBrowserSubscribers: number;
+  activeChannelCount: number;
   cleanupCount: number;
+  droppedSubscriberCount: number;
   deliveredCount: number;
   fallbackActive: boolean;
+  fallbackPollCount: number;
   listenerConnected: boolean;
   listenerDegraded: boolean;
+  maxSubscriberLag: number;
   notificationCount: number;
 };
 
@@ -55,6 +63,7 @@ class LiveOutboxFanout {
   private fallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private fallbackWasActive = false;
   private listenerConnected = false;
+  private metricsTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private subscriberSeq = 0;
@@ -62,11 +71,17 @@ class LiveOutboxFanout {
   private readonly subscribersById = new Map<string, LiveOutboxFanoutSubscriber>();
   private readonly stats: LiveOutboxFanoutStats = {
     activeSubscribers: 0,
+    activeAgentSubscribers: 0,
+    activeBrowserSubscribers: 0,
+    activeChannelCount: 0,
     cleanupCount: 0,
+    droppedSubscriberCount: 0,
     deliveredCount: 0,
     fallbackActive: false,
+    fallbackPollCount: 0,
     listenerConnected: false,
     listenerDegraded: false,
+    maxSubscriberLag: 0,
     notificationCount: 0,
   };
 
@@ -78,6 +93,7 @@ class LiveOutboxFanout {
       channels: new Set(channels),
       route: cleanText(input.route) || 'unknown',
       cursor: Math.max(0, Math.trunc(input.cursor || 0)),
+      autoAdvance: input.autoAdvance !== false,
       closed: false,
       enqueue: input.enqueue,
     };
@@ -92,17 +108,20 @@ class LiveOutboxFanout {
       channelSubscribers.set(id, subscriber);
     }
 
-    this.stats.activeSubscribers = this.subscribersById.size;
+    this.updateStats();
     console.info('[LIVE_OUTBOX_FANOUT_SUBSCRIBED]', {
       subscriberId: id,
       route: subscriber.route,
       channelCount: subscriber.channels.size,
       activeSubscribers: this.stats.activeSubscribers,
+      activeBrowserSubscribers: this.stats.activeBrowserSubscribers,
+      activeAgentSubscribers: this.stats.activeAgentSubscribers,
       cursor: subscriber.cursor,
     });
 
     void this.ensureStarted();
     this.ensureFallbackLoop();
+    this.ensureMetricsLoop();
 
     return {
       id,
@@ -117,6 +136,7 @@ class LiveOutboxFanout {
   }
 
   getStats() {
+    this.updateStats();
     return { ...this.stats };
   }
 
@@ -317,10 +337,13 @@ class LiveOutboxFanout {
         });
       }
       if (!ok) {
+        this.stats.droppedSubscriberCount += 1;
         this.unsubscribe(subscriber.id, 'enqueue_failed');
         continue;
       }
-      subscriber.cursor = Math.max(subscriber.cursor, row.outbox_id);
+      if (subscriber.autoAdvance) {
+        subscriber.cursor = Math.max(subscriber.cursor, row.outbox_id);
+      }
       delivered += 1;
       this.stats.deliveredCount += 1;
     }
@@ -369,9 +392,33 @@ class LiveOutboxFanout {
 
     this.fallbackInFlight = true;
     try {
-      const rows = await getLiveOutboxRowsAfter(activeChannels, minCursor, 500);
-      for (const row of rows) {
-        this.routeRow(row, 'fallback');
+      let pageCursor = minCursor;
+      let pageCount = 0;
+      let rowCount = 0;
+      for (;;) {
+        const rows = await getLiveOutboxRowsAfter(activeChannels, pageCursor, 500);
+        this.stats.fallbackPollCount += 1;
+        pageCount += 1;
+        rowCount += rows.length;
+        console.info('[LIVE_OUTBOX_FANOUT_FALLBACK_POLL]', {
+          activeChannels: activeChannels.length,
+          minCursor: pageCursor,
+          rowCount: rows.length,
+          pageCount,
+          fallbackPollCount: this.stats.fallbackPollCount,
+        });
+        for (const row of rows) {
+          this.routeRow(row, 'fallback');
+          pageCursor = Math.max(pageCursor, row.outbox_id);
+        }
+        if (rows.length < 500) break;
+      }
+      if (pageCount > 1 || rowCount > 0) {
+        console.info('[LIVE_OUTBOX_FANOUT_FALLBACK_DRAINED]', {
+          activeChannels: activeChannels.length,
+          pageCount,
+          rowCount,
+        });
       }
     } catch (error) {
       console.info('[LIVE_OUTBOX_FANOUT_ERROR]', {
@@ -389,22 +436,24 @@ class LiveOutboxFanout {
       clearTimeout(this.fallbackTimer);
       this.fallbackTimer = null;
     }
-    if (this.fallbackWasActive) {
-      console.info('[LIVE_OUTBOX_FANOUT_FALLBACK_ACTIVE]', {
-        active: false,
+    const wasActive = this.fallbackWasActive;
+    this.updateFallbackActive(false);
+    if (wasActive) {
+      console.info('[LIVE_OUTBOX_FANOUT_FALLBACK_RECOVERED]', {
         reason,
         activeSubscribers: this.subscribersById.size,
       });
     }
-    this.updateFallbackActive(false);
   }
 
   private updateFallbackActive(active: boolean) {
     if (this.fallbackWasActive !== active) {
-      console.info('[LIVE_OUTBOX_FANOUT_FALLBACK_ACTIVE]', {
-        active,
-        activeSubscribers: this.subscribersById.size,
-      });
+      if (active) {
+        console.info('[LIVE_OUTBOX_FANOUT_FALLBACK_ACTIVE]', {
+          activeSubscribers: this.subscribersById.size,
+          activeChannelCount: this.subscribersByChannel.size,
+        });
+      }
     }
     this.fallbackWasActive = active;
     this.updateStats();
@@ -425,12 +474,14 @@ class LiveOutboxFanout {
     }
 
     this.stats.cleanupCount += 1;
-    this.stats.activeSubscribers = this.subscribersById.size;
+    this.updateStats();
     console.info('[LIVE_OUTBOX_FANOUT_UNSUBSCRIBED]', {
       subscriberId: id,
       route: subscriber.route,
       reason,
       activeSubscribers: this.stats.activeSubscribers,
+      activeBrowserSubscribers: this.stats.activeBrowserSubscribers,
+      activeAgentSubscribers: this.stats.activeAgentSubscribers,
       cleanupCount: this.stats.cleanupCount,
       cursor: subscriber.cursor,
     });
@@ -441,14 +492,60 @@ class LiveOutboxFanout {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
       }
+      this.stopMetricsLoop();
     }
   }
 
   private updateStats() {
+    let activeAgentSubscribers = 0;
+    let activeBrowserSubscribers = 0;
+    let maxCursor = 0;
+    let minCursor = Number.POSITIVE_INFINITY;
+    for (const subscriber of this.subscribersById.values()) {
+      if (subscriber.route.includes('agent')) {
+        activeAgentSubscribers += 1;
+      } else {
+        activeBrowserSubscribers += 1;
+      }
+      maxCursor = Math.max(maxCursor, subscriber.cursor);
+      minCursor = Math.min(minCursor, subscriber.cursor);
+    }
     this.stats.activeSubscribers = this.subscribersById.size;
+    this.stats.activeAgentSubscribers = activeAgentSubscribers;
+    this.stats.activeBrowserSubscribers = activeBrowserSubscribers;
+    this.stats.activeChannelCount = this.subscribersByChannel.size;
     this.stats.fallbackActive = this.fallbackWasActive;
     this.stats.listenerConnected = this.listenerConnected;
     this.stats.listenerDegraded = this.degraded;
+    this.stats.maxSubscriberLag =
+      this.subscribersById.size > 1 && Number.isFinite(minCursor) ? maxCursor - minCursor : 0;
+  }
+
+  private ensureMetricsLoop() {
+    if (this.metricsTimer || !this.subscribersById.size) return;
+    this.metricsTimer = setInterval(() => {
+      if (!this.subscribersById.size) {
+        this.stopMetricsLoop();
+        return;
+      }
+      this.logMetrics('interval');
+    }, 60_000);
+    this.logMetrics('subscribe');
+  }
+
+  private stopMetricsLoop() {
+    if (!this.metricsTimer) return;
+    clearInterval(this.metricsTimer);
+    this.metricsTimer = null;
+    this.logMetrics('stop');
+  }
+
+  private logMetrics(phase: 'subscribe' | 'interval' | 'stop') {
+    this.updateStats();
+    console.info('[LIVE_OUTBOX_FANOUT_METRICS]', {
+      phase,
+      ...this.stats,
+    });
   }
 }
 

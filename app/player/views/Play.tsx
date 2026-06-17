@@ -26,6 +26,8 @@ export default function Play(props: Props) {
     gameBackgroundImageByKey,
     gameLogins,
     loadingList,
+    onCardsRendered,
+    onShellRendered,
     openActiveTableSplash,
     selectedGameName,
     setSelectedGameName,
@@ -56,6 +58,20 @@ export default function Play(props: Props) {
     setVisibleCardCount(MOBILE_CARD_INITIAL_LIMIT);
   }, [gameLogins.length, mobileLowEndMode]);
 
+  useEffect(() => {
+    onShellRendered?.();
+  }, [onShellRendered]);
+
+  useEffect(() => {
+    if (loadingList) {
+      return;
+    }
+    onCardsRendered?.({
+      count: gameLogins.length,
+      state: gameLogins.length > 0 ? 'cards' : 'empty',
+    });
+  }, [gameLogins.length, loadingList, onCardsRendered]);
+
   const visibleGameLogins = useMemo(
     () =>
       mobileLowEndMode
@@ -84,8 +100,22 @@ export default function Play(props: Props) {
                 </div>
 
                 {loadingList ? (
-                  <div className="flex justify-center py-16">
-                    <i className="fas fa-spinner fa-spin text-4xl text-amber-400"></i>
+                  <div className="grid grid-cols-2 gap-2 sm:items-start" aria-busy="true">
+                    {Array.from({ length: 4 }).map((_, index) => (
+                      <div
+                        key={index}
+                        className="fire-panel fire-orange min-h-[156px] rounded-2xl border border-white/10 bg-black/45 p-3 shadow-xl"
+                      >
+                        <div className="mx-auto h-5 w-24 rounded bg-amber-200/15" />
+                        <div className="mt-4 rounded-xl border border-white/10 bg-black/35 px-2 py-2">
+                          <div className="h-3 w-24 rounded bg-amber-100/15" />
+                          <div className="mt-2 h-4 w-full rounded bg-white/10" />
+                          <div className="mt-3 h-3 w-24 rounded bg-amber-100/15" />
+                          <div className="mt-2 h-4 w-3/4 rounded bg-white/10" />
+                        </div>
+                        <div className="mt-3 h-9 rounded-xl bg-orange-400/20" />
+                      </div>
+                    ))}
                   </div>
                 ) : gameLogins.length === 0 ? (
                   <div className="rounded-3xl border border-amber-500/25 bg-black/50 p-10 text-center text-amber-100/55">

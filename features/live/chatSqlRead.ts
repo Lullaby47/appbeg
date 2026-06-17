@@ -17,7 +17,7 @@ import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sql
 const POLL_MS = 8_000;
 const SAFETY_REFETCH_MS = 45_000;
 const UNREAD_CACHE_MS = 5_000;
-const UNREAD_SHARED_POLL_MS = 15_000;
+const UNREAD_SHARED_POLL_MS = 25_000;
 
 const MESSAGE_LIVE_EVENTS = [
   'chat_message_created',
@@ -263,6 +263,7 @@ function subscribeUnreadShared(
     currentState.cleanup = createPlayerScopedPoll({
       pollName: options?.requirePlayerRole ? 'player_chat_unread_counts' : 'chat_unread_counts',
       intervalMs: options?.requirePlayerRole ? UNREAD_SHARED_POLL_MS : POLL_MS,
+      summaryRoute: '/api/chat/unread-counts',
       onTick: async () => {
         const counts = await fetchUnreadShared(currentState, {
           preferStaffSession: options?.preferStaffSession,

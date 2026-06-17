@@ -1,5 +1,8 @@
 'use client';
 
+import { playerDebugLog } from '@/lib/client/playerDebugLogs';
+import { recordPlayerRequest } from '@/lib/client/playerRequestSummary';
+
 import { isValidRole } from '@/lib/auth/roles';
 import {
   isPlayerChatRoute,
@@ -169,11 +172,13 @@ async function fetchSessionMePayloadFromApi(): Promise<SessionMePayload | null> 
   }
 
   try {
+    const startedAt = Date.now();
     const response = await fetch('/api/auth/session/me', {
       method: 'GET',
       headers: getSessionRequestHeaders(),
       cache: 'no-store',
     });
+    recordPlayerRequest('/api/auth/session/me', Date.now() - startedAt);
 
     const payload = (await response.json().catch(() => ({}))) as SessionMePayload;
 
@@ -325,7 +330,7 @@ function stopSessionMePoller(reason: string) {
 function scheduleSessionMePoller(reason: string) {
   if (sessionMePollTimer || !sessionMeSubscribers.size) {
     if (sessionMeSubscribers.size) {
-      console.info('[SESSION_ME_POLLER_REUSED]', {
+      playerDebugLog('[SESSION_ME_POLLER_REUSED]', {
         reason,
         subscriberCount: sessionMeSubscribers.size,
         pollerCount: sessionMePollerActive ? 1 : 0,
@@ -336,7 +341,7 @@ function scheduleSessionMePoller(reason: string) {
 
   if (!sessionMePollerActive) {
     sessionMePollerActive = true;
-    console.info('[SESSION_ME_POLLER_CREATED]', {
+    playerDebugLog('[SESSION_ME_POLLER_CREATED]', {
       reason,
       subscriberCount: sessionMeSubscribers.size,
       pollerCount: 1,
@@ -347,6 +352,10 @@ function scheduleSessionMePoller(reason: string) {
     sessionMePollTimer = null;
     if (!sessionMeSubscribers.size) {
       stopSessionMePoller('no_subscribers');
+      return;
+    }
+    if (typeof document !== 'undefined' && document.hidden) {
+      sessionMePollTimer = setTimeout(tick, nextSessionMePollIntervalMs());
       return;
     }
     try {
@@ -361,7 +370,9 @@ function scheduleSessionMePoller(reason: string) {
     } finally {
       const intervalMs = nextSessionMePollIntervalMs();
       if (intervalMs > 0 && sessionMeSubscribers.size) {
-        sessionMePollTimer = setTimeout(tick, intervalMs);
+        const jitterCap = Math.min(2_000, Math.floor(intervalMs * 0.15));
+        const jitterMs = Math.floor(Math.random() * (jitterCap + 1));
+        sessionMePollTimer = setTimeout(tick, intervalMs + jitterMs);
       } else {
         stopSessionMePoller('no_interval');
       }
@@ -384,7 +395,7 @@ export function subscribeSessionMe(
   options?: { intervalMs?: number; initialDelayMs?: number; onError?: (error: Error) => void }
 ) {
   const id = nextSessionMeSubscriberId++;
-  const intervalMs = Math.max(4_000, Number(options?.intervalMs || 12_000));
+  const intervalMs = Math.max(4_000, Number(options?.intervalMs || 20_000));
   const initialDelayMs = Math.max(0, Number(options?.initialDelayMs || 0));
   sessionMeSubscribers.set(id, {
     label,

@@ -1,5 +1,7 @@
 import 'server-only';
 
+import { isSqlAuthVerboseLogs } from '@/lib/server/verboseLogs';
+
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 
 export const PLAYER_SESSION_AUTH_CACHE_TTL_MS = 20_000;
@@ -172,25 +174,27 @@ export function getCachedPlayerSessionValidation(input: {
   }
 
   const now = Date.now();
-  console.info('[AUTH_CACHE_HIT]', {
-    cache: 'player_session_validation',
-    uid: input.uid,
-    sessionId: input.playerSessionId,
-    ok: entry.result.ok,
-    source: entry.result.source || 'sql',
-    ageMs: now - entry.cachedAt,
-    expiresInMs: entry.expiresAt - now,
-  });
-  console.info('[PLAYER_SESSION_AUTH_CACHE]', {
-    hit: true,
-    uid: input.uid,
-    sessionId: input.playerSessionId,
-    ok: entry.result.ok,
-    reason: entry.result.reason || null,
-    source: entry.result.source || 'sql',
-    ageMs: now - entry.cachedAt,
-    expiresInMs: entry.expiresAt - now,
-  });
+  if (isSqlAuthVerboseLogs()) {
+    console.info('[AUTH_CACHE_HIT]', {
+      cache: 'player_session_validation',
+      uid: input.uid,
+      sessionId: input.playerSessionId,
+      ok: entry.result.ok,
+      source: entry.result.source || 'sql',
+      ageMs: now - entry.cachedAt,
+      expiresInMs: entry.expiresAt - now,
+    });
+    console.info('[PLAYER_SESSION_AUTH_CACHE]', {
+      hit: true,
+      uid: input.uid,
+      sessionId: input.playerSessionId,
+      ok: entry.result.ok,
+      reason: entry.result.reason || null,
+      source: entry.result.source || 'sql',
+      ageMs: now - entry.cachedAt,
+      expiresInMs: entry.expiresAt - now,
+    });
+  }
   return { hit: true, validation: statusResultToAuthValidation(entry.result), entry };
 }
 

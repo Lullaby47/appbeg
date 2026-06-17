@@ -5,6 +5,8 @@ import {
   getLocalPlayerSessionId,
   getPlayerSessionGeneration,
 } from '@/features/auth/playerSession';
+import { playerDebugLog } from '@/lib/client/playerDebugLogs';
+import { recordPlayerRequest } from '@/lib/client/playerRequestSummary';
 import {
   handleStalePlayerFetchError,
   isPlayerSessionStale,
@@ -93,6 +95,14 @@ function shouldStopPollForSessionGuard(
   return false;
 }
 
+function pollIntervalWithJitter(intervalMs: number) {
+  if (intervalMs <= 0) {
+    return 0;
+  }
+  const jitterCap = Math.min(2_000, Math.floor(intervalMs * 0.15));
+  return intervalMs + Math.floor(Math.random() * (jitterCap + 1));
+}
+
 export function createPlayerScopedPoll(input: {
   pollName: string;
   intervalMs: number;
@@ -100,6 +110,7 @@ export function createPlayerScopedPoll(input: {
   onError?: (error: Error) => void;
   pauseWhenHidden?: boolean;
   initialDelayMs?: number;
+  summaryRoute?: string;
 }) {
   let cancelled = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -129,7 +140,7 @@ export function createPlayerScopedPoll(input: {
     }
 
     if (input.pauseWhenHidden !== false && typeof document !== 'undefined' && document.hidden) {
-      console.info('[PLAYER_POLL_PAUSED]', {
+      playerDebugLog('[PLAYER_POLL_PAUSED]', {
         pollName: input.pollName,
         reason: 'document_hidden',
       });
@@ -138,7 +149,7 @@ export function createPlayerScopedPoll(input: {
           return;
         }
         document.removeEventListener('visibilitychange', onVisible);
-        console.info('[PLAYER_POLL_RESUMED]', {
+        playerDebugLog('[PLAYER_POLL_RESUMED]', {
           pollName: input.pollName,
           reason: 'document_visible',
         });
@@ -148,6 +159,7 @@ export function createPlayerScopedPoll(input: {
       return;
     }
 
+    const requestStartedAt = Date.now();
     try {
       await input.onTick();
     } catch (error) {
@@ -161,13 +173,21 @@ export function createPlayerScopedPoll(input: {
         input.onError?.(error instanceof Error ? error : new Error(String(error)));
       }
     } finally {
+      recordPlayerRequest(
+        input.summaryRoute || input.pollName,
+        Date.now() - requestStartedAt
+      );
       if (
         !cancelled &&
         !shouldStopPollForSessionGuard(input.pollName, generationAtStart, sessionIdAtStart)
       ) {
+        const nextIntervalMs = pollIntervalWithJitter(input.intervalMs);
+        if (nextIntervalMs <= 0) {
+          return;
+        }
         timer = setTimeout(() => {
           void tick();
-        }, input.intervalMs);
+        }, nextIntervalMs);
       }
     }
   };
@@ -248,7 +268,7 @@ export function startPlayerRoleGuardedInterval(input: {
           typeof document !== 'undefined' &&
           document.hidden
         ) {
-          console.info('[PLAYER_POLL_PAUSED]', {
+          playerDebugLog('[PLAYER_POLL_PAUSED]', {
             pollName: input.pollName,
             reason: 'document_hidden',
           });

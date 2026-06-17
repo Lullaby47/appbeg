@@ -1,5 +1,7 @@
 'use client';
 
+import { useEffect } from 'react';
+import { playerDebugLog } from '@/lib/client/playerDebugLogs';
 import { AnimatePresence, motion } from 'motion/react';
 import { getPlayerBonusEventDescription } from '../utils';
 
@@ -19,6 +21,22 @@ export default function Bonus(props: Props) {
     setBonusStripPaused,
     showBonusPanelHint,
   } = props;
+
+  useEffect(() => {
+    if (bonusEventsSessionLoading) {
+      playerDebugLog('[PLAYER_BONUS_SESSION_LOADING]');
+      return;
+    }
+    if (playerBonusEvents.length === 0) {
+      playerDebugLog('[BONUS_RENDER_EMPTY]', { playerBonusEventsLength: playerBonusEvents.length });
+      playerDebugLog('[PLAYER_BONUS_EMPTY_ACTIVE_EVENTS]');
+      return;
+    }
+    playerDebugLog('[BONUS_RENDER_WITH_EVENTS]', {
+      playerBonusEventsLength: playerBonusEvents.length,
+      firstEventId: playerBonusEvents[0]?.id || null,
+    });
+  }, [bonusEventsSessionLoading, playerBonusEvents]);
 
   return (
 

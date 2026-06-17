@@ -22,7 +22,7 @@ export type PlayerProfileSqlSnapshot = {
   referralBonusNoticeAt: string | null;
 };
 
-const DEFAULT_POLL_INTERVAL_MS = 12_000;
+const DEFAULT_POLL_INTERVAL_MS = 20_000;
 
 function mapSessionMeToProfile(payload: SessionMePayload): PlayerProfileSqlSnapshot | null {
   if (!payload.ok || !payload.uid) {

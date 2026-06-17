@@ -66,8 +66,10 @@ function createFanoutAgentStreamResponse(input: {
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
+      let replaying = true;
       let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
       let subscription: LiveOutboxFanoutSubscription | null = null;
+      const pendingRows: LiveOutboxRow[] = [];
 
       const clearHeartbeatTimer = () => {
         if (heartbeatTimer) {
@@ -89,7 +91,8 @@ function createFanoutAgentStreamResponse(input: {
           lastEventId: subscription?.getCursor() ?? lastEventId,
           reason,
           mode: 'fanout',
-          activeAgentSubscribers: stats.activeSubscribers,
+          activeAgentSubscribers: stats.activeAgentSubscribers,
+          activeSubscribers: stats.activeSubscribers,
           cleanupCount: stats.cleanupCount,
         });
         try {
@@ -144,16 +147,20 @@ function createFanoutAgentStreamResponse(input: {
         channels: [channel],
         cursor: lastEventId,
         route: 'carer_agent_stream',
-        enqueue: (row) => sendRow(row, 'fanout'),
+        autoAdvance: false,
+        enqueue: (row) => {
+          if (closed) return false;
+          if (replaying) {
+            pendingRows.push(row);
+            return true;
+          }
+          return sendRow(row, 'fanout');
+        },
       });
 
       const pump = async () => {
         try {
-          const replayRows = await getLiveOutboxRowsAfter(
-            [channel],
-            subscription?.getCursor() ?? lastEventId,
-            100
-          );
+          const replayRows = await getLiveOutboxRowsAfter([channel], lastEventId, 100);
           console.info('[AGENT_STREAM_REPLAY]', {
             carerUid,
             agentId,
@@ -174,7 +181,14 @@ function createFanoutAgentStreamResponse(input: {
             mode: 'fanout',
             error,
           });
+        } finally {
+          replaying = false;
         }
+
+        for (const row of pendingRows.sort((left, right) => left.outbox_id - right.outbox_id)) {
+          if (!sendRow(row, 'fanout')) break;
+        }
+        pendingRows.length = 0;
 
         sendHeartbeat('initial');
         heartbeatTimer = setInterval(() => {

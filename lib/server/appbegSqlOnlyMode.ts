@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { isProductionNodeEnv, resolveServerSqlFlag } from '@/lib/server/sqlRuntime';
+import { isSqlAuthVerboseLogs } from '@/lib/server/verboseLogs';
 
 function envRaw(name: string) {
   return String(process.env[name] || '').trim();
@@ -64,6 +65,9 @@ export function logSqlAuthProfileRead(input: {
   missReason?: string | null;
   route?: string;
 }) {
+  if (!isSqlAuthVerboseLogs()) {
+    return;
+  }
   console.info('[SQL_AUTH_PROFILE_READ]', {
     uid: input.uid,
     role: input.role ?? null,
@@ -80,6 +84,9 @@ export function logSqlAuthSessionRead(input: {
   missReason?: string | null;
   route?: string;
 }) {
+  if (!isSqlAuthVerboseLogs()) {
+    return;
+  }
   console.info('[SQL_AUTH_SESSION_READ]', {
     uid: input.uid,
     session_id: input.sessionId ?? null,
@@ -90,6 +97,9 @@ export function logSqlAuthSessionRead(input: {
 }
 
 export function logSqlAuthNoFirestore(route: string, details?: Record<string, unknown>) {
+  if (!isSqlAuthVerboseLogs()) {
+    return;
+  }
   console.info('[SQL_AUTH_NO_FIRESTORE]', {
     route,
     ...(details || {}),

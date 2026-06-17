@@ -251,7 +251,7 @@ export function fakeRedeemDismissSplashMessage(input: {
 
 const INITIAL_RECONNECT_MS = 1_000;
 const MAX_RECONNECT_MS = 15_000;
-const SAFETY_REFETCH_MS = 30_000;
+const SAFETY_REFETCH_MS = 60_000;
 const STALL_TIMEOUT_MS = 90_000;
 const RECONNECT_BOOTSTRAP_COOLDOWN_MS = 1_500;
 const activePlayerRequestLiveStreamKeys = new Set<string>();
@@ -1419,6 +1419,14 @@ export function attachPlayerRequestSqlReadListener(
 
   const runSafetyRefetch = () => {
     if (disposed || fellBack) {
+      return;
+    }
+    if (
+      typeof document !== 'undefined' &&
+      document.hidden &&
+      eventSource &&
+      eventSource.readyState === EventSource.OPEN
+    ) {
       return;
     }
     void refetchSnapshotNow('safety_interval', true);

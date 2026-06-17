@@ -635,6 +635,12 @@ export default function CoadminPage() {
   const refetchCashoutTasksRef = useRef<(() => void) | null>(null);
   const BONUS_ENSURE_CLIENT_COOLDOWN_MS = 45_000;
 
+  function resetBonusEventsEnsureGuard(reason: string) {
+    bonusEventsLastEnsureAttemptedCountRef.current = null;
+    bonusEventsLastMissingCountRef.current = null;
+    console.info('[BONUS_EVENTS_ENSURE_GUARD_RESET]', { reason });
+  }
+
   const activeChatUser =
     activeView === 'reach-out' ? reachOutChatUser : staffChatUser;
   const isBonusEventsView =
@@ -1409,10 +1415,20 @@ export default function CoadminPage() {
         }
 
         const tryAutoFill = (activeCount: number) => {
+          const desiredCapacity = MAX_ACTIVE_BONUS_EVENTS;
+          const missingCount = Math.max(0, desiredCapacity - activeCount);
+          console.info('[BONUS_ENSURE_ENTRY]', {
+            activeCount,
+            coadminUid,
+            view: activeView,
+            desiredCapacity,
+            missingCount,
+          });
           bonusEventsLatestActiveCountRef.current = activeCount;
-          console.info('[bonusEvents] snapshot-count', {
+          console.info('[BONUS_ENSURE_ACTIVE_COUNT]', {
             activeCount,
             cap: MAX_ACTIVE_BONUS_EVENTS,
+            expiredRowsNotCounted: true,
           });
           if (activeCount >= MAX_ACTIVE_BONUS_EVENTS) {
             bonusEventsLastEnsureAttemptedCountRef.current = null;
@@ -1424,11 +1440,21 @@ export default function CoadminPage() {
             });
             return;
           }
-          const missingCount = Math.max(0, MAX_ACTIVE_BONUS_EVENTS - activeCount);
+          console.info('[BONUS_ENSURE_MISSING]', {
+            activeCount,
+            missingCount,
+            desiredCapacity: MAX_ACTIVE_BONUS_EVENTS,
+          });
           const isFirstEmptyAttempt =
             activeCount === 0 && bonusEventsLastEnsureAttemptAtMsRef.current === 0;
           const nowMs = Date.now();
           if (!isFirstEmptyAttempt && bonusEventsEnsureCooldownUntilMsRef.current > nowMs) {
+            console.info('[BONUS_ENSURE_COOLDOWN_BLOCK]', {
+              reason: 'client_cooldown_until',
+              activeCount,
+              missingCount,
+              retryAfterMs: bonusEventsEnsureCooldownUntilMsRef.current - nowMs,
+            });
             console.info('[bonusEvents] skipped-client-cooldown', {
               activeCount,
               missingCount,
@@ -1438,6 +1464,12 @@ export default function CoadminPage() {
           }
           if (!isFirstEmptyAttempt && bonusEventsLastMissingCountRef.current === missingCount) {
             bonusEventsEnsureCooldownUntilMsRef.current = nowMs + BONUS_ENSURE_CLIENT_COOLDOWN_MS;
+            console.info('[BONUS_ENSURE_COOLDOWN_BLOCK]', {
+              reason: 'client_missing_count_unchanged',
+              activeCount,
+              missingCount,
+              retryAfterMs: BONUS_ENSURE_CLIENT_COOLDOWN_MS,
+            });
             console.info('[bonusEvents] skipped-client-cooldown', {
               activeCount,
               missingCount,
@@ -1447,12 +1479,30 @@ export default function CoadminPage() {
           }
           if (
             bonusAutoFillBusyRef.current ||
-            bonusEventsLastEnsureAttemptedCountRef.current === activeCount
+            (activeCount > 0 &&
+              bonusEventsLastEnsureAttemptedCountRef.current === activeCount)
           ) {
+            console.info('[BONUS_ENSURE_COOLDOWN_BLOCK]', {
+              reason: bonusAutoFillBusyRef.current ? 'busy' : 'already_attempted_count',
+              activeCount,
+            });
+            console.info('[BONUS_EVENTS_ENSURE_SKIPPED]', {
+              reason: bonusAutoFillBusyRef.current ? 'busy' : 'already_attempted_count',
+              activeCount,
+            });
             return;
           }
 
-          bonusEventsLastEnsureAttemptedCountRef.current = activeCount;
+          if (activeCount === 0) {
+            console.info('[BONUS_EVENTS_ENSURE_RETRY_ALLOWED]', {
+              activeCount,
+              reason: 'zero_active_capacity',
+            });
+          }
+
+          if (activeCount > 0) {
+            bonusEventsLastEnsureAttemptedCountRef.current = activeCount;
+          }
           bonusEventsLastMissingCountRef.current = missingCount;
           console.info('[bonusEvents] ensure-trigger', {
             activeCount,
@@ -1530,7 +1580,7 @@ export default function CoadminPage() {
               });
             }
           },
-          { skipTimeWindowFilter: true }
+          { skipTimeWindowFilter: true, onActiveFilterEmpty: () => resetBonusEventsEnsureGuard('active_filter_empty') }
         );
       } catch (error: any) {
         if (!isCancelled) {
@@ -3076,6 +3126,14 @@ export default function CoadminPage() {
     activeCountHint?: number,
     options?: { ignoreCooldown?: boolean }
   ) {
+    const desiredCapacity = MAX_ACTIVE_BONUS_EVENTS;
+    console.info('[BONUS_ENSURE_ENTRY]', {
+      source: 'ensureCoadminBonusCapacity',
+      activeCountHint: activeCountHint ?? null,
+      ignoreCooldown: Boolean(options?.ignoreCooldown),
+      coadminUid: coadminActorUid || null,
+      desiredCapacity,
+    });
     if (bonusAutoFillBusyRef.current) {
       console.info('[coadmin] bonus-events:ensure-skip', {
         reason: 'busy',
@@ -3086,6 +3144,19 @@ export default function CoadminPage() {
       typeof activeCountHint === 'number'
         ? activeCountHint
         : bonusEventsLatestActiveCountRef.current;
+    const missingCapacity = Math.max(0, desiredCapacity - resolvedActiveCount);
+    console.info('[BONUS_ENSURE_ACTIVE_COUNT]', {
+      source: 'ensureCoadminBonusCapacity',
+      resolvedActiveCount,
+      stateActiveCount: bonusEvents.length,
+      desiredCapacity,
+    });
+    console.info('[BONUS_ENSURE_MISSING]', {
+      source: 'ensureCoadminBonusCapacity',
+      missingCapacity,
+      desiredCapacity,
+      resolvedActiveCount,
+    });
     // Strict full-capacity guard: never call ensure API when active is full.
     if (resolvedActiveCount >= MAX_ACTIVE_BONUS_EVENTS) {
       bonusEventsEnsureCooldownUntilMsRef.current = Date.now() + 60_000;
@@ -3111,12 +3182,22 @@ export default function CoadminPage() {
       ? BONUS_ENSURE_CLIENT_COOLDOWN_MS - (nowMs - bonusEventsLastEnsureAttemptAtMsRef.current)
       : 0;
     if (!options?.ignoreCooldown && retryAfterByAttempt > 0) {
+      console.info('[BONUS_ENSURE_COOLDOWN_BLOCK]', {
+        source: 'ensureCoadminBonusCapacity',
+        reason: 'retry_after_by_attempt',
+        retryAfterMs: retryAfterByAttempt,
+      });
       console.info('[bonusEvents] skipped-client-cooldown', {
         retryAfterMs: retryAfterByAttempt,
       });
       return;
     }
     if (!options?.ignoreCooldown && bonusEventsEnsureCooldownUntilMsRef.current > nowMs) {
+      console.info('[BONUS_ENSURE_COOLDOWN_BLOCK]', {
+        source: 'ensureCoadminBonusCapacity',
+        reason: 'cooldown_until',
+        retryAfterMs: bonusEventsEnsureCooldownUntilMsRef.current - nowMs,
+      });
       console.info('[bonusEvents] skipped-client-cooldown', {
         retryAfterMs: bonusEventsEnsureCooldownUntilMsRef.current - nowMs,
       });
@@ -3125,6 +3206,12 @@ export default function CoadminPage() {
     const missingCount = Math.max(0, MAX_ACTIVE_BONUS_EVENTS - stateActiveCount);
     if (!options?.ignoreCooldown && bonusEventsLastMissingCountRef.current === missingCount) {
       bonusEventsEnsureCooldownUntilMsRef.current = nowMs + BONUS_ENSURE_CLIENT_COOLDOWN_MS;
+      console.info('[BONUS_ENSURE_COOLDOWN_BLOCK]', {
+        source: 'ensureCoadminBonusCapacity',
+        reason: 'missing_count_unchanged',
+        missingCount,
+        retryAfterMs: BONUS_ENSURE_CLIENT_COOLDOWN_MS,
+      });
       console.info('[bonusEvents] skipped-client-cooldown', {
         missingCount,
         retryAfterMs: BONUS_ENSURE_CLIENT_COOLDOWN_MS,
@@ -3177,6 +3264,28 @@ export default function CoadminPage() {
       const result = {
         autoCreatedCount: Number(data.autoCreatedCount || 0),
       };
+      if (data.skipped === 'unchanged-active-state' && resolvedActiveCount === 0) {
+        resetBonusEventsEnsureGuard('unchanged_active_state_while_empty');
+        console.info('[BONUS_EVENTS_ENSURE_RETRY_ALLOWED]', {
+          reason: 'unchanged_active_state_while_empty',
+          activeCount: resolvedActiveCount,
+        });
+      }
+      if (
+        result.autoCreatedCount === 0 &&
+        (typeof data.totalActive === 'number' ? data.totalActive : resolvedActiveCount) === 0
+      ) {
+        resetBonusEventsEnsureGuard('ensure_returned_zero_created_while_empty');
+      } else if (result.autoCreatedCount > 0 && typeof data.totalActive === 'number') {
+        bonusEventsLastEnsureAttemptedCountRef.current = data.totalActive;
+      }
+      console.info('[BONUS_ENSURE_CREATED]', {
+        source: 'ensureCoadminBonusCapacity',
+        autoCreatedCount: result.autoCreatedCount,
+        totalActive: data.totalActive ?? null,
+        skipped: data.skipped || null,
+        coadminUid: coadminActorUid || null,
+      });
       console.info('[bonusEvents] ensure-created', {
         activeCount: stateActiveCount,
         missingCount,
@@ -3204,6 +3313,13 @@ export default function CoadminPage() {
       setMessage(msg);
     } finally {
       bonusAutoFillBusyRef.current = false;
+      console.info('[BONUS_ENSURE_EXIT]', {
+        source: 'ensureCoadminBonusCapacity',
+        coadminUid: coadminActorUid || null,
+        resolvedActiveCount,
+        stateActiveCount: bonusEvents.length,
+        desiredCapacity,
+      });
     }
   }
 
@@ -4374,8 +4490,9 @@ export default function CoadminPage() {
                     <button
                       type="button"
                       onClick={() => {
+                        resetBonusEventsEnsureGuard('manual_refresh');
                         setMessage('');
-                        void ensureCoadminBonusCapacity();
+                        void ensureCoadminBonusCapacity(undefined, { ignoreCooldown: true });
                       }}
                       disabled={bonusAutoFillBusyRef.current}
                       className="min-h-[44px] rounded-xl border border-amber-300/40 bg-amber-200/90 px-4 py-2 text-sm font-semibold text-black transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
@@ -4418,7 +4535,23 @@ export default function CoadminPage() {
                 </div>
               </div>
               {myBonusEvents.length === 0 ? (
-                <p className="text-sm text-neutral-400">No bonus events created yet.</p>
+                <div className="space-y-3">
+                  <p className="text-sm text-neutral-400">No active bonus events.</p>
+                  <p className="text-xs text-neutral-500">
+                    Existing bonus events may have expired. Create or refill active events.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetBonusEventsEnsureGuard('manual_refill');
+                      void ensureCoadminBonusCapacity(0, { ignoreCooldown: true });
+                    }}
+                    disabled={bonusAutoFillBusyRef.current}
+                    className="min-h-[40px] rounded-xl border border-violet-300/35 bg-violet-500/20 px-4 py-2 text-sm font-semibold text-violet-100 transition hover:bg-violet-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {bonusAutoFillBusyRef.current ? 'Refilling...' : 'Refill active events'}
+                  </button>
+                </div>
               ) : (
                 <div className="space-y-3">
                   {myBonusEvents.map((event) => (

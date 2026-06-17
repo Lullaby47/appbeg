@@ -185,7 +185,7 @@ function shouldDedupPlayerSessionEnd(sessionId: string, reason: string) {
   return false;
 }
 
-const DEFAULT_PLAYER_SESSION_POLL_INTERVAL_MS = 12_000;
+const DEFAULT_PLAYER_SESSION_POLL_INTERVAL_MS = 15_000;
 const PLAYER_SESSION_VERIFY_CACHE_TTL_MS = 8_000;
 let activePlayerSessionPollStop: (() => void) | null = null;
 
@@ -1110,7 +1110,7 @@ export function startPlayerSessionStatusPolling(
     }
 
     if (document.hidden) {
-      scheduleNext(intervalMs);
+      scheduleNext(intervalMs + Math.floor(Math.random() * 1_000));
       return;
     }
 

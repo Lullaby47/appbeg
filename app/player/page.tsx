@@ -3,7 +3,7 @@
 import '../../styles/player-fire.css';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { FormEvent, MouseEvent, TouchEvent } from 'react';
+import type { FormEvent, MouseEvent, SetStateAction, TouchEvent } from 'react';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
@@ -21,6 +21,8 @@ import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessio
 import { useIsPlayerSessionRole } from '@/features/player/useIsPlayerSessionRole';
 import { resolvePlayerRoleForFetch } from '@/lib/client/playerFetchGuard';
 import { startPlayerRoleGuardedInterval } from '@/lib/client/playerPollGuard';
+import { playerDebugLog } from '@/lib/client/playerDebugLogs';
+import { startPlayerRequestSummaryReporter } from '@/lib/client/playerRequestSummary';
 import { getGameLoginsByCoadmin } from '@/features/games/gameLogins';
 import {
   getPlayerGameLoginsByPlayer,
@@ -210,7 +212,37 @@ import {
 
 const Lobby = dynamic(() => import('./views/Lobby'), { loading: () => null });
 const Bonus = dynamic(() => import('./views/Bonus'), { loading: () => null });
-const Play = dynamic(() => import('./views/Play'), { loading: () => null });
+function PlayLoadingShell() {
+  if (typeof window !== 'undefined') {
+    console.info('[PLAY_PANEL_WAITING_FOR]', {
+      waitingFor: ['play_component_chunk'],
+      source: 'dynamic_import_fallback',
+    });
+  }
+  return (
+    <div className="space-y-5 sm:space-y-6">
+      <div className="fire-panel fire-orange fire-hero relative overflow-hidden rounded-3xl border border-amber-400/30 bg-gradient-to-r from-amber-500/20 via-rose-600/15 to-purple-900/30 p-4 shadow-lg sm:p-5">
+        <div className="h-4 w-36 rounded bg-amber-200/20" />
+        <div className="mt-3 h-8 w-48 rounded bg-white/15" />
+        <div className="mt-3 h-4 w-full max-w-md rounded bg-amber-100/10" />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div
+            key={index}
+            className="min-h-[156px] rounded-2xl border border-white/10 bg-black/45 p-3"
+          >
+            <div className="mx-auto h-5 w-24 rounded bg-amber-200/15" />
+            <div className="mt-4 h-16 rounded-xl border border-white/10 bg-white/5" />
+            <div className="mt-3 h-9 rounded-xl bg-orange-400/20" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const Play = dynamic(() => import('./views/Play'), { loading: () => <PlayLoadingShell /> });
 const Vault = dynamic(() => import('./views/Vault'), { loading: () => null });
 const EarnCoins = dynamic(() => import('./views/EarnCoins'), { loading: () => null });
 const Agents = dynamic(() => import('./views/Agents'), { loading: () => null });
@@ -340,6 +372,15 @@ export default function PlayerPage() {
   const [baseDataLoading, setBaseDataLoading] = useState(false);
   const baseDataLoadedRef = useRef(false);
   const baseDataLoadingRef = useRef(false);
+  const playPanelShellLoggedRef = useRef(false);
+  const playPanelBlockedLoggedRef = useRef('');
+  const playPanelGameLoginsLoadedLoggedRef = useRef(false);
+  const playPanelNoncriticalDeferredLoggedRef = useRef(false);
+  const playPanelRenderStartLoggedRef = useRef(false);
+  const playPanelShellRenderedLoggedRef = useRef(false);
+  const playPanelCardsRenderedLoggedRef = useRef(false);
+  const playPanelFullyReadyLoggedRef = useRef(false);
+  const playPanelLastWaitingForRef = useRef('');
   const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
 
   const [selectedGameName, setSelectedGameName] = useState('');
@@ -488,7 +529,10 @@ export default function PlayerPage() {
       return { name: 'session/me', blocking: true, ui_waits_for: true };
     }
     if (pathname === '/api/player/base-data') {
-      return { name: 'base-data', blocking: true, ui_waits_for: true };
+      return { name: 'base-data', blocking: false, ui_waits_for: false };
+    }
+    if (pathname === '/api/player/play-data') {
+      return { name: 'play-data', blocking: false, ui_waits_for: false };
     }
     if (pathname.startsWith('/api/live/snapshot/player/')) {
       return { name: 'live snapshot', blocking: false, ui_waits_for: false };
@@ -1580,6 +1624,15 @@ export default function PlayerPage() {
   );
   const shouldListenToBonusEvents =
     Boolean(playerCoadminUid) && activeView === 'bonus-events';
+  const shouldPollPlayData =
+    activeView === 'play' || activeView === 'usernames';
+
+  useEffect(() => {
+    if (!isPlayerRole) {
+      return;
+    }
+    return startPlayerRequestSummaryReporter();
+  }, [isPlayerRole]);
 
   useEffect(() => {
     return () => {
@@ -3087,7 +3140,7 @@ export default function PlayerPage() {
         chatUnreadStartedForUidRef.current = '';
       }
     };
-  }, [isPlayerRole, markPlayerStartupFlag, playerUid]);
+  }, [isPlayerRole, markPlayerStartupFlag, playerUid, startupNow]);
 
   useEffect(() => {
     if (totalUnread > previousUnreadRef.current) {
@@ -3098,39 +3151,31 @@ export default function PlayerPage() {
   }, [playNotificationSound, totalUnread]);
 
   useEffect(() => {
-    if (!isPlayerRole || !playerUid) return;
-
-    setLoadingList(true);
-    setMessage('');
-    const gameLoginInitialDelayMs =
-      isClientSqlReadMode() && !baseDataLoadedRef.current ? 10_000 : 0;
-    if (gameLoginInitialDelayMs > 0) {
-      if (playerStartupRef.current) {
-        playerStartupRef.current.duplicateRequestsRemoved += 1;
-      }
-      console.info('[PLAYER_STARTUP_FETCH_SKIPPED]', {
-        request: '/api/player-game-logins/cache',
-        reason: 'base_data_owns_initial_game_logins',
-        delayedSafetyPollMs: gameLoginInitialDelayMs,
-      });
-      console.info('[PLAYER_STARTUP_DATA_REUSED]', {
-        source: '/api/player/base-data',
-        data: 'player_game_logins',
-      });
-    } else {
-      console.info('[PLAYER_STARTUP_FETCH]', {
-        request: '/api/player-game-logins/cache',
-        reason: baseDataLoadedRef.current ? 'base_data_already_loaded' : 'legacy_or_immediate_listener',
-      });
+    if (!isPlayerRole || !playerUid) {
+      return;
     }
 
+    if (shouldPollPlayData) {
+      setLoadingList(true);
+    }
+    setMessage('');
     const unsubscribeLogins = listenToPlayerGameLoginsByPlayer(
       playerUid,
       (list) => {
         const sorted = sortByNewest(list);
         setGameLogins(sorted);
         setLoadingList(false);
-        void syncCredentialSidecarsForPlayer(playerUid, sorted);
+        if (!playPanelGameLoginsLoadedLoggedRef.current) {
+          playPanelGameLoginsLoadedLoggedRef.current = true;
+          playerDebugLog('[PLAY_PANEL_GAME_LOGINS_LOADED]', {
+            elapsed_ms: startupNow(),
+            count: sorted.length,
+            source: '/api/player/play-data',
+          });
+        }
+        if (shouldPollPlayData) {
+          void syncCredentialSidecarsForPlayer(playerUid, sorted);
+        }
       },
       (error) => {
         setLoadingList(false);
@@ -3141,8 +3186,16 @@ export default function PlayerPage() {
           'Failed to listen for credential updates.'
         );
       },
-      { initialDelayMs: gameLoginInitialDelayMs }
+      { initialDelayMs: 0, pollEnabled: shouldPollPlayData }
     );
+
+    return () => {
+      unsubscribeLogins();
+    };
+  }, [isPlayerRole, playerUid, shouldPollPlayData, syncCredentialSidecarsForPlayer, startupNow]);
+
+  useEffect(() => {
+    if (!isPlayerRole || !playerUid) return;
 
     const liveShadowCompare = attachPlayerRequestLiveShadowCompare(playerUid);
     let sqlReadDispose: (() => void) | null = null;
@@ -3559,7 +3612,6 @@ export default function PlayerPage() {
     }
 
     return () => {
-      unsubscribeLogins();
       unsubscribeRequests?.();
       sqlReadDispose?.();
       liveShadowCompare.dispose();
@@ -3567,12 +3619,12 @@ export default function PlayerPage() {
   }, [
     isPlayerRole,
     playerUid,
-    syncCredentialSidecarsForPlayer,
     isStaleLivePopupEvent,
     markOutcomeSeen,
     markRechargeSplashSeen,
     markRedeemSplashSeen,
     markPlayerStartupFlag,
+    startupNow,
   ]);
 
   useEffect(() => {
@@ -3745,7 +3797,16 @@ export default function PlayerPage() {
             ),
           });
         }
+        playerDebugLog('[BONUS_EVENTS_STATE_SET]', {
+          beforeSetStateLength: events.length,
+          playerCoadminUid,
+        });
         setBonusEvents(events);
+        setBonusEventsSessionLoading(false);
+        playerDebugLog('[BONUS_EVENTS_STATE_SET]', {
+          afterSetStateLength: events.length,
+          playerCoadminUid,
+        });
       },
       (error) => {
         console.error('[player bonusEvents] error', error);
@@ -4177,6 +4238,90 @@ export default function PlayerPage() {
   }, [activeView]);
 
   useEffect(() => {
+    if (activeView !== 'play') {
+      return;
+    }
+
+    if (!playPanelRenderStartLoggedRef.current) {
+      playPanelRenderStartLoggedRef.current = true;
+      console.info('[PLAY_PANEL_RENDER_START]', {
+        elapsed_ms: startupNow(),
+        source: 'active_view_effect',
+        activeView,
+        isPlayerRole,
+        hasPlayerUid: Boolean(playerUid),
+        baseDataLoaded,
+        loadingList,
+      });
+    }
+
+    const waitingFor = [
+      !isPlayerRole ? 'sessionMe_player_role' : '',
+      !playerUid ? 'sessionMe_player_uid' : '',
+      loadingList ? 'play_data_cards' : '',
+    ].filter(Boolean);
+    const waitingKey = waitingFor.join('|') || 'none';
+    if (playPanelLastWaitingForRef.current !== waitingKey) {
+      playPanelLastWaitingForRef.current = waitingKey;
+      console.info('[PLAY_PANEL_WAITING_FOR]', {
+        elapsed_ms: startupNow(),
+        waitingFor,
+        notWaitingFor: [
+          'baseData',
+          'completedUsernameCarers',
+          'bonusEvents',
+          'liveSnapshot',
+          'cashoutTasks',
+          'chat',
+          'unreadCounts',
+          'presence',
+          'referralData',
+          'freeplayData',
+        ],
+      });
+    }
+
+    const hasValidShellSession = Boolean(isPlayerRole && playerUid);
+    if (!hasValidShellSession) {
+      const reason = !isPlayerRole ? 'player_role_not_confirmed' : 'player_uid_missing';
+      if (playPanelBlockedLoggedRef.current !== reason) {
+        playPanelBlockedLoggedRef.current = reason;
+        console.info('[PLAY_PANEL_RENDER_BLOCKED]', {
+          reason,
+          elapsed_ms: startupNow(),
+        });
+      }
+      return;
+    }
+
+    if (!playPanelShellLoggedRef.current) {
+      playPanelShellLoggedRef.current = true;
+      console.info('[PLAY_PANEL_SHELL_VISIBLE]', {
+        elapsed_ms: startupNow(),
+        hasGameLogins: gameLogins.length > 0,
+        gameLoginCount: gameLogins.length,
+        waitsForBaseData: false,
+      });
+    }
+
+    if (!playPanelNoncriticalDeferredLoggedRef.current) {
+      playPanelNoncriticalDeferredLoggedRef.current = true;
+      console.info('[PLAY_PANEL_NONCRITICAL_DEFERRED]', {
+        elapsed_ms: startupNow(),
+        deferred: [
+          'referral_rewards',
+          'freeplay',
+          'staff',
+          'cashouts',
+          'chat_unread',
+          'live_snapshot',
+          'base_data',
+        ],
+      });
+    }
+  }, [activeView, baseDataLoaded, gameLogins.length, isPlayerRole, loadingList, playerUid, startupNow]);
+
+  useEffect(() => {
     if (activeView !== 'bonus-events') {
       setShowBonusPanelHint(false);
       return;
@@ -4539,7 +4684,48 @@ export default function PlayerPage() {
     }
   }
 
+  function openPlayView(source: string) {
+    if (!playPanelRenderStartLoggedRef.current) {
+      playPanelRenderStartLoggedRef.current = true;
+      console.info('[PLAY_PANEL_RENDER_START]', {
+        elapsed_ms: startupNow(),
+        source,
+        activeView,
+        isPlayerRole,
+        hasPlayerUid: Boolean(playerUid),
+        baseDataLoaded,
+        loadingList,
+      });
+    }
+    setActiveView('play');
+  }
+
+  function setActiveViewFromLobby(value: SetStateAction<PlayerView>) {
+    if (typeof value === 'function') {
+      setActiveView(value);
+      return;
+    }
+    if (value === 'play') {
+      openPlayView('lobby');
+      return;
+    }
+    setActiveView(value);
+  }
+
   function handleChangeView(view: PlayerView, options: { scrollToTop?: boolean } = {}) {
+    if (view === 'play') {
+      openPlayView('handleChangeView');
+      setMobileMenuOpen(false);
+      setMessage('');
+      setSelectedAgent(null);
+      setNewMessage('');
+      handleClearImage();
+      if (options.scrollToTop === false) {
+        return;
+      }
+      pageScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
     setActiveView(view);
     setMobileMenuOpen(false);
     setMessage('');
@@ -5766,7 +5952,7 @@ export default function PlayerPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveView('play')}
+                  onClick={() => openPlayView('desktop_action_button')}
                   disabled={maintenanceBreak.enabled}
                   className="fire-button fire-orange rounded-2xl border border-red-200/70 bg-gradient-to-r from-red-500 via-red-400 to-rose-500 px-3 py-3 text-sm font-black text-white shadow-[0_0_26px_-10px_rgba(239,68,68,0.9)] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60 lg:px-5 lg:text-base"
                 >
@@ -5832,7 +6018,7 @@ export default function PlayerPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveView('play')}
+                  onClick={() => openPlayView('mobile_action_button')}
                   disabled={maintenanceBreak.enabled}
                   className="fire-button fire-orange min-h-[44px] rounded-2xl border border-red-200/70 bg-gradient-to-r from-red-500 via-red-400 to-rose-500 px-2 py-2 text-xs font-black text-white shadow-[0_0_24px_-12px_rgba(239,68,68,0.95)] active:scale-[0.99] hover:brightness-110 disabled:opacity-60"
                 >
@@ -5937,12 +6123,46 @@ export default function PlayerPage() {
             )}
             
             {/* DASHBOARD VIEW */}
-            {activeView === 'dashboard' && <Lobby activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} agents={agents} bonusStripPaused={bonusStripPaused} bonusVanishedToast={bonusVanishedToast} formatWalletAmount={formatWalletAmount} gameLogins={gameLogins} handleActivateBonusEvent={handleActivateBonusEvent} handleCopyReferralCode={handleCopyReferralCode} handleOpenFirstUnreadAgent={handleOpenFirstUnreadAgent} openCashToCoinTransferModal={openCashToCoinTransferModal} openCoinToCashTransferModal={openCoinToCashTransferModal} isBlockedPlayer={isBlockedPlayer} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} referralCode={referralCode} setActiveView={setActiveView} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} setMessage={setMessage} setShowLoadCoinPanel={setShowLoadCoinPanel} totalUnread={totalUnread} wallet={wallet} />}
+            {activeView === 'dashboard' && <Lobby activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} agents={agents} bonusStripPaused={bonusStripPaused} bonusVanishedToast={bonusVanishedToast} formatWalletAmount={formatWalletAmount} gameLogins={gameLogins} handleActivateBonusEvent={handleActivateBonusEvent} handleCopyReferralCode={handleCopyReferralCode} handleOpenFirstUnreadAgent={handleOpenFirstUnreadAgent} openCashToCoinTransferModal={openCashToCoinTransferModal} openCoinToCashTransferModal={openCoinToCashTransferModal} isBlockedPlayer={isBlockedPlayer} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} referralCode={referralCode} setActiveView={setActiveViewFromLobby} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} setMessage={setMessage} setShowLoadCoinPanel={setShowLoadCoinPanel} totalUnread={totalUnread} wallet={wallet} />}
 
             {activeView === 'bonus-events' && <Bonus activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} bonusEventsSessionLoading={bonusEventsSessionLoading} bonusSwipeStartXRef={bonusSwipeStartXRef} bonusVanishedToast={bonusVanishedToast} handleActivateBonusEvent={handleActivateBonusEvent} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} showBonusPanelHint={showBonusPanelHint} />}
 
             {/* PLAY VIEW */}
-            {activeView === 'play' && <Play copyCredentialValue={copyCredentialValue} gameBackgroundImageByKey={gameBackgroundImageByKey} gameLogins={gameLogins} loadingList={loadingList} openActiveTableSplash={openActiveTableSplash} selectedGameName={selectedGameName} setSelectedGameName={setSelectedGameName} togglePassword={togglePassword} visiblePasswords={visiblePasswords} />}
+            {activeView === 'play' && <Play copyCredentialValue={copyCredentialValue} gameBackgroundImageByKey={gameBackgroundImageByKey} gameLogins={gameLogins} loadingList={loadingList} onCardsRendered={(input: { count: number; state: string }) => {
+              if (!playPanelCardsRenderedLoggedRef.current) {
+                playPanelCardsRenderedLoggedRef.current = true;
+                console.info('[PLAY_PANEL_CARDS_RENDERED]', {
+                  elapsed_ms: startupNow(),
+                  count: input.count,
+                  state: input.state,
+                  source: '/api/player/play-data',
+                });
+              }
+              if (!playPanelFullyReadyLoggedRef.current) {
+                playPanelFullyReadyLoggedRef.current = true;
+                console.info('[PLAY_PANEL_FULLY_READY]', {
+                  elapsed_ms: startupNow(),
+                  definition: 'play shell rendered and play-data card state resolved',
+                  cardCount: input.count,
+                  cardState: input.state,
+                  nonBlockingHydration: {
+                    baseDataLoaded,
+                    cashoutsLoaded: Boolean(playerStartupRef.current?.cashoutsLoaded),
+                    liveSnapshotLoaded: Boolean(playerStartupRef.current?.requestsLoaded),
+                    bonusEventsListening: shouldListenToBonusEvents,
+                  },
+                });
+              }
+            }} onShellRendered={() => {
+              if (!playPanelShellRenderedLoggedRef.current) {
+                playPanelShellRenderedLoggedRef.current = true;
+                console.info('[PLAY_PANEL_SHELL_RENDERED]', {
+                  elapsed_ms: startupNow(),
+                  gameLoginCount: gameLogins.length,
+                  loadingList,
+                });
+              }
+            }} openActiveTableSplash={openActiveTableSplash} selectedGameName={selectedGameName} setSelectedGameName={setSelectedGameName} togglePassword={togglePassword} visiblePasswords={visiblePasswords} />}
 
             {/* USERNAMES VIEW */}
             {activeView === 'usernames' && <Vault coadminFrontendLinkByGameKey={coadminFrontendLinkByGameKey} copyCredentialValue={copyCredentialValue} creatorNames={creatorNames} credentialTaskLoadingKey={credentialTaskLoadingKey} gameBackgroundImageByKey={gameBackgroundImageByKey} gameLogins={gameLogins} loadingList={loadingList} openCredentialResetModal={openCredentialResetModal} selectedCreatorUid={selectedCreatorUid} setSelectedCreatorUid={setSelectedCreatorUid} togglePassword={togglePassword} usernameCarersByGame={usernameCarersByGame} usernamesCreatorFilterKeys={usernamesCreatorFilterKeys} usernamesVisibleLogins={usernamesVisibleLogins} visiblePasswords={visiblePasswords} />}

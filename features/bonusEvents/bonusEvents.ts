@@ -30,6 +30,7 @@ import {
   PLAYER_SESSION_LOADING_MESSAGE,
 } from '@/features/auth/playerSession';
 import { checkPlayerPollRole, createPlayerScopedPoll } from '@/lib/client/playerPollGuard';
+import { playerDebugLog } from '@/lib/client/playerDebugLogs';
 import {
   handleStalePlayerFetchError,
   isPlayerSessionStale,
@@ -738,7 +739,7 @@ export async function setCoadminAutoBonusPercentRange(values: {
   };
 }
 
-const BONUS_EVENTS_SQL_POLL_MS = 8_000;
+const BONUS_EVENTS_SQL_POLL_MS = 15_000;
 
 function mapApiBonusEvent(event: Record<string, unknown>): BonusEvent {
   const bonusPercentage = Number(event.bonusPercentage ?? event.bonus_percentage ?? 0);
@@ -862,7 +863,7 @@ export function logPlayerBonusRequestHeaders(values: {
   blocked: boolean;
   reason: string;
 }) {
-  console.info('[PLAYER_BONUS_REQUEST_HEADERS]', values);
+  playerDebugLog('[PLAYER_BONUS_REQUEST_HEADERS]', values);
 }
 
 /** @deprecated Use logPlayerBonusRequestHeaders */
@@ -903,6 +904,7 @@ type FetchBonusEventsOptions = {
   skipTimeWindowFilter?: boolean;
   isPlayerView?: boolean;
   onSessionLoading?: (loading: boolean) => void;
+  onActiveFilterEmpty?: () => void;
 };
 
 async function fetchBonusEventsFromApi(
@@ -911,6 +913,7 @@ async function fetchBonusEventsFromApi(
 ) {
   const isPlayerView = options?.isPlayerView ?? false;
   const url = `/api/bonus-events/list?coadminUid=${encodeURIComponent(coadminUid)}`;
+  playerDebugLog('[BONUS_FETCH_START]', { coadminUid, isPlayerView, url });
   const requestContext = isPlayerView ? await resolvePlayerBonusRequestContext() : { role: null, uid: null };
 
   if (isPlayerView) {
@@ -947,6 +950,10 @@ async function fetchBonusEventsFromApi(
         blocked: true,
         reason: gate.reason || 'player_session_loading',
       });
+      playerDebugLog('[PLAYER_BONUS_SESSION_LOADING]', {
+        reason: gate.reason || 'player_session_loading',
+        coadminUid,
+      });
       options?.onSessionLoading?.(true);
       return null;
     }
@@ -965,6 +972,10 @@ async function fetchBonusEventsFromApi(
         headersSent: [],
         blocked: true,
         reason: gate.reason,
+      });
+      playerDebugLog('[PLAYER_BONUS_SESSION_LOADING]', {
+        reason: gate.reason || 'player_session_failed',
+        coadminUid,
       });
       options?.onSessionLoading?.(true);
       return null;
@@ -1009,6 +1020,7 @@ async function fetchBonusEventsFromApi(
     const payload = (await response.json().catch(() => ({}))) as {
       events?: Array<Record<string, unknown>>;
       error?: string;
+      filterReason?: string;
     };
     if (!response.ok) {
       const reason = payload.error || `http_${response.status}`;
@@ -1028,6 +1040,7 @@ async function fetchBonusEventsFromApi(
           reason,
         });
         if (isPlayerBonusSessionError(reason)) {
+          playerDebugLog('[PLAYER_BONUS_SESSION_LOADING]', { reason, coadminUid });
           options?.onSessionLoading?.(true);
           return null;
         }
@@ -1049,6 +1062,24 @@ async function fetchBonusEventsFromApi(
     const filtered = options?.skipTimeWindowFilter
       ? sortByNewest(events)
       : sortByNewest(events).filter((event) => isBonusEventActive(event));
+    if (!isPlayerView && payload.filterReason === 'active_filter_empty') {
+      options?.onActiveFilterEmpty?.();
+    }
+    if (isPlayerView && filtered.length === 0) {
+      playerDebugLog('[PLAYER_BONUS_LOADED_EMPTY]', {
+        coadminUid,
+        apiCount: events.length,
+        filterReason: payload.filterReason || null,
+      });
+    }
+    playerDebugLog('[BONUS_FETCH_RESPONSE]', {
+      coadminUid,
+      isPlayerView,
+      status: response.status,
+      apiEventCount: events.length,
+      filteredEventCount: filtered.length,
+      filterReason: payload.filterReason || null,
+    });
     return filtered;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1067,6 +1098,7 @@ async function fetchBonusEventsFromApi(
         blocked: true,
         reason: message,
       });
+      playerDebugLog('[PLAYER_BONUS_SESSION_LOADING]', { reason: message, coadminUid });
       options?.onSessionLoading?.(true);
       return null;
     }
@@ -1093,6 +1125,7 @@ export function listenBonusEventsByCoadmin(
     skipTimeWindowFilter?: boolean;
     isPlayerView?: boolean;
     onSessionLoading?: (loading: boolean) => void;
+    onActiveFilterEmpty?: () => void;
     onSnapshotDebug?: (values: {
       snapshotSize: number;
       firstDocData: Record<string, unknown> | null;
@@ -1128,6 +1161,10 @@ export function listenBonusEventsByCoadmin(
           reason: error.message,
         });
         if (isPlayerBonusSessionError(error.message) || isPlayerSessionStale()) {
+          playerDebugLog('[PLAYER_BONUS_SESSION_LOADING]', {
+            reason: error.message,
+            coadminUid,
+          });
           options?.onSessionLoading?.(true);
           return;
         }
@@ -1177,6 +1214,7 @@ export function listenBonusEventsByCoadmin(
       return createPlayerScopedPoll({
         pollName: 'player_bonus_events',
         intervalMs: BONUS_EVENTS_SQL_POLL_MS,
+        summaryRoute: '/api/bonus-events/list',
         onTick: runTick,
         onError: handleTickError,
       });

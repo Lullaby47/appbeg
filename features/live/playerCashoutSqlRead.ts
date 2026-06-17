@@ -10,8 +10,8 @@ import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import { isClientSqlReadMode, logClientFirestoreSkipped } from '@/lib/client/sqlReadMode';
 import { subscribePlayerCashoutLiveFromPlayerStream } from '@/features/live/playerRequestSqlRead';
 
-const POLL_MS = 10_000;
-const SAFETY_REFETCH_MS = 45_000;
+const POLL_MS = 30_000;
+const SAFETY_REFETCH_MS = 60_000;
 const STARTUP_CASHOUT_CACHE_COOLDOWN_MS = 2_500;
 const activeCashoutLiveStreamKeys = new Set<string>();
 
@@ -210,6 +210,19 @@ function attachCashoutSqlPoll(input: {
     if (disposed) {
       return;
     }
+    if (
+      input.scope === 'player' &&
+      typeof document !== 'undefined' &&
+      document.hidden &&
+      sharedStreamUnsubscribe
+    ) {
+      if (!disposed) {
+        pollTimer = setTimeout(() => {
+          void runPoll('poll_interval_hidden_wait');
+        }, POLL_MS);
+      }
+      return;
+    }
     if (refetchInFlight) {
       if (isStartupCooldownActive()) {
         logCashoutCacheDeduped(reason, 'in_flight_startup_refetch_suppressed');
@@ -406,6 +419,14 @@ function attachCashoutSqlPoll(input: {
   void runPoll('initial');
   connectEventSource();
   safetyTimer = setInterval(() => {
+    if (
+      input.scope === 'player' &&
+      typeof document !== 'undefined' &&
+      document.hidden &&
+      sharedStreamUnsubscribe
+    ) {
+      return;
+    }
     scheduleImmediateRefetch('safety_interval');
   }, SAFETY_REFETCH_MS);
 

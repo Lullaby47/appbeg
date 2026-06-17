@@ -23,7 +23,7 @@ import { db } from '@/lib/firebase/client';
 /** A user is "online" if their client wrote presence within this window. */
 export const PRESENCE_TTL_MS = 120_000;
 
-const PRESENCE_POLL_MS = 15_000;
+const PRESENCE_POLL_MS = 30_000;
 const PRESENCE_CACHE_MS = 15_000;
 const PRESENCE_MERGE_DELAY_MS = 40;
 
@@ -219,21 +219,15 @@ export function usePresenceOnlineMap(
         }
         if (typeof document !== 'undefined' && document.hidden) {
           pausedForHidden = true;
-          console.info('[PLAYER_POLL_PAUSED]', {
-            pollName: 'presence',
-            reason: 'document_hidden',
-          });
-          timer = setTimeout(() => {
-            void poll();
-          }, PRESENCE_POLL_MS);
+          if (!cancelled) {
+            timer = setTimeout(() => {
+              void poll();
+            }, PRESENCE_POLL_MS);
+          }
           return;
         }
         if (pausedForHidden) {
           pausedForHidden = false;
-          console.info('[PLAYER_POLL_RESUMED]', {
-            pollName: 'presence',
-            reason: 'document_visible',
-          });
         }
         if (options?.requirePlayerRole) {
           const sessionUser = await checkPlayerPollRole('player_presence');

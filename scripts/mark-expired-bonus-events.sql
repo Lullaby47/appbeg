@@ -1,0 +1,7 @@
+-- Hygiene only: mark stale active rows as expired when their window has ended.
+-- DO NOT execute without explicit approval in production.
+--
+-- UPDATE bonus_events_cache
+-- SET status = 'expired'
+-- WHERE lower(trim(status)) = 'active'
+--   AND end_date < now();

@@ -386,7 +386,7 @@ export function listenToPlayerGameLoginsByPlayer(
   playerUid: string,
   onChange: (logins: PlayerGameLogin[]) => void,
   onError?: (error: Error) => void,
-  options?: { initialDelayMs?: number }
+  options?: { initialDelayMs?: number; pollEnabled?: boolean }
 ) {
   if (isPlayerGameLoginsSqlReadEnabled()) {
     return attachPlayerGameLoginsSqlPoll({
@@ -395,6 +395,7 @@ export function listenToPlayerGameLoginsByPlayer(
       onChange,
       onError,
       initialDelayMs: options?.initialDelayMs,
+      pollEnabled: options?.pollEnabled,
     });
   }
 

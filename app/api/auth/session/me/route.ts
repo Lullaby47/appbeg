@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { verifyAppSessionFromRequest } from '@/lib/firebase/apiAuth';
 import { logSqlAuthNoFirestore, logSqlAuthProfileRead, logSqlAuthSessionRead } from '@/lib/server/appbegSqlOnlyMode';
+import { isSqlAuthVerboseLogs } from '@/lib/server/verboseLogs';
 import { readSessionMePlayerExtras } from '@/lib/server/sessionMeExtras';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
 
@@ -324,6 +325,7 @@ export async function GET(request: Request) {
 
   const total_ms = Date.now() - totalStartedAt;
 
+  if (isSqlAuthVerboseLogs()) {
   console.info('[APP_SESSION_ME]', {
 
     ok: true,
@@ -434,6 +436,7 @@ export async function GET(request: Request) {
     bytes: response_size_bytes,
     hasPlayerExtras: Boolean(playerExtras),
   });
+  }
 
   return response;
 

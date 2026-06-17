@@ -526,25 +526,33 @@ export async function POST(request: Request) {
       isActiveEvent(d.data() as Record<string, unknown>)
     );
     const activeStateHash = buildActiveStateHash(activeDocs);
+    const missingCapacity = Math.max(0, MAX_ACTIVE_BONUS_EVENTS - activeDocs.length);
 
     if (
       lease.lastEnsuredStateHash &&
       lease.lastEnsuredStateHash === activeStateHash &&
       lease.lastEnsuredAtMs > 0 &&
-      lease.now.toMillis() - lease.lastEnsuredAtMs < BONUS_ENSURE_STATE_CACHE_MS
+      lease.now.toMillis() - lease.lastEnsuredAtMs < BONUS_ENSURE_STATE_CACHE_MS &&
+      !(activeDocs.length === 0 && missingCapacity > 0)
     ) {
       shouldMarkEnsured = true;
       ensuredActiveCount = activeDocs.length;
       ensuredStateHash = activeStateHash;
-      console.info('[bonusEvents] ensure-capacity:skip', {
+      console.info('[BONUS_EVENTS_ENSURE_UNCHANGED_ACTIVE_STATE]', {
         coadminUid: caller.coadminUid,
-        reason: 'unchanged-active-state',
         activeCount: activeDocs.length,
       });
       return NextResponse.json({
         autoCreatedCount: 0,
         totalActive: activeDocs.length,
         skipped: 'unchanged-active-state',
+      });
+    }
+
+    if (activeDocs.length === 0 && missingCapacity > 0) {
+      console.info('[BONUS_EVENTS_ENSURE_EMPTY_ACTIVE_CREATE]', {
+        coadminUid: caller.coadminUid,
+        missing: missingCapacity,
       });
     }
 
@@ -660,6 +668,11 @@ export async function POST(request: Request) {
     if (autoCreatedCount > 0) {
       const commitStartedAt = Date.now();
       await batch.commit();
+      console.info('[BONUS_EVENTS_ENSURE_CREATED]', {
+        coadminUid: caller.coadminUid,
+        autoCreatedCount,
+        totalActive: activeDocs.length + autoCreatedCount,
+      });
       console.info('[bonusEvents] ensure-capacity:batch-commit-done', {
         coadminUid: caller.coadminUid,
         commitMs: Date.now() - commitStartedAt,

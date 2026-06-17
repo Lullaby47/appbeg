@@ -4,12 +4,16 @@ import { NextResponse } from 'next/server';
 
 import { shouldBlockFirestoreFallback } from '@/lib/server/sqlRuntime';
 import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
+import { isSqlCacheVerboseLogs } from '@/lib/server/verboseLogs';
 
 export function isCacheSqlAuthoritative() {
   return shouldBlockFirestoreFallback();
 }
 
 export function logCacheSqlRead(route: string, details: Record<string, unknown> = {}) {
+  if (!isSqlCacheVerboseLogs()) {
+    return;
+  }
   console.info('[CACHE_SQL_READ]', {
     route,
     source: 'sql',
@@ -32,6 +36,9 @@ export function logCacheFirestoreFallbackBlocked(
     sql_read_mode: true,
     details: { reason: 'sql_cache_authoritative', ...details },
   });
+  if (!isSqlCacheVerboseLogs()) {
+    return;
+  }
   console.info('[CACHE_SQL_READ]', {
     route,
     source: 'sql',

@@ -9,6 +9,11 @@ import {
 import { authSqlReadEnvLogFields } from '@/lib/server/authSqlRead';
 import { logRouteSessionValidation, sessionIdsFromRequest } from '@/lib/server/sessionAuthLog';
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
+import {
+  getLiveOutboxFanoutStats,
+  subscribeLiveOutboxFanout,
+  type LiveOutboxFanoutSubscription,
+} from '@/lib/sql/liveOutboxFanout';
 import { getLiveOutboxRowsAfter, type LiveOutboxRow } from '@/lib/sql/liveOutbox';
 
 export const runtime = 'nodejs';
@@ -69,6 +74,44 @@ function formatPingEvent(channels: string[]) {
     now: new Date().toISOString(),
     channels,
   })}\n\n`;
+}
+
+function isBrowserFanoutEnabled() {
+  return (
+    String(process.env.LIVE_OUTBOX_FANOUT_ENABLED || '').trim() === '1' &&
+    String(process.env.LIVE_OUTBOX_FANOUT_BROWSER_ENABLED || '').trim() === '1'
+  );
+}
+
+function isLoggableLiveRow(row: LiveOutboxRow) {
+  return (
+    row.entity_type === 'carer_task' ||
+    row.entity_type === 'player_game_request' ||
+    row.entity_type === 'freeplay_gift' ||
+    row.entity_type === 'player_cashout_task' ||
+    row.entity_type === 'chat_message' ||
+    row.event_type.startsWith('freeplay.') ||
+    row.event_type.startsWith('task.') ||
+    row.event_type.startsWith('cashout_') ||
+    row.event_type.startsWith('chat.') ||
+    row.event_type === 'player_message_created' ||
+    row.event_type === 'chat_message_created' ||
+    row.event_type.endsWith('_create') ||
+    row.event_type.endsWith('_task_created') ||
+    row.event_type.endsWith('_task_create')
+  );
+}
+
+function logLiveStreamDelivered(row: LiveOutboxRow, phase: 'poll' | 'replay' | 'fanout') {
+  if (!isLoggableLiveRow(row)) return;
+  console.info('[LIVE_STREAM_EVENT_DELIVERED]', {
+    outboxId: row.outbox_id,
+    channel: row.channel,
+    eventType: row.event_type,
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+    phase,
+  });
 }
 
 function requestWithAppSessionQuery(request: Request): Request {
@@ -567,6 +610,191 @@ export async function GET(request: Request) {
   return apiError('Forbidden.', 403);
 }
 
+function createFanoutLiveStreamResponse(
+  request: Request,
+  allowedChannels: string[],
+  lastEventId: number
+) {
+  console.info('[LIVE_STREAM_FANOUT_ENABLED]', {
+    channels: allowedChannels,
+    lastEventId,
+  });
+
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let cursor = lastEventId;
+      let closed = false;
+      let replaying = true;
+      let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+      let subscription: LiveOutboxFanoutSubscription | null = null;
+      const pendingRows: LiveOutboxRow[] = [];
+
+      const clearHeartbeatTimer = () => {
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+        }
+      };
+
+      const closeStream = (reason: string) => {
+        if (closed) return;
+        closed = true;
+        clearHeartbeatTimer();
+        subscription?.unsubscribe(reason);
+        const stats = getLiveOutboxFanoutStats();
+        console.info('[LIVE_STREAM_FANOUT_CLEANUP]', {
+          channels: allowedChannels,
+          lastEventId: subscription?.getCursor() ?? cursor,
+          reason,
+          activeBrowserSubscribers: stats.activeBrowserSubscribers,
+          activeSubscribers: stats.activeSubscribers,
+          cleanupCount: stats.cleanupCount,
+        });
+        try {
+          controller.close();
+        } catch {
+          // Ignore close races.
+        }
+      };
+
+      const enqueue = (chunk: string) => {
+        if (closed) return false;
+        try {
+          controller.enqueue(encoder.encode(chunk));
+          return true;
+        } catch (error) {
+          console.info('[LIVE_STREAM_ERROR]', {
+            phase: 'fanout_enqueue',
+            channels: allowedChannels,
+            lastEventId: cursor,
+            error,
+          });
+          closeStream('enqueue_failed');
+          return false;
+        }
+      };
+
+      const sendRow = (row: LiveOutboxRow, phase: 'replay' | 'fanout') => {
+        if (closed) return false;
+        if (row.outbox_id <= cursor) return true;
+        const ok = enqueue(formatSseEvent(row));
+        if (!ok) return false;
+        cursor = Math.max(cursor, row.outbox_id);
+        subscription?.advanceCursor(cursor);
+        logLiveStreamDelivered(row, phase);
+        if (phase === 'fanout') {
+          console.info('[LIVE_STREAM_FANOUT_DELIVERED]', {
+            outboxId: row.outbox_id,
+            channel: row.channel,
+            eventType: row.event_type,
+            lastEventId: cursor,
+          });
+        }
+        return true;
+      };
+
+      const sendHeartbeat = (phase: 'initial' | 'interval') => {
+        if (closed) return;
+        enqueue(formatPingEvent(allowedChannels));
+        console.info('[LIVE_STREAM_HEARTBEAT]', {
+          channels: allowedChannels,
+          lastEventId: cursor,
+          phase,
+          mode: 'fanout',
+        });
+      };
+
+      subscription = subscribeLiveOutboxFanout({
+        channels: allowedChannels,
+        cursor: lastEventId,
+        route: 'browser_live_stream',
+        autoAdvance: false,
+        enqueue: (row) => {
+          if (closed) return false;
+          if (replaying) {
+            pendingRows.push(row);
+            return true;
+          }
+          return sendRow(row, 'fanout');
+        },
+      });
+
+      console.info('[LIVE_STREAM_FANOUT_SUBSCRIBED]', {
+        subscriptionId: subscription.id,
+        channels: allowedChannels,
+        lastEventId,
+      });
+
+      const pump = async () => {
+        try {
+          console.info('[LIVE_STREAM_FANOUT_REPLAY_START]', {
+            subscriptionId: subscription?.id,
+            channels: allowedChannels,
+            lastEventId,
+          });
+          const replayRows = await getLiveOutboxRowsAfter(allowedChannels, lastEventId, 200);
+          let replayCount = 0;
+          for (const row of replayRows) {
+            if (!sendRow(row, 'replay')) break;
+            replayCount += 1;
+          }
+          console.info('[LIVE_STREAM_FANOUT_REPLAY_DONE]', {
+            subscriptionId: subscription?.id,
+            channels: allowedChannels,
+            replayCount,
+            pendingCount: pendingRows.length,
+            lastEventId: cursor,
+          });
+        } catch (error) {
+          console.info('[LIVE_STREAM_ERROR]', {
+            phase: 'fanout_replay',
+            channels: allowedChannels,
+            lastEventId: cursor,
+            error,
+          });
+        } finally {
+          replaying = false;
+        }
+
+        for (const row of pendingRows.sort((left, right) => left.outbox_id - right.outbox_id)) {
+          if (!sendRow(row, 'fanout')) break;
+        }
+        pendingRows.length = 0;
+
+        sendHeartbeat('initial');
+        heartbeatTimer = setInterval(() => {
+          sendHeartbeat('interval');
+        }, HEARTBEAT_INTERVAL_MS);
+      };
+
+      request.signal.addEventListener('abort', () => closeStream('client_abort'), { once: true });
+      void pump().catch((error) => {
+        console.info('[LIVE_STREAM_ERROR]', {
+          phase: 'fanout_pump',
+          channels: allowedChannels,
+          lastEventId: cursor,
+          error,
+        });
+        closeStream('pump_failed');
+      });
+    },
+    cancel() {
+      // Abort is wired once on request.signal; client disconnect triggers abort.
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
+  });
+}
+
 function createLiveStreamResponse(
   request: Request,
   allowedChannels: string[],
@@ -575,6 +803,16 @@ function createLiveStreamResponse(
   console.info('[LIVE_STREAM_SUBSCRIBE]', {
     channels: allowedChannels,
     lastEventId,
+  });
+
+  if (isBrowserFanoutEnabled()) {
+    return createFanoutLiveStreamResponse(request, allowedChannels, lastEventId);
+  }
+
+  console.info('[LIVE_STREAM_LEGACY_POLLING_ACTIVE]', {
+    channels: allowedChannels,
+    lastEventId,
+    pollIntervalMs: POLL_INTERVAL_MS,
   });
 
   const encoder = new TextEncoder();
@@ -652,30 +890,7 @@ function createLiveStreamResponse(
         try {
           const rows = await getLiveOutboxRowsAfter(allowedChannels, cursor, 100);
           for (const row of rows) {
-            if (
-              row.entity_type === 'carer_task' ||
-              row.entity_type === 'player_game_request' ||
-              row.entity_type === 'freeplay_gift' ||
-              row.entity_type === 'player_cashout_task' ||
-              row.entity_type === 'chat_message' ||
-              row.event_type.startsWith('freeplay.') ||
-              row.event_type.startsWith('task.') ||
-              row.event_type.startsWith('cashout_') ||
-              row.event_type.startsWith('chat.') ||
-              row.event_type === 'player_message_created' ||
-              row.event_type === 'chat_message_created' ||
-              row.event_type.endsWith('_create') ||
-              row.event_type.endsWith('_task_created') ||
-              row.event_type.endsWith('_task_create')
-            ) {
-              console.info('[LIVE_STREAM_EVENT_DELIVERED]', {
-                outboxId: row.outbox_id,
-                channel: row.channel,
-                eventType: row.event_type,
-                entityType: row.entity_type,
-                entityId: row.entity_id,
-              });
-            }
+            logLiveStreamDelivered(row, 'poll');
             enqueue(formatSseEvent(row));
             cursor = Math.max(cursor, row.outbox_id);
           }
@@ -695,31 +910,7 @@ function createLiveStreamResponse(
         try {
           const replayRows = await getLiveOutboxRowsAfter(allowedChannels, cursor, 200);
           for (const row of replayRows) {
-            if (
-              row.entity_type === 'carer_task' ||
-              row.entity_type === 'player_game_request' ||
-              row.entity_type === 'freeplay_gift' ||
-              row.entity_type === 'player_cashout_task' ||
-              row.entity_type === 'chat_message' ||
-              row.event_type.startsWith('freeplay.') ||
-              row.event_type.startsWith('task.') ||
-              row.event_type.startsWith('cashout_') ||
-              row.event_type.startsWith('chat.') ||
-              row.event_type === 'player_message_created' ||
-              row.event_type === 'chat_message_created' ||
-              row.event_type.endsWith('_create') ||
-              row.event_type.endsWith('_task_created') ||
-              row.event_type.endsWith('_task_create')
-            ) {
-              console.info('[LIVE_STREAM_EVENT_DELIVERED]', {
-                outboxId: row.outbox_id,
-                channel: row.channel,
-                eventType: row.event_type,
-                entityType: row.entity_type,
-                entityId: row.entity_id,
-                phase: 'replay',
-              });
-            }
+            logLiveStreamDelivered(row, 'replay');
             enqueue(formatSseEvent(row));
             cursor = Math.max(cursor, row.outbox_id);
           }
