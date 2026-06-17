@@ -113,6 +113,9 @@ export function logBonusEventsListAuth(
     source: string;
   }
 ) {
+  if (!isBonusVerboseLogs()) {
+    return;
+  }
   console.info('[BONUS_EVENTS_LIST_AUTH]', {
     route: values.route,
     uid: values.uid,
@@ -319,6 +322,9 @@ export function logPlayerBonusAuth(
     reason: string;
   }
 ) {
+  if (!isBonusVerboseLogs()) {
+    return;
+  }
   console.info('[PLAYER_BONUS_AUTH]', {
     route: values.route,
     playerUid: values.playerUid,

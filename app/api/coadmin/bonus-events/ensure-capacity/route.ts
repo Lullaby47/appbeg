@@ -12,6 +12,7 @@ import {
   logBonusEventsEnsureSql,
   resolveCoadminBonusAuthFailure,
 } from '@/lib/server/bonusEventsAudit';
+import { invalidateBonusEventsMemoryCache } from '@/lib/server/bonusEventsMemoryCache';
 import { ensureBonusCapacityInSql } from '@/lib/sql/authorityBonus';
 
 export const runtime = 'nodejs';
@@ -397,6 +398,9 @@ export async function POST(request: Request) {
         totalActive: result.totalActive,
         skipped: result.skipped || null,
       });
+      if (result.autoCreatedCount > 0) {
+        invalidateBonusEventsMemoryCache(callerUid);
+      }
       return NextResponse.json({ ...result, authority: 'sql' });
     }
 
@@ -678,6 +682,7 @@ export async function POST(request: Request) {
         commitMs: Date.now() - commitStartedAt,
         createdCount: autoCreatedCount,
       });
+      invalidateBonusEventsMemoryCache(caller.coadminUid);
     }
 
     shouldMarkEnsured = true;

@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { cleanText } from '@/lib/sql/playerMirrorCommon';
+import { isSqlAuthVerboseLogs } from '@/lib/server/verboseLogs';
 
 export type SessionIdsFromRequest = {
   app_session_id: string | null;
@@ -21,6 +22,9 @@ export function logRouteSessionValidation(
     validates?: string;
   }
 ) {
+  if (details.ok === true && !isSqlAuthVerboseLogs()) {
+    return;
+  }
   console.info('[SESSION_AUTH]', {
     route,
     ...details,

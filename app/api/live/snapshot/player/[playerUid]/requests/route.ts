@@ -46,7 +46,12 @@ const PLAYER_REQUEST_SNAPSHOT_COLUMNS = `
   dismiss_reason_code,
   dismiss_reason_message,
   automation_status,
-  retry_attempt,
+  raw_firestore_data ->> 'playerMessage' AS player_message,
+  CASE
+    WHEN raw_firestore_data ->> 'retryAttempt' ~ '^-?[0-9]+$'
+      THEN (raw_firestore_data ->> 'retryAttempt')::integer
+    ELSE NULL
+  END AS retry_attempt,
   created_at,
   updated_at,
   completed_at,
@@ -117,6 +122,7 @@ function mapSnapshotRow(row: Record<string, unknown>): SnapshotRequest {
       cleanText(row.dismiss_reason_message) || readRawField(row, 'dismissReasonMessage'),
     automationStatus: cleanText(row.automation_status) || readRawField(row, 'automationStatus'),
     playerMessage:
+      cleanText(row.player_message) ||
       readRawField(row, 'playerMessage') ||
       cleanText(row.poke_message) ||
       readRawField(row, 'pokeMessage'),

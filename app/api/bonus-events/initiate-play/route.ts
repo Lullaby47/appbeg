@@ -24,6 +24,7 @@ import {
   logPlayerBonusAuth,
   logPlayerBonusSessionHeaderCheck,
 } from '@/lib/server/bonusEventsAudit';
+import { invalidateBonusEventsMemoryCache } from '@/lib/server/bonusEventsMemoryCache';
 import { initiateBonusPlayInSql } from '@/lib/sql/authorityBonus';
 import { mirrorCarerTaskById } from '@/lib/sql/carerTasksCache';
 import { mirrorFinancialEventById } from '@/lib/sql/financialEventsCache';
@@ -195,6 +196,7 @@ export async function POST(request: Request) {
         requestId: result.requestId,
         duplicate: result.duplicate,
       });
+      invalidateBonusEventsMemoryCache(coadminUid);
       return NextResponse.json({
         success: true,
         requestId: result.requestId,
@@ -419,6 +421,7 @@ export async function POST(request: Request) {
       type: 'recharge',
       bonusEventId,
     });
+    invalidateBonusEventsMemoryCache(coadminUid);
     void mirrorCarerTaskById(taskRef.id, 'appbeg_bonus_initiate_play');
     void mirrorPlayerGameRequestById(requestRef.id, 'appbeg_bonus_initiate_play');
     void mirrorFinancialEventById(eventRef.id, 'appbeg_bonus_initiate_play');

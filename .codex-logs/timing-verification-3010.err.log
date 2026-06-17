@@ -1,0 +1,8 @@
+⨯ Another next dev server is already running.
+
+- Local:        http://localhost:3000
+- PID:          7580
+- Dir:          C:\Shared\appbeg\appbeg-new
+- Log:          .next\dev\logs\next-development.log
+
+Run taskkill /PID 7580 /F to stop it.

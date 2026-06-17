@@ -6,6 +6,7 @@ import {
   runMirrorClientQuery,
   withPlayerMirrorClient,
 } from '@/lib/sql/playerMirrorCommon';
+import { isSqlAuthVerboseLogs } from '@/lib/server/verboseLogs';
 
 export type SessionMePlayerExtras = {
   coin: number;
@@ -18,6 +19,35 @@ export type SessionMePlayerExtras = {
   referralBonusNoticeAt: string | null;
   coadminPaymentDetailsNoticeVersion: number;
 };
+
+type SessionMePlayerExtrasCacheEntry = {
+  cachedAt: number;
+  expiresAt: number;
+  value: SessionMePlayerExtras;
+};
+
+const SESSION_ME_EXTRAS_CACHE_TTL_MS = (() => {
+  const fromEnv = Number(process.env.SESSION_ME_EXTRAS_CACHE_TTL_MS || 30_000);
+  if (!Number.isFinite(fromEnv)) {
+    return 30_000;
+  }
+  return Math.min(60_000, Math.max(5_000, Math.trunc(fromEnv)));
+})();
+
+const globalSessionMeExtras = globalThis as typeof globalThis & {
+  __appbegSessionMePlayerExtrasCache?: Map<string, SessionMePlayerExtrasCacheEntry>;
+};
+
+function sessionMePlayerExtrasCache() {
+  if (!globalSessionMeExtras.__appbegSessionMePlayerExtrasCache) {
+    globalSessionMeExtras.__appbegSessionMePlayerExtrasCache = new Map();
+  }
+  return globalSessionMeExtras.__appbegSessionMePlayerExtrasCache;
+}
+
+function sessionMePlayerExtrasCacheKey(input: { uid: string; coadminUid: string | null }) {
+  return `${cleanText(input.uid)}:${cleanText(input.coadminUid)}`;
+}
 
 function readRawField(raw: unknown, field: string) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -33,6 +63,36 @@ export async function readSessionMePlayerExtras(input: {
   const uid = cleanText(input.uid);
   if (!uid) {
     return null;
+  }
+
+  const cacheKey = sessionMePlayerExtrasCacheKey({ uid, coadminUid: input.coadminUid });
+  const cached = sessionMePlayerExtrasCache().get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    if (isSqlAuthVerboseLogs()) {
+      console.info('[SESSION_ME_EXTRAS_CACHE_HIT]', {
+        uid,
+        coadminUid: cleanText(input.coadminUid) || null,
+        ageMs: Date.now() - cached.cachedAt,
+        ttlMs: SESSION_ME_EXTRAS_CACHE_TTL_MS,
+      });
+      console.info('[SESSION_ME_EXTRAS_SKIPPED_RECENT_AUTH]', {
+        uid,
+        reason: 'recent_session_me_extras_cache',
+      });
+    }
+    return cached.value;
+  }
+
+  if (cached) {
+    sessionMePlayerExtrasCache().delete(cacheKey);
+  }
+  if (isSqlAuthVerboseLogs()) {
+    console.info('[SESSION_ME_EXTRAS_CACHE_MISS]', {
+      uid,
+      coadminUid: cleanText(input.coadminUid) || null,
+      reason: cached ? 'expired' : 'empty',
+      ttlMs: SESSION_ME_EXTRAS_CACHE_TTL_MS,
+    });
   }
 
   try {
@@ -97,6 +157,15 @@ export async function readSessionMePlayerExtras(input: {
         };
       }
     );
+
+    if (result) {
+      const now = Date.now();
+      sessionMePlayerExtrasCache().set(cacheKey, {
+        cachedAt: now,
+        expiresAt: now + SESSION_ME_EXTRAS_CACHE_TTL_MS,
+        value: result,
+      });
+    }
 
     return result;
   } catch (error) {

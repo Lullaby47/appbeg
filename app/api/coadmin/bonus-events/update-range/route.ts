@@ -11,6 +11,7 @@ import {
   logBonusEventsRangeSql,
   resolveCoadminBonusAuthFailure,
 } from '@/lib/server/bonusEventsAudit';
+import { invalidateBonusEventsMemoryCache } from '@/lib/server/bonusEventsMemoryCache';
 import { updateBonusRangeInSql } from '@/lib/sql/authorityBonus';
 import { mirrorCoadminBonusSettingsSnapshot } from '@/lib/sql/coadminBonusSettingsCache';
 
@@ -135,6 +136,9 @@ export async function POST(request: Request) {
         adjustedEventCount: result.adjustedEventCount,
         duplicate: result.duplicate || false,
       });
+      if (result.adjustedEventCount > 0) {
+        invalidateBonusEventsMemoryCache(callerUid);
+      }
       return NextResponse.json({ ...result, authority: 'sql' });
     }
 
@@ -286,6 +290,9 @@ export async function POST(request: Request) {
       totalActiveConsidered: activeSnap.size,
       outOfRangeCount: outOfRangeDocs.length,
     });
+    if (adjustedEventCount > 0) {
+      invalidateBonusEventsMemoryCache(callerUid);
+    }
 
     return NextResponse.json({
       minPercent: normalized.minPercent,

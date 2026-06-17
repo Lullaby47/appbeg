@@ -2,7 +2,12 @@ import 'server-only';
 
 import { Pool, type PoolClient } from 'pg';
 import { recordSqlPoolMetric } from '@/lib/server/logMetrics';
-import { isSqlCacheVerboseLogs, POOL_ACQUIRE_SLOW_MS, SQL_QUERY_SLOW_MS } from '@/lib/server/verboseLogs';
+import {
+  isLoadTestMode,
+  isSqlCacheVerboseLogs,
+  POOL_ACQUIRE_SLOW_MS,
+  SQL_QUERY_SLOW_MS,
+} from '@/lib/server/verboseLogs';
 
 const SQL_CONNECTION_TIMEOUT_MS = resolvePositiveInt(
   process.env.PG_CONNECTION_TIMEOUT_MS,
@@ -10,6 +15,10 @@ const SQL_CONNECTION_TIMEOUT_MS = resolvePositiveInt(
 );
 const SQL_STATEMENT_TIMEOUT_MS = resolvePositiveInt(process.env.PG_STATEMENT_TIMEOUT_MS, 15_000);
 const PLAYER_MIRROR_IDLE_TIMEOUT_MS = resolvePositiveInt(process.env.PG_IDLE_TIMEOUT_MS, 30_000);
+const PLAYER_MIRROR_POOL_KEEPALIVE_INTERVAL_MS = resolvePositiveInt(
+  process.env.PLAYER_MIRROR_POOL_KEEPALIVE_INTERVAL_MS,
+  30_000
+);
 
 function resolvePositiveInt(value: unknown, fallback: number) {
   const parsed = Number(value);
@@ -50,12 +59,182 @@ function recommendedPlayerMirrorPoolMax() {
   return 8;
 }
 
-function resolvePlayerMirrorPoolWarmMin() {
-  const fromEnv = Number(process.env.PLAYER_MIRROR_POOL_WARM_MIN || 0);
+function resolvePlayerMirrorPoolWarmCount() {
+  const fromEnv = Number(
+    process.env.PLAYER_MIRROR_POOL_WARM_COUNT ||
+      process.env.PLAYER_MIRROR_POOL_WARM_MIN ||
+      Math.min(PLAYER_MIRROR_POOL_MAX, 4)
+  );
   if (!Number.isFinite(fromEnv)) {
-    return 0;
+    return Math.min(PLAYER_MIRROR_POOL_MAX, 4);
   }
   return Math.min(PLAYER_MIRROR_POOL_MAX, Math.max(0, Math.trunc(fromEnv)));
+}
+
+function isPlayerMirrorPoolKeepaliveEnabled() {
+  const env = cleanText(process.env.PLAYER_MIRROR_POOL_KEEPALIVE_ENABLED).toLowerCase();
+  if (env === '0' || env === 'false' || env === 'no') {
+    return false;
+  }
+  if (env === '1' || env === 'true' || env === 'yes') {
+    return true;
+  }
+  return false;
+}
+
+function shouldRunPlayerMirrorPoolKeepalive() {
+  return isPlayerMirrorPoolKeepaliveEnabled();
+}
+
+type PlayerMirrorKeepaliveState = {
+  timer: ReturnType<typeof setInterval> | null;
+  started: boolean;
+  stopHooksRegistered: boolean;
+};
+
+const globalSqlPoolKeepalive = globalThis as typeof globalThis & {
+  __appbegPlayerMirrorKeepaliveState?: PlayerMirrorKeepaliveState;
+  __appbegPlayerMirrorPoolCreatedAt?: number;
+};
+
+function playerMirrorKeepaliveState(): PlayerMirrorKeepaliveState {
+  if (!globalSqlPoolKeepalive.__appbegPlayerMirrorKeepaliveState) {
+    globalSqlPoolKeepalive.__appbegPlayerMirrorKeepaliveState = {
+      timer: null,
+      started: false,
+      stopHooksRegistered: false,
+    };
+  }
+  return globalSqlPoolKeepalive.__appbegPlayerMirrorKeepaliveState;
+}
+
+export function logSqlPoolIdleState(context: string) {
+  const pool = globalSqlPool.__appbegPlayerRegistrationMirrorPool?.pool;
+  if (!pool) {
+    return;
+  }
+  const createdAt = globalSqlPoolKeepalive.__appbegPlayerMirrorPoolCreatedAt ?? Date.now();
+  console.info('[SQL_POOL_IDLE_STATE]', {
+    totalCount: pool.totalCount,
+    idleCount: pool.idleCount,
+    waitingCount: pool.waitingCount,
+    max: PLAYER_MIRROR_POOL_MAX,
+    idleTimeoutMillis: PLAYER_MIRROR_IDLE_TIMEOUT_MS,
+    age: Date.now() - createdAt,
+    context,
+  });
+}
+
+function stopPlayerMirrorPoolKeepalive() {
+  const state = playerMirrorKeepaliveState();
+  if (state.timer != null) {
+    clearInterval(state.timer);
+    state.timer = null;
+  }
+  state.started = false;
+}
+
+async function runPlayerMirrorPoolKeepaliveTick(compact: boolean) {
+  const pool = getPlayerMirrorPool();
+  if (!pool) {
+    return;
+  }
+
+  const warmTarget = Math.max(
+    1,
+    Math.min(resolvePlayerMirrorPoolWarmCount() || 1, PLAYER_MIRROR_POOL_MAX)
+  );
+  const startedAt = Date.now();
+  let ok = 0;
+  let failed = 0;
+
+  const pingOne = async () => {
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query('SELECT 1');
+        ok += 1;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      failed += 1;
+      console.warn('[SQL_POOL_KEEPALIVE_ERROR]', {
+        name: 'playerMirror',
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  await Promise.all(Array.from({ length: warmTarget }, () => pingOne()));
+
+  if (!compact) {
+    logSqlPoolIdleState('keepalive_tick');
+  }
+  console.info('[SQL_POOL_KEEPALIVE_TICK]', {
+    name: 'playerMirror',
+    ok,
+    failed,
+    durationMs: Date.now() - startedAt,
+    totalCount: pool.totalCount,
+    idleCount: pool.idleCount,
+    ...(compact ? {} : { waitingCount: pool.waitingCount }),
+  });
+}
+
+function registerPlayerMirrorPoolKeepaliveStopHooks() {
+  const state = playerMirrorKeepaliveState();
+  if (state.stopHooksRegistered || typeof process === 'undefined') {
+    return;
+  }
+  state.stopHooksRegistered = true;
+  const stop = () => stopPlayerMirrorPoolKeepalive();
+  process.once('beforeExit', stop);
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
+}
+
+function warnKeepaliveIntervalVsIdleTimeout() {
+  if (!isPlayerMirrorPoolKeepaliveEnabled()) {
+    return;
+  }
+  if (PLAYER_MIRROR_POOL_KEEPALIVE_INTERVAL_MS >= PLAYER_MIRROR_IDLE_TIMEOUT_MS) {
+    console.warn('[SQL_POOL_KEEPALIVE_CONFIG]', {
+      warning: 'keepalive_interval_should_be_less_than_idle_timeout',
+      intervalMs: PLAYER_MIRROR_POOL_KEEPALIVE_INTERVAL_MS,
+      idleTimeoutMillis: PLAYER_MIRROR_IDLE_TIMEOUT_MS,
+    });
+  }
+}
+
+export function startPlayerMirrorPoolKeepalive() {
+  if (!shouldRunPlayerMirrorPoolKeepalive()) {
+    return;
+  }
+
+  const state = playerMirrorKeepaliveState();
+  if (state.started) {
+    return;
+  }
+  state.started = true;
+  warnKeepaliveIntervalVsIdleTimeout();
+  registerPlayerMirrorPoolKeepaliveStopHooks();
+
+  const compact = isLoadTestMode();
+  console.info('[SQL_POOL_KEEPALIVE_START]', {
+    name: 'playerMirror',
+    intervalMs: PLAYER_MIRROR_POOL_KEEPALIVE_INTERVAL_MS,
+    warmTarget: Math.max(1, resolvePlayerMirrorPoolWarmCount() || 1),
+    idleTimeoutMillis: PLAYER_MIRROR_IDLE_TIMEOUT_MS,
+    environment: playerMirrorPoolEnvironment(),
+    vercel: process.env.VERCEL === '1',
+  });
+
+  void runPlayerMirrorPoolKeepaliveTick(compact);
+
+  state.timer = setInterval(() => {
+    void runPlayerMirrorPoolKeepaliveTick(compact);
+  }, PLAYER_MIRROR_POOL_KEEPALIVE_INTERVAL_MS);
 }
 
 function isPlayerMirrorPoolWarmEnabled() {
@@ -66,7 +245,7 @@ function isPlayerMirrorPoolWarmEnabled() {
   if (env === '1' || env === 'true' || env === 'yes') {
     return true;
   }
-  return process.env.NODE_ENV !== 'production';
+  return false;
 }
 
 type PlayerMirrorWarmState = {
@@ -103,7 +282,7 @@ export function warmPlayerMirrorPool(reason: string) {
     return;
   }
 
-  const requested = resolvePlayerMirrorPoolWarmMin();
+  const requested = resolvePlayerMirrorPoolWarmCount();
   if (requested <= 0) {
     return;
   }
@@ -113,6 +292,14 @@ export function warmPlayerMirrorPool(reason: string) {
     let ok = 0;
     let failed = 0;
     const warmCount = Math.min(requested, PLAYER_MIRROR_POOL_MAX);
+
+    console.info('[SQL_POOL_WARM_START]', {
+      name: 'playerMirror',
+      reason,
+      requested: warmCount,
+      max: PLAYER_MIRROR_POOL_MAX,
+      environment: playerMirrorPoolEnvironment(),
+    });
 
     const warmOne = async () => {
       try {
@@ -130,18 +317,21 @@ export function warmPlayerMirrorPool(reason: string) {
 
     await Promise.all(Array.from({ length: warmCount }, () => warmOne()));
 
-    console.info('[SQL_POOL_WARMUP]', {
+    console.info('[SQL_POOL_WARM_DONE]', {
       name: 'playerMirror',
       reason,
       requested: warmCount,
       ok,
       failed,
       durationMs: Date.now() - startedAt,
+      totalCount: pool.totalCount,
+      idleCount: pool.idleCount,
     });
+    logSqlPoolIdleState('warm_done');
     warmState.completed = true;
   })()
     .catch((error) => {
-      console.warn('[SQL_POOL_WARMUP] failed', {
+      console.warn('[SQL_POOL_WARM_ERROR]', {
         name: 'playerMirror',
         reason,
         error: error instanceof Error ? error.message : String(error),
@@ -209,6 +399,9 @@ function logSqlPoolAcquire(
   });
   if (acquireMs >= POOL_ACQUIRE_SLOW_MS || statsBefore.waitingCount > 0 || stats.waitingCount > 0) {
     logPlayerMirrorPoolStats(`slow_acquire:${acquireContext?.context ?? 'unspecified'}`);
+  }
+  if (statsBefore.idleCount === 0) {
+    logSqlPoolIdleState(`acquire_idle_empty:${acquireContext?.context ?? 'unspecified'}`);
   }
 }
 
@@ -634,6 +827,7 @@ export function getPlayerMirrorPool(poolTiming?: PlayerMirrorPoolTiming) {
     }
   });
   globalSqlPool.__appbegPlayerRegistrationMirrorPool = { connectionString, pool };
+  globalSqlPoolKeepalive.__appbegPlayerMirrorPoolCreatedAt = Date.now();
   if (poolTiming) {
     poolTiming.sql_pool_ms = Date.now() - poolStartedAt;
     poolTiming.poolReused = false;
@@ -641,10 +835,16 @@ export function getPlayerMirrorPool(poolTiming?: PlayerMirrorPoolTiming) {
   console.info('[SQL_POOL] created', {
     name: 'playerMirror',
     max: PLAYER_MIRROR_POOL_MAX,
+    min: 0,
     idleTimeoutMillis: PLAYER_MIRROR_IDLE_TIMEOUT_MS,
     connectionTimeoutMillis: SQL_CONNECTION_TIMEOUT_MS,
     statementTimeoutMillis: SQL_STATEMENT_TIMEOUT_MS,
+    keepaliveEnabled: isPlayerMirrorPoolKeepaliveEnabled(),
+    keepaliveIntervalMs: isPlayerMirrorPoolKeepaliveEnabled()
+      ? PLAYER_MIRROR_POOL_KEEPALIVE_INTERVAL_MS
+      : null,
   });
+  logSqlPoolIdleState('pool_created');
   console.info('[SQL_POOL_RECOMMENDED]', {
     name: 'playerMirror',
     current: PLAYER_MIRROR_POOL_MAX,
@@ -653,5 +853,6 @@ export function getPlayerMirrorPool(poolTiming?: PlayerMirrorPoolTiming) {
   });
   logSqlPoolAudit();
   void warmPlayerMirrorPool('pool_created');
+  startPlayerMirrorPoolKeepalive();
   return pool;
 }

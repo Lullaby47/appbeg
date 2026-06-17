@@ -1,0 +1,192 @@
+[SQL_QUERY_SLOW] {
+  context: null,
+  route: null,
+  pool_acquire_ms: 0,
+  query_exec_ms: 819,
+  total_ms: 819
+}
+⨯ ./lib/sql/playerMirrorCommon.ts:238:5
+Return statement is not allowed here
+  [90m236 |[0m   [36mconst[0m env = cleanText(process.env.[33mPLAYER_MIRROR_POOL_WARM_ENABLED[0m).toLowerCase();
+  [90m237 |[0m   [36mif[0m (env === [32m'0'[0m || env === [32m'false'[0m || env === [32m'no'[0m) {
+[31m[1m>[0m [90m238 |[0m     [36mreturn[0m [36mfalse[0m;
+  [90m    |[0m     [31m[1m^^^^^^^^^^^^^[0m
+  [90m239 |[0m   }
+  [90m240 |[0m   [36mif[0m (env === [32m'1'[0m || env === [32m'true'[0m || env === [32m'yes'[0m) {
+  [90m241 |[0m     [36mreturn[0m [36mtrue[0m;
+
+Parsing ecmascript source code failed
+
+Import trace:
+  App Route:
+    ./lib/sql/playerMirrorCommon.ts
+    ./lib/server/playerSessionStatus.ts
+    ./app/api/auth/player-session/status/route.ts
+
+
+
+./lib/sql/playerMirrorCommon.ts:241:5
+Return statement is not allowed here
+  [90m239 |[0m   }
+  [90m240 |[0m   [36mif[0m (env === [32m'1'[0m || env === [32m'true'[0m || env === [32m'yes'[0m) {
+[31m[1m>[0m [90m241 |[0m     [36mreturn[0m [36mtrue[0m;
+  [90m    |[0m     [31m[1m^^^^^^^^^^^^[0m
+  [90m242 |[0m   }
+  [90m243 |[0m   [36mreturn[0m [36mfalse[0m;
+  [90m244 |[0m }
+
+Parsing ecmascript source code failed
+
+Import trace:
+  App Route:
+    ./lib/sql/playerMirrorCommon.ts
+    ./lib/server/playerSessionStatus.ts
+    ./app/api/auth/player-session/status/route.ts
+
+
+
+./lib/sql/playerMirrorCommon.ts:243:3
+Return statement is not allowed here
+  [90m241 |[0m     [36mreturn[0m [36mtrue[0m;
+  [90m242 |[0m   }
+[31m[1m>[0m [90m243 |[0m   [36mreturn[0m [36mfalse[0m;
+  [90m    |[0m   [31m[1m^^^^^^^^^^^^^[0m
+  [90m244 |[0m }
+  [90m245 |[0m
+  [90m246 |[0m [36mtype[0m [33mPlayerMirrorWarmState[0m = {
+
+Parsing ecmascript source code failed
+
+Import trace:
+  App Route:
+    ./lib/sql/playerMirrorCommon.ts
+    ./lib/server/playerSessionStatus.ts
+    ./app/api/auth/player-session/status/route.ts
+
+
+
+./lib/sql/playerMirrorCommon.ts
+Code generation for chunk item errored
+An error occurred while generating the chunk item [project]/lib/sql/playerMirrorCommon.ts [app-route] (ecmascript)
+
+Caused by:
+- CJS module can't be async.
+
+Debug info:
+- An error occurred while generating the chunk item [project]/lib/sql/playerMirrorCommon.ts [app-route] (ecmascript)
+- Execution of <EcmascriptModuleAsset as EcmascriptChunkPlaceable>::chunk_item_content failed
+- Execution of EcmascriptChunkItemContent::new failed
+- CJS module can't be async.
+
+Import trace:
+  App Route:
+    ./lib/sql/playerMirrorCommon.ts
+    ./lib/server/playerSessionStatus.ts
+    ./app/api/auth/player-session/status/route.ts
+
+
+[browser] Uncaught Error: ./lib/sql/playerMirrorCommon.ts:243:3
+Return statement is not allowed here
+  241 |     return true;
+  242 |   }
+> 243 |   return false;
+      |   ^^^^^^^^^^^^^
+  244 | }
+  245 |
+  246 | type PlayerMirrorWarmState = {
+
+Parsing ecmascript source code failed
+
+Import trace:
+  App Route:
+    ./lib/sql/playerMirrorCommon.ts
+    ./lib/server/playerSessionStatus.ts
+    ./app/api/auth/player-session/status/route.ts
+
+
+    at <unknown> (Error: ./lib/sql/playerMirrorCommon.ts:243:3)
+    at <unknown> (Error: (./lib/sql/playerMirrorCommon.ts:243:3)
+[browser] Uncaught Error: ./lib/sql/playerMirrorCommon.ts:243:3
+Return statement is not allowed here
+  241 |     return true;
+  242 |   }
+> 243 |   return false;
+      |   ^^^^^^^^^^^^^
+  244 | }
+  245 |
+  246 | type PlayerMirrorWarmState = {
+
+Parsing ecmascript source code failed
+
+Import trace:
+  App Route:
+    ./lib/sql/playerMirrorCommon.ts
+    ./lib/server/playerSessionStatus.ts
+    ./app/api/auth/player-session/status/route.ts
+
+
+    at <unknown> (Error: ./lib/sql/playerMirrorCommon.ts:243:3)
+    at <unknown> (Error: (./lib/sql/playerMirrorCommon.ts:243:3)
+[browser] Uncaught Error: ./lib/sql/playerMirrorCommon.ts:243:3
+Return statement is not allowed here
+  241 |     return true;
+  242 |   }
+> 243 |   return false;
+      |   ^^^^^^^^^^^^^
+  244 | }
+  245 |
+  246 | type PlayerMirrorWarmState = {
+
+Parsing ecmascript source code failed
+
+Import trace:
+  App Route:
+    ./lib/sql/playerMirrorCommon.ts
+    ./lib/server/playerSessionStatus.ts
+    ./app/api/auth/player-session/status/route.ts
+
+
+    at <unknown> (Error: ./lib/sql/playerMirrorCommon.ts:243:3)
+    at <unknown> (Error: (./lib/sql/playerMirrorCommon.ts:243:3)
+[browser] Uncaught Error: ./lib/sql/playerMirrorCommon.ts:243:3
+Return statement is not allowed here
+  241 |     return true;
+  242 |   }
+> 243 |   return false;
+      |   ^^^^^^^^^^^^^
+  244 | }
+  245 |
+  246 | type PlayerMirrorWarmState = {
+
+Parsing ecmascript source code failed
+
+Import trace:
+  App Route:
+    ./lib/sql/playerMirrorCommon.ts
+    ./lib/server/playerSessionStatus.ts
+    ./app/api/auth/player-session/status/route.ts
+
+
+    at <unknown> (Error: ./lib/sql/playerMirrorCommon.ts:243:3)
+    at <unknown> (Error: (./lib/sql/playerMirrorCommon.ts:243:3)
+[browser] Uncaught Error: ./lib/sql/playerMirrorCommon.ts:243:3
+Return statement is not allowed here
+  241 |     return true;
+  242 |   }
+> 243 |   return false;
+      |   ^^^^^^^^^^^^^
+  244 | }
+  245 |
+  246 | type PlayerMirrorWarmState = {
+
+Parsing ecmascript source code failed
+
+Import trace:
+  App Route:
+    ./lib/sql/playerMirrorCommon.ts
+    ./lib/server/playerSessionStatus.ts
+    ./app/api/auth/player-session/status/route.ts
+
+
+    at <unknown> (Error: ./lib/sql/playerMirrorCommon.ts:243:3)
+    at <unknown> (Error: (./lib/sql/playerMirrorCommon.ts:243:3)

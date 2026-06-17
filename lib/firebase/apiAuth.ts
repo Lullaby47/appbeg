@@ -1884,7 +1884,7 @@ export async function requirePlayerApiUser(
 
   const playerUid = resolved.uid;
   const resolveBranch = resolved.branch;
-  console.info('[API_AUTH] player_api_user resolve', {
+  logVerboseApiAuth('[API_AUTH] player_api_user resolve', {
     branch: resolveBranch,
     uid: playerUid,
     app_session_id: appSessionIdFromRequest(request) || null,
@@ -1982,7 +1982,7 @@ export async function requirePlayerApiUser(
     };
   }
 
-  console.info('[API_AUTH] player_api_user allowed', {
+  logVerboseApiAuth('[API_AUTH] player_api_user allowed', {
     branch: resolveBranch,
     uid: auth.uid,
     auth_path: auth.timing.auth_path,

@@ -1,0 +1,3225 @@
+
+> appbeg-new@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.4 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://10.5.0.2:3000
+- Environments: .env.local
+✓ Ready in 299ms
+[APPBEG_SQL_ONLY_MODE] enabled=true
+[FIREBASE_RUNTIME_DISABLED] enabled=true
+[FIREBASE_RUNTIME_GUARD] migration_paths_allowed=scripts/firebase-backfill,lib/firebase/migrationOnly,app/api/admin/migration
+[APPBEG_SQL_ONLY_FLAGS] {
+  context: 'instrumentation',
+  appbeg_sql_only_mode: true,
+  allow_firebase_fallback: false,
+  auth_sql_only: true,
+  node_env: 'development',
+  production_default: false
+}
+[ENV_SQL_ONLY_VERIFIED] {
+  appbegSqlOnlyMode: true,
+  allowFirebaseFallback: false,
+  authSqlRead: true,
+  appSessionSqlRead: true,
+  playerSessionSqlRead: true,
+  nextPublicSqlLoginFirst: true,
+  nextPublicSqlPlayerLogin: true,
+  databaseUrlConfigured: true
+}
+[SQL_RUNTIME] {
+  context: 'instrumentation',
+  node_env: 'development',
+  database_url_configured: true,
+  auth_sql_read: true,
+  player_session_sql_read: true,
+  app_session_sql_read: true,
+  authority_sql_write: true,
+  appbeg_sql_only_mode: true,
+  allow_firebase_fallback: false,
+  sql_read_mode: true,
+  sql_authority_mode: true,
+  firestore_fallback_blocked: true,
+  authority_source: 'sql'
+}
+[SQL_POOL] created {
+  name: 'playerMirror',
+  max: 8,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+  statementTimeoutMillis: 15000
+}
+[SQL_POOL_RECOMMENDED] {
+  name: 'playerMirror',
+  current: 8,
+  recommended: 8,
+  environment: 'local_dev'
+}
+[SQL_POOL_AUDIT] known_pools {
+  playerMirror: {
+    scope: 'carerTasksCache,liveOutbox,playerGameRequestsCache,playersCache,playerSessionsCache,...',
+    shared: true,
+    max: 8,
+    env: 'PG_POOL_MAX'
+  },
+  gameLoginsCache: {
+    scope: 'game_logins_cache reads/writes',
+    shared: true,
+    uses: 'playerMirror'
+  },
+  automationJobsCache: {
+    scope: 'automation_jobs_cache',
+    shared: true,
+    uses: 'playerMirror'
+  },
+  coadminBonusSettingsCache: {
+    scope: 'coadmin_bonus_settings_cache',
+    shared: true,
+    uses: 'playerMirror'
+  },
+  note: 'carerTasksCache uses playerMirror; separate pools also hit DATABASE_URL under burst load',
+  vercel_pgbouncer: 'On Vercel/serverless prefer DATABASE_URL with ?pgbouncer=true and transaction pool mode; avoid holding clients across awaits/SSE; keep max pool modest per instance'
+}
+[SQL_POOL_WARM_START] {
+  name: 'playerMirror',
+  reason: 'pool_created',
+  requested: 4,
+  max: 8,
+  environment: 'local_dev'
+}
+
+ GET /api/auth/player-session/status 200 in 839ms (next.js: 508ms, application-code: 331ms)
+ GET /api/live/stream?channels=player%3AX0lC6Vaq43YM130tuCLv6SDO9Yn2%3Arequests%2Cplayer%3AX0lC6Vaq43YM130tuCLv6SDO9Yn2%3Afreeplay%2Cplayer%3AX0lC6Vaq43YM130tuCLv6SDO9Yn2%3Acashouts&lastEventId=4610&appSessionId=a15e8c42-240c-4096-bf1d-f9d492bf1f60&playerSessionId=66eebe42-8070-4084-af33-390704a01bd9 200 in 836ms (next.js: 504ms, application-code: 331ms)
+ GET /player 200 in 633ms (next.js: 365ms, application-code: 268ms)
+ GET /manifest.webmanifest 200 in 22ms (next.js: 19ms, application-code: 4ms)
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1131,
+  totalCount: 8,
+  idleCount: 0,
+  waitingCount: 2,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/player-session/status',
+  idle_before: 0,
+  waiting_before: 2,
+  slow_acquire: true
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1130,
+  totalCount: 8,
+  idleCount: 0,
+  waitingCount: 1,
+  max: 8,
+  request_id: null,
+  route: '/api/live/stream',
+  idle_before: 0,
+  waiting_before: 3,
+  slow_acquire: true
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 107,
+  totalCount: 8,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/session/me',
+  idle_before: 0,
+  waiting_before: 4,
+  slow_acquire: false
+}
+[SQL_POOL_WARM_DONE] {
+  name: 'playerMirror',
+  reason: 'pool_created',
+  requested: 4,
+  ok: 4,
+  failed: 0,
+  durationMs: 1689
+}
+[SQL_RUNTIME_DB_AUDIT] {
+  context: 'instrumentation',
+  database_url_hash: 'd3871e91271c',
+  database_name: 'appbeg',
+  authority_sql_write: true,
+  auth_sql_read: true,
+  player_session_sql_read: true,
+  app_session_sql_read: true,
+  environment: 'development',
+  authority_operations_exists: true,
+  missing_authority_tables: []
+}
+[SQL_RUNTIME_READY] {
+  database_url_hash: 'd3871e91271c',
+  missingTables: [],
+  missingIndexes: [],
+  missingPermissions: [],
+  firebaseFirestoreBlocked: true,
+  runtimeSource: 'postgres',
+  context: 'instrumentation',
+  all_required_tables_present: true,
+  skipped: false,
+  reason: null
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=269 total_ms=269 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[APP_SESSIONS] {
+  app_session_touch_skipped: true,
+  reason: 'player_sql_session_authoritative',
+  sessionIdPrefix: 'a15e8c42'
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=273 total_ms=273 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=274 total_ms=274 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[SQL_RUNTIME_DB_AUDIT] {
+  context: 'instrumentation',
+  database_url_hash: 'd3871e91271c',
+  database_name: 'appbeg',
+  authority_sql_write: true,
+  auth_sql_read: true,
+  player_session_sql_read: true,
+  app_session_sql_read: true,
+  environment: 'development',
+  authority_operations_exists: true,
+  missing_authority_tables: []
+}
+[SQL_RUNTIME_READY] {
+  database_url_hash: 'd3871e91271c',
+  missingTables: [],
+  missingIndexes: [],
+  missingPermissions: [],
+  firebaseFirestoreBlocked: true,
+  runtimeSource: 'postgres',
+  context: 'instrumentation',
+  all_required_tables_present: true,
+  skipped: false,
+  reason: null
+}
+[LIVE_AUTH_SESSION_SQL] hit=true sessionId=66eebe42-8070-4084-af33-390704a01bd9 playerUid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 active=true expired=false pool_acquire_ms=1 query_exec_ms=269 total_ms=270
+[PLAYER_LIVE_STREAM_SUBSCRIBE] {
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610
+}
+[LIVE_STREAM_SUBSCRIBE] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610
+}
+[LIVE_STREAM_FANOUT_ENABLED] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610
+}
+[LIVE_OUTBOX_FANOUT_SUBSCRIBED] {
+  subscriberId: 'live-outbox-sub-1781699048619-1',
+  route: 'browser_live_stream',
+  channelCount: 3,
+  activeSubscribers: 1,
+  activeBrowserSubscribers: 1,
+  activeAgentSubscribers: 0,
+  cursor: 4610
+}
+[LIVE_OUTBOX_FANOUT_START] { activeSubscribers: 1 }
+[LIVE_OUTBOX_FANOUT_METRICS] {
+  phase: 'subscribe',
+  activeSubscribers: 1,
+  activeAgentSubscribers: 0,
+  activeBrowserSubscribers: 1,
+  activeChannelCount: 3,
+  cleanupCount: 0,
+  droppedSubscriberCount: 0,
+  deliveredCount: 0,
+  fallbackActive: false,
+  fallbackPollCount: 0,
+  listenerConnected: false,
+  listenerDegraded: false,
+  maxSubscriberLag: 0,
+  notificationCount: 0
+}
+[LIVE_STREAM_FANOUT_SUBSCRIBED] {
+  subscriptionId: 'live-outbox-sub-1781699048619-1',
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610
+}
+[LIVE_STREAM_FANOUT_REPLAY_START] {
+  subscriptionId: 'live-outbox-sub-1781699048619-1',
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610
+}
+[LIVE_AUTH_SESSION_SQL] hit=true sessionId=66eebe42-8070-4084-af33-390704a01bd9 playerUid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 active=true expired=false pool_acquire_ms=0 query_exec_ms=276 total_ms=276
+[PLAYER_SESSION_STATUS] {
+  source: 'sql',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  activeSessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  ok: true,
+  reason: null,
+  durationMs: 1954,
+  cache_hit: false
+}
+[APP_SESSION_ME] {
+  ok: true,
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  source: 'sql',
+  firestore_fallback: false,
+  user_doc_ms: 0,
+  durationMs: 929
+}
+[APP_SESSION_ME_TIMING] {
+  ok: true,
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  cookie_parse_ms: 0,
+  session_lookup_ms: 270,
+  profile_lookup_ms: 275,
+  pool_acquire_ms: 107,
+  cache_lookup_ms: 0,
+  client_release_ms: 0,
+  auth_finalize_ms: 0,
+  auth_total_ms: 652,
+  serialization_ms: 0,
+  response_ms: 1,
+  total_ms: 929,
+  unaccounted_ms: 276
+}
+[SESSION_ME_TIMING] {
+  ok: true,
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  session_lookup_ms: 270,
+  auth_validation_ms: 652,
+  profile_lookup_ms: 275,
+  player_session_ms: 0,
+  cache_lookup_ms: 0,
+  player_extras_ms: 276,
+  serialization_ms: 0,
+  response_ms: 1,
+  total_ms: 929,
+  unaccounted_ms: 0
+}
+[SESSION_ME_RESPONSE_SIZE] {
+  ok: true,
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  bytes: 616,
+  hasPlayerExtras: true
+}
+ GET /api/auth/session/me 200 in 956ms (next.js: 24ms, application-code: 932ms)
+ GET /api/player/game-backgrounds 200 in 25ms (next.js: 18ms, application-code: 7ms)
+ POST /api/presence/heartbeat 200 in 52ms (next.js: 50ms, application-code: 2ms)
+ GET /api/player/game-backgrounds 200 in 4ms (next.js: 1569µs, application-code: 3ms)
+[PLAYER_BASE_DATA_MODE] {
+  mode: 'parallel',
+  reason: 'warm_pool',
+  totalCount: 8,
+  idleCount: 4,
+  waitingCount: 0,
+  max: 8
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'player_base_data_game_logins',
+  acquire_ms: 0,
+  totalCount: 8,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/player/base-data',
+  idle_before: 4,
+  waiting_before: 1,
+  slow_acquire: false
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'player_base_data_freeplay',
+  acquire_ms: 1,
+  totalCount: 8,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/player/base-data',
+  idle_before: 4,
+  waiting_before: 2,
+  slow_acquire: false
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'player_base_data_referral_rewards',
+  acquire_ms: 1,
+  totalCount: 8,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/player/base-data',
+  idle_before: 4,
+  waiting_before: 3,
+  slow_acquire: false
+}
+[LIVE_STREAM_FANOUT_REPLAY_DONE] {
+  subscriptionId: 'live-outbox-sub-1781699048619-1',
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  replayCount: 0,
+  pendingCount: 0,
+  lastEventId: 4610
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'initial',
+  mode: 'fanout'
+}
+[AUTHORITY_SCHEMA_AUDIT] {
+  database_name: 'appbeg',
+  current_schema: 'public',
+  database_url_hash: 'd3871e91271c',
+  authority_sql_write: true,
+  missing_tables: [],
+  present_tables: [
+    'authority_operations',
+    'user_balance_events',
+    'financial_events_cache',
+    'user_balance_snapshots_cache',
+    'players_cache',
+    'player_game_requests_cache',
+    'carer_tasks_cache',
+    'automation_jobs_cache',
+    'player_cashout_tasks_cache',
+    'transfer_requests_cache',
+    'referral_reward_claims_cache',
+    'player_coin_rewards_cache',
+    'freeplay_pending_gifts_cache',
+    'freeplay_gifts_cache',
+    'coadmin_maintenance_cache',
+    'impersonation_logs_cache',
+    'bonus_events_cache',
+    'conversations_cache',
+    'user_presence_cache'
+  ],
+  all_required_tables_present: true,
+  context: 'instrumentation',
+  skipped: false,
+  reason: null
+}
+[PLAYER_SESSION_TOUCH_SQL] {
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  deviceId: '8c5ef154-8a06-4930-9b5e-a937faf56e86',
+  pool_acquire_ms: 1,
+  query_exec_ms: 272,
+  cache_invalidation_ms: 0,
+  total_ms: 273,
+  combined: true,
+  combined_update_query_exec_ms: 272,
+  session_update_pool_acquire_ms: 0,
+  session_update_query_exec_ms: 0,
+  players_update_pool_acquire_ms: 0,
+  players_update_query_exec_ms: 0,
+  concurrent_global: 1,
+  concurrent_session: 1,
+  pool_total_count: 8,
+  pool_idle_count: 2,
+  pool_waiting_count: 0,
+  cache_invalidation_applied: false,
+  shared_client: true,
+  sql_ok: true
+}
+[SQL_LOGIN_NO_FIRESTORE_MIRROR] {
+  route: '/api/auth/player-session/touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  playerSessionIdPrefix: '66eebe42',
+  appSessionIdPrefix: 'a15e8c42',
+  firestoreMirrorSkipped: true,
+  reason: 'sql_session_authority'
+}
+[PLAYER_SESSION_SQL] {
+  action: 'touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  sql_ok: true,
+  firestore_mirror_ok: null,
+  firestore_mirror_async: null,
+  previousSessionCount: 0,
+  durationMs: 276,
+  reason: null
+}
+ POST /api/auth/player-session/touch 200 in 301ms (next.js: 22ms, application-code: 280ms)
+ POST /api/presence/heartbeat 200 in 319ms (next.js: 45ms, application-code: 274ms)
+[PLAYER_BASE_DATA_SQL_STAGE] { stage: 'staff', ok: true, count: 1, durationMs: 271 }
+[PLAYER_BASE_DATA_SQL_STAGE] { stage: 'game_logins', ok: true, count: 11, durationMs: 272 }
+[PLAYER_BASE_DATA_SQL_STAGE] { stage: 'freeplay', ok: true, count: 0, durationMs: 278 }
+[PLAYER_BASE_DATA_SQL_STAGE] { stage: 'referral_rewards', ok: true, count: 0, durationMs: 274 }
+[PLAYER_BASE_DATA_PARALLEL] {
+  parallel: true,
+  staff_ms: 271,
+  game_logins_ms: 272,
+  freeplay_ms: 278,
+  referral_rewards_ms: 274,
+  total_sql_ms: 279,
+  total_ms: 281,
+  pool_waiting_max: 3,
+  source: 'postgres'
+}
+ GET /api/player/base-data 200 in 313ms (next.js: 28ms, application-code: 285ms)
+ GET /api/player-cashout-tasks/cache?scope=player&limit=50&uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 200 in 346ms (next.js: 62ms, application-code: 283ms)
+[LIVE_OUTBOX_FANOUT_LISTENING] { channel: 'live_outbox', activeSubscribers: 1 }
+[SNAPSHOT_NO_CHANGE_CHECK] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  carerUid: null,
+  clientLatestOutboxId: null,
+  forceFull: true
+}
+[SNAPSHOT_FULL_QUERY_RUN] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  reason: 'force_full'
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'player_requests_snapshot',
+  acquire_ms: 0,
+  totalCount: 8,
+  idleCount: 6,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  idle_before: 8,
+  waiting_before: 1,
+  slow_acquire: false
+}
+[SNAPSHOT_COLUMN_PRUNED] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  excludedColumns: [ 'raw_firestore_data' ]
+}
+[SNAPSHOT_PAYLOAD_SIZE] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  rowCount: 40,
+  payloadBytes: 20085
+}
+ GET /api/live/snapshot/player/X0lC6Vaq43YM130tuCLv6SDO9Yn2/requests?forceFull=1 200 in 1132ms (next.js: 846ms, application-code: 285ms)
+[PLAYER_LIVE_STREAM_SUBSCRIBE] {
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610
+}
+[LIVE_STREAM_SUBSCRIBE] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610
+}
+[LIVE_STREAM_FANOUT_ENABLED] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610
+}
+[LIVE_OUTBOX_FANOUT_SUBSCRIBED] {
+  subscriberId: 'live-outbox-sub-1781699050544-2',
+  route: 'browser_live_stream',
+  channelCount: 3,
+  activeSubscribers: 2,
+  activeBrowserSubscribers: 2,
+  activeAgentSubscribers: 0,
+  cursor: 4610
+}
+[LIVE_STREAM_FANOUT_SUBSCRIBED] {
+  subscriptionId: 'live-outbox-sub-1781699050544-2',
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610
+}
+[LIVE_STREAM_FANOUT_REPLAY_START] {
+  subscriptionId: 'live-outbox-sub-1781699050544-2',
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610
+}
+[LIVE_STREAM_FANOUT_REPLAY_DONE] {
+  subscriptionId: 'live-outbox-sub-1781699050544-2',
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  replayCount: 0,
+  pendingCount: 0,
+  lastEventId: 4610
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'initial',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[AUTH_CACHE_SUMMARY] { hits: 9, misses: 4, hitRate: 0.692, route: 'app_session_auth' }
+[SQL_POOL_SUMMARY] {
+  name: 'playerMirror',
+  max: 8,
+  totalCount: 1,
+  idleCount: 0,
+  waitingCount: 0,
+  slowAcquireCount: 5,
+  maxAcquireMs: 1131
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1096,
+  totalCount: 1,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/player-session/touch',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=273 total_ms=273 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[PLAYER_SESSION_TOUCH_SQL] {
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  deviceId: '8c5ef154-8a06-4930-9b5e-a937faf56e86',
+  pool_acquire_ms: 1,
+  query_exec_ms: 274,
+  cache_invalidation_ms: 0,
+  total_ms: 275,
+  combined: true,
+  combined_update_query_exec_ms: 274,
+  session_update_pool_acquire_ms: 0,
+  session_update_query_exec_ms: 0,
+  players_update_pool_acquire_ms: 0,
+  players_update_query_exec_ms: 0,
+  concurrent_global: 1,
+  concurrent_session: 1,
+  pool_total_count: 1,
+  pool_idle_count: 0,
+  pool_waiting_count: 0,
+  cache_invalidation_applied: false,
+  shared_client: true,
+  sql_ok: true
+}
+[SQL_LOGIN_NO_FIRESTORE_MIRROR] {
+  route: '/api/auth/player-session/touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  playerSessionIdPrefix: '66eebe42',
+  appSessionIdPrefix: 'a15e8c42',
+  firestoreMirrorSkipped: true,
+  reason: 'sql_session_authority'
+}
+[PLAYER_SESSION_SQL] {
+  action: 'touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  sql_ok: true,
+  firestore_mirror_ok: null,
+  firestore_mirror_async: null,
+  previousSessionCount: 0,
+  durationMs: 1921,
+  reason: null
+}
+ POST /api/auth/player-session/touch 200 in 1927ms (next.js: 1907µs, application-code: 1925ms)
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_OUTBOX_FANOUT_METRICS] {
+  phase: 'interval',
+  activeSubscribers: 2,
+  activeAgentSubscribers: 0,
+  activeBrowserSubscribers: 2,
+  activeChannelCount: 3,
+  cleanupCount: 0,
+  droppedSubscriberCount: 0,
+  deliveredCount: 0,
+  fallbackActive: false,
+  fallbackPollCount: 0,
+  listenerConnected: true,
+  listenerDegraded: false,
+  maxSubscriberLag: 0,
+  notificationCount: 0
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[AUTH_CACHE_SUMMARY] { hits: 0, misses: 1, hitRate: 0, route: 'app_session_auth' }
+[SQL_POOL_SUMMARY] {
+  name: 'playerMirror',
+  max: 8,
+  totalCount: 2,
+  idleCount: 0,
+  waitingCount: 0,
+  slowAcquireCount: 1,
+  maxAcquireMs: 1095
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1095,
+  totalCount: 2,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/player-session/touch',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1120,
+  totalCount: 2,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/player-session/status',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=278 total_ms=278 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=281 total_ms=281 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[PLAYER_SESSION_TOUCH_SQL] {
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  deviceId: '8c5ef154-8a06-4930-9b5e-a937faf56e86',
+  pool_acquire_ms: 0,
+  query_exec_ms: 277,
+  cache_invalidation_ms: 0,
+  total_ms: 277,
+  combined: true,
+  combined_update_query_exec_ms: 277,
+  session_update_pool_acquire_ms: 0,
+  session_update_query_exec_ms: 0,
+  players_update_pool_acquire_ms: 0,
+  players_update_query_exec_ms: 0,
+  concurrent_global: 1,
+  concurrent_session: 1,
+  pool_total_count: 2,
+  pool_idle_count: 0,
+  pool_waiting_count: 0,
+  cache_invalidation_applied: false,
+  shared_client: true,
+  sql_ok: true
+}
+[SQL_LOGIN_NO_FIRESTORE_MIRROR] {
+  route: '/api/auth/player-session/touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  playerSessionIdPrefix: '66eebe42',
+  appSessionIdPrefix: 'a15e8c42',
+  firestoreMirrorSkipped: true,
+  reason: 'sql_session_authority'
+}
+[PLAYER_SESSION_SQL] {
+  action: 'touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  sql_ok: true,
+  firestore_mirror_ok: null,
+  firestore_mirror_async: null,
+  previousSessionCount: 0,
+  durationMs: 1928,
+  reason: null
+}
+ POST /api/auth/player-session/touch 200 in 1933ms (next.js: 1954µs, application-code: 1931ms)
+[LIVE_AUTH_SESSION_SQL] hit=true sessionId=66eebe42-8070-4084-af33-390704a01bd9 playerUid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 active=true expired=false pool_acquire_ms=0 query_exec_ms=280 total_ms=280
+[PLAYER_SESSION_STATUS] {
+  source: 'sql',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  activeSessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  ok: true,
+  reason: null,
+  durationMs: 1962,
+  cache_hit: false
+}
+[ROUTE_METRICS_SUMMARY] {
+  route: '/api/auth/player-session/status',
+  count: 2,
+  avgMs: 1959,
+  p95Ms: 1963,
+  maxMs: 1963,
+  errors: 0,
+  slowCount: 2
+}
+ GET /api/auth/player-session/status 200 in 1971ms (next.js: 6ms, application-code: 1965ms)
+[AUTH_CACHE_SUMMARY] {
+  hits: 7,
+  misses: 1,
+  hitRate: 0.875,
+  route: 'player_session_validation'
+}
+[ROUTE_METRICS_SUMMARY] {
+  route: '/api/presence/heartbeat',
+  count: 3,
+  avgMs: 183,
+  p95Ms: 278,
+  maxMs: 278,
+  errors: 0,
+  slowCount: 0
+}
+ POST /api/presence/heartbeat 200 in 283ms (next.js: 1359µs, application-code: 281ms)
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_OUTBOX_FANOUT_METRICS] {
+  phase: 'interval',
+  activeSubscribers: 2,
+  activeAgentSubscribers: 0,
+  activeBrowserSubscribers: 2,
+  activeChannelCount: 3,
+  cleanupCount: 0,
+  droppedSubscriberCount: 0,
+  deliveredCount: 0,
+  fallbackActive: false,
+  fallbackPollCount: 0,
+  listenerConnected: true,
+  listenerDegraded: false,
+  maxSubscriberLag: 0,
+  notificationCount: 0
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[AUTH_CACHE_SUMMARY] { hits: 1, misses: 2, hitRate: 0.333, route: 'app_session_auth' }
+[SQL_POOL_SUMMARY] {
+  name: 'playerMirror',
+  max: 8,
+  totalCount: 1,
+  idleCount: 0,
+  waitingCount: 0,
+  slowAcquireCount: 2,
+  maxAcquireMs: 1120
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1065,
+  totalCount: 1,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/session/me',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=268 total_ms=268 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[ROUTE_METRICS_SUMMARY] {
+  route: '/api/auth/session/me',
+  count: 2,
+  avgMs: 1399,
+  p95Ms: 1869,
+  maxMs: 1869,
+  errors: 0,
+  slowCount: 2
+}
+[APP_SESSION_ME] {
+  ok: true,
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  source: 'sql',
+  firestore_fallback: false,
+  user_doc_ms: 0,
+  durationMs: 1869
+}
+[APP_SESSION_ME_TIMING] {
+  ok: true,
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  cookie_parse_ms: 0,
+  session_lookup_ms: 269,
+  profile_lookup_ms: 268,
+  pool_acquire_ms: 1065,
+  cache_lookup_ms: 0,
+  client_release_ms: 0,
+  auth_finalize_ms: 1,
+  auth_total_ms: 1604,
+  serialization_ms: 0,
+  response_ms: 0,
+  total_ms: 1869,
+  unaccounted_ms: 265
+}
+[SESSION_ME_TIMING] {
+  ok: true,
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  session_lookup_ms: 269,
+  auth_validation_ms: 1604,
+  profile_lookup_ms: 268,
+  player_session_ms: 0,
+  cache_lookup_ms: 0,
+  player_extras_ms: 265,
+  serialization_ms: 0,
+  response_ms: 0,
+  total_ms: 1869,
+  unaccounted_ms: 0
+}
+[SESSION_ME_RESPONSE_SIZE] {
+  ok: true,
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  bytes: 616,
+  hasPlayerExtras: true
+}
+ GET /api/auth/session/me 200 in 1876ms (next.js: 1329µs, application-code: 1874ms)
+ GET /api/auth/session/me 200 in 3ms (next.js: 1383µs, application-code: 2ms)
+[AUTH_CACHE_SUMMARY] { hits: 0, misses: 1, hitRate: 0, route: 'player_session_validation' }
+[LIVE_AUTH_SESSION_SQL] hit=true sessionId=66eebe42-8070-4084-af33-390704a01bd9 playerUid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 active=true expired=false pool_acquire_ms=0 query_exec_ms=267 total_ms=267
+[PLAYER_BASE_DATA_MODE] {
+  mode: 'parallel',
+  reason: 'warm_pool',
+  totalCount: 1,
+  idleCount: 1,
+  waitingCount: 0,
+  max: 8
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'player_base_data_freeplay',
+  acquire_ms: 1043,
+  totalCount: 4,
+  idleCount: 1,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/player/base-data',
+  idle_before: 1,
+  waiting_before: 2,
+  slow_acquire: true
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'player_base_data_game_logins',
+  acquire_ms: 1087,
+  totalCount: 4,
+  idleCount: 1,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/player/base-data',
+  idle_before: 1,
+  waiting_before: 1,
+  slow_acquire: true
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'player_base_data_referral_rewards',
+  acquire_ms: 1100,
+  totalCount: 4,
+  idleCount: 1,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/player/base-data',
+  idle_before: 1,
+  waiting_before: 3,
+  slow_acquire: true
+}
+[PLAYER_BASE_DATA_SQL_STAGE] { stage: 'staff', ok: true, count: 1, durationMs: 269 }
+[PLAYER_BASE_DATA_SQL_STAGE] { stage: 'game_logins', ok: true, count: 11, durationMs: 1359 }
+[PLAYER_BASE_DATA_SQL_STAGE] { stage: 'freeplay', ok: true, count: 0, durationMs: 1305 }
+[PLAYER_BASE_DATA_SQL_STAGE] { stage: 'referral_rewards', ok: true, count: 0, durationMs: 1376 }
+[PLAYER_BASE_DATA_PARALLEL] {
+  parallel: true,
+  staff_ms: 269,
+  game_logins_ms: 1359,
+  freeplay_ms: 1305,
+  referral_rewards_ms: 1376,
+  total_sql_ms: 1378,
+  total_ms: 1378,
+  pool_waiting_max: 3,
+  source: 'postgres'
+}
+[ROUTE_METRICS_SUMMARY] {
+  route: '/api/player/base-data',
+  count: 2,
+  avgMs: 965,
+  p95Ms: 1647,
+  maxMs: 1647,
+  errors: 0,
+  slowCount: 1
+}
+[PLAYER_BASE_DATA_TIMING] {
+  auth_session_validation_ms: 268,
+  player_profile_lookup_ms: 0,
+  player_session_ms: null,
+  staff_coadmin_lookup_ms: 269,
+  game_logins_ms: 1359,
+  freeplay_pending_ms: 1305,
+  referral_rewards_ms: 1376,
+  serialization_ms: 0,
+  total_sql_ms: 1378,
+  total_ms: 1647,
+  parallel: true,
+  shared_client: false,
+  client_acquire_ms: 1100,
+  pool_waiting_max: 3,
+  dominant_stage: { stage: 'referral_rewards_ms', ms: 1376 },
+  counts: { staff: 1, gameLogins: 11, referralGroups: 0 },
+  source: 'postgres'
+}
+[PLAYER_BASE_DATA] {
+  auth_ms: 268,
+  shared_client: false,
+  parallel: true,
+  client_acquire_ms: 1100,
+  staff_ms: 269,
+  game_logins_ms: 1359,
+  freeplay_ms: 1305,
+  referral_rewards_ms: 1376,
+  total_sql_ms: 1378,
+  pool_waiting_max: 3,
+  total_ms: 1378,
+  counts: { staff: 1, gameLogins: 11, referralGroups: 0 },
+  pendingGift: false,
+  source: 'postgres'
+}
+ GET /api/player/base-data 200 in 1651ms (next.js: 1069µs, application-code: 1650ms)
+[SNAPSHOT_NO_CHANGE_CHECK] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  carerUid: null,
+  clientLatestOutboxId: null,
+  forceFull: true
+}
+[SNAPSHOT_FULL_QUERY_RUN] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  reason: 'force_full'
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'player_requests_snapshot',
+  acquire_ms: 0,
+  totalCount: 4,
+  idleCount: 2,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  idle_before: 4,
+  waiting_before: 1,
+  slow_acquire: false
+}
+[SNAPSHOT_COLUMN_PRUNED] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  excludedColumns: [ 'raw_firestore_data' ]
+}
+[SNAPSHOT_PAYLOAD_SIZE] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  rowCount: 40,
+  payloadBytes: 20085
+}
+ GET /api/live/snapshot/player/X0lC6Vaq43YM130tuCLv6SDO9Yn2/requests?forceFull=1 200 in 289ms (next.js: 6ms, application-code: 283ms)
+[BONUS_EVENTS_CACHE_MISS_MEMORY] {
+  key: 'pNaCcFpMHccu5l3TgLSKvldtrOB2|includeInactive=0|skipTimeWindowFilter=0',
+  reason: 'empty'
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'unspecified',
+  acquire_ms: 0,
+  totalCount: 4,
+  idleCount: 2,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: null,
+  idle_before: 4,
+  waiting_before: 1,
+  slow_acquire: false
+}
+[GAME_LOGINS_CACHE] postgres read {
+  pool: 'playerMirror',
+  coadminUid: 'pNaCcFpMHccu5l3TgLSKvldtrOB2',
+  count: 11,
+  pg_connect_ms: 1,
+  poolReused: true
+}
+[BONUS_EVENTS_CACHE] read ok {
+  coadminUid: 'pNaCcFpMHccu5l3TgLSKvldtrOB2',
+  totalRows: 40,
+  activeRows: 20,
+  returnedCount: 20,
+  includeInactive: false,
+  durationMs: 1100
+}
+[BONUS_EVENTS_LIST_SQL] {
+  route: '/api/bonus-events/list',
+  table: 'bonus_events_cache',
+  coadminUid: 'pNaCcFpMHccu5l3TgLSKvldtrOB2',
+  count: 20,
+  activeCount: 20,
+  sql_ms: 1103,
+  firestore_fallback: false,
+  reason: 'bonus_events_cache_read'
+}
+[PLAYER_BONUS_LIST_SQL] {
+  route: '/api/bonus-events/list',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  playerCoadminUid: 'pNaCcFpMHccu5l3TgLSKvldtrOB2',
+  queriedCoadminUid: 'pNaCcFpMHccu5l3TgLSKvldtrOB2',
+  totalRowsForCoadmin: 20,
+  returnedCount: 20,
+  reason: 'bonus_events_cache_read_active'
+}
+ GET /api/bonus-events/list?coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 200 in 1138ms (next.js: 28ms, application-code: 1109ms)
+[BONUS_EVENTS_CACHE_HIT_MEMORY] {
+  key: 'pNaCcFpMHccu5l3TgLSKvldtrOB2|includeInactive=0|skipTimeWindowFilter=0',
+  ageMs: 6,
+  expiresInMs: 44994
+}
+ GET /api/bonus-events/list?coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 200 in 4ms (next.js: 1512µs, application-code: 3ms)
+[PLAYER_SESSION_TOUCH_SQL] {
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  deviceId: '8c5ef154-8a06-4930-9b5e-a937faf56e86',
+  pool_acquire_ms: 0,
+  query_exec_ms: 276,
+  cache_invalidation_ms: 0,
+  total_ms: 276,
+  combined: true,
+  combined_update_query_exec_ms: 276,
+  session_update_pool_acquire_ms: 0,
+  session_update_query_exec_ms: 0,
+  players_update_pool_acquire_ms: 0,
+  players_update_query_exec_ms: 0,
+  concurrent_global: 1,
+  concurrent_session: 1,
+  pool_total_count: 4,
+  pool_idle_count: 2,
+  pool_waiting_count: 0,
+  cache_invalidation_applied: false,
+  shared_client: true,
+  sql_ok: true
+}
+[SQL_LOGIN_NO_FIRESTORE_MIRROR] {
+  route: '/api/auth/player-session/touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  playerSessionIdPrefix: '66eebe42',
+  appSessionIdPrefix: 'a15e8c42',
+  firestoreMirrorSkipped: true,
+  reason: 'sql_session_authority'
+}
+[PLAYER_SESSION_SQL] {
+  action: 'touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  sql_ok: true,
+  firestore_mirror_ok: null,
+  firestore_mirror_async: null,
+  previousSessionCount: 0,
+  durationMs: 277,
+  reason: null
+}
+ POST /api/auth/player-session/touch 200 in 283ms (next.js: 1684µs, application-code: 281ms)
+ GET /api/player/play-data 200 in 303ms (next.js: 28ms, application-code: 276ms)
+[STAFF_MESSAGE_LIST_QUERY] { uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2', role: 'player' }
+[STAFF_MESSAGE_LIST_RESULT] {
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  peerCount: 0,
+  totalUnread: 0
+}
+ GET /api/chat/unread-counts 200 in 301ms (next.js: 24ms, application-code: 277ms)
+[SNAPSHOT_NO_CHANGE_CHECK] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  carerUid: null,
+  clientLatestOutboxId: 4610,
+  forceFull: false
+}
+[SNAPSHOT_NO_CHANGE_HIT] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  carerUid: null,
+  latestOutboxId: 4610,
+  outboxQueryMs: 270
+}
+[SNAPSHOT_FULL_QUERY_SKIPPED] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  latestOutboxId: 4610,
+  outboxQueryMs: 270
+}
+ GET /api/live/snapshot/player/X0lC6Vaq43YM130tuCLv6SDO9Yn2/requests?latestOutboxId=4610 200 in 280ms (next.js: 6ms, application-code: 274ms)
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+ GET /api/auth/session/me 200 in 3ms (next.js: 1292µs, application-code: 2ms)
+[LIVE_AUTH_SESSION_SQL] hit=true sessionId=66eebe42-8070-4084-af33-390704a01bd9 playerUid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 active=true expired=false pool_acquire_ms=0 query_exec_ms=268 total_ms=268
+[PLAYER_BASE_DATA_MODE] {
+  mode: 'parallel',
+  reason: 'warm_pool',
+  totalCount: 4,
+  idleCount: 4,
+  waitingCount: 0,
+  max: 8
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'player_base_data_game_logins',
+  acquire_ms: 0,
+  totalCount: 4,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/player/base-data',
+  idle_before: 4,
+  waiting_before: 1,
+  slow_acquire: false
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'player_base_data_freeplay',
+  acquire_ms: 0,
+  totalCount: 4,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/player/base-data',
+  idle_before: 4,
+  waiting_before: 2,
+  slow_acquire: false
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'player_base_data_referral_rewards',
+  acquire_ms: 1,
+  totalCount: 4,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/player/base-data',
+  idle_before: 4,
+  waiting_before: 3,
+  slow_acquire: false
+}
+[PLAYER_BASE_DATA_SQL_STAGE] { stage: 'staff', ok: true, count: 1, durationMs: 269 }
+[PLAYER_BASE_DATA_SQL_STAGE] { stage: 'game_logins', ok: true, count: 11, durationMs: 272 }
+[PLAYER_BASE_DATA_SQL_STAGE] { stage: 'freeplay', ok: true, count: 0, durationMs: 258 }
+[PLAYER_BASE_DATA_SQL_STAGE] { stage: 'referral_rewards', ok: true, count: 0, durationMs: 266 }
+[PLAYER_BASE_DATA_PARALLEL] {
+  parallel: true,
+  staff_ms: 269,
+  game_logins_ms: 272,
+  freeplay_ms: 258,
+  referral_rewards_ms: 266,
+  total_sql_ms: 274,
+  total_ms: 275,
+  pool_waiting_max: 3,
+  source: 'postgres'
+}
+ GET /api/player/base-data 200 in 548ms (next.js: 1232µs, application-code: 546ms)
+[SNAPSHOT_NO_CHANGE_CHECK] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  carerUid: null,
+  clientLatestOutboxId: null,
+  forceFull: true
+}
+[SNAPSHOT_FULL_QUERY_RUN] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  reason: 'force_full'
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'player_requests_snapshot',
+  acquire_ms: 0,
+  totalCount: 4,
+  idleCount: 2,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  idle_before: 4,
+  waiting_before: 1,
+  slow_acquire: false
+}
+[SNAPSHOT_COLUMN_PRUNED] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  excludedColumns: [ 'raw_firestore_data' ]
+}
+[SNAPSHOT_PAYLOAD_SIZE] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  rowCount: 40,
+  payloadBytes: 20085
+}
+ GET /api/live/snapshot/player/X0lC6Vaq43YM130tuCLv6SDO9Yn2/requests?forceFull=1 200 in 284ms (next.js: 5ms, application-code: 279ms)
+[BONUS_EVENTS_CACHE_HIT_MEMORY] {
+  key: 'pNaCcFpMHccu5l3TgLSKvldtrOB2|includeInactive=0|skipTimeWindowFilter=0',
+  ageMs: 22489,
+  expiresInMs: 22511
+}
+ GET /api/bonus-events/list?coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 200 in 3ms (next.js: 1144µs, application-code: 2ms)
+ GET /api/player/play-data 200 in 277ms (next.js: 914µs, application-code: 276ms)
+[STAFF_MESSAGE_LIST_QUERY] { uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2', role: 'player' }
+[STAFF_MESSAGE_LIST_RESULT] {
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  peerCount: 0,
+  totalUnread: 0
+}
+ GET /api/chat/unread-counts 200 in 277ms (next.js: 1343µs, application-code: 276ms)
+[SNAPSHOT_NO_CHANGE_CHECK] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  carerUid: null,
+  clientLatestOutboxId: 4610,
+  forceFull: false
+}
+[SNAPSHOT_NO_CHANGE_HIT] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  carerUid: null,
+  latestOutboxId: 4610,
+  outboxQueryMs: 275
+}
+[SNAPSHOT_FULL_QUERY_SKIPPED] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  latestOutboxId: 4610,
+  outboxQueryMs: 275
+}
+ GET /api/live/snapshot/player/X0lC6Vaq43YM130tuCLv6SDO9Yn2/requests?latestOutboxId=4610 200 in 283ms (next.js: 5ms, application-code: 279ms)
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_OUTBOX_FANOUT_METRICS] {
+  phase: 'interval',
+  activeSubscribers: 2,
+  activeAgentSubscribers: 0,
+  activeBrowserSubscribers: 2,
+  activeChannelCount: 3,
+  cleanupCount: 0,
+  droppedSubscriberCount: 0,
+  deliveredCount: 0,
+  fallbackActive: false,
+  fallbackPollCount: 0,
+  listenerConnected: true,
+  listenerDegraded: false,
+  maxSubscriberLag: 0,
+  notificationCount: 0
+}
+[AUTH_CACHE_SUMMARY] { hits: 20, misses: 1, hitRate: 0.952, route: 'app_session_auth' }
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=270 total_ms=270 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=272 total_ms=272 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[LIVE_AUTH_SESSION_SQL] hit=true sessionId=66eebe42-8070-4084-af33-390704a01bd9 playerUid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 active=true expired=false pool_acquire_ms=0 query_exec_ms=269 total_ms=269
+[PLAYER_SESSION_STATUS] {
+  source: 'sql',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  activeSessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  ok: true,
+  reason: null,
+  durationMs: 810,
+  cache_hit: false
+}
+[ROUTE_METRICS_SUMMARY] {
+  route: '/api/auth/player-session/status',
+  count: 1,
+  avgMs: 810,
+  p95Ms: 810,
+  maxMs: 810,
+  errors: 0,
+  slowCount: 1
+}
+ GET /api/auth/player-session/status 200 in 813ms (next.js: 1042µs, application-code: 812ms)
+[PLAYER_SESSION_TOUCH_SQL] {
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  deviceId: '8c5ef154-8a06-4930-9b5e-a937faf56e86',
+  pool_acquire_ms: 1,
+  query_exec_ms: 272,
+  cache_invalidation_ms: 0,
+  total_ms: 273,
+  combined: true,
+  combined_update_query_exec_ms: 272,
+  session_update_pool_acquire_ms: 0,
+  session_update_query_exec_ms: 0,
+  players_update_pool_acquire_ms: 0,
+  players_update_query_exec_ms: 0,
+  concurrent_global: 1,
+  concurrent_session: 1,
+  pool_total_count: 4,
+  pool_idle_count: 3,
+  pool_waiting_count: 0,
+  cache_invalidation_applied: false,
+  shared_client: true,
+  sql_ok: true
+}
+[SQL_LOGIN_NO_FIRESTORE_MIRROR] {
+  route: '/api/auth/player-session/touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  playerSessionIdPrefix: '66eebe42',
+  appSessionIdPrefix: 'a15e8c42',
+  firestoreMirrorSkipped: true,
+  reason: 'sql_session_authority'
+}
+[PLAYER_SESSION_SQL] {
+  action: 'touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  sql_ok: true,
+  firestore_mirror_ok: null,
+  firestore_mirror_async: null,
+  previousSessionCount: 0,
+  durationMs: 821,
+  reason: null
+}
+ POST /api/auth/player-session/touch 200 in 824ms (next.js: 1286µs, application-code: 823ms)
+[AUTH_CACHE_SUMMARY] {
+  hits: 12,
+  misses: 1,
+  hitRate: 0.923,
+  route: 'player_session_validation'
+}
+[ROUTE_METRICS_SUMMARY] {
+  route: '/api/presence/heartbeat',
+  count: 1,
+  avgMs: 273,
+  p95Ms: 273,
+  maxMs: 273,
+  errors: 0,
+  slowCount: 0
+}
+ POST /api/presence/heartbeat 200 in 278ms (next.js: 1374µs, application-code: 276ms)
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[AUTH_CACHE_SUMMARY] { hits: 1, misses: 2, hitRate: 0.333, route: 'app_session_auth' }
+[SQL_POOL_SUMMARY] {
+  name: 'playerMirror',
+  max: 8,
+  totalCount: 1,
+  idleCount: 0,
+  waitingCount: 0,
+  slowAcquireCount: 4,
+  maxAcquireMs: 1104
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1104,
+  totalCount: 1,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/player-session/touch',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=275 total_ms=275 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[PLAYER_SESSION_TOUCH_SQL] {
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  deviceId: '8c5ef154-8a06-4930-9b5e-a937faf56e86',
+  pool_acquire_ms: 1,
+  query_exec_ms: 276,
+  cache_invalidation_ms: 0,
+  total_ms: 278,
+  combined: true,
+  combined_update_query_exec_ms: 276,
+  session_update_pool_acquire_ms: 0,
+  session_update_query_exec_ms: 0,
+  players_update_pool_acquire_ms: 0,
+  players_update_query_exec_ms: 0,
+  concurrent_global: 1,
+  concurrent_session: 1,
+  pool_total_count: 1,
+  pool_idle_count: 0,
+  pool_waiting_count: 0,
+  cache_invalidation_applied: false,
+  shared_client: true,
+  sql_ok: true
+}
+[SQL_LOGIN_NO_FIRESTORE_MIRROR] {
+  route: '/api/auth/player-session/touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  playerSessionIdPrefix: '66eebe42',
+  appSessionIdPrefix: 'a15e8c42',
+  firestoreMirrorSkipped: true,
+  reason: 'sql_session_authority'
+}
+[PLAYER_SESSION_SQL] {
+  action: 'touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  sql_ok: true,
+  firestore_mirror_ok: null,
+  firestore_mirror_async: null,
+  previousSessionCount: 0,
+  durationMs: 1940,
+  reason: null
+}
+ POST /api/auth/player-session/touch 200 in 1944ms (next.js: 1475µs, application-code: 1942ms)
+[LIVE_OUTBOX_FANOUT_METRICS] {
+  phase: 'interval',
+  activeSubscribers: 2,
+  activeAgentSubscribers: 0,
+  activeBrowserSubscribers: 2,
+  activeChannelCount: 3,
+  cleanupCount: 0,
+  droppedSubscriberCount: 0,
+  deliveredCount: 0,
+  fallbackActive: false,
+  fallbackPollCount: 0,
+  listenerConnected: true,
+  listenerDegraded: false,
+  maxSubscriberLag: 0,
+  notificationCount: 0
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[AUTH_CACHE_SUMMARY] { hits: 0, misses: 1, hitRate: 0, route: 'app_session_auth' }
+[SQL_POOL_SUMMARY] {
+  name: 'playerMirror',
+  max: 8,
+  totalCount: 2,
+  idleCount: 0,
+  waitingCount: 0,
+  slowAcquireCount: 1,
+  maxAcquireMs: 1078
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1078,
+  totalCount: 2,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/player-session/touch',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1081,
+  totalCount: 2,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/player-session/status',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=270 total_ms=270 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=269 total_ms=269 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[PLAYER_SESSION_TOUCH_SQL] {
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  deviceId: '8c5ef154-8a06-4930-9b5e-a937faf56e86',
+  pool_acquire_ms: 0,
+  query_exec_ms: 271,
+  cache_invalidation_ms: 0,
+  total_ms: 271,
+  combined: true,
+  combined_update_query_exec_ms: 271,
+  session_update_pool_acquire_ms: 0,
+  session_update_query_exec_ms: 0,
+  players_update_pool_acquire_ms: 0,
+  players_update_query_exec_ms: 0,
+  concurrent_global: 1,
+  concurrent_session: 1,
+  pool_total_count: 2,
+  pool_idle_count: 0,
+  pool_waiting_count: 0,
+  cache_invalidation_applied: false,
+  shared_client: true,
+  sql_ok: true
+}
+[SQL_LOGIN_NO_FIRESTORE_MIRROR] {
+  route: '/api/auth/player-session/touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  playerSessionIdPrefix: '66eebe42',
+  appSessionIdPrefix: 'a15e8c42',
+  firestoreMirrorSkipped: true,
+  reason: 'sql_session_authority'
+}
+[PLAYER_SESSION_SQL] {
+  action: 'touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  sql_ok: true,
+  firestore_mirror_ok: null,
+  firestore_mirror_async: null,
+  previousSessionCount: 0,
+  durationMs: 1895,
+  reason: null
+}
+ POST /api/auth/player-session/touch 200 in 1900ms (next.js: 1612µs, application-code: 1898ms)
+[LIVE_AUTH_SESSION_SQL] hit=true sessionId=66eebe42-8070-4084-af33-390704a01bd9 playerUid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 active=true expired=false pool_acquire_ms=0 query_exec_ms=269 total_ms=269
+[PLAYER_SESSION_STATUS] {
+  source: 'sql',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  activeSessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  ok: true,
+  reason: null,
+  durationMs: 1892,
+  cache_hit: false
+}
+[ROUTE_METRICS_SUMMARY] {
+  route: '/api/auth/player-session/status',
+  count: 1,
+  avgMs: 1893,
+  p95Ms: 1893,
+  maxMs: 1893,
+  errors: 0,
+  slowCount: 1
+}
+ GET /api/auth/player-session/status 200 in 1896ms (next.js: 966µs, application-code: 1895ms)
+[AUTH_CACHE_SUMMARY] { hits: 1, misses: 0, hitRate: 1, route: 'player_session_validation' }
+[ROUTE_METRICS_SUMMARY] {
+  route: '/api/presence/heartbeat',
+  count: 1,
+  avgMs: 271,
+  p95Ms: 271,
+  maxMs: 271,
+  errors: 0,
+  slowCount: 0
+}
+ POST /api/presence/heartbeat 200 in 276ms (next.js: 1184µs, application-code: 275ms)
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_OUTBOX_FANOUT_METRICS] {
+  phase: 'interval',
+  activeSubscribers: 2,
+  activeAgentSubscribers: 0,
+  activeBrowserSubscribers: 2,
+  activeChannelCount: 3,
+  cleanupCount: 0,
+  droppedSubscriberCount: 0,
+  deliveredCount: 0,
+  fallbackActive: false,
+  fallbackPollCount: 0,
+  listenerConnected: true,
+  listenerDegraded: false,
+  maxSubscriberLag: 0,
+  notificationCount: 0
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[AUTH_CACHE_SUMMARY] { hits: 1, misses: 2, hitRate: 0.333, route: 'app_session_auth' }
+[SQL_POOL_SUMMARY] {
+  name: 'playerMirror',
+  max: 8,
+  totalCount: 1,
+  idleCount: 0,
+  waitingCount: 0,
+  slowAcquireCount: 2,
+  maxAcquireMs: 1081
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1080,
+  totalCount: 1,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/live/snapshot/player/X0lC6Vaq43YM130tuCLv6SDO9Yn2/requests',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=271 total_ms=271 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[APP_SESSIONS] {
+  app_session_touch_skipped: true,
+  reason: 'player_sql_session_authoritative',
+  sessionIdPrefix: 'a15e8c42'
+}
+[AUTH_CACHE_SUMMARY] { hits: 0, misses: 1, hitRate: 0, route: 'player_session_validation' }
+[LIVE_AUTH_SESSION_SQL] hit=true sessionId=66eebe42-8070-4084-af33-390704a01bd9 playerUid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 active=true expired=false pool_acquire_ms=1 query_exec_ms=268 total_ms=269
+[SNAPSHOT_NO_CHANGE_CHECK] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  carerUid: null,
+  clientLatestOutboxId: 4610,
+  forceFull: false
+}
+[SNAPSHOT_NO_CHANGE_HIT] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  carerUid: null,
+  latestOutboxId: 4610,
+  outboxQueryMs: 268
+}
+[SNAPSHOT_FULL_QUERY_SKIPPED] {
+  route: '/api/live/snapshot/player/[playerUid]/requests',
+  latestOutboxId: 4610,
+  outboxQueryMs: 268
+}
+ GET /api/live/snapshot/player/X0lC6Vaq43YM130tuCLv6SDO9Yn2/requests?latestOutboxId=4610 200 in 2.2s (next.js: 6ms, application-code: 2.2s)
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_OUTBOX_FANOUT_METRICS] {
+  phase: 'interval',
+  activeSubscribers: 2,
+  activeAgentSubscribers: 0,
+  activeBrowserSubscribers: 2,
+  activeChannelCount: 3,
+  cleanupCount: 0,
+  droppedSubscriberCount: 0,
+  deliveredCount: 0,
+  fallbackActive: false,
+  fallbackPollCount: 0,
+  listenerConnected: true,
+  listenerDegraded: false,
+  maxSubscriberLag: 0,
+  notificationCount: 0
+}
+[AUTH_CACHE_SUMMARY] { hits: 0, misses: 1, hitRate: 0, route: 'app_session_auth' }
+[SQL_POOL_SUMMARY] {
+  name: 'playerMirror',
+  max: 8,
+  totalCount: 2,
+  idleCount: 0,
+  waitingCount: 0,
+  slowAcquireCount: 1,
+  maxAcquireMs: 1043
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1043,
+  totalCount: 2,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/player-session/status',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1110,
+  totalCount: 2,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/player-session/touch',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=263 total_ms=263 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=279 total_ms=279 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[LIVE_AUTH_SESSION_SQL] hit=true sessionId=66eebe42-8070-4084-af33-390704a01bd9 playerUid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 active=true expired=false pool_acquire_ms=0 query_exec_ms=261 total_ms=261
+[PLAYER_SESSION_STATUS] {
+  source: 'sql',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  activeSessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  ok: true,
+  reason: null,
+  durationMs: 1829,
+  cache_hit: false
+}
+[ROUTE_METRICS_SUMMARY] {
+  route: '/api/auth/player-session/status',
+  count: 1,
+  avgMs: 1830,
+  p95Ms: 1830,
+  maxMs: 1830,
+  errors: 0,
+  slowCount: 1
+}
+ GET /api/auth/player-session/status 200 in 1835ms (next.js: 2ms, application-code: 1833ms)
+[AUTH_CACHE_SUMMARY] { hits: 1, misses: 0, hitRate: 1, route: 'player_session_validation' }
+[PLAYER_SESSION_TOUCH_SQL] {
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  deviceId: '8c5ef154-8a06-4930-9b5e-a937faf56e86',
+  pool_acquire_ms: 0,
+  query_exec_ms: 277,
+  cache_invalidation_ms: 0,
+  total_ms: 278,
+  combined: true,
+  combined_update_query_exec_ms: 277,
+  session_update_pool_acquire_ms: 0,
+  session_update_query_exec_ms: 0,
+  players_update_pool_acquire_ms: 0,
+  players_update_query_exec_ms: 0,
+  concurrent_global: 1,
+  concurrent_session: 1,
+  pool_total_count: 2,
+  pool_idle_count: 0,
+  pool_waiting_count: 0,
+  cache_invalidation_applied: false,
+  shared_client: true,
+  sql_ok: true
+}
+[SQL_LOGIN_NO_FIRESTORE_MIRROR] {
+  route: '/api/auth/player-session/touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  playerSessionIdPrefix: '66eebe42',
+  appSessionIdPrefix: 'a15e8c42',
+  firestoreMirrorSkipped: true,
+  reason: 'sql_session_authority'
+}
+[PLAYER_SESSION_SQL] {
+  action: 'touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  sql_ok: true,
+  firestore_mirror_ok: null,
+  firestore_mirror_async: null,
+  previousSessionCount: 0,
+  durationMs: 1972,
+  reason: null
+}
+ POST /api/auth/player-session/touch 200 in 1978ms (next.js: 2ms, application-code: 1976ms)
+[ROUTE_METRICS_SUMMARY] {
+  route: '/api/presence/heartbeat',
+  count: 1,
+  avgMs: 265,
+  p95Ms: 265,
+  maxMs: 265,
+  errors: 0,
+  slowCount: 0
+}
+ POST /api/presence/heartbeat 200 in 269ms (next.js: 1312µs, application-code: 268ms)
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_OUTBOX_FANOUT_METRICS] {
+  phase: 'interval',
+  activeSubscribers: 2,
+  activeAgentSubscribers: 0,
+  activeBrowserSubscribers: 2,
+  activeChannelCount: 3,
+  cleanupCount: 0,
+  droppedSubscriberCount: 0,
+  deliveredCount: 0,
+  fallbackActive: false,
+  fallbackPollCount: 0,
+  listenerConnected: true,
+  listenerDegraded: false,
+  maxSubscriberLag: 0,
+  notificationCount: 0
+}
+[AUTH_CACHE_SUMMARY] { hits: 1, misses: 2, hitRate: 0.333, route: 'app_session_auth' }
+[SQL_POOL_SUMMARY] {
+  name: 'playerMirror',
+  max: 8,
+  totalCount: 1,
+  idleCount: 0,
+  waitingCount: 0,
+  slowAcquireCount: 2,
+  maxAcquireMs: 1112
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1112,
+  totalCount: 1,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/player-session/touch',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=278 total_ms=278 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[PLAYER_SESSION_TOUCH_SQL] {
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  deviceId: '8c5ef154-8a06-4930-9b5e-a937faf56e86',
+  pool_acquire_ms: 0,
+  query_exec_ms: 277,
+  cache_invalidation_ms: 0,
+  total_ms: 277,
+  combined: true,
+  combined_update_query_exec_ms: 277,
+  session_update_pool_acquire_ms: 0,
+  session_update_query_exec_ms: 0,
+  players_update_pool_acquire_ms: 0,
+  players_update_query_exec_ms: 0,
+  concurrent_global: 1,
+  concurrent_session: 1,
+  pool_total_count: 1,
+  pool_idle_count: 0,
+  pool_waiting_count: 0,
+  cache_invalidation_applied: false,
+  shared_client: true,
+  sql_ok: true
+}
+[SQL_LOGIN_NO_FIRESTORE_MIRROR] {
+  route: '/api/auth/player-session/touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  playerSessionIdPrefix: '66eebe42',
+  appSessionIdPrefix: 'a15e8c42',
+  firestoreMirrorSkipped: true,
+  reason: 'sql_session_authority'
+}
+[PLAYER_SESSION_SQL] {
+  action: 'touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  sql_ok: true,
+  firestore_mirror_ok: null,
+  firestore_mirror_async: null,
+  previousSessionCount: 0,
+  durationMs: 1957,
+  reason: null
+}
+ POST /api/auth/player-session/touch 200 in 1967ms (next.js: 4ms, application-code: 1963ms)
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_AUTH_SESSION_SQL] hit=true sessionId=66eebe42-8070-4084-af33-390704a01bd9 playerUid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 active=true expired=false pool_acquire_ms=0 query_exec_ms=282 total_ms=282
+[ROUTE_METRICS_SUMMARY] {
+  route: '/api/auth/player-session/status',
+  count: 1,
+  avgMs: 283,
+  p95Ms: 283,
+  maxMs: 283,
+  errors: 0,
+  slowCount: 0
+}
+ GET /api/auth/player-session/status 200 in 288ms (next.js: 1737µs, application-code: 286ms)
+[AUTH_CACHE_SUMMARY] { hits: 2, misses: 0, hitRate: 1, route: 'app_session_auth' }
+[AUTH_CACHE_SUMMARY] { hits: 1, misses: 0, hitRate: 1, route: 'player_session_validation' }
+[ROUTE_METRICS_SUMMARY] {
+  route: '/api/presence/heartbeat',
+  count: 1,
+  avgMs: 276,
+  p95Ms: 276,
+  maxMs: 276,
+  errors: 0,
+  slowCount: 0
+}
+ POST /api/presence/heartbeat 200 in 281ms (next.js: 1367µs, application-code: 280ms)
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_OUTBOX_FANOUT_METRICS] {
+  phase: 'interval',
+  activeSubscribers: 2,
+  activeAgentSubscribers: 0,
+  activeBrowserSubscribers: 2,
+  activeChannelCount: 3,
+  cleanupCount: 0,
+  droppedSubscriberCount: 0,
+  deliveredCount: 0,
+  fallbackActive: false,
+  fallbackPollCount: 0,
+  listenerConnected: true,
+  listenerDegraded: false,
+  maxSubscriberLag: 0,
+  notificationCount: 0
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=274 total_ms=274 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[PLAYER_SESSION_TOUCH_SQL] {
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  deviceId: '8c5ef154-8a06-4930-9b5e-a937faf56e86',
+  pool_acquire_ms: 0,
+  query_exec_ms: 279,
+  cache_invalidation_ms: 0,
+  total_ms: 279,
+  combined: true,
+  combined_update_query_exec_ms: 279,
+  session_update_pool_acquire_ms: 0,
+  session_update_query_exec_ms: 0,
+  players_update_pool_acquire_ms: 0,
+  players_update_query_exec_ms: 0,
+  concurrent_global: 1,
+  concurrent_session: 1,
+  pool_total_count: 1,
+  pool_idle_count: 0,
+  pool_waiting_count: 0,
+  cache_invalidation_applied: false,
+  shared_client: true,
+  sql_ok: true
+}
+[SQL_LOGIN_NO_FIRESTORE_MIRROR] {
+  route: '/api/auth/player-session/touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  playerSessionIdPrefix: '66eebe42',
+  appSessionIdPrefix: 'a15e8c42',
+  firestoreMirrorSkipped: true,
+  reason: 'sql_session_authority'
+}
+[PLAYER_SESSION_SQL] {
+  action: 'touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  sql_ok: true,
+  firestore_mirror_ok: null,
+  firestore_mirror_async: null,
+  previousSessionCount: 0,
+  durationMs: 835,
+  reason: null
+}
+ POST /api/auth/player-session/touch 200 in 840ms (next.js: 3ms, application-code: 837ms)
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_OUTBOX_FANOUT_METRICS] {
+  phase: 'interval',
+  activeSubscribers: 2,
+  activeAgentSubscribers: 0,
+  activeBrowserSubscribers: 2,
+  activeChannelCount: 3,
+  cleanupCount: 0,
+  droppedSubscriberCount: 0,
+  deliveredCount: 0,
+  fallbackActive: false,
+  fallbackPollCount: 0,
+  listenerConnected: true,
+  listenerDegraded: false,
+  maxSubscriberLag: 0,
+  notificationCount: 0
+}
+[AUTH_CACHE_SUMMARY] { hits: 0, misses: 2, hitRate: 0, route: 'app_session_auth' }
+[SQL_POOL_SUMMARY] {
+  name: 'playerMirror',
+  max: 8,
+  totalCount: 2,
+  idleCount: 0,
+  waitingCount: 0,
+  slowAcquireCount: 1,
+  maxAcquireMs: 1046
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1046,
+  totalCount: 2,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/player-session/status',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1082,
+  totalCount: 2,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/player-session/touch',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=261 total_ms=261 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=272 total_ms=272 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[LIVE_AUTH_SESSION_SQL] hit=true sessionId=66eebe42-8070-4084-af33-390704a01bd9 playerUid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 active=true expired=false pool_acquire_ms=0 query_exec_ms=261 total_ms=261
+[PLAYER_SESSION_STATUS] {
+  source: 'sql',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  activeSessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  ok: true,
+  reason: null,
+  durationMs: 1837,
+  cache_hit: false
+}
+[ROUTE_METRICS_SUMMARY] {
+  route: '/api/auth/player-session/status',
+  count: 1,
+  avgMs: 1837,
+  p95Ms: 1837,
+  maxMs: 1837,
+  errors: 0,
+  slowCount: 1
+}
+ GET /api/auth/player-session/status 200 in 1840ms (next.js: 1220µs, application-code: 1839ms)
+[AUTH_CACHE_SUMMARY] { hits: 1, misses: 0, hitRate: 1, route: 'player_session_validation' }
+[PLAYER_SESSION_TOUCH_SQL] {
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  deviceId: '8c5ef154-8a06-4930-9b5e-a937faf56e86',
+  pool_acquire_ms: 0,
+  query_exec_ms: 274,
+  cache_invalidation_ms: 0,
+  total_ms: 274,
+  combined: true,
+  combined_update_query_exec_ms: 274,
+  session_update_pool_acquire_ms: 0,
+  session_update_query_exec_ms: 0,
+  players_update_pool_acquire_ms: 0,
+  players_update_query_exec_ms: 0,
+  concurrent_global: 1,
+  concurrent_session: 1,
+  pool_total_count: 2,
+  pool_idle_count: 0,
+  pool_waiting_count: 0,
+  cache_invalidation_applied: false,
+  shared_client: true,
+  sql_ok: true
+}
+[SQL_LOGIN_NO_FIRESTORE_MIRROR] {
+  route: '/api/auth/player-session/touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  playerSessionIdPrefix: '66eebe42',
+  appSessionIdPrefix: 'a15e8c42',
+  firestoreMirrorSkipped: true,
+  reason: 'sql_session_authority'
+}
+[PLAYER_SESSION_SQL] {
+  action: 'touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  sql_ok: true,
+  firestore_mirror_ok: null,
+  firestore_mirror_async: null,
+  previousSessionCount: 0,
+  durationMs: 1901,
+  reason: null
+}
+ POST /api/auth/player-session/touch 200 in 1906ms (next.js: 1854µs, application-code: 1904ms)
+[ROUTE_METRICS_SUMMARY] {
+  route: '/api/presence/heartbeat',
+  count: 1,
+  avgMs: 261,
+  p95Ms: 261,
+  maxMs: 261,
+  errors: 0,
+  slowCount: 0
+}
+ POST /api/presence/heartbeat 200 in 266ms (next.js: 1302µs, application-code: 265ms)
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_OUTBOX_FANOUT_METRICS] {
+  phase: 'interval',
+  activeSubscribers: 2,
+  activeAgentSubscribers: 0,
+  activeBrowserSubscribers: 2,
+  activeChannelCount: 3,
+  cleanupCount: 0,
+  droppedSubscriberCount: 0,
+  deliveredCount: 0,
+  fallbackActive: false,
+  fallbackPollCount: 0,
+  listenerConnected: true,
+  listenerDegraded: false,
+  maxSubscriberLag: 0,
+  notificationCount: 0
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[AUTH_CACHE_SUMMARY] { hits: 1, misses: 2, hitRate: 0.333, route: 'app_session_auth' }
+[SQL_POOL_SUMMARY] {
+  name: 'playerMirror',
+  max: 8,
+  totalCount: 1,
+  idleCount: 0,
+  waitingCount: 0,
+  slowAcquireCount: 2,
+  maxAcquireMs: 1085
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1085,
+  totalCount: 1,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/player-session/touch',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=269 total_ms=269 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[PLAYER_SESSION_TOUCH_SQL] {
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  deviceId: '8c5ef154-8a06-4930-9b5e-a937faf56e86',
+  pool_acquire_ms: 1,
+  query_exec_ms: 272,
+  cache_invalidation_ms: 0,
+  total_ms: 273,
+  combined: true,
+  combined_update_query_exec_ms: 272,
+  session_update_pool_acquire_ms: 0,
+  session_update_query_exec_ms: 0,
+  players_update_pool_acquire_ms: 0,
+  players_update_query_exec_ms: 0,
+  concurrent_global: 1,
+  concurrent_session: 1,
+  pool_total_count: 1,
+  pool_idle_count: 0,
+  pool_waiting_count: 0,
+  cache_invalidation_applied: false,
+  shared_client: true,
+  sql_ok: true
+}
+[SQL_LOGIN_NO_FIRESTORE_MIRROR] {
+  route: '/api/auth/player-session/touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  playerSessionIdPrefix: '66eebe42',
+  appSessionIdPrefix: 'a15e8c42',
+  firestoreMirrorSkipped: true,
+  reason: 'sql_session_authority'
+}
+[PLAYER_SESSION_SQL] {
+  action: 'touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  sql_ok: true,
+  firestore_mirror_ok: null,
+  firestore_mirror_async: null,
+  previousSessionCount: 0,
+  durationMs: 1905,
+  reason: null
+}
+ POST /api/auth/player-session/touch 200 in 1913ms (next.js: 2ms, application-code: 1911ms)
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+ GET /player 200 in 166ms (next.js: 65ms, application-code: 101ms)
+ GET /player 200 in 65ms (next.js: 1759µs, application-code: 64ms)
+ GET /player 200 in 65ms (next.js: 2ms, application-code: 63ms)
+ GET /player 200 in 66ms (next.js: 16ms, application-code: 50ms)
+ GET /player 200 in 83ms (next.js: 30ms, application-code: 53ms)
+ GET /player 200 in 97ms (next.js: 3ms, application-code: 93ms)
+ GET /player 200 in 82ms (next.js: 3ms, application-code: 78ms)
+ GET /player 200 in 78ms (next.js: 1958µs, application-code: 76ms)
+ GET /player 200 in 78ms (next.js: 14ms, application-code: 64ms)
+ GET /player 200 in 66ms (next.js: 3ms, application-code: 63ms)
+ GET /player 200 in 80ms (next.js: 3ms, application-code: 78ms)
+ GET /player 200 in 66ms (next.js: 3ms, application-code: 62ms)
+ GET /player 200 in 64ms (next.js: 3ms, application-code: 62ms)
+ GET /player 200 in 64ms (next.js: 16ms, application-code: 48ms)
+ GET /player 200 in 51ms (next.js: 1898µs, application-code: 49ms)
+ GET /player 200 in 83ms (next.js: 2ms, application-code: 80ms)
+ GET /player 200 in 69ms (next.js: 2ms, application-code: 66ms)
+ GET /player 200 in 68ms (next.js: 3ms, application-code: 66ms)
+ GET /player 200 in 82ms (next.js: 16ms, application-code: 66ms)
+ GET /player 200 in 49ms (next.js: 1994µs, application-code: 47ms)
+ GET /player 200 in 66ms (next.js: 2ms, application-code: 64ms)
+ GET /player 200 in 51ms (next.js: 2ms, application-code: 49ms)
+ GET /player 200 in 35ms (next.js: 1773µs, application-code: 33ms)
+ GET /player 200 in 19ms (next.js: 2ms, application-code: 17ms)
+ GET /manifest.webmanifest 200 in 71ms (next.js: 67ms, application-code: 4ms)
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1117,
+  totalCount: 2,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/player-session/status',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[SQL_POOL_ACQUIRE] {
+  name: 'playerMirror',
+  context: 'app_session_auth',
+  acquire_ms: 1100,
+  totalCount: 2,
+  idleCount: 0,
+  waitingCount: 0,
+  max: 8,
+  request_id: null,
+  route: '/api/auth/player-session/touch',
+  idle_before: 0,
+  waiting_before: 0,
+  slow_acquire: true
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=275 total_ms=275 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[APP_SESSIONS] {
+  app_session_touch_skipped: true,
+  reason: 'player_sql_session_authoritative',
+  sessionIdPrefix: 'a15e8c42'
+}
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=275 total_ms=275 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+[LIVE_AUTH_SESSION_SQL] hit=true sessionId=66eebe42-8070-4084-af33-390704a01bd9 playerUid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 active=true expired=false pool_acquire_ms=0 query_exec_ms=275 total_ms=275
+[PLAYER_SESSION_STATUS] {
+  source: 'sql',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  activeSessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  ok: true,
+  reason: null,
+  durationMs: 1949,
+  cache_hit: false
+}
+ GET /api/auth/player-session/status 200 in 1998ms (next.js: 44ms, application-code: 1954ms)
+[PLAYER_SESSION_TOUCH_SQL] {
+  playerUid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  deviceId: '8c5ef154-8a06-4930-9b5e-a937faf56e86',
+  pool_acquire_ms: 0,
+  query_exec_ms: 277,
+  cache_invalidation_ms: 0,
+  total_ms: 277,
+  combined: true,
+  combined_update_query_exec_ms: 277,
+  session_update_pool_acquire_ms: 0,
+  session_update_query_exec_ms: 0,
+  players_update_pool_acquire_ms: 0,
+  players_update_query_exec_ms: 0,
+  concurrent_global: 1,
+  concurrent_session: 1,
+  pool_total_count: 2,
+  pool_idle_count: 0,
+  pool_waiting_count: 0,
+  cache_invalidation_applied: false,
+  shared_client: true,
+  sql_ok: true
+}
+[SQL_LOGIN_NO_FIRESTORE_MIRROR] {
+  route: '/api/auth/player-session/touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  playerSessionIdPrefix: '66eebe42',
+  appSessionIdPrefix: 'a15e8c42',
+  firestoreMirrorSkipped: true,
+  reason: 'sql_session_authority'
+}
+[PLAYER_SESSION_SQL] {
+  action: 'touch',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  sessionId: '66eebe42-8070-4084-af33-390704a01bd9',
+  sql_ok: true,
+  firestore_mirror_ok: null,
+  firestore_mirror_async: null,
+  previousSessionCount: 0,
+  durationMs: 1930,
+  reason: null
+}
+ POST /api/auth/player-session/touch 200 in 1980ms (next.js: 44ms, application-code: 1935ms)
+[API_AUTH_SQL_PROFILE] hit=true uid=X0lC6Vaq43YM130tuCLv6SDO9Yn2 role=player coadminUid=pNaCcFpMHccu5l3TgLSKvldtrOB2 source=players_cache pool_acquire_ms=0 query_exec_ms=275 total_ms=275 shared_client=true
+[AUTH_CACHE_STORE] {
+  cache: 'app_session_auth',
+  uid: 'X0lC6Vaq43YM130tuCLv6SDO9Yn2',
+  role: 'player',
+  sessionIdPrefix: 'a15e8c42',
+  expiresInMs: 30000
+}
+ POST /api/presence/heartbeat 200 in 876ms (next.js: 41ms, application-code: 835ms)
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+ GET /player 200 in 144ms (next.js: 56ms, application-code: 88ms)
+ GET /player 200 in 67ms (next.js: 1841µs, application-code: 65ms)
+ GET /player 200 in 81ms (next.js: 2ms, application-code: 78ms)
+ GET /player 200 in 82ms (next.js: 16ms, application-code: 65ms)
+ GET /player 200 in 82ms (next.js: 32ms, application-code: 50ms)
+ GET /player 200 in 99ms (next.js: 3ms, application-code: 96ms)
+ GET /player 200 in 88ms (next.js: 4ms, application-code: 84ms)
+ GET /player 200 in 72ms (next.js: 16ms, application-code: 56ms)
+ GET /player 200 in 72ms (next.js: 31ms, application-code: 41ms)
+ GET /player 200 in 74ms (next.js: 3ms, application-code: 71ms)
+ GET /player 200 in 92ms (next.js: 2ms, application-code: 90ms)
+ GET /player 200 in 73ms (next.js: 3ms, application-code: 70ms)
+ GET /player 200 in 73ms (next.js: 1831µs, application-code: 71ms)
+ GET /player 200 in 73ms (next.js: 19ms, application-code: 54ms)
+ GET /player 200 in 41ms (next.js: 5ms, application-code: 36ms)
+ GET /player 200 in 94ms (next.js: 3ms, application-code: 91ms)
+ GET /player 200 in 78ms (next.js: 4ms, application-code: 75ms)
+ GET /player 200 in 77ms (next.js: 3ms, application-code: 75ms)
+ GET /player 200 in 77ms (next.js: 23ms, application-code: 54ms)
+ GET /player 200 in 38ms (next.js: 2ms, application-code: 36ms)
+ GET /player 200 in 62ms (next.js: 2ms, application-code: 59ms)
+ GET /player 200 in 46ms (next.js: 3ms, application-code: 43ms)
+ GET /player 200 in 28ms (next.js: 1935µs, application-code: 26ms)
+ GET /player 200 in 28ms (next.js: 14ms, application-code: 15ms)
+ GET /api/auth/player-session/status 500 in 678ms (next.js: 583ms, application-code: 96ms)
+ GET /manifest.webmanifest 500 in 670ms (next.js: 576ms, application-code: 94ms)
+[LIVE_OUTBOX_FANOUT_METRICS] {
+  phase: 'interval',
+  activeSubscribers: 2,
+  activeAgentSubscribers: 0,
+  activeBrowserSubscribers: 2,
+  activeChannelCount: 3,
+  cleanupCount: 0,
+  droppedSubscriberCount: 0,
+  deliveredCount: 0,
+  fallbackActive: false,
+  fallbackPollCount: 0,
+  listenerConnected: true,
+  listenerDegraded: false,
+  maxSubscriberLag: 0,
+  notificationCount: 0
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+ GET /player 500 in 10ms (next.js: 4ms, application-code: 6ms)
+ GET /player 500 in 9ms (next.js: 4ms, application-code: 5ms)
+ GET /player 500 in 13ms (next.js: 6ms, application-code: 7ms)
+ GET /player 500 in 19ms (next.js: 12ms, application-code: 7ms)
+ GET /api/live/stream?channels=player%3AX0lC6Vaq43YM130tuCLv6SDO9Yn2%3Arequests%2Cplayer%3AX0lC6Vaq43YM130tuCLv6SDO9Yn2%3Afreeplay%2Cplayer%3AX0lC6Vaq43YM130tuCLv6SDO9Yn2%3Acashouts&lastEventId=4610&appSessionId=a15e8c42-240c-4096-bf1d-f9d492bf1f60&playerSessionId=66eebe42-8070-4084-af33-390704a01bd9 200 in 11.4min (next.js: 1666µs, application-code: 11.4min)
+[LIVE_OUTBOX_FANOUT_UNSUBSCRIBED] {
+  subscriberId: 'live-outbox-sub-1781699050544-2',
+  route: 'browser_live_stream',
+  reason: 'client_abort',
+  activeSubscribers: 1,
+  activeBrowserSubscribers: 1,
+  activeAgentSubscribers: 0,
+  cleanupCount: 1,
+  cursor: 4610
+}
+[LIVE_STREAM_FANOUT_CLEANUP] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  reason: 'client_abort',
+  activeBrowserSubscribers: 1,
+  activeSubscribers: 1,
+  cleanupCount: 1
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+ GET /player 500 in 10ms (next.js: 4ms, application-code: 6ms)
+ GET /player 500 in 19ms (next.js: 12ms, application-code: 7ms)
+ GET /player 500 in 9ms (next.js: 4ms, application-code: 5ms)
+ GET /player 500 in 11ms (next.js: 5ms, application-code: 6ms)
+[LIVE_OUTBOX_FANOUT_METRICS] {
+  phase: 'interval',
+  activeSubscribers: 1,
+  activeAgentSubscribers: 0,
+  activeBrowserSubscribers: 1,
+  activeChannelCount: 3,
+  cleanupCount: 1,
+  droppedSubscriberCount: 0,
+  deliveredCount: 0,
+  fallbackActive: false,
+  fallbackPollCount: 0,
+  listenerConnected: true,
+  listenerDegraded: false,
+  maxSubscriberLag: 0,
+  notificationCount: 0
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_OUTBOX_FANOUT_METRICS] {
+  phase: 'interval',
+  activeSubscribers: 1,
+  activeAgentSubscribers: 0,
+  activeBrowserSubscribers: 1,
+  activeChannelCount: 3,
+  cleanupCount: 1,
+  droppedSubscriberCount: 0,
+  deliveredCount: 0,
+  fallbackActive: false,
+  fallbackPollCount: 0,
+  listenerConnected: true,
+  listenerDegraded: false,
+  maxSubscriberLag: 0,
+  notificationCount: 0
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_STREAM_HEARTBEAT] {
+  channels: [
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:requests',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:freeplay',
+    'player:X0lC6Vaq43YM130tuCLv6SDO9Yn2:cashouts'
+  ],
+  lastEventId: 4610,
+  phase: 'interval',
+  mode: 'fanout'
+}
+[LIVE_OUTBOX_FANOUT_METRICS] {
+  phase: 'interval',
+  activeSubscribers: 1,
+  activeAgentSubscribers: 0,
+  activeBrowserSubscribers: 1,
+  activeChannelCount: 3,
+  cleanupCount: 1,
+  droppedSubscriberCount: 0,
+  deliveredCount: 0,
+  fallbackActive: false,
+  fallbackPollCount: 0,
+  listenerConnected: true,
+  listenerDegraded: false,
+  maxSubscriberLag: 0,
+  notificationCount: 0
+}
+[?25h

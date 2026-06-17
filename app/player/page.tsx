@@ -527,6 +527,13 @@ export default function PlayerPage() {
         reason,
         elapsed_ms: startupNow(),
       });
+      console.info('[STARTUP_ROUTE_PHASE]', {
+        phase,
+        target,
+        delayMs,
+        reason,
+        elapsed_ms: startupNow(),
+      });
       if (delayMs > 0) {
         console.info('[PLAYER_STARTUP_DEFERRED_FETCH]', {
           phase,
@@ -534,8 +541,19 @@ export default function PlayerPage() {
           delayMs,
           reason,
         });
+        console.info('[STARTUP_FETCH_DEFERRED]', {
+          phase,
+          target,
+          delayMs,
+          reason,
+        });
       }
       console.info('[PLAYER_STARTUP_BURST_REDUCED]', {
+        phase,
+        target,
+        delayMs,
+      });
+      console.info('[STARTUP_BURST_SOFTENED]', {
         phase,
         target,
         delayMs,
@@ -3142,7 +3160,7 @@ export default function PlayerPage() {
       return;
     }
     chatUnreadStartedForUidRef.current = playerUid;
-    const delayMs = playerStartupJitterMs(750, 1_500);
+    const delayMs = playerStartupJitterMs(1_000, 2_500);
     console.info('[PLAYER_CHAT_UNREAD_START_ONCE]', {
       playerUid,
       delayMs,
@@ -3186,7 +3204,7 @@ export default function PlayerPage() {
       return;
     }
 
-    const playDataDelayMs = shouldPollPlayData ? 0 : playerStartupJitterMs(750, 1_500);
+    const playDataDelayMs = shouldPollPlayData ? 0 : playerStartupJitterMs(1_500, 3_000);
     logPlayerStartupPhase(
       shouldPollPlayData ? 1 : 3,
       '/api/player/play-data',

@@ -21,6 +21,11 @@ import {
   type CachedBonusEvent,
 } from '@/lib/sql/bonusEventsCache';
 import { readGameLoginsCacheByCoadmin } from '@/lib/sql/gameLoginsCache';
+import {
+  bonusEventsMemoryCacheKey,
+  readBonusEventsMemoryCache,
+  writeBonusEventsMemoryCache,
+} from '@/lib/server/bonusEventsMemoryCache';
 
 export const runtime = 'nodejs';
 
@@ -244,6 +249,12 @@ export async function GET(request: Request) {
     const startedAt = Date.now();
     const url = new URL(request.url);
     const requestedCoadminUid = String(url.searchParams.get('coadminUid') || '').trim();
+    const includeInactive =
+      url.searchParams.get('includeInactive') === '1' ||
+      url.searchParams.get('includeInactive') === 'true';
+    const skipTimeWindowFilter =
+      url.searchParams.get('skipTimeWindowFilter') === '1' ||
+      url.searchParams.get('skipTimeWindowFilter') === 'true';
     const auth = await requireApiUser(request, ['admin', 'coadmin', 'staff', 'carer', 'player']);
     if ('response' in auth) {
       const headerFlags = bonusEventsRequestHeaderFlags(request);
@@ -308,6 +319,22 @@ export async function GET(request: Request) {
       return NextResponse.json({ events: [], source: 'postgres', firestore_fallback: false });
     }
 
+    const memoryCacheKey = bonusEventsMemoryCacheKey({
+      coadminUid,
+      includeInactive,
+      skipTimeWindowFilter,
+    });
+    const memoryCached = readBonusEventsMemoryCache<BonusEvent>(memoryCacheKey);
+    if (memoryCached) {
+      return NextResponse.json({
+        events: memoryCached.events,
+        source: 'postgres',
+        firestore_fallback: false,
+        cache: 'memory',
+        filterReason: memoryCached.filterReason,
+      });
+    }
+
     const sqlReadMode = isCacheSqlAuthoritative();
     const sqlStartedAt = Date.now();
     const [gameNames, rawEvents] = await Promise.all([
@@ -354,18 +381,26 @@ export async function GET(request: Request) {
       });
     }
 
+    const filterReason =
+      events.length > 0
+        ? 'active'
+        : rawEvents.length > 0
+          ? 'active_filter_empty'
+          : coadminUid
+            ? 'no_rows_for_coadmin'
+            : 'missing_coadmin_scope';
+    writeBonusEventsMemoryCache(memoryCacheKey, {
+      events,
+      rawCount: rawEvents.length,
+      activeCount: events.length,
+      filterReason,
+    });
+
     return NextResponse.json({
       events,
       source: 'postgres',
       firestore_fallback: false,
-      filterReason:
-        events.length > 0
-          ? 'active'
-          : rawEvents.length > 0
-            ? 'active_filter_empty'
-            : coadminUid
-              ? 'no_rows_for_coadmin'
-              : 'missing_coadmin_scope',
+      filterReason,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to load bonus events.';
