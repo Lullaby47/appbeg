@@ -249,12 +249,65 @@ const GAME_LOGINS_BY_COADMIN_SQL = `
   ORDER BY id, COALESCE(created_at, updated_at, mirrored_at) DESC
 `;
 
+const GAME_LOGIN_BY_COADMIN_GAME_SQL = `
+  SELECT
+    id,
+    game_name,
+    username,
+    password,
+    backend_url,
+    frontend_url,
+    site_url,
+    created_by,
+    coadmin_uid,
+    created_at,
+    status,
+    updated_at,
+    mirrored_at
+  FROM public.game_logins_cache
+  WHERE status = 'active'
+    AND deleted_at IS NULL
+    AND (coadmin_uid = $1 OR created_by = $1)
+    AND LOWER(REGEXP_REPLACE(TRIM(game_name), '[^a-zA-Z0-9]+', '_', 'g')) = $2
+  ORDER BY COALESCE(created_at, updated_at, mirrored_at) DESC
+  LIMIT 1
+`;
+
 function sortCachedGameLogins(rows: CachedGameLogin[]) {
   return rows.sort((left, right) => {
     const leftTime = left.createdAt ? new Date(left.createdAt).getTime() : 0;
     const rightTime = right.createdAt ? new Date(right.createdAt).getTime() : 0;
     return rightTime - leftTime;
   });
+}
+
+export async function readGameLoginCacheForCoadminGame(
+  coadminUid: string,
+  normalizedGameName: string
+): Promise<CachedGameLogin | null> {
+  const cleanCoadminUid = cleanText(coadminUid);
+  const cleanGame = cleanText(normalizedGameName).toLowerCase();
+  const pool = getPlayerMirrorPool();
+  if (!pool || !cleanCoadminUid || !cleanGame) {
+    return null;
+  }
+
+  try {
+    const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(
+      pool,
+      GAME_LOGIN_BY_COADMIN_GAME_SQL,
+      [cleanCoadminUid, cleanGame]
+    );
+    const row = rows[0];
+    return row ? mapRow(row) : null;
+  } catch (error) {
+    console.warn('[GAME_LOGINS_CACHE] single game read failed', {
+      coadminUid: cleanCoadminUid,
+      normalizedGameName: cleanGame,
+      error,
+    });
+    return null;
+  }
 }
 
 export async function readGameLoginsCacheByCoadminWithClient(

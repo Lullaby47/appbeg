@@ -351,6 +351,8 @@ export async function POST(request: Request) {
         gameCredential,
         previewCoadminUid,
         hasAnyFirstRechargeAppliedRequest: firstRechargeRead.hasAnyFirstRechargeAppliedRequest,
+        firstRechargePrechecked: true,
+        maintenancePrechecked: true,
         idempotencyKey,
       });
       timing.authority_transaction_ms = Date.now() - authorityStartedAt;

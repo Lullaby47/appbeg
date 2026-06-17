@@ -4,7 +4,8 @@ import type { PoolClient } from 'pg';
 
 import {
   claimAuthorityOperation,
-  readAuthorityOperationPayload,
+  logAuthPayloadPreTxnRemoved,
+  readAuthorityOperationPayloadWithClient,
 } from '@/lib/sql/authorityLedger';
 import { normalizeGameName } from '@/lib/sql/authorityGameRequestHelpers';
 import { scheduleAutoClaimPendingTaskOnCreate } from '@/lib/sql/authorityAutoClaim';
@@ -298,6 +299,8 @@ export async function createPlayerCredentialTaskInSql(input: {
     cleanText(input.idempotencyKey) ||
     `player_credential_task:${taskType}:${playerUid}:${normalizedGame}`;
 
+  logAuthPayloadPreTxnRemoved('create_username');
+
   console.info('[RESET_PASSWORD_TASK_CREATE_START]', {
     playerUid,
     gameName: gameName.trim(),
@@ -318,7 +321,9 @@ export async function createPlayerCredentialTaskInSql(input: {
       payload: {},
     });
     if (!op.claimed && op.duplicate) {
-      const payload = await readAuthorityOperationPayload(operationKey);
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'create_username',
+      });
       if (payload?.taskId) {
         await client.query('COMMIT');
         return {

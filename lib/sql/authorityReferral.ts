@@ -10,7 +10,8 @@ import {
 import {
   claimAuthorityOperation,
   insertAuthorityLedgerEvent,
-  readAuthorityOperationPayload,
+  logAuthPayloadPreTxnRemoved,
+  readAuthorityOperationPayloadWithClient,
 } from '@/lib/sql/authorityLedger';
 import {
   patchPlayerReferralFieldsInTxn,
@@ -140,20 +141,7 @@ export async function claimReferralRewardInSql(
   const claimId = buildReferralClaimDocId(referrerUid, referredPlayerUid);
   const operationKey = `referral_reward:${referrerUid}:${claimId}`;
 
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.claimId) {
-    return {
-      success: true,
-      duplicate: true,
-      alreadyClaimed: existing.alreadyClaimed === true,
-      rewardCoins: Number(existing.rewardCoins || REFERRAL_REWARD_COINS),
-      referredPlayerUid,
-      claimId,
-      message:
-        'Congratulations! You received referral reward coins from this player\'s recharge.',
-    };
-  }
-
+  logAuthPayloadPreTxnRemoved('referral_reward_claim');
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL authority unavailable.');
 
@@ -176,8 +164,10 @@ export async function claimReferralRewardInSql(
       payload: {},
     });
     if (!claim.claimed) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'referral_reward_claim',
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       if (payload?.claimId) {
         return {
           success: true,

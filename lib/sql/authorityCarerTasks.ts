@@ -19,8 +19,9 @@ import {
   claimAuthorityOperation,
   deleteAuthorityOperationsByPrefixInTxn,
   insertAuthorityLedgerEvent,
+  logAuthPayloadPreTxnRemoved,
   readAuthorityOperationExists,
-  readAuthorityOperationPayload,
+  readAuthorityOperationPayloadWithClient,
 } from '@/lib/sql/authorityLedger';
 import {
   normalizeGameName,
@@ -34,7 +35,8 @@ import {
   carerTaskLiveChannel,
   coadminJobLiveChannel,
   coadminTaskLiveChannel,
-  insertLiveOutboxEventWithClient,
+  insertLiveOutboxEventsBatch,
+  type LiveOutboxInsertInput,
 } from '@/lib/sql/liveOutbox';
 import { cleanText, getPlayerMirrorPool, toIsoString } from '@/lib/sql/playerMirrorCommon';
 
@@ -604,25 +606,22 @@ async function patchCarerTaskInTxn(
   );
 }
 
-async function writeTaskOutboxInTxn(
-  client: PoolClient,
-  input: {
-    coadminUid: string;
-    carerUid?: string | null;
-    taskId: string;
-    status: string;
-    type?: string;
-    gameName?: string;
-    playerUid?: string;
-    requestId?: string | null;
-    assignedCarerUid?: string | null;
-    claimedByUid?: string | null;
-    automationStatus?: string | null;
-    automationJobId?: string | null;
-    updatedAt: string;
-    eventType?: string;
-  }
-) {
+function buildTaskOutboxRows(input: {
+  coadminUid: string;
+  carerUid?: string | null;
+  taskId: string;
+  status: string;
+  type?: string;
+  gameName?: string;
+  playerUid?: string;
+  requestId?: string | null;
+  assignedCarerUid?: string | null;
+  claimedByUid?: string | null;
+  automationStatus?: string | null;
+  automationJobId?: string | null;
+  updatedAt: string;
+  eventType?: string;
+}): LiveOutboxInsertInput[] {
   const payload: Record<string, unknown> = {
     entityId: input.taskId,
     taskId: input.taskId,
@@ -660,17 +659,19 @@ async function writeTaskOutboxInTxn(
       payload.claimedByUid = carerUid;
     }
   }
-  await insertLiveOutboxEventWithClient(client, {
-    channel: coadminTaskLiveChannel(input.coadminUid),
-    eventType,
-    entityType: 'carer_task',
-    entityId: input.taskId,
-    source: 'authority_carer_task',
-    mirroredAt: input.updatedAt,
-    payload,
-  });
+  const rows: LiveOutboxInsertInput[] = [
+    {
+      channel: coadminTaskLiveChannel(input.coadminUid),
+      eventType,
+      entityType: 'carer_task',
+      entityId: input.taskId,
+      source: 'authority_carer_task',
+      mirroredAt: input.updatedAt,
+      payload,
+    },
+  ];
   if (carerUid) {
-    await insertLiveOutboxEventWithClient(client, {
+    rows.push({
       channel: carerTaskLiveChannel(carerUid),
       eventType,
       entityType: 'carer_task',
@@ -680,6 +681,80 @@ async function writeTaskOutboxInTxn(
       payload,
     });
   }
+  return rows;
+}
+
+async function writeTaskOutboxInTxn(
+  client: PoolClient,
+  input: {
+    coadminUid: string;
+    carerUid?: string | null;
+    taskId: string;
+    status: string;
+    type?: string;
+    gameName?: string;
+    playerUid?: string;
+    requestId?: string | null;
+    assignedCarerUid?: string | null;
+    claimedByUid?: string | null;
+    automationStatus?: string | null;
+    automationJobId?: string | null;
+    updatedAt: string;
+    eventType?: string;
+    outboxFlowName?: string;
+  }
+) {
+  await insertLiveOutboxEventsBatch(client, buildTaskOutboxRows(input), {
+    flowName: input.outboxFlowName || 'write_task_outbox',
+  });
+}
+
+function buildJobOutboxRows(input: {
+  coadminUid: string;
+  carerUid: string;
+  jobId: string;
+  taskId: string;
+  status: string;
+  type?: string;
+  gameName?: string;
+  requestId?: string | null;
+  updatedAt: string;
+  eventType?: string;
+}): LiveOutboxInsertInput[] {
+  const payload = {
+    entityId: input.jobId,
+    jobId: input.jobId,
+    taskId: input.taskId,
+    coadminUid: input.coadminUid,
+    carerUid: input.carerUid,
+    status: input.status,
+    type: cleanText(input.type),
+    gameName: cleanText(input.gameName),
+    requestId: cleanText(input.requestId) || null,
+    updatedAt: input.updatedAt,
+    source: 'authority',
+  };
+  const eventType = cleanText(input.eventType) || 'job.upserted';
+  return [
+    {
+      channel: coadminJobLiveChannel(input.coadminUid),
+      eventType,
+      entityType: 'automation_job',
+      entityId: input.jobId,
+      source: 'authority_carer_task',
+      mirroredAt: input.updatedAt,
+      payload,
+    },
+    {
+      channel: carerJobLiveChannel(input.carerUid),
+      eventType,
+      entityType: 'automation_job',
+      entityId: input.jobId,
+      source: 'authority_carer_task',
+      mirroredAt: input.updatedAt,
+      payload,
+    },
+  ];
 }
 
 async function writeJobOutboxInTxn(
@@ -695,40 +770,51 @@ async function writeJobOutboxInTxn(
     requestId?: string | null;
     updatedAt: string;
     eventType?: string;
+    outboxFlowName?: string;
   }
 ) {
+  await insertLiveOutboxEventsBatch(client, buildJobOutboxRows(input), {
+    flowName: input.outboxFlowName || 'write_job_outbox',
+  });
+}
+
+function buildAgentJobAvailableOutboxRow(input: {
+  carerUid: string;
+  agentId: string;
+  jobId: string;
+  taskId: string;
+  type: string;
+  gameName: string;
+  updatedAt: string;
+}): LiveOutboxInsertInput | null {
+  const carerUid = cleanText(input.carerUid);
+  const agentId = cleanText(input.agentId);
+  const jobId = cleanText(input.jobId);
+  const taskId = cleanText(input.taskId);
+  if (!carerUid || !agentId || !jobId || !taskId) {
+    return null;
+  }
+
   const payload = {
-    entityId: input.jobId,
-    jobId: input.jobId,
-    taskId: input.taskId,
-    coadminUid: input.coadminUid,
-    carerUid: input.carerUid,
-    status: input.status,
+    jobId,
+    taskId,
+    carerUid,
+    agentId,
     type: cleanText(input.type),
-    gameName: cleanText(input.gameName),
-    requestId: cleanText(input.requestId) || null,
-    updatedAt: input.updatedAt,
-    source: 'authority',
+    game: cleanText(input.gameName),
   };
-  const eventType = cleanText(input.eventType) || 'job.upserted';
-  await insertLiveOutboxEventWithClient(client, {
-    channel: coadminJobLiveChannel(input.coadminUid),
-    eventType,
+
+  console.info('[AGENT_STREAM_JOB_AVAILABLE]', payload);
+
+  return {
+    channel: agentJobLiveChannel(carerUid, agentId),
+    eventType: 'job_available',
     entityType: 'automation_job',
-    entityId: input.jobId,
+    entityId: jobId,
     source: 'authority_carer_task',
     mirroredAt: input.updatedAt,
     payload,
-  });
-  await insertLiveOutboxEventWithClient(client, {
-    channel: carerJobLiveChannel(input.carerUid),
-    eventType,
-    entityType: 'automation_job',
-    entityId: input.jobId,
-    source: 'authority_carer_task',
-    mirroredAt: input.updatedAt,
-    payload,
-  });
+  };
 }
 
 async function writeAgentJobAvailableOutboxInTxn(
@@ -743,33 +829,12 @@ async function writeAgentJobAvailableOutboxInTxn(
     updatedAt: string;
   }
 ) {
-  const carerUid = cleanText(input.carerUid);
-  const agentId = cleanText(input.agentId);
-  const jobId = cleanText(input.jobId);
-  const taskId = cleanText(input.taskId);
-  if (!carerUid || !agentId || !jobId || !taskId) {
+  const row = buildAgentJobAvailableOutboxRow(input);
+  if (!row) {
     return;
   }
-
-  const payload = {
-    jobId,
-    taskId,
-    carerUid,
-    agentId,
-    type: cleanText(input.type),
-    game: cleanText(input.gameName),
-  };
-
-  console.info('[AGENT_STREAM_JOB_AVAILABLE]', payload);
-
-  await insertLiveOutboxEventWithClient(client, {
-    channel: agentJobLiveChannel(carerUid, agentId),
-    eventType: 'job_available',
-    entityType: 'automation_job',
-    entityId: jobId,
-    source: 'authority_carer_task',
-    mirroredAt: input.updatedAt,
-    payload,
+  await insertLiveOutboxEventsBatch(client, [row], {
+    flowName: 'write_agent_job_available_outbox',
   });
 }
 
@@ -1413,31 +1478,33 @@ export async function claimCarerTaskInTxn(
       throw new Error('Failed to claim task: no automation job was created.');
     }
 
-    await writeTaskOutboxInTxn(client, {
-      coadminUid: taskCoadminUid,
-      carerUid: currentUserUid,
-      taskId,
-      status: 'in_progress',
-      type: cleanText(task.type),
-      gameName: cleanText(task.game_name),
-      requestId: cleanText(task.request_id),
-      updatedAt: nowIso,
-      eventType: 'task.claimed',
-    });
-    await writeJobOutboxInTxn(client, {
-      coadminUid: taskCoadminUid,
-      carerUid: currentUserUid,
-      jobId: result.jobId,
-      taskId,
-      status: result.status,
-      type: mappedType,
-      gameName: cleanText(task.game_name),
-      requestId: cleanText(task.request_id),
-      updatedAt: nowIso,
-      eventType: reusedExistingJob ? 'job.reused' : 'job.created',
-    });
+    const claimOutboxRows: LiveOutboxInsertInput[] = [
+      ...buildTaskOutboxRows({
+        coadminUid: taskCoadminUid,
+        carerUid: currentUserUid,
+        taskId,
+        status: 'in_progress',
+        type: cleanText(task.type),
+        gameName: cleanText(task.game_name),
+        requestId: cleanText(task.request_id),
+        updatedAt: nowIso,
+        eventType: 'task.claimed',
+      }),
+      ...buildJobOutboxRows({
+        coadminUid: taskCoadminUid,
+        carerUid: currentUserUid,
+        jobId: result.jobId,
+        taskId,
+        status: result.status,
+        type: mappedType,
+        gameName: cleanText(task.game_name),
+        requestId: cleanText(task.request_id),
+        updatedAt: nowIso,
+        eventType: reusedExistingJob ? 'job.reused' : 'job.created',
+      }),
+    ];
     if (normalizeAutomationStatus(result.status) === 'queued') {
-      await writeAgentJobAvailableOutboxInTxn(client, {
+      const agentRow = buildAgentJobAvailableOutboxRow({
         carerUid: currentUserUid,
         agentId: resolvedAgentId,
         jobId: result.jobId,
@@ -1446,18 +1513,26 @@ export async function claimCarerTaskInTxn(
         gameName: cleanText(task.game_name),
         updatedAt: nowIso,
       });
+      if (agentRow) {
+        claimOutboxRows.push(agentRow);
+      }
     }
     for (const cancelledJobId of cancelledJobIds) {
-      await writeJobOutboxInTxn(client, {
-        coadminUid: taskCoadminUid,
-        carerUid: currentUserUid,
-        jobId: cancelledJobId,
-        taskId,
-        status: 'cancelled',
-        updatedAt: nowIso,
-        eventType: 'job.cancelled',
-      });
+      claimOutboxRows.push(
+        ...buildJobOutboxRows({
+          coadminUid: taskCoadminUid,
+          carerUid: currentUserUid,
+          jobId: cancelledJobId,
+          taskId,
+          status: 'cancelled',
+          updatedAt: nowIso,
+          eventType: 'job.cancelled',
+        })
+      );
     }
+    await insertLiveOutboxEventsBatch(client, claimOutboxRows, {
+      flowName: 'carer_task_claim',
+    });
 
   return result;
 }
@@ -1490,6 +1565,7 @@ export async function claimCarerTaskInSql(input: ClaimCarerTaskInput): Promise<{
   }
   const operationKey = `task_claim:${taskId}:${carerUid}`;
 
+  logAuthPayloadPreTxnRemoved('carer_task_claim');
   const client = await db.connect();
   try {
     await client.query('BEGIN');
@@ -1503,7 +1579,9 @@ export async function claimCarerTaskInSql(input: ClaimCarerTaskInput): Promise<{
       payload: {},
     });
     if (!op.claimed && op.duplicate) {
-      const payload = await readAuthorityOperationPayload(operationKey);
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'carer_task_claim',
+      });
       const staleJobId = cleanText(payload?.jobId);
       console.info('[SQL_TASK_CLAIM_DUPLICATE_CHECK]', {
         taskId,
@@ -1655,6 +1733,8 @@ export async function returnTaskToPendingInSql(input: {
   const taskId = cleanText(input.taskId);
   const idempotencyKey = cleanText(input.idempotencyKey) || taskId;
   const operationKey = `task_return:${taskId}:${idempotencyKey}`;
+
+  logAuthPayloadPreTxnRemoved('carer_task_return');
   const client = await db.connect();
   try {
     await client.query('BEGIN');
@@ -1675,7 +1755,9 @@ export async function returnTaskToPendingInSql(input: {
         throw new Error('Task not found.');
       }
       if (!taskNeedsReturnReapply(existingTask)) {
-        const payload = await readAuthorityOperationPayload(operationKey);
+        const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+          flowName: 'carer_task_return',
+        });
         const finalState = await readTaskReturnFinalState(client, taskId);
         logTaskReturnFinalState({
           taskId,
@@ -2082,30 +2164,7 @@ export async function deletePendingTaskInSql(input: {
   const idempotencyKey = cleanText(input.idempotencyKey) || taskId;
   const operationKey = `task_delete:${taskId}:${idempotencyKey}`;
 
-  const existingPayload = await readAuthorityOperationPayload(operationKey);
-  if (existingPayload?.deleted === true) {
-    console.info('[CARER_DELETE_TASK_SQL_WRITE]', {
-      taskId,
-      matchedRows: 0,
-      beforeStatus: 'deleted',
-      afterStatus: 'deleted',
-      beforeDeletedAt: 'existing',
-      afterDeletedAt: 'existing',
-      deletedAtSet: true,
-      linkedRequestId: cleanText(existingPayload.linkedRequestId) || null,
-      linkedRequestUpdated: false,
-      automationJobCancelled: false,
-      outboxInserted: false,
-      ok: true,
-      reason: 'authority_operation_duplicate',
-    });
-    return {
-      success: true as const,
-      duplicate: true,
-      alreadyDeleted: true,
-      taskId,
-    };
-  }
+  logAuthPayloadPreTxnRemoved('carer_task_delete');
 
   const client = await db.connect();
   try {
@@ -2120,8 +2179,10 @@ export async function deletePendingTaskInSql(input: {
       payload: {},
     });
     if (!op.claimed && op.duplicate) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'carer_task_delete',
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       const tombstoneCheck = await db.query(
         `
           SELECT status, deleted_at, request_id
@@ -2322,6 +2383,7 @@ export async function completeUsernameTasksInSql(input: {
     cleanText(input.idempotencyKey) || `username:${coadminUid}:${playerUid}:${normalizeGameName(gameName)}`;
   const operationKey = `task_complete:${batchKey}:${input.actorUid}`;
 
+  logAuthPayloadPreTxnRemoved('carer_task_complete_username');
   const client = await db.connect();
   try {
     await client.query('BEGIN');
@@ -2335,7 +2397,9 @@ export async function completeUsernameTasksInSql(input: {
       payload: {},
     });
     if (!op.claimed && op.duplicate) {
-      const payload = await readAuthorityOperationPayload(operationKey);
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'carer_task_complete_username',
+      });
       await client.query('COMMIT');
       return {
         success: true as const,

@@ -14,7 +14,8 @@ import { cleanText, getPlayerMirrorPool, toIsoString } from '@/lib/sql/playerMir
 import {
   claimAuthorityOperation,
   insertAuthorityLedgerEvent,
-  readAuthorityOperationPayload,
+  logAuthPayloadPreTxnRemoved,
+  readAuthorityOperationPayloadWithClient,
 } from '@/lib/sql/authorityLedger';
 import {
   insertLiveOutboxEventWithClient,
@@ -546,11 +547,8 @@ export async function transferPlayerBalancesInSql(input: {
     amount,
     operationKey,
   });
-  const existingPayload = await readAuthorityOperationPayload(operationKey);
-  if (existingPayload?.transferId) {
-    return storedTransferResult(existingPayload, transferId, eventId);
-  }
 
+  logAuthPayloadPreTxnRemoved(`transfer_${direction}`);
   const db = getPlayerMirrorPool();
   if (!db) {
     throw new Error('Postgres is unavailable.');
@@ -573,8 +571,10 @@ export async function transferPlayerBalancesInSql(input: {
       [eventId]
     );
     if ((existingFinancial.rowCount || 0) > 0) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: `transfer_${direction}`,
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       if (payload?.transferId) {
         return storedTransferResult(payload, transferId, eventId);
       }
@@ -591,8 +591,10 @@ export async function transferPlayerBalancesInSql(input: {
       payload: {},
     });
     if (claim.duplicate) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: `transfer_${direction}`,
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       if (payload?.transferId) {
         return storedTransferResult(payload, transferId, eventId);
       }

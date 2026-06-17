@@ -6,7 +6,8 @@ import { updatePlayerBalancesInTxn } from '@/lib/sql/authorityGameRequestHelpers
 import {
   claimAuthorityOperation,
   insertAuthorityLedgerEvent,
-  readAuthorityOperationPayload,
+  logAuthPayloadPreTxnRemoved,
+  readAuthorityOperationPayloadWithClient,
 } from '@/lib/sql/authorityLedger';
 import {
   insertLiveOutboxEventWithClient,
@@ -26,11 +27,8 @@ export async function approveTransferRequestInSql(input: {
   if (!requestId) throw new Error('requestId is required.');
 
   const operationKey = `transfer_request_approve:${requestId}`;
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.approved) {
-    return { success: true as const, duplicate: true, eventId: String(existing.eventId || '') };
-  }
 
+  logAuthPayloadPreTxnRemoved('risk_transfer_approval');
   const eventId = randomUUID();
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('Postgres is unavailable.');
@@ -49,8 +47,10 @@ export async function approveTransferRequestInSql(input: {
       payload: {},
     });
     if (claim.duplicate) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'risk_transfer_approval',
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       if (payload?.approved) {
         return { success: true as const, duplicate: true, eventId: String(payload.eventId || '') };
       }

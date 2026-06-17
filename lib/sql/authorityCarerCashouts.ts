@@ -6,7 +6,8 @@ import type { PoolClient } from 'pg';
 import {
   claimAuthorityOperation,
   insertAuthorityLedgerEvent,
-  readAuthorityOperationPayload,
+  logAuthPayloadPreTxnRemoved,
+  readAuthorityOperationPayloadWithClient,
 } from '@/lib/sql/authorityLedger';
 import { updatePlayerBalancesInTxn } from '@/lib/sql/authorityGameRequestHelpers';
 import {
@@ -132,11 +133,8 @@ export async function createCarerCashoutInSql(input: {
 
   const cashoutId = randomUUID();
   const operationKey = `carer_cashout_create:${cashoutId}`;
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.cashoutId) {
-    return { success: true as const, duplicate: true, cashoutId: String(existing.cashoutId) };
-  }
 
+  logAuthPayloadPreTxnRemoved('carer_cashout_create');
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('Postgres is unavailable.');
   const nowIso = new Date().toISOString();
@@ -155,8 +153,10 @@ export async function createCarerCashoutInSql(input: {
       payload: {},
     });
     if (claim.duplicate) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'carer_cashout_create',
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       if (payload?.cashoutId) {
         return { success: true as const, duplicate: true, cashoutId: String(payload.cashoutId) };
       }
@@ -274,11 +274,8 @@ export async function completeCarerCashoutInSql(input: {
   if (!cashoutId) throw new Error('cashoutId is required.');
 
   const operationKey = `carer_cashout_complete:${cashoutId}`;
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.completed) {
-    return { success: true as const, duplicate: true };
-  }
 
+  logAuthPayloadPreTxnRemoved('carer_cashout_complete');
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('Postgres is unavailable.');
   const nowIso = new Date().toISOString();
@@ -430,11 +427,8 @@ export async function declineCarerCashoutInSql(input: {
   if (!cashoutId) throw new Error('cashoutId is required.');
 
   const operationKey = `carer_cashout_decline:${cashoutId}`;
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.declined) {
-    return { success: true as const, duplicate: true };
-  }
 
+  logAuthPayloadPreTxnRemoved('carer_cashout_decline');
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('Postgres is unavailable.');
   const nowIso = new Date().toISOString();

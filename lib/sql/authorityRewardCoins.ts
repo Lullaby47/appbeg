@@ -11,7 +11,8 @@ import { updatePlayerBalancesInTxn } from '@/lib/sql/authorityGameRequestHelpers
 import {
   claimAuthorityOperation,
   insertAuthorityLedgerEvent,
-  readAuthorityOperationPayload,
+  logAuthPayloadPreTxnRemoved,
+  readAuthorityOperationPayloadWithClient,
 } from '@/lib/sql/authorityLedger';
 import {
   insertLiveOutboxEventWithClient,
@@ -69,18 +70,8 @@ export async function rewardCoinsInSql(input: {
   const operationKey = idempotencyKey
     ? `reward_coins:${senderUid}:${idempotencyKey}`
     : `reward_coins:${rewardId}`;
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.rewardId) {
-    return {
-      success: true as const,
-      duplicate: true,
-      rewardId: String(existing.rewardId),
-      amountCoins: Number(existing.amountCoins || amountCoins),
-      feeCoins: Number(existing.feeCoins || feeCoins),
-      recipientCoins: Number(existing.recipientCoins || recipientCoins),
-    };
-  }
 
+  logAuthPayloadPreTxnRemoved('reward_coins');
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('Postgres is unavailable.');
   const nowIso = new Date().toISOString();
@@ -99,8 +90,10 @@ export async function rewardCoinsInSql(input: {
       payload: {},
     });
     if (claim.duplicate) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'reward_coins',
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       if (payload?.rewardId) {
         return {
           success: true as const,

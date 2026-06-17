@@ -8,8 +8,8 @@ import { getCoadminMaintenanceBreak } from '@/lib/maintenance/admin';
 import {
   claimAuthorityOperation,
   insertAuthorityLedgerEvent,
-  readAuthorityOperationExists,
-  readAuthorityOperationPayload,
+  logAuthPayloadPreTxnRemoved,
+  readAuthorityOperationPayloadWithClient,
 } from '@/lib/sql/authorityLedger';
 import { scheduleAutoClaimPendingTaskOnCreate } from '@/lib/sql/authorityAutoClaim';
 import {
@@ -25,10 +25,12 @@ import {
 import {
   carerTaskLiveChannel,
   coadminTaskLiveChannel,
-  insertLiveOutboxEventWithClient,
+  insertLiveOutboxEventsBatch,
+  type LiveOutboxInsertInput,
   playerRequestLiveChannel,
 } from '@/lib/sql/liveOutbox';
 import { cleanText, getPlayerMirrorPool, toIsoString } from '@/lib/sql/playerMirrorCommon';
+import { RechargeSqlWaterfall } from '@/lib/server/rechargeSqlWaterfall';
 import { hasFirstRechargeMatchAppliedFromSqlWithClient } from '@/lib/sql/playerGameRequestsCache';
 
 const MIN_REDEEM_AMOUNT = 50;
@@ -122,6 +124,8 @@ export type AuthorityRechargeCreateInput = {
   gameCredential: RequestLinkedGameCredential | null;
   previewCoadminUid: string;
   hasAnyFirstRechargeAppliedRequest: boolean;
+  firstRechargePrechecked?: boolean;
+  maintenancePrechecked?: boolean;
   idempotencyKey?: string | null;
 };
 
@@ -438,25 +442,21 @@ async function updateCarerTaskCompletedInTxn(
   });
 }
 
-async function writeCarerTaskOutboxInTxn(
-  client: PoolClient,
-  input: {
-    coadminUid: string;
-    carerUid?: string | null;
-    taskId: string;
-    requestId: string;
-    status: string;
-    eventType: string;
-    updatedAt: string;
-    type?: string;
-    playerUid?: string;
-    gameName?: string;
-    amount?: number | null;
-    assignedCarerUid?: string | null;
-    claimedByUid?: string | null;
-    outboxLogReason?: string;
-  }
-) {
+function buildCarerTaskOutboxRows(input: {
+  coadminUid: string;
+  carerUid?: string | null;
+  taskId: string;
+  requestId: string;
+  status: string;
+  eventType: string;
+  updatedAt: string;
+  type?: string;
+  playerUid?: string;
+  gameName?: string;
+  amount?: number | null;
+  assignedCarerUid?: string | null;
+  claimedByUid?: string | null;
+}): { rows: LiveOutboxInsertInput[]; channels: string[] } {
   const payload: Record<string, unknown> = {
     entityId: input.taskId,
     taskId: input.taskId,
@@ -489,19 +489,21 @@ async function writeCarerTaskOutboxInTxn(
   }
 
   const outboxChannels = [coadminTaskLiveChannel(input.coadminUid)];
-  await insertLiveOutboxEventWithClient(client, {
-    channel: outboxChannels[0],
-    eventType: input.eventType,
-    entityType: 'carer_task',
-    entityId: input.taskId,
-    source: 'authority_game_request',
-    mirroredAt: input.updatedAt,
-    payload,
-  });
+  const rows: LiveOutboxInsertInput[] = [
+    {
+      channel: outboxChannels[0],
+      eventType: input.eventType,
+      entityType: 'carer_task',
+      entityId: input.taskId,
+      source: 'authority_game_request',
+      mirroredAt: input.updatedAt,
+      payload,
+    },
+  ];
   const carerUid = cleanText(input.carerUid);
   if (carerUid) {
     outboxChannels.push(carerTaskLiveChannel(carerUid));
-    await insertLiveOutboxEventWithClient(client, {
+    rows.push({
       channel: carerTaskLiveChannel(carerUid),
       eventType: input.eventType,
       entityType: 'carer_task',
@@ -511,6 +513,36 @@ async function writeCarerTaskOutboxInTxn(
       payload,
     });
   }
+  return { rows, channels: outboxChannels };
+}
+
+async function writeCarerTaskOutboxInTxn(
+  client: PoolClient,
+  input: {
+    coadminUid: string;
+    carerUid?: string | null;
+    taskId: string;
+    requestId: string;
+    status: string;
+    eventType: string;
+    updatedAt: string;
+    type?: string;
+    playerUid?: string;
+    gameName?: string;
+    amount?: number | null;
+    assignedCarerUid?: string | null;
+    claimedByUid?: string | null;
+    outboxLogReason?: string;
+    outboxFlowName?: string;
+  }
+) {
+  const type = cleanText(input.type);
+  const playerUid = cleanText(input.playerUid);
+  const { rows, channels: outboxChannels } = buildCarerTaskOutboxRows(input);
+  await insertLiveOutboxEventsBatch(client, rows, {
+    flowName: input.outboxFlowName || 'write_carer_task_outbox',
+  });
+  const carerUid = cleanText(input.carerUid);
 
   if (input.eventType === 'task.completed') {
     console.info('[LIVE_OUTBOX_INSERT_TASK_COMPLETED]', {
@@ -609,58 +641,99 @@ export async function createRechargeRequestInSql(
   const bonusEventId = cleanText(input.bonusEventId) || null;
   const idempotencyKey = cleanText(input.idempotencyKey) || randomUUID();
   const operationKey = `game_request_create:${playerUid}:recharge:${idempotencyKey}`;
+  const waterfall = new RechargeSqlWaterfall();
 
   if (!playerUid || !gameName || amount <= 0) {
     throw new Error('Enter a valid amount.');
   }
 
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.requestId) {
-    return {
-      success: true,
-      duplicate: true,
-      requestId: cleanText(existing.requestId),
-    };
-  }
-
+  logAuthPayloadPreTxnRemoved('recharge_create');
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL authority unavailable.');
 
   const requestId = randomUUID();
   const eventId = randomUUID();
-  const client = await db.connect();
+  const client = await waterfall.time(
+    {
+      step: 'pool_connect',
+      table: 'pool',
+      queryType: 'txn',
+      sequentialOrParallel: 'sequential',
+      required: true,
+      canMoveAfterResponse: false,
+    },
+    () => db.connect()
+  );
   try {
-    await client.query('BEGIN');
-    const claim = await claimAuthorityOperation(client, {
-      operationKey,
-      operationType: 'game_request_create',
-      userUid: playerUid,
-      sourceId: requestId,
-      actorUid: playerUid,
-      actorRole: 'player',
-      payload: {},
-    });
+    await waterfall.time(
+      {
+        step: 'begin',
+        table: 'transaction',
+        queryType: 'txn',
+        sequentialOrParallel: 'sequential',
+        required: true,
+        canMoveAfterResponse: false,
+      },
+      () => client.query('BEGIN')
+    );
+    const claim = await waterfall.time(
+      {
+        step: 'claim_authority_operation',
+        table: 'authority_operations',
+        queryType: 'write',
+        sequentialOrParallel: 'sequential',
+        required: true,
+        canMoveAfterResponse: false,
+      },
+      () =>
+        claimAuthorityOperation(client, {
+          operationKey,
+          operationType: 'game_request_create',
+          userUid: playerUid,
+          sourceId: requestId,
+          actorUid: playerUid,
+          actorRole: 'player',
+          payload: {},
+        })
+    );
     if (!claim.claimed) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'recharge_create',
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       if (payload?.requestId) {
-        return {
-          success: true,
-          duplicate: true,
-          requestId: cleanText(payload.requestId),
-        };
+        const requestIdFromPayload = cleanText(payload.requestId);
+        if (requestIdFromPayload) {
+          waterfall.flushSummary();
+          return {
+            success: true,
+            duplicate: true,
+            requestId: requestIdFromPayload,
+          };
+        }
       }
       throw new Error('Duplicate recharge create in progress.');
     }
 
-    const playerResult = await client.query(
-      `
-        SELECT uid, username, role, status, coin, coadmin_uid, created_by, raw_firestore_data
-        FROM public.players_cache
-        WHERE uid = $1 AND deleted_at IS NULL
-        FOR UPDATE
-      `,
-      [playerUid]
+    const playerResult = await waterfall.time(
+      {
+        step: 'lock_player_for_update',
+        table: 'players_cache',
+        queryType: 'read',
+        sequentialOrParallel: 'sequential',
+        required: true,
+        canMoveAfterResponse: false,
+      },
+      () =>
+        client.query(
+          `
+            SELECT uid, username, role, status, coin, coadmin_uid, created_by, raw_firestore_data
+            FROM public.players_cache
+            WHERE uid = $1 AND deleted_at IS NULL
+            FOR UPDATE
+          `,
+          [playerUid]
+        )
     );
     if (!playerResult.rows.length) throw new Error('Player profile not found.');
     const player = playerResult.rows[0] as Record<string, unknown>;
@@ -677,9 +750,21 @@ export async function createRechargeRequestInSql(
       cleanText(input.previewCoadminUid);
     if (!coadminUid) throw new Error('Player coadmin scope not found.');
 
-    const maintenanceBreak = await getCoadminMaintenanceBreak(coadminUid);
-    if (maintenanceBreak.enabled) {
-      throw new Error(`MAINTENANCE_BREAK:${maintenanceBreak.message}`);
+    if (!input.maintenancePrechecked) {
+      const maintenanceBreak = await waterfall.time(
+        {
+          step: 'read_maintenance_break',
+          table: 'coadmin_maintenance_cache',
+          queryType: 'read',
+          sequentialOrParallel: 'sequential',
+          required: true,
+          canMoveAfterResponse: false,
+        },
+        () => getCoadminMaintenanceBreak(coadminUid)
+      );
+      if (maintenanceBreak.enabled) {
+        throw new Error(`MAINTENANCE_BREAK:${maintenanceBreak.message}`);
+      }
     }
 
     const currentCoin = readPlayerCoin(player);
@@ -690,9 +775,21 @@ export async function createRechargeRequestInSql(
     }
 
     const firstRechargeMatchUsed = readFirstRechargeMatchUsed(player);
-    const hasApplied =
-      input.hasAnyFirstRechargeAppliedRequest ||
-      (await hasFirstRechargeMatchAppliedFromSqlWithClient(client, playerUid));
+    let hasApplied =
+      input.hasAnyFirstRechargeAppliedRequest || firstRechargeMatchUsed;
+    if (!hasApplied && !input.firstRechargePrechecked) {
+      hasApplied = await waterfall.time(
+        {
+          step: 'read_first_recharge_applied',
+          table: 'player_game_requests_cache',
+          queryType: 'read',
+          sequentialOrParallel: 'sequential',
+          required: true,
+          canMoveAfterResponse: false,
+        },
+        () => hasFirstRechargeMatchAppliedFromSqlWithClient(client, playerUid)
+      );
+    }
     const firstRechargeMatchEligible =
       !bonusEventId && !firstRechargeMatchUsed && !hasApplied;
 
@@ -737,31 +834,63 @@ export async function createRechargeRequestInSql(
       createdAt: nowIso,
       completedAt: null,
       pokedAt: null,
-      pokeMessage: null,
+      pokeMessage: PLAYER_RECHARGE_SENT_MESSAGE,
       coinDeductedOnRequest: true,
     };
 
-    await updatePlayerBalancesInTxn(client, playerUid, { coin: newCoin });
-    await upsertGameRequestCacheInTxn(client, requestId, {
-      ...requestRaw,
-      playerUsername,
-      source: 'authority_recharge_create',
-      rawFirestoreData: requestRaw,
-    });
-    const linkedRechargeTask = await upsertLinkedCarerTaskInTxn(
-      client,
+    await waterfall.time(
       {
-        requestId,
-        coadminUid,
-        type: 'recharge',
-        playerUid,
-        playerUsername,
-        gameName,
-        amount: boostedAmount,
-        currentUsername: assignedGameUsername,
-        gameCredential: input.gameCredential,
+        step: 'update_player_balance',
+        table: 'players_cache',
+        queryType: 'write',
+        sequentialOrParallel: 'sequential',
+        required: true,
+        canMoveAfterResponse: false,
       },
-      nowIso
+      () => updatePlayerBalancesInTxn(client, playerUid, { coin: newCoin })
+    );
+    await waterfall.time(
+      {
+        step: 'upsert_game_request',
+        table: 'player_game_requests_cache',
+        queryType: 'write',
+        sequentialOrParallel: 'sequential',
+        required: true,
+        canMoveAfterResponse: false,
+      },
+      () =>
+        upsertGameRequestCacheInTxn(client, requestId, {
+          ...requestRaw,
+          playerUsername,
+          source: 'authority_recharge_create',
+          rawFirestoreData: requestRaw,
+        })
+    );
+    const linkedRechargeTask = await waterfall.time(
+      {
+        step: 'upsert_linked_carer_task',
+        table: 'carer_tasks_cache',
+        queryType: 'write',
+        sequentialOrParallel: 'sequential',
+        required: true,
+        canMoveAfterResponse: false,
+      },
+      () =>
+        upsertLinkedCarerTaskInTxn(
+          client,
+          {
+            requestId,
+            coadminUid,
+            type: 'recharge',
+            playerUid,
+            playerUsername,
+            gameName,
+            amount: boostedAmount,
+            currentUsername: assignedGameUsername,
+            gameCredential: input.gameCredential,
+          },
+          nowIso
+        )
     );
 
     const financialRaw = {
@@ -773,54 +902,62 @@ export async function createRechargeRequestInSql(
       createdAt: nowIso,
       ttlExpiresAt: ttlAfterDaysIso(90),
     };
-    await insertFinancialEventInTxn(client, {
-      eventId,
-      playerUid,
-      coadminUid,
-      amountNpr: amount,
-      type: 'recharge_request_deduct',
-      requestId,
-      beforeCoin: currentCoin,
-      afterCoin: newCoin,
-      createdAt: nowIso,
-      source: 'authority_recharge_create',
-    });
-    await insertAuthorityLedgerEvent(client, {
-      eventKey: `financialEvents:${eventId}:${playerUid}:coin:recharge_request_coin_debit`,
-      userUid: playerUid,
-      username: playerUsername,
-      role: 'player',
-      coadminUid,
-      balanceType: 'coin',
-      direction: 'debit',
-      delta: -amount,
-      absoluteAfter: newCoin,
-      eventType: 'recharge_request_coin_debit',
-      sourceCollection: 'financialEvents',
-      sourceId: eventId,
-      actorUid: playerUid,
-      actorRole: 'player',
-      confidence: 'high',
-      sourceCreatedAt: nowIso,
-      rawSourceData: financialRaw,
-      sourceFields: { amount, requestId },
-    });
+    await waterfall.time(
+      {
+        step: 'insert_financial_event',
+        table: 'financial_events_cache',
+        queryType: 'write',
+        sequentialOrParallel: 'sequential',
+        required: true,
+        canMoveAfterResponse: false,
+      },
+      () =>
+        insertFinancialEventInTxn(client, {
+          eventId,
+          playerUid,
+          coadminUid,
+          amountNpr: amount,
+          type: 'recharge_request_deduct',
+          requestId,
+          beforeCoin: currentCoin,
+          afterCoin: newCoin,
+          createdAt: nowIso,
+          source: 'authority_recharge_create',
+        })
+    );
+    await waterfall.time(
+      {
+        step: 'insert_authority_ledger',
+        table: 'user_balance_events',
+        queryType: 'write',
+        sequentialOrParallel: 'sequential',
+        required: true,
+        canMoveAfterResponse: false,
+      },
+      () =>
+        insertAuthorityLedgerEvent(client, {
+          eventKey: `financialEvents:${eventId}:${playerUid}:coin:recharge_request_coin_debit`,
+          userUid: playerUid,
+          username: playerUsername,
+          role: 'player',
+          coadminUid,
+          balanceType: 'coin',
+          direction: 'debit',
+          delta: -amount,
+          absoluteAfter: newCoin,
+          eventType: 'recharge_request_coin_debit',
+          sourceCollection: 'financialEvents',
+          sourceId: eventId,
+          actorUid: playerUid,
+          actorRole: 'player',
+          confidence: 'high',
+          sourceCreatedAt: nowIso,
+          rawSourceData: financialRaw,
+          sourceFields: { amount, requestId },
+        })
+    );
 
-    await emitPlayerRequestOutcomeMessage(client, {
-      playerUid,
-      coadminUid,
-      requestId,
-      requestType: 'recharge',
-      outcomeType: 'recharge_sent',
-      status: 'pending',
-      gameName,
-      amount: boostedAmount,
-      updatedAt: nowIso,
-      message: PLAYER_RECHARGE_SENT_MESSAGE,
-      toastVariant: 'info',
-      source: 'authority_recharge_create',
-    });
-    const rechargeOutboxChannels = await writeCarerTaskOutboxInTxn(client, {
+    const carerOutbox = buildCarerTaskOutboxRows({
       coadminUid,
       taskId: `request__${requestId}`,
       requestId,
@@ -832,8 +969,36 @@ export async function createRechargeRequestInSql(
       assignedCarerUid: null,
       eventType: 'task.upserted',
       updatedAt: nowIso,
-      outboxLogReason: 'player_recharge_create',
     });
+    await waterfall.time(
+      {
+        step: 'emit_recharge_sent_outbox_batch',
+        table: 'live_outbox',
+        queryType: 'write',
+        sequentialOrParallel: 'sequential',
+        required: true,
+        canMoveAfterResponse: false,
+      },
+      () =>
+        emitPlayerRequestOutcomeMessage(client, {
+          playerUid,
+          coadminUid,
+          requestId,
+          requestType: 'recharge',
+          outcomeType: 'recharge_sent',
+          status: 'pending',
+          gameName,
+          amount: boostedAmount,
+          updatedAt: nowIso,
+          message: PLAYER_RECHARGE_SENT_MESSAGE,
+          toastVariant: 'info',
+          source: 'authority_recharge_create',
+          skipPokeUpdate: true,
+          additionalOutboxRows: carerOutbox.rows,
+          outboxFlowName: 'recharge_create',
+        })
+    );
+    const rechargeOutboxChannels = carerOutbox.channels;
     logPlayerRequestCarerTaskLink({
       logKey: '[PLAYER_RECHARGE_TO_CARER_TASK]',
       requestId,
@@ -861,11 +1026,33 @@ export async function createRechargeRequestInSql(
       reason: 'player_recharge_create',
     });
 
-    await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
-      operationKey,
-      JSON.stringify({ requestId, playerUid, type: 'recharge', amount }),
-    ]);
-    await client.query('COMMIT');
+    await waterfall.time(
+      {
+        step: 'finalize_authority_operation',
+        table: 'authority_operations',
+        queryType: 'write',
+        sequentialOrParallel: 'sequential',
+        required: true,
+        canMoveAfterResponse: false,
+      },
+      () =>
+        client.query(
+          `UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`,
+          [operationKey, JSON.stringify({ requestId, playerUid, type: 'recharge', amount })]
+        )
+    );
+    await waterfall.time(
+      {
+        step: 'commit',
+        table: 'transaction',
+        queryType: 'txn',
+        sequentialOrParallel: 'sequential',
+        required: true,
+        canMoveAfterResponse: false,
+      },
+      () => client.query('COMMIT')
+    );
+    waterfall.flushSummary();
     scheduleAutoClaimPendingTaskOnCreate({
       taskId: linkedRechargeTask.taskId,
       coadminUid,
@@ -897,15 +1084,7 @@ export async function createRedeemRequestInSql(
     );
   }
 
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.requestId) {
-    return {
-      success: true,
-      duplicate: true,
-      requestId: cleanText(existing.requestId),
-    };
-  }
-
+  logAuthPayloadPreTxnRemoved('redeem_create');
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL authority unavailable.');
 
@@ -923,8 +1102,10 @@ export async function createRedeemRequestInSql(
       payload: {},
     });
     if (!claim.claimed) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'redeem_create',
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       if (payload?.requestId) {
         return {
           success: true,
@@ -1030,6 +1211,19 @@ export async function createRedeemRequestInSql(
       nowIso
     );
 
+    const redeemCarerOutbox = buildCarerTaskOutboxRows({
+      coadminUid,
+      taskId: `request__${requestId}`,
+      requestId,
+      status: 'pending',
+      type: 'redeem',
+      playerUid,
+      gameName,
+      amount,
+      assignedCarerUid: null,
+      eventType: 'task.upserted',
+      updatedAt: nowIso,
+    });
     await emitPlayerRequestOutcomeMessage(client, {
       playerUid,
       coadminUid,
@@ -1043,21 +1237,10 @@ export async function createRedeemRequestInSql(
       message: PLAYER_REDEEM_SENT_MESSAGE,
       toastVariant: 'info',
       source: 'authority_redeem_create',
+      additionalOutboxRows: redeemCarerOutbox.rows,
+      outboxFlowName: 'redeem_create',
     });
-    const redeemOutboxChannels = await writeCarerTaskOutboxInTxn(client, {
-      coadminUid,
-      taskId: `request__${requestId}`,
-      requestId,
-      status: 'pending',
-      type: 'redeem',
-      playerUid,
-      gameName,
-      amount,
-      assignedCarerUid: null,
-      eventType: 'task.upserted',
-      updatedAt: nowIso,
-      outboxLogReason: 'player_redeem_create',
-    });
+    const redeemOutboxChannels = redeemCarerOutbox.channels;
     logPlayerRequestCarerTaskLink({
       logKey: '[PLAYER_REDEEM_TO_CARER_TASK]',
       requestId,
@@ -1121,18 +1304,7 @@ export async function completeRechargeRedeemTaskInSql(
   const idempotencyKey = cleanText(input.idempotencyKey) || taskId;
   const operationKey = `game_request_complete:${taskId}:${idempotencyKey}`;
 
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.requestId) {
-    return {
-      success: true,
-      duplicate: true,
-      alreadyCompleted: existing.alreadyCompleted === true,
-      taskId,
-      requestId: cleanText(existing.requestId),
-      totalAwardNpr: Number(existing.totalAwardNpr || 0),
-    };
-  }
-
+  logAuthPayloadPreTxnRemoved('complete_recharge_redeem');
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL authority unavailable.');
 
@@ -1149,8 +1321,10 @@ export async function completeRechargeRedeemTaskInSql(
       payload: {},
     });
     if (!claim.claimed) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'complete_recharge_redeem',
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       if (payload?.requestId) {
         return {
           success: true,
@@ -1457,27 +1631,7 @@ export async function completeRechargeRedeemTaskInSql(
     const completeOutcomeType =
       requestType === 'redeem' ? 'redeem_completed' : 'recharge_completed';
 
-    await emitPlayerRequestOutcomeMessage(client, {
-      playerUid,
-      coadminUid,
-      requestId,
-      requestType: requestType === 'redeem' ? 'redeem' : 'recharge',
-      outcomeType: completeOutcomeType,
-      status: 'completed',
-      gameName: cleanText(request.game_name),
-      amount,
-      updatedAt: nowIso,
-      message: playerSuccessMessage,
-      toastVariant: 'success',
-      source: 'authority_game_request_complete',
-    });
-    console.info('[PLAYER_RECHARGE_SUCCESS_TOAST_QUEUED]', {
-      requestId,
-      playerUid,
-      message: playerSuccessMessage,
-      requestType,
-    });
-    await writeCarerTaskOutboxInTxn(client, {
+    const completeCarerOutbox = buildCarerTaskOutboxRows({
       coadminUid: taskScope,
       carerUid: assignedCarerUid || actorUid,
       taskId,
@@ -1491,20 +1645,44 @@ export async function completeRechargeRedeemTaskInSql(
       eventType: 'task.completed',
       updatedAt: nowIso,
     });
-    await insertLiveOutboxEventWithClient(client, {
-      channel: playerRequestLiveChannel(playerUid),
-      eventType: 'balance_update',
-      entityType: 'player_balance',
-      entityId: playerUid,
+    await emitPlayerRequestOutcomeMessage(client, {
+      playerUid,
+      coadminUid,
+      requestId,
+      requestType: requestType === 'redeem' ? 'redeem' : 'recharge',
+      outcomeType: completeOutcomeType,
+      status: 'completed',
+      gameName: cleanText(request.game_name),
+      amount,
+      updatedAt: nowIso,
+      message: playerSuccessMessage,
+      toastVariant: 'success',
       source: 'authority_game_request_complete',
-      mirroredAt: nowIso,
-      payload: {
-        entityId: playerUid,
-        playerUid,
-        requestId,
-        updatedAt: nowIso,
-        source: 'authority',
-      },
+      additionalOutboxRows: [
+        ...completeCarerOutbox.rows,
+        {
+          channel: playerRequestLiveChannel(playerUid),
+          eventType: 'balance_update',
+          entityType: 'player_balance',
+          entityId: playerUid,
+          source: 'authority_game_request_complete',
+          mirroredAt: nowIso,
+          payload: {
+            entityId: playerUid,
+            playerUid,
+            requestId,
+            updatedAt: nowIso,
+            source: 'authority',
+          },
+        },
+      ],
+      outboxFlowName: 'complete_recharge_redeem',
+    });
+    console.info('[PLAYER_RECHARGE_SUCCESS_TOAST_QUEUED]', {
+      requestId,
+      playerUid,
+      message: playerSuccessMessage,
+      requestType,
     });
     console.info('[SQL_PLAYER_REQUEST_COMPLETED]', {
       requestId,
@@ -1677,18 +1855,7 @@ export async function dismissRechargeRequestInSql(
   const operationKey = `game_request_dismiss:${requestId}:${idempotencyKey}`;
   const linkedTaskId = `request__${requestId}`;
 
-  const existing = await readAuthorityOperationPayload(operationKey);
-  const duplicateResult = await resolveDismissRechargeDuplicate(requestId, linkedTaskId, existing);
-  if (duplicateResult) {
-    return duplicateResult;
-  }
-  if (await readAuthorityOperationExists(operationKey)) {
-    const inFlightDuplicate = await resolveDismissRechargeDuplicate(requestId, linkedTaskId, existing);
-    if (inFlightDuplicate) {
-      return inFlightDuplicate;
-    }
-  }
-
+  logAuthPayloadPreTxnRemoved('dismiss_recharge');
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL authority unavailable.');
 
@@ -1709,10 +1876,12 @@ export async function dismissRechargeRequestInSql(
       payload: {},
     });
     if (!claim.claimed) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'dismiss_recharge',
+      });
       if (ownsTransaction) {
         await client.query('ROLLBACK');
       }
-      const payload = await readAuthorityOperationPayload(operationKey);
       const duplicate = await resolveDismissRechargeDuplicate(requestId, linkedTaskId, payload);
       if (duplicate) {
         return duplicate;
@@ -1730,7 +1899,10 @@ export async function dismissRechargeRequestInSql(
       [requestId]
     );
     if (!requestResult.rows.length) {
-      const duplicate = await resolveDismissRechargeDuplicate(requestId, linkedTaskId, existing);
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'dismiss_recharge',
+      });
+      const duplicate = await resolveDismissRechargeDuplicate(requestId, linkedTaskId, payload);
       if (duplicate) {
         if (ownsTransaction) {
           await client.query('ROLLBACK');
@@ -1956,6 +2128,25 @@ export async function dismissRechargeRequestInSql(
     }
 
     if (pokeMessage) {
+      const dismissAdditionalRows: LiveOutboxInsertInput[] = [];
+      if (refunded) {
+        dismissAdditionalRows.push({
+          channel: playerRequestLiveChannel(playerUid),
+          eventType: 'balance_update',
+          entityType: 'player_balance',
+          entityId: playerUid,
+          source: 'authority_dismiss_recharge',
+          mirroredAt: nowIso,
+          payload: {
+            entityId: playerUid,
+            playerUid,
+            updatedAt: nowIso,
+            source: 'authority',
+            refunded: true,
+            requestId,
+          },
+        });
+      }
       await emitPlayerRequestOutcomeMessage(client, {
         playerUid,
         coadminUid: requestCoadminUid,
@@ -1972,6 +2163,8 @@ export async function dismissRechargeRequestInSql(
         dismissReasonMessage,
         refunded,
         source: 'authority_dismiss_recharge',
+        additionalOutboxRows: dismissAdditionalRows,
+        outboxFlowName: 'dismiss_recharge',
       });
     }
     console.info('[LIVE_OUTBOX_INSERT_DONE]', {
@@ -1980,22 +2173,6 @@ export async function dismissRechargeRequestInSql(
       durationMs: Date.now() - outboxStartedAt,
     });
     if (refunded) {
-      await insertLiveOutboxEventWithClient(client, {
-        channel: playerRequestLiveChannel(playerUid),
-        eventType: 'balance_update',
-        entityType: 'player_balance',
-        entityId: playerUid,
-        source: 'authority_dismiss_recharge',
-        mirroredAt: nowIso,
-        payload: {
-          entityId: playerUid,
-          playerUid,
-          updatedAt: nowIso,
-          source: 'authority',
-          refunded: true,
-          requestId,
-        },
-      });
       console.info('[LIVE_OUTBOX_INSERT_PLAYER_BALANCE_UPDATE]', {
         requestId,
         playerUid,
@@ -2061,20 +2238,7 @@ export async function dismissRedeemRequestInSql(
   const operationKey = `game_request_dismiss:${requestId}:${idempotencyKey}`;
   const linkedTaskId = `request__${requestId}`;
 
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.requestId) {
-    return {
-      success: true,
-      duplicate: true,
-      alreadyDismissed: existing.alreadyDismissed === true,
-      refunded: existing.refunded === true,
-      refundAmount: Math.max(0, Number(existing.refundAmount || 0)) || undefined,
-      requestId,
-      linkedTaskId,
-      taskDeleted: existing.taskDeleted === true,
-    };
-  }
-
+  logAuthPayloadPreTxnRemoved('dismiss_redeem');
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL authority unavailable.');
 
@@ -2094,10 +2258,12 @@ export async function dismissRedeemRequestInSql(
       payload: {},
     });
     if (!claim.claimed) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'dismiss_redeem',
+      });
       if (ownsTransaction) {
         await client.query('ROLLBACK');
       }
-      const payload = await readAuthorityOperationPayload(operationKey);
       if (payload?.requestId) {
         return {
           success: true,
@@ -2336,6 +2502,25 @@ export async function dismissRedeemRequestInSql(
         dismissedByAutomation && input.fakeRedeem === true
           ? 'authority_dismiss_fake_redeem'
           : 'authority_dismiss_redeem';
+      const dismissAdditionalRows: LiveOutboxInsertInput[] = [];
+      if (refunded) {
+        dismissAdditionalRows.push({
+          channel: playerRequestLiveChannel(playerUid),
+          eventType: 'balance_update',
+          entityType: 'player_balance',
+          entityId: playerUid,
+          source: outcomeSource,
+          mirroredAt: nowIso,
+          payload: {
+            entityId: playerUid,
+            playerUid,
+            updatedAt: nowIso,
+            source: 'authority',
+            refunded: true,
+            requestId,
+          },
+        });
+      }
       await emitPlayerRequestOutcomeMessage(client, {
         playerUid,
         coadminUid: canonicalScope,
@@ -2352,24 +2537,8 @@ export async function dismissRedeemRequestInSql(
         dismissReasonMessage,
         refunded,
         source: outcomeSource,
-      });
-    }
-    if (refunded) {
-      await insertLiveOutboxEventWithClient(client, {
-        channel: playerRequestLiveChannel(playerUid),
-        eventType: 'balance_update',
-        entityType: 'player_balance',
-        entityId: playerUid,
-        source: 'authority_dismiss_redeem',
-        mirroredAt: nowIso,
-        payload: {
-          entityId: playerUid,
-          playerUid,
-          updatedAt: nowIso,
-          source: 'authority',
-          refunded: true,
-          requestId,
-        },
+        additionalOutboxRows: dismissAdditionalRows,
+        outboxFlowName: 'dismiss_redeem',
       });
     }
     if (taskExists && input.skipTaskTombstone !== true) {
@@ -2384,6 +2553,7 @@ export async function dismissRedeemRequestInSql(
         amount: Math.max(0, Number(request.amount || 0)),
         eventType: 'task.tombstoned',
         updatedAt: nowIso,
+        outboxFlowName: 'dismiss_redeem_task_tombstone',
       });
     }
 

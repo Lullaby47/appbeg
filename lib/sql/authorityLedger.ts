@@ -166,6 +166,55 @@ export async function readAuthorityOperationExists(operationKey: string): Promis
   return result.rows.length > 0;
 }
 
+export function logAuthPayloadPreTxnRemoved(flowName: string) {
+  console.info('[AUTH_PAYLOAD_PRE_TXN_REMOVED]', { flowName, savedRoundTrip: true });
+}
+
+export function logAuthDuplicatePayloadReadInTxn(flowName: string, operationKey: string) {
+  console.info('[AUTH_DUPLICATE_PAYLOAD_READ_IN_TXN]', {
+    flowName,
+    operationKey: cleanText(operationKey),
+    source: 'same_client',
+  });
+}
+
+function parseAuthorityOperationPayloadValue(payload: unknown): Record<string, unknown> | null {
+  if (payload === null || payload === undefined) {
+    return null;
+  }
+  if (typeof payload !== 'object' || Array.isArray(payload)) {
+    return {};
+  }
+  return payload as Record<string, unknown>;
+}
+
+export async function readAuthorityOperationPayloadWithClient(
+  client: PoolClient,
+  operationKey: string,
+  options?: { flowName?: string }
+): Promise<Record<string, unknown> | null> {
+  const key = cleanText(operationKey);
+  if (!key) {
+    return null;
+  }
+  if (options?.flowName) {
+    logAuthDuplicatePayloadReadInTxn(options.flowName, key);
+  }
+  const result = await client.query(
+    `
+      SELECT payload
+      FROM public.authority_operations
+      WHERE operation_key = $1
+      LIMIT 1
+    `,
+    [key]
+  );
+  if (!result.rows.length) {
+    return null;
+  }
+  return parseAuthorityOperationPayloadValue(result.rows[0]?.payload);
+}
+
 export async function readAuthorityOperationPayload(
   operationKey: string
 ): Promise<Record<string, unknown> | null> {
@@ -191,11 +240,7 @@ export async function readAuthorityOperationPayload(
   if (!result.rows.length) {
     return null;
   }
-  const payload = result.rows[0]?.payload;
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return {};
-  }
-  return payload as Record<string, unknown>;
+  return parseAuthorityOperationPayloadValue(result.rows[0]?.payload);
 }
 
 export async function deleteAuthorityOperationInTxn(

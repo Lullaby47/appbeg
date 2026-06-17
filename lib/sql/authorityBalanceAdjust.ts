@@ -3,7 +3,7 @@ import 'server-only';
 import { randomUUID } from 'crypto';
 
 import { cleanText, getPlayerMirrorPool } from '@/lib/sql/playerMirrorCommon';
-import { claimAuthorityOperation, insertAuthorityLedgerEvent } from '@/lib/sql/authorityLedger';
+import { claimAuthorityOperation, insertAuthorityLedgerEvent, logAuthPayloadPreTxnRemoved } from '@/lib/sql/authorityLedger';
 import { lookupUserDirectoryFromSql, resolvePlayerScopeUid } from '@/lib/sql/authorityLookup';
 
 export type AuthorityBalanceAdjustInput = {
@@ -85,6 +85,7 @@ export async function adjustPlayerBalanceInSql(
   const eventType = resolveEventType(balanceType, delta);
   const amountNpr = Math.abs(delta);
 
+  logAuthPayloadPreTxnRemoved('coadmin_balance_adjust');
   const client = await db.connect();
   try {
     await client.query('BEGIN');

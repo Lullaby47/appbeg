@@ -11,21 +11,23 @@ import { getCoadminMaintenanceBreak } from '@/lib/maintenance/admin';
 import {
   claimAuthorityOperation,
   insertAuthorityLedgerEvent,
-  readAuthorityOperationPayload,
+  logAuthPayloadPreTxnRemoved,
+  readAuthorityOperationPayloadWithClient,
 } from '@/lib/sql/authorityLedger';
 import { scheduleAutoClaimPendingTaskOnCreate } from '@/lib/sql/authorityAutoClaim';
 import {
+  buildGameRequestOutboxRows,
   normalizeGameName,
   ttlAfterDaysIso,
   updatePlayerBalancesInTxn,
   upsertGameRequestCacheInTxn,
   upsertLinkedCarerTaskInTxn,
-  writeGameRequestOutboxInTxn,
 } from '@/lib/sql/authorityGameRequestHelpers';
 import { isBonusEventActive, type CachedBonusEvent } from '@/lib/sql/bonusEventsCache';
 import {
   coadminTaskLiveChannel,
   insertLiveOutboxEventWithClient,
+  insertLiveOutboxEventsBatch,
   playerRequestLiveChannel,
 } from '@/lib/sql/liveOutbox';
 import { readGameLoginsCacheByCoadminWithClient } from '@/lib/sql/gameLoginsCache';
@@ -474,15 +476,7 @@ export async function initiateBonusPlayInSql(
   const idempotencyKey = cleanText(input.idempotencyKey) || bonusEventId;
   const operationKey = `bonus_event:${playerUid}:initiate_play:${idempotencyKey}`;
 
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.requestId) {
-    return {
-      success: true,
-      duplicate: true,
-      requestId: cleanText(existing.requestId),
-    };
-  }
-
+  logAuthPayloadPreTxnRemoved('bonus_initiate_play');
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL authority unavailable.');
 
@@ -501,8 +495,10 @@ export async function initiateBonusPlayInSql(
       payload: {},
     });
     if (!claim.claimed) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'bonus_initiate_play',
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       if (payload?.requestId) {
         return {
           success: true,
@@ -762,35 +758,41 @@ export async function initiateBonusPlayInSql(
 
     await tombstoneBonusEventInTxn(client, bonusEventId, 'authority_bonus_initiate_play');
 
-    await writeGameRequestOutboxInTxn(client, {
-      playerUid,
-      coadminUid,
-      requestId,
-      type: 'recharge',
-      status: 'pending',
-      gameName,
-      amount: boostedAmount,
-      eventType: 'bonus_initiate_play',
-      updatedAt: nowIso,
-    });
-    await insertLiveOutboxEventWithClient(client, {
-      channel: coadminTaskLiveChannel(coadminUid),
-      eventType: 'bonus_event_claimed',
-      entityType: 'bonus_event',
-      entityId: bonusEventId,
-      source: 'authority_bonus_initiate_play',
-      mirroredAt: nowIso,
-      payload: { bonusEventId, requestId, playerUid, updatedAt: nowIso },
-    });
-    await insertLiveOutboxEventWithClient(client, {
-      channel: playerRequestLiveChannel(playerUid),
-      eventType: 'balance_update',
-      entityType: 'player_balance',
-      entityId: playerUid,
-      source: 'authority_bonus_initiate_play',
-      mirroredAt: nowIso,
-      payload: { playerUid, updatedAt: nowIso },
-    });
+    await insertLiveOutboxEventsBatch(
+      client,
+      [
+        ...buildGameRequestOutboxRows({
+          playerUid,
+          coadminUid,
+          requestId,
+          type: 'recharge',
+          status: 'pending',
+          gameName,
+          amount: boostedAmount,
+          eventType: 'bonus_initiate_play',
+          updatedAt: nowIso,
+        }),
+        {
+          channel: coadminTaskLiveChannel(coadminUid),
+          eventType: 'bonus_event_claimed',
+          entityType: 'bonus_event',
+          entityId: bonusEventId,
+          source: 'authority_bonus_initiate_play',
+          mirroredAt: nowIso,
+          payload: { bonusEventId, requestId, playerUid, updatedAt: nowIso },
+        },
+        {
+          channel: playerRequestLiveChannel(playerUid),
+          eventType: 'balance_update',
+          entityType: 'player_balance',
+          entityId: playerUid,
+          source: 'authority_bonus_initiate_play',
+          mirroredAt: nowIso,
+          payload: { playerUid, updatedAt: nowIso },
+        },
+      ],
+      { flowName: 'bonus_initiate_play' }
+    );
 
     await client.query(`UPDATE public.authority_operations SET payload = $2::jsonb WHERE operation_key = $1`, [
       operationKey,
@@ -1217,16 +1219,7 @@ export async function updateBonusRangeInSql(
     cleanText(input.idempotencyKey) || `${normalized.minPercent}-${normalized.maxPercent}`;
   const operationKey = `bonus_event:${coadminUid}:update_range:${idempotencyKey}`;
 
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.minPercent != null) {
-    return {
-      minPercent: Number(existing.minPercent),
-      maxPercent: Number(existing.maxPercent),
-      adjustedEventCount: Number(existing.adjustedEventCount || 0),
-      duplicate: true,
-    };
-  }
-
+  logAuthPayloadPreTxnRemoved('bonus_update_range');
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('SQL authority unavailable.');
 
@@ -1244,8 +1237,10 @@ export async function updateBonusRangeInSql(
       payload: {},
     });
     if (!claim.claimed) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'bonus_update_range',
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       if (payload?.minPercent != null) {
         return {
           minPercent: Number(payload.minPercent),

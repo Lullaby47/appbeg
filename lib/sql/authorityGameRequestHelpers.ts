@@ -12,7 +12,8 @@ import { cleanText, toIsoString } from '@/lib/sql/playerMirrorCommon';
 import {
   carerTaskLiveChannel,
   coadminTaskLiveChannel,
-  insertLiveOutboxEventWithClient,
+  insertLiveOutboxEventsBatch,
+  type LiveOutboxInsertInput,
   playerRequestLiveChannel,
 } from '@/lib/sql/liveOutbox';
 
@@ -467,8 +468,9 @@ export async function tombstoneLinkedCarerTaskInTxn(
   };
   const coadminUid = cleanText(task.coadmin_uid);
   const carerUid = cleanText(task.assigned_carer_uid) || cleanText(task.claimed_by_uid);
+  const tombstoneRows: LiveOutboxInsertInput[] = [];
   if (coadminUid) {
-    await insertLiveOutboxEventWithClient(client, {
+    tombstoneRows.push({
       channel: coadminTaskLiveChannel(coadminUid),
       eventType: 'task.tombstoned',
       entityType: 'carer_task',
@@ -479,7 +481,7 @@ export async function tombstoneLinkedCarerTaskInTxn(
     });
   }
   if (carerUid) {
-    await insertLiveOutboxEventWithClient(client, {
+    tombstoneRows.push({
       channel: carerTaskLiveChannel(carerUid),
       eventType: 'task.tombstoned',
       entityType: 'carer_task',
@@ -489,7 +491,62 @@ export async function tombstoneLinkedCarerTaskInTxn(
       payload,
     });
   }
+  if (tombstoneRows.length) {
+    await insertLiveOutboxEventsBatch(client, tombstoneRows, { flowName: 'tombstone_linked_carer_task' });
+  }
   return taskId;
+}
+
+export function buildGameRequestOutboxRows(input: {
+  playerUid: string;
+  coadminUid: string;
+  requestId: string;
+  type: string;
+  status: string;
+  gameName: string;
+  amount: number;
+  eventType: string;
+  updatedAt: string;
+  pokeMessage?: string | null;
+  dismissReasonCode?: string | null;
+  dismissReasonMessage?: string | null;
+  refunded?: boolean;
+}): LiveOutboxInsertInput[] {
+  const payload = {
+    entityId: input.requestId,
+    playerUid: input.playerUid,
+    requestId: input.requestId,
+    type: input.type,
+    status: input.status,
+    gameName: input.gameName,
+    amount: input.amount,
+    updatedAt: input.updatedAt,
+    pokeMessage: cleanText(input.pokeMessage) || null,
+    dismissReasonCode: cleanText(input.dismissReasonCode) || null,
+    dismissReasonMessage: cleanText(input.dismissReasonMessage) || null,
+    refunded: input.refunded === true,
+    source: 'authority',
+  };
+  return [
+    {
+      channel: playerRequestLiveChannel(input.playerUid),
+      eventType: input.eventType,
+      entityType: 'player_game_request',
+      entityId: input.requestId,
+      source: 'authority_game_request',
+      mirroredAt: input.updatedAt,
+      payload,
+    },
+    {
+      channel: coadminTaskLiveChannel(input.coadminUid),
+      eventType: input.eventType,
+      entityType: 'player_game_request',
+      entityId: input.requestId,
+      source: 'authority_game_request',
+      mirroredAt: input.updatedAt,
+      payload,
+    },
+  ];
 }
 
 export async function writeGameRequestOutboxInTxn(
@@ -508,32 +565,14 @@ export async function writeGameRequestOutboxInTxn(
     dismissReasonCode?: string | null;
     dismissReasonMessage?: string | null;
     refunded?: boolean;
+    outboxFlowName?: string;
   }
 ) {
-  const payload = {
-    entityId: input.requestId,
-    playerUid: input.playerUid,
-    requestId: input.requestId,
-    type: input.type,
-    status: input.status,
-    gameName: input.gameName,
-    amount: input.amount,
-    updatedAt: input.updatedAt,
-    pokeMessage: cleanText(input.pokeMessage) || null,
-    dismissReasonCode: cleanText(input.dismissReasonCode) || null,
-    dismissReasonMessage: cleanText(input.dismissReasonMessage) || null,
-    refunded: input.refunded === true,
-    source: 'authority',
-  };
-  const playerOutboxId = await insertLiveOutboxEventWithClient(client, {
-    channel: playerRequestLiveChannel(input.playerUid),
-    eventType: input.eventType,
-    entityType: 'player_game_request',
-    entityId: input.requestId,
-    source: 'authority_game_request',
-    mirroredAt: input.updatedAt,
-    payload,
+  const rows = buildGameRequestOutboxRows(input);
+  const outboxIds = await insertLiveOutboxEventsBatch(client, rows, {
+    flowName: input.outboxFlowName || 'write_game_request_outbox',
   });
+  const playerOutboxId = outboxIds[0] ?? null;
   if (input.eventType === 'recharge_dismiss') {
     console.info('[LIVE_OUTBOX_INSERT_PLAYER_RECHARGE_DISMISS]', {
       requestId: input.requestId,
@@ -568,15 +607,6 @@ export async function writeGameRequestOutboxInTxn(
       status: input.status,
     });
   }
-  await insertLiveOutboxEventWithClient(client, {
-    channel: coadminTaskLiveChannel(input.coadminUid),
-    eventType: input.eventType,
-    entityType: 'player_game_request',
-    entityId: input.requestId,
-    source: 'authority_game_request',
-    mirroredAt: input.updatedAt,
-    payload,
-  });
   return playerOutboxId;
 }
 
@@ -643,6 +673,9 @@ export async function emitPlayerRequestOutcomeMessage(
     refunded?: boolean;
     source: string;
     skipIdempotency?: boolean;
+    skipPokeUpdate?: boolean;
+    additionalOutboxRows?: LiveOutboxInsertInput[];
+    outboxFlowName?: string;
   }
 ): Promise<{ emitted: boolean; duplicate: boolean }> {
   const message = cleanText(input.message);
@@ -678,14 +711,16 @@ export async function emitPlayerRequestOutcomeMessage(
           ? 'dismissed'
           : cleanText(input.status) || 'pending';
 
-  await client.query(
-    `
-      UPDATE public.player_game_requests_cache
-      SET poke_message = $2, updated_at = $3::timestamptz
-      WHERE firebase_id = $1 AND deleted_at IS NULL
-    `,
-    [input.requestId, message, input.updatedAt]
-  );
+  if (input.skipPokeUpdate !== true) {
+    await client.query(
+      `
+        UPDATE public.player_game_requests_cache
+        SET poke_message = $2, updated_at = $3::timestamptz
+        WHERE firebase_id = $1 AND deleted_at IS NULL
+      `,
+      [input.requestId, message, input.updatedAt]
+    );
+  }
 
   const basePayload = {
     entityId: input.requestId,
@@ -708,24 +743,26 @@ export async function emitPlayerRequestOutcomeMessage(
     updatedAt: input.updatedAt,
   };
 
-  await writeGameRequestOutboxInTxn(client, {
-    playerUid: input.playerUid,
-    coadminUid: input.coadminUid,
-    requestId: input.requestId,
-    type: input.requestType,
-    status: requestStatus,
-    gameName: input.gameName,
-    amount: input.amount,
-    eventType: input.outcomeType,
-    updatedAt: input.updatedAt,
-    pokeMessage: message,
-    dismissReasonCode,
-    dismissReasonMessage,
-    refunded: input.refunded,
-  });
+  const outboxRows: LiveOutboxInsertInput[] = [
+    ...buildGameRequestOutboxRows({
+      playerUid: input.playerUid,
+      coadminUid: input.coadminUid,
+      requestId: input.requestId,
+      type: input.requestType,
+      status: requestStatus,
+      gameName: input.gameName,
+      amount: input.amount,
+      eventType: input.outcomeType,
+      updatedAt: input.updatedAt,
+      pokeMessage: message,
+      dismissReasonCode,
+      dismissReasonMessage,
+      refunded: input.refunded,
+    }),
+  ];
 
   if (legacyEventType !== input.outcomeType) {
-    await insertLiveOutboxEventWithClient(client, {
+    outboxRows.push({
       channel: playerRequestLiveChannel(input.playerUid),
       eventType: legacyEventType,
       entityType: 'player_game_request',
@@ -736,7 +773,7 @@ export async function emitPlayerRequestOutcomeMessage(
     });
   }
 
-  await insertLiveOutboxEventWithClient(client, {
+  outboxRows.push({
     channel: playerRequestLiveChannel(input.playerUid),
     eventType: 'request.message',
     entityType: 'player_game_request',
@@ -747,26 +784,28 @@ export async function emitPlayerRequestOutcomeMessage(
   });
 
   if (input.outcomeType.endsWith('_completed')) {
-    await insertLiveOutboxEventWithClient(client, {
-      channel: playerRequestLiveChannel(input.playerUid),
-      eventType: 'request.completed',
-      entityType: 'player_game_request',
-      entityId: input.requestId,
-      source: input.source,
-      mirroredAt: input.updatedAt,
-      payload: basePayload,
-    });
-    await insertLiveOutboxEventWithClient(client, {
-      channel: playerRequestLiveChannel(input.playerUid),
-      eventType: 'player_message',
-      entityType: 'player_game_request',
-      entityId: input.requestId,
-      source: input.source,
-      mirroredAt: input.updatedAt,
-      payload: basePayload,
-    });
+    outboxRows.push(
+      {
+        channel: playerRequestLiveChannel(input.playerUid),
+        eventType: 'request.completed',
+        entityType: 'player_game_request',
+        entityId: input.requestId,
+        source: input.source,
+        mirroredAt: input.updatedAt,
+        payload: basePayload,
+      },
+      {
+        channel: playerRequestLiveChannel(input.playerUid),
+        eventType: 'player_message',
+        entityType: 'player_game_request',
+        entityId: input.requestId,
+        source: input.source,
+        mirroredAt: input.updatedAt,
+        payload: basePayload,
+      }
+    );
   } else if (input.outcomeType.endsWith('_dismissed')) {
-    await insertLiveOutboxEventWithClient(client, {
+    outboxRows.push({
       channel: playerRequestLiveChannel(input.playerUid),
       eventType: 'player_message',
       entityType: 'player_game_request',
@@ -776,7 +815,7 @@ export async function emitPlayerRequestOutcomeMessage(
       payload: basePayload,
     });
     if (input.requestType === 'redeem') {
-      await insertLiveOutboxEventWithClient(client, {
+      outboxRows.push({
         channel: playerRequestLiveChannel(input.playerUid),
         eventType: 'request.dismissed',
         entityType: 'player_game_request',
@@ -787,6 +826,14 @@ export async function emitPlayerRequestOutcomeMessage(
       });
     }
   }
+
+  if (input.additionalOutboxRows?.length) {
+    outboxRows.push(...input.additionalOutboxRows);
+  }
+
+  await insertLiveOutboxEventsBatch(client, outboxRows, {
+    flowName: input.outboxFlowName || `player_request_outcome:${input.outcomeType}`,
+  });
 
   const logDetails = {
     requestId: input.requestId,

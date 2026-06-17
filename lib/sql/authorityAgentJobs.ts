@@ -6,7 +6,6 @@ import type { PoolClient } from 'pg';
 import { normalizeGameName } from '@/lib/sql/authorityGameRequestHelpers';
 import {
   claimAuthorityOperation,
-  readAuthorityOperationPayload,
 } from '@/lib/sql/authorityLedger';
 import { returnTaskToPendingInSql } from '@/lib/sql/authorityCarerTasks';
 import {

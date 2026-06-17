@@ -10,7 +10,8 @@ import { cleanText, getPlayerMirrorPool, toIsoString } from '@/lib/sql/playerMir
 import {
   claimAuthorityOperation,
   insertAuthorityLedgerEvent,
-  readAuthorityOperationPayload,
+  logAuthPayloadPreTxnRemoved,
+  readAuthorityOperationPayloadWithClient,
 } from '@/lib/sql/authorityLedger';
 import {
   readPlayerCashoutTasksCacheByCoadmin,
@@ -408,15 +409,8 @@ export async function createPlayerCashoutTaskInSql(
 
   const resolvedIdempotencyKey = idempotencyKey || randomUUID();
   const operationKey = `cashout_create:${playerUid}:${resolvedIdempotencyKey}`;
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.taskId) {
-    return {
-      success: true,
-      duplicate: true,
-      taskId: cleanText(existing.taskId),
-    };
-  }
 
+  logAuthPayloadPreTxnRemoved('cashout_create');
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('Postgres is unavailable.');
 
@@ -438,8 +432,10 @@ export async function createPlayerCashoutTaskInSql(
       payload: {},
     });
     if (claim.duplicate) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'cashout_create',
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       if (payload?.taskId) {
         return { success: true, duplicate: true, taskId: cleanText(payload.taskId) };
       }
@@ -717,16 +713,8 @@ export async function completePlayerCashoutTaskInSql(
 
   const idempotencyKey = cleanText(input.idempotencyKey) || taskId;
   const operationKey = `cashout_complete:${taskId}:${idempotencyKey}`;
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.taskId) {
-    return {
-      success: true,
-      duplicate: true,
-      alreadyCompleted: existing.alreadyCompleted === true,
-      taskId,
-    };
-  }
 
+  logAuthPayloadPreTxnRemoved('cashout_complete');
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('Postgres is unavailable.');
 
@@ -818,8 +806,10 @@ export async function completePlayerCashoutTaskInSql(
       payload: {},
     });
     if (claim.duplicate) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'cashout_complete',
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       return {
         success: true,
         duplicate: true,
@@ -1360,16 +1350,8 @@ export async function declinePlayerCashoutTaskInSql(
 
   const idempotencyKey = cleanText(input.idempotencyKey) || taskId;
   const operationKey = `cashout_decline:${taskId}:${idempotencyKey}`;
-  const existing = await readAuthorityOperationPayload(operationKey);
-  if (existing?.taskId) {
-    return {
-      success: true,
-      duplicate: true,
-      taskId,
-      refunded: existing.refunded === true,
-    };
-  }
 
+  logAuthPayloadPreTxnRemoved('cashout_decline');
   const db = getPlayerMirrorPool();
   if (!db) throw new Error('Postgres is unavailable.');
 
@@ -1416,8 +1398,10 @@ export async function declinePlayerCashoutTaskInSql(
       payload: {},
     });
     if (claim.duplicate) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'cashout_decline',
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       return {
         success: true,
         duplicate: true,

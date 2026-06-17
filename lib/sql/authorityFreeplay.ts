@@ -7,7 +7,8 @@ import { cleanText, getPlayerMirrorPool } from '@/lib/sql/playerMirrorCommon';
 import {
   claimAuthorityOperation,
   insertAuthorityLedgerEvent,
-  readAuthorityOperationPayload,
+  logAuthPayloadPreTxnRemoved,
+  readAuthorityOperationPayloadWithClient,
 } from '@/lib/sql/authorityLedger';
 import {
   insertLiveOutboxEventWithClient,
@@ -495,16 +496,7 @@ export async function giveFreeplayGiftInSql(input: {
     : null;
 
   if (operationKey) {
-    const existing = await readAuthorityOperationPayload(operationKey);
-    if (existing?.playerUid && existing?.giftId) {
-      return {
-        success: true,
-        duplicate: true,
-        playerUid: cleanText(existing.playerUid),
-        playerUsername: cleanText(existing.playerUsername) || 'Player',
-        giftId: cleanText(existing.giftId),
-      };
-    }
+    logAuthPayloadPreTxnRemoved('freeplay_give');
   }
 
   const db = getPlayerMirrorPool();
@@ -533,8 +525,10 @@ export async function giveFreeplayGiftInSql(input: {
         },
       });
       if (claim.duplicate) {
+        const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+          flowName: 'freeplay_give',
+        });
         await client.query('ROLLBACK');
-        const payload = await readAuthorityOperationPayload(operationKey);
         if (payload?.playerUid && payload?.giftId) {
           return {
             success: true,
@@ -664,6 +658,7 @@ export async function claimFreeplayGiftInSql(input: {
     operationKey,
   });
 
+  logAuthPayloadPreTxnRemoved('freeplay_claim');
   const client = await db.connect();
   try {
     await client.query('BEGIN');
@@ -758,8 +753,10 @@ export async function claimFreeplayGiftInSql(input: {
       payload: {},
     });
     if (claim.duplicate) {
+      const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+        flowName: 'freeplay_claim',
+      });
       await client.query('ROLLBACK');
-      const payload = await readAuthorityOperationPayload(operationKey);
       const amount = Math.max(0, Math.floor(Number(payload?.amount || marker.amount || 0)));
       return {
         success: true,

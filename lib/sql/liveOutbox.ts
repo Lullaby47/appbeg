@@ -242,25 +242,113 @@ export async function insertLiveOutboxEvent(input: {
   }
 }
 
-export async function insertLiveOutboxEventWithClient(
-  client: PoolClient,
-  input: {
-    channel: string;
-    eventType: string;
-    entityType: string;
-    entityId: string;
-    payload: Record<string, unknown>;
-    source?: string;
-    mirroredAt?: string | null;
-  }
-): Promise<number | null> {
+export type LiveOutboxInsertInput = {
+  channel: string;
+  eventType: string;
+  entityType: string;
+  entityId: string;
+  payload: Record<string, unknown>;
+  source?: string;
+  mirroredAt?: string | null;
+};
+
+type NormalizedLiveOutboxInsert = {
+  channel: string;
+  eventType: string;
+  entityType: string;
+  entityId: string;
+  payloadJson: string;
+  payloadHash: string;
+  source: string;
+  mirroredAt: string | null;
+};
+
+function normalizeLiveOutboxInsert(input: LiveOutboxInsertInput): NormalizedLiveOutboxInsert | null {
   const channel = cleanText(input.channel);
   const entityId = cleanText(input.entityId);
   if (!channel || !entityId) {
     return null;
   }
+  const payload = input.payload || {};
+  return {
+    channel,
+    eventType: cleanText(input.eventType),
+    entityType: cleanText(input.entityType),
+    entityId,
+    payloadJson: JSON.stringify(payload),
+    payloadHash: hashPayload(payload),
+    source: cleanText(input.source) || 'authority',
+    mirroredAt: input.mirroredAt || null,
+  };
+}
 
-  const payloadHash = hashPayload(input.payload);
+function logLiveOutboxCarerTaskInsert(
+  outboxId: number | null,
+  input: LiveOutboxInsertInput
+) {
+  if (!outboxId || cleanText(input.entityType) !== 'carer_task') {
+    return;
+  }
+  const payload = input.payload || {};
+  console.info('[LIVE_OUTBOX_INSERT_TASK]', {
+    outboxId,
+    channel: cleanText(input.channel),
+    eventType: cleanText(input.eventType),
+    entityId: cleanText(input.entityId),
+    coadminUid: cleanText(payload.coadminUid),
+    carerUid:
+      cleanText(payload.assignedCarerUid) ||
+      cleanText(payload.claimedByUid) ||
+      cleanText(payload.carerUid),
+    taskStatus: cleanText(payload.status),
+    taskType: cleanText(payload.type),
+  });
+}
+
+export async function insertLiveOutboxEventsBatch(
+  client: PoolClient,
+  rows: LiveOutboxInsertInput[],
+  options?: { flowName?: string }
+): Promise<(number | null)[]> {
+  if (!rows.length) {
+    return [];
+  }
+
+  const startedAt = Date.now();
+  const normalized: NormalizedLiveOutboxInsert[] = [];
+  const sourceRows: LiveOutboxInsertInput[] = [];
+  for (const row of rows) {
+    const next = normalizeLiveOutboxInsert(row);
+    if (!next) {
+      continue;
+    }
+    normalized.push(next);
+    sourceRows.push(row);
+  }
+  if (!normalized.length) {
+    return [];
+  }
+
+  const params: unknown[] = [];
+  const valueClauses: string[] = [];
+  let paramIndex = 1;
+  for (const row of normalized) {
+    valueClauses.push(
+      `($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}::jsonb, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7}::timestamptz)`
+    );
+    params.push(
+      row.channel,
+      row.eventType,
+      row.entityType,
+      row.entityId,
+      row.payloadJson,
+      row.payloadHash,
+      row.source,
+      row.mirroredAt
+    );
+    paramIndex += 8;
+  }
+
   const result = await client.query(
     `
       INSERT INTO public.live_outbox (
@@ -273,40 +361,45 @@ export async function insertLiveOutboxEventWithClient(
         source,
         mirrored_at
       )
-      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::timestamptz)
+      VALUES ${valueClauses.join(', ')}
       RETURNING outbox_id
     `,
-    [
-      channel,
-      cleanText(input.eventType),
-      cleanText(input.entityType),
-      entityId,
-      JSON.stringify(input.payload),
-      payloadHash,
-      cleanText(input.source) || 'authority',
-      input.mirroredAt || null,
-    ]
+    params
   );
 
-  const outboxId = Number(result.rows[0]?.outbox_id || 0) || null;
-  const entityType = cleanText(input.entityType);
-  if (outboxId && entityType === 'carer_task') {
-    const payload = input.payload || {};
-    console.info('[LIVE_OUTBOX_INSERT_TASK]', {
-      outboxId,
-      channel,
-      eventType: cleanText(input.eventType),
-      entityId,
-      coadminUid: cleanText(payload.coadminUid),
-      carerUid:
-        cleanText(payload.assignedCarerUid) ||
-        cleanText(payload.claimedByUid) ||
-        cleanText(payload.carerUid),
-      taskStatus: cleanText(payload.status),
-      taskType: cleanText(payload.type),
+  const outboxIds = result.rows.map((row) => Number(row.outbox_id) || null);
+  for (let index = 0; index < outboxIds.length; index += 1) {
+    logLiveOutboxCarerTaskInsert(outboxIds[index], sourceRows[index]);
+  }
+
+  if (options?.flowName) {
+    console.info('[OUTBOX_BATCH_WRITE]', {
+      flowName: options.flowName,
+      rows: normalized.length,
+      statementsBefore: normalized.length,
+      statementsAfter: 1,
+      roundTripsSaved: Math.max(0, normalized.length - 1),
+      durationMs: Date.now() - startedAt,
     });
   }
-  return outboxId;
+
+  return outboxIds;
+}
+
+export async function insertLiveOutboxEventWithClient(
+  client: PoolClient,
+  input: {
+    channel: string;
+    eventType: string;
+    entityType: string;
+    entityId: string;
+    payload: Record<string, unknown>;
+    source?: string;
+    mirroredAt?: string | null;
+  }
+): Promise<number | null> {
+  const outboxIds = await insertLiveOutboxEventsBatch(client, [input]);
+  return outboxIds[0] ?? null;
 }
 
 export function buildPlayerRequestOutboxPayload(input: {
