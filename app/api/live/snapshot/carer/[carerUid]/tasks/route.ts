@@ -19,6 +19,7 @@ import {
   runMirrorClientQuery,
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
+import { logSqlExplainSummary } from '@/lib/sql/sqlExplainSummary';
 
 export const runtime = 'nodejs';
 
@@ -251,58 +252,75 @@ async function fetchSnapshotRowsWithClient(
   coadminUid: string
 ) {
   const totalStartedAt = Date.now();
-  const activePack = await runMirrorClientQuery<Record<string, unknown>>(
-    client,
-    `
-      SELECT ${SNAPSHOT_TASK_COLUMNS}
+  const snapshotSql = `
+    WITH active_rows AS (
+      SELECT ${SNAPSHOT_TASK_COLUMNS}, 'active'::text AS snapshot_bucket
       FROM public.carer_tasks_cache
       WHERE coadmin_uid = $1
         AND deleted_at IS NULL
         AND status = ANY($2::text[])
       ORDER BY created_at DESC
-    `,
-    [coadminUid, CARER_TASK_ACTIVE_STATUSES]
-  );
-  const completedPack = await runMirrorClientQuery<Record<string, unknown>>(
-    client,
-    `
-      SELECT ${SNAPSHOT_TASK_COLUMNS}
+    ),
+    completed_rows AS (
+      SELECT ${SNAPSHOT_TASK_COLUMNS}, 'completed'::text AS snapshot_bucket
       FROM public.carer_tasks_cache
       WHERE coadmin_uid = $1
         AND deleted_at IS NULL
         AND status = 'completed'
       ORDER BY completed_at DESC
-      LIMIT $2
-    `,
-    [coadminUid, CARER_TASK_RECENT_COMPLETED_LIMIT]
+      LIMIT $3
+    )
+    SELECT *
+    FROM active_rows
+    UNION ALL
+    SELECT *
+    FROM completed_rows
+  `;
+  const snapshotPack = await runMirrorClientQuery<Record<string, unknown>>(
+    client,
+    snapshotSql,
+    [coadminUid, CARER_TASK_ACTIVE_STATUSES, CARER_TASK_RECENT_COMPLETED_LIMIT]
+  );
+  await logSqlExplainSummary({
+    client,
+    route: '/api/live/snapshot/carer/[carerUid]/tasks',
+    queryName: 'carer_tasks_snapshot_combined',
+    sql: snapshotSql,
+    params: [coadminUid, CARER_TASK_ACTIVE_STATUSES, CARER_TASK_RECENT_COMPLETED_LIMIT],
+    rowsReturned: snapshotPack.rows.length,
+  });
+  const activeRows = snapshotPack.rows.filter((row) => cleanText(row.snapshot_bucket) === 'active');
+  const completedRows = snapshotPack.rows.filter(
+    (row) => cleanText(row.snapshot_bucket) === 'completed'
   );
 
   const timing = createPlayerMirrorSqlTiming({
     pool_acquire_ms: 0,
-    query_exec_ms: activePack.timing.query_exec_ms + completedPack.timing.query_exec_ms,
+    query_exec_ms: snapshotPack.timing.query_exec_ms,
     total_ms: Date.now() - totalStartedAt,
   });
 
   const merged = new Map<string, Record<string, unknown>>();
-  for (const row of [...activePack.rows, ...completedPack.rows]) {
+  for (const row of [...activeRows, ...completedRows]) {
     const firebaseId = cleanText(row.firebase_id);
     if (firebaseId) {
       merged.set(firebaseId, row);
     }
   }
-  const activeBreakdown = countSnapshotStatuses(activePack.rows.map(mapSnapshotRow));
-  const completedBreakdown = countSnapshotStatuses(completedPack.rows.map(mapSnapshotRow));
+  const activeBreakdown = countSnapshotStatuses(activeRows.map(mapSnapshotRow));
+  const completedBreakdown = countSnapshotStatuses(completedRows.map(mapSnapshotRow));
 
   return {
     rows: Array.from(merged.values()),
     timing,
-    recentRowCount: completedPack.rows.length,
-    completedRowCount: completedPack.rows.length,
-    activeRowCount: activePack.rows.length,
+    recentRowCount: completedRows.length,
+    completedRowCount: completedRows.length,
+    activeRowCount: activeRows.length,
     rawRowCount: merged.size,
-    recent_query_exec_ms: completedPack.timing.query_exec_ms,
-    completed_query_exec_ms: completedPack.timing.query_exec_ms,
-    active_query_exec_ms: activePack.timing.query_exec_ms,
+    recent_query_exec_ms: 0,
+    completed_query_exec_ms: 0,
+    active_query_exec_ms: snapshotPack.timing.query_exec_ms,
+    combined_query_exec_ms: snapshotPack.timing.query_exec_ms,
     activePendingCount: activeBreakdown.pendingCount,
     activeInProgressCount: activeBreakdown.inProgressCount,
     activeCompletedCount: activeBreakdown.completedCount,
@@ -482,6 +500,7 @@ export async function GET(
       activeCompletedRows: snapshotPack.activeCompletedCount,
       completedWindowRows: snapshotPack.completedCompletedCount,
       queryMs: snapshotPack.timing.query_exec_ms,
+      combinedQueryMs: snapshotPack.combined_query_exec_ms,
       activeQueryMs: snapshotPack.active_query_exec_ms,
       completedQueryMs: snapshotPack.completed_query_exec_ms,
       completedLimit: CARER_TASK_RECENT_COMPLETED_LIMIT,

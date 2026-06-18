@@ -79,6 +79,15 @@ export type PlayerGameRequest = {
   retryAttempt?: number | null;
 };
 
+export type CreatePlayerGameRequestResult = {
+  requestId: string;
+  request: PlayerGameRequest;
+  ok: boolean;
+  status: number;
+  duplicate?: boolean;
+  authority?: string;
+};
+
 type PlayerGameRedeemLimitReset = {
   playerUid: string;
   gameName: string;
@@ -544,7 +553,9 @@ export async function createPlayerGameRequest(values: {
   baseAmount?: number;
   bonusPercentage?: number;
   bonusEventId?: string;
-}) {
+  idempotencyKey?: string;
+  onApiStart?: (meta: { route: string; type: PlayerGameRequestType }) => void;
+}): Promise<CreatePlayerGameRequestResult> {
   const playerUid = await resolvePlayerActorUid();
 
   await assertActivePlayerSession();
@@ -563,9 +574,34 @@ export async function createPlayerGameRequest(values: {
     throw new Error('Enter a valid amount.');
   }
   const cleanGameName = values.gameName.trim();
+  const buildCommittedRequest = (
+    requestId: string,
+    type: PlayerGameRequestType
+  ): PlayerGameRequest => ({
+    id: requestId,
+    playerUid,
+    gameName: cleanGameName,
+    amount: requestAmount,
+    baseAmount: values.baseAmount ?? null,
+    bonusPercentage: values.bonusPercentage ?? null,
+    bonusEventId: values.bonusEventId ?? null,
+    type,
+    status: 'pending',
+    createdBy: getCachedSessionUser()?.coadminUid || undefined,
+    coadminUid: getCachedSessionUser()?.coadminUid || undefined,
+    createdAt: Timestamp.now(),
+    completedAt: null,
+    pokedAt: null,
+    pokeMessage: null,
+  });
+
   if (values.type === 'recharge') {
     const headers = await getPlayerRequestAuthHeaders();
     logPlayerRechargeRequestAuth(headers);
+    values.onApiStart?.({
+      route: '/api/player/game-requests/recharge',
+      type: 'recharge',
+    });
     const response = await fetch('/api/player/game-requests/recharge', {
       method: 'POST',
       headers,
@@ -575,11 +611,22 @@ export async function createPlayerGameRequest(values: {
         baseAmount: values.baseAmount,
         bonusPercentage: values.bonusPercentage,
         bonusEventId: values.bonusEventId,
+        idempotencyKey: values.idempotencyKey,
       }),
     });
-    const payload = (await response.json().catch(() => ({}))) as { error?: string; requestId?: string };
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      requestId?: string;
+      duplicate?: boolean;
+      authority?: string;
+    };
     if (!response.ok) {
-      throw new Error(readApiError('Failed to create recharge request.', payload));
+      const error = new Error(readApiError('Failed to create recharge request.', payload));
+      Object.assign(error, {
+        status: response.status,
+        errorCode: payload.error || `http_${response.status}`,
+      });
+      throw error;
     }
 
     const createdRequestId = String(payload.requestId || '').trim();
@@ -587,7 +634,14 @@ export async function createPlayerGameRequest(values: {
       throw new Error('Recharge request was created but request ID was missing.');
     }
     await finalizePlayerGameRequestAfterApi(createdRequestId, 'recharge');
-    return;
+    return {
+      requestId: createdRequestId,
+      request: buildCommittedRequest(createdRequestId, 'recharge'),
+      ok: response.ok,
+      status: response.status,
+      duplicate: payload.duplicate === true,
+      authority: payload.authority,
+    };
   }
 
   if (requestAmount > MAX_REDEEM_AMOUNT) {
@@ -635,6 +689,10 @@ export async function createPlayerGameRequest(values: {
     });
   }
 
+  values.onApiStart?.({
+    route: '/api/player/game-requests/redeem',
+    type: 'redeem',
+  });
   const response = await fetch('/api/player/game-requests/redeem', {
     method: 'POST',
     headers: await getPlayerRequestAuthHeaders(),
@@ -644,11 +702,22 @@ export async function createPlayerGameRequest(values: {
       baseAmount: values.baseAmount,
       bonusPercentage: values.bonusPercentage,
       bonusEventId: values.bonusEventId,
+      idempotencyKey: values.idempotencyKey,
     }),
   });
-  const payload = (await response.json().catch(() => ({}))) as { error?: string; requestId?: string };
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    requestId?: string;
+    duplicate?: boolean;
+    authority?: string;
+  };
   if (!response.ok) {
-    throw new Error(readApiError('Failed to create redeem request.', payload));
+    const error = new Error(readApiError('Failed to create redeem request.', payload));
+    Object.assign(error, {
+      status: response.status,
+      errorCode: payload.error || `http_${response.status}`,
+    });
+    throw error;
   }
 
   const createdRequestId = String(payload.requestId || '').trim();
@@ -656,6 +725,14 @@ export async function createPlayerGameRequest(values: {
     throw new Error('Redeem request was created but request ID was missing.');
   }
   await finalizePlayerGameRequestAfterApi(createdRequestId, 'redeem');
+  return {
+    requestId: createdRequestId,
+    request: buildCommittedRequest(createdRequestId, 'redeem'),
+    ok: response.ok,
+    status: response.status,
+    duplicate: payload.duplicate === true,
+    authority: payload.authority,
+  };
 }
 
 export async function getPendingPlayerGameRequests(

@@ -374,6 +374,14 @@ export async function POST(request: Request) {
         firstRechargeSource,
         shared_sql_client: sharedSqlClient,
       });
+      console.info('[PLAYER_REQUEST_RESPONSE_SENT]', {
+        type: 'recharge',
+        playerUid,
+        requestId: result.requestId,
+        duplicate: result.duplicate,
+        authority: 'sql',
+        totalMs: Date.now() - routeStartedAt,
+      });
       return NextResponse.json({
         success: true,
         requestId: result.requestId,
@@ -391,6 +399,12 @@ export async function POST(request: Request) {
     failureStage = 'authority_transaction';
     try {
       await adminDb.runTransaction(async (transaction) => {
+        console.info('[PLAYER_REQUEST_TX_BEGIN]', {
+          type: 'recharge',
+          playerUid,
+          requestId: requestRef.id,
+          authority: 'firestore',
+        });
         const authorityReadsStartedAt = Date.now();
         const firstRechargeMatchPercent = 50;
         const sqlFirstRechargeMatchUsed = playerAuthority?.firstRechargeMatchUsed ?? null;
@@ -484,6 +498,13 @@ export async function POST(request: Request) {
               requestId: requestRef.id,
               taskId: taskRef.id,
               type: 'recharge',
+            });
+            console.info('[PLAYER_REQUEST_TASK_CREATED]', {
+              type: 'recharge',
+              playerUid,
+              requestId: requestRef.id,
+              taskId: taskRef.id,
+              authority: 'firestore',
             });
           }
           timing.carer_task_ms = Date.now() - carerTaskStartedAt;
@@ -632,6 +653,13 @@ export async function POST(request: Request) {
             taskId: taskRef.id,
             type: 'recharge',
           });
+          console.info('[PLAYER_REQUEST_TASK_CREATED]', {
+            type: 'recharge',
+            playerUid,
+            requestId: requestRef.id,
+            taskId: taskRef.id,
+            authority: 'firestore',
+          });
         }
         timing.carer_task_ms = Date.now() - carerTaskStartedAt;
 
@@ -659,6 +687,13 @@ export async function POST(request: Request) {
       taskId: taskRef.id,
       type: 'recharge',
     });
+    console.info('[PLAYER_REQUEST_TX_COMMIT]', {
+      type: 'recharge',
+      playerUid,
+      requestId: requestRef.id,
+      taskId: taskRef.id,
+      authority: 'firestore',
+    });
     const mirrorStartedAt = Date.now();
     void mirrorCarerTaskById(taskRef.id, 'appbeg_recharge_request');
     void mirrorPlayerGameRequestById(requestRef.id, 'appbeg_recharge_request');
@@ -681,6 +716,13 @@ export async function POST(request: Request) {
       shared_sql_client: sharedSqlClient,
     });
 
+    console.info('[PLAYER_REQUEST_RESPONSE_SENT]', {
+      type: 'recharge',
+      playerUid,
+      requestId: requestRef.id,
+      authority: 'firestore',
+      totalMs: Date.now() - routeStartedAt,
+    });
     return NextResponse.json({
       success: true,
       requestId: requestRef.id,
@@ -731,4 +773,3 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status });
   }
 }
-

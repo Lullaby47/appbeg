@@ -4,6 +4,7 @@ import '../../styles/player-fire.css';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, MouseEvent, SetStateAction, TouchEvent } from 'react';
+import { flushSync } from 'react-dom';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
@@ -393,6 +394,8 @@ export default function PlayerPage() {
   );
   const [playAmount, setPlayAmount] = useState('');
   const [requestLoading, setRequestLoading] = useState(false);
+  const requestSubmitInFlightRef = useRef(false);
+  const requestIdempotencyKeyRef = useRef('');
   const [playRequestSplash, setPlayRequestSplash] = useState<null | {
     type: PlayerGameRequestType;
     gameName: string;
@@ -4429,12 +4432,74 @@ export default function PlayerPage() {
     type: PlayerGameRequestType,
     clickEvent?: MouseEvent<HTMLButtonElement>
   ) {
+    const clickStartedAt =
+      typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now();
+    const nowMs = () =>
+      typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now();
     clickEvent?.preventDefault();
     clickEvent?.stopPropagation();
+    if (requestSubmitInFlightRef.current) {
+      console.info('[PLAYER_REQUEST_ERROR_SHOWN]', {
+        requestType: type,
+        clientRequestId: requestIdempotencyKeyRef.current || null,
+        reason: 'duplicate_submit_blocked',
+        errorCode: 'duplicate_submit_blocked',
+        clickToErrorMs: Math.round(nowMs() - clickStartedAt),
+      });
+      return;
+    }
+    requestSubmitInFlightRef.current = true;
+    if (!requestIdempotencyKeyRef.current) {
+      requestIdempotencyKeyRef.current =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+    const clientRequestId = requestIdempotencyKeyRef.current;
     console.info('[PLAYER_ACTION_CLICK]', {
       action: type,
       defaultPrevented: clickEvent?.defaultPrevented ?? false,
     });
+    console.info('[PLAYER_REQUEST_CLICK]', {
+      requestType: type,
+      gameName: selectedGameName || null,
+      clientRequestId,
+      hasAmount: Boolean(playAmount),
+    });
+
+    const amountText = sanitizeWholeAmountText(playAmount);
+    flushSync(() => {
+      setRequestLoading(true);
+      setMessage('Sending request...');
+      setPlayRequestSplash({
+        type,
+        gameName: selectedGameName,
+        amountText,
+      });
+    });
+    console.info('[PLAYER_REQUEST_PENDING_VISIBLE]', {
+      requestType: type,
+      clientRequestId,
+      clickToPendingVisibleMs: Math.round(nowMs() - clickStartedAt),
+    });
+
+    const clearPendingForRetry = (reason: string) => {
+      setRequestLoading(false);
+      setPlayRequestSplash(null);
+      requestSubmitInFlightRef.current = false;
+      requestIdempotencyKeyRef.current = '';
+      console.info('[PLAYER_REQUEST_ERROR_SHOWN]', {
+        requestType: type,
+        clientRequestId,
+        reason,
+        errorCode: reason,
+        clickToErrorMs: Math.round(nowMs() - clickStartedAt),
+      });
+    };
 
     if (maintenanceBreak.enabled) {
       console.info('[MAINTENANCE] blocked player action', {
@@ -4443,6 +4508,7 @@ export default function PlayerPage() {
         coadminUid: playerCoadminUid || null,
       });
       setMessage(maintenanceBreak.message);
+      clearPendingForRetry('maintenance_break');
       return;
     }
 
@@ -4450,14 +4516,15 @@ export default function PlayerPage() {
       setMessage(
         'Your account is blocked. Recharge and redeem requests are disabled.'
       );
+      clearPendingForRetry('blocked_player');
       return;
     }
 
-    const amountText = sanitizeWholeAmountText(playAmount);
     const amountNum = Number(amountText);
     if (type === 'recharge') {
       if (!Number.isFinite(amountNum) || amountNum <= 0) {
         setMessage('Enter a valid amount.');
+        clearPendingForRetry('invalid_recharge_amount');
         return;
       }
       const uid = auth.currentUser?.uid;
@@ -4469,6 +4536,7 @@ export default function PlayerPage() {
           );
           setWallet((w) => ({ ...w, coin: liveCoin }));
           if (liveCoin < amountNum) {
+            clearPendingForRetry('insufficient_coin_live_check');
             setMessage(
               'Not enough coin to send a recharge. Add coin first — for example use “Transfer all cash to coin” when you have cash, or use a lower amount.'
             );
@@ -4476,6 +4544,7 @@ export default function PlayerPage() {
           }
         }
       } else if (amountNum > wallet.coin) {
+        clearPendingForRetry('insufficient_coin_cached');
         setMessage(
           'Not enough coin to send a recharge. Add coin first — for example use “Transfer all cash to coin” when you have cash, or use a lower amount.'
         );
@@ -4485,36 +4554,84 @@ export default function PlayerPage() {
     if (type === 'redeem') {
       if (!Number.isFinite(amountNum) || amountNum < MIN_REDEEM_AMOUNT || amountNum > MAX_REDEEM_AMOUNT) {
         setMessage(`Redeem amount must be between ${MIN_REDEEM_AMOUNT} and ${MAX_REDEEM_AMOUNT}.`);
+        clearPendingForRetry('invalid_redeem_amount');
         return;
       }
     }
 
     closeActiveTableSplash();
-    setPlayRequestSplash({
-      type,
-      gameName: selectedGameName,
-      amountText,
-    });
-    setRequestLoading(true);
-    setMessage('');
 
     try {
-      await createPlayerGameRequest({
+      if (!requestIdempotencyKeyRef.current) {
+        requestIdempotencyKeyRef.current =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      }
+      const idempotencyKey = requestIdempotencyKeyRef.current;
+      let apiStartedAt = 0;
+      const result = await createPlayerGameRequest({
         gameName: selectedGameName,
         amount: amountNum,
         type,
+        idempotencyKey,
+        onApiStart: ({ route }) => {
+          apiStartedAt = nowMs();
+          console.info('[PLAYER_REQUEST_API_START]', {
+            requestType: type,
+            route,
+            clientRequestId: idempotencyKey,
+            clickToApiStartMs: Math.round(apiStartedAt - clickStartedAt),
+          });
+        },
+      });
+      const responseAt = nowMs();
+      console.info('[PLAYER_REQUEST_API_RESPONSE]', {
+        requestType: type,
+        clientRequestId: idempotencyKey,
+        requestId: result.requestId,
+        ok: result.ok,
+        status: result.status,
+        duplicate: result.duplicate === true,
+        authority: result.authority || null,
+        apiDurationMs: apiStartedAt > 0 ? Math.round(responseAt - apiStartedAt) : null,
+        clickToResponseMs: Math.round(responseAt - clickStartedAt),
       });
 
       saveRecentPlayAmount(type, amountText);
-      if (!isClientSqlReadMode() && !PLAYER_REQUESTS_SQL_READ_ENABLED) {
-        setMessage(type === 'redeem' ? PLAYER_REDEEM_SENT_MESSAGE : PLAYER_RECHARGE_SENT_MESSAGE);
-      }
+      setRequestHistory((current) =>
+        sortByNewest([
+          result.request,
+          ...current.filter((request) => request.id !== result.requestId),
+        ])
+      );
+      setMessage(type === 'redeem' ? PLAYER_REDEEM_SENT_MESSAGE : PLAYER_RECHARGE_SENT_MESSAGE);
+      const toastAt = nowMs();
+      console.info('[PLAYER_REQUEST_SUCCESS_TOAST_SHOWN]', {
+        requestType: type,
+        clientRequestId: idempotencyKey,
+        requestId: result.requestId,
+        responseToToastMs: Math.round(toastAt - responseAt),
+        responseToSuccessToastMs: Math.round(toastAt - responseAt),
+        clickToToastMs: Math.round(toastAt - clickStartedAt),
+      });
       setPlayAmount('');
+      requestIdempotencyKeyRef.current = '';
     } catch (error) {
       reportPlayerUiError('player_game_request', error, setMessage, 'Request failed.');
+      const errorMeta = error as { status?: unknown; errorCode?: unknown };
+      console.info('[PLAYER_REQUEST_ERROR_SHOWN]', {
+        requestType: type,
+        clientRequestId: requestIdempotencyKeyRef.current || clientRequestId,
+        reason: error instanceof Error ? error.message : String(error),
+        errorCode: String(errorMeta.errorCode || errorMeta.status || 'request_failed'),
+        status: Number(errorMeta.status || 0) || null,
+        clickToErrorMs: Math.round(nowMs() - clickStartedAt),
+      });
     } finally {
       setRequestLoading(false);
       setPlayRequestSplash(null);
+      requestSubmitInFlightRef.current = false;
     }
   }
 

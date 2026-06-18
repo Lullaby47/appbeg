@@ -706,6 +706,11 @@ export async function createRechargeRequestInSql(
       },
       () => client.query('BEGIN')
     );
+    console.info('[PLAYER_REQUEST_TX_BEGIN]', {
+      type: 'recharge',
+      playerUid,
+      requestId,
+    });
     const claim = await waterfall.time(
       {
         step: 'claim_authority_operation',
@@ -922,6 +927,13 @@ export async function createRechargeRequestInSql(
           nowIso
         )
     );
+    console.info('[PLAYER_REQUEST_TASK_CREATED]', {
+      type: 'recharge',
+      playerUid,
+      requestId,
+      taskId: linkedRechargeTask.taskId,
+      insertedCarerTask: linkedRechargeTask.inserted,
+    });
 
     const financialRaw = {
       playerUid,
@@ -1038,6 +1050,14 @@ export async function createRechargeRequestInSql(
       channels: rechargeOutboxChannels,
       eventType: 'task.upserted',
     });
+    console.info('[PLAYER_REQUEST_OUTBOX_EMITTED]', {
+      type: 'recharge',
+      playerUid,
+      requestId,
+      taskId: linkedRechargeTask.taskId,
+      rowCount: carerOutbox.rows.length,
+      channels: rechargeOutboxChannels,
+    });
     logPlayerRequestCarerTaskLink({
       logKey: '[PLAYER_RECHARGE_TO_CARER_TASK]',
       requestId,
@@ -1091,6 +1111,12 @@ export async function createRechargeRequestInSql(
       },
       () => client.query('COMMIT')
     );
+    console.info('[PLAYER_REQUEST_TX_COMMIT]', {
+      type: 'recharge',
+      playerUid,
+      requestId,
+      taskId: linkedRechargeTask.taskId,
+    });
     waterfall.flushSummary();
     console.info('[TASK_CREATE_COMMITTED]', {
       taskId: linkedRechargeTask.taskId,
@@ -1138,6 +1164,11 @@ export async function createRedeemRequestInSql(
   const client = await db.connect();
   try {
     await client.query('BEGIN');
+    console.info('[PLAYER_REQUEST_TX_BEGIN]', {
+      type: 'redeem',
+      playerUid,
+      requestId,
+    });
     const claim = await claimAuthorityOperation(client, {
       operationKey,
       operationType: 'game_request_create',
@@ -1256,6 +1287,13 @@ export async function createRedeemRequestInSql(
       },
       nowIso
     );
+    console.info('[PLAYER_REQUEST_TASK_CREATED]', {
+      type: 'redeem',
+      playerUid,
+      requestId,
+      taskId: linkedRedeemTask.taskId,
+      insertedCarerTask: linkedRedeemTask.inserted,
+    });
 
     const redeemCarerOutbox = buildCarerTaskOutboxRows({
       coadminUid,
@@ -1296,6 +1334,14 @@ export async function createRedeemRequestInSql(
       channels: redeemOutboxChannels,
       eventType: 'task.upserted',
     });
+    console.info('[PLAYER_REQUEST_OUTBOX_EMITTED]', {
+      type: 'redeem',
+      playerUid,
+      requestId,
+      taskId: linkedRedeemTask.taskId,
+      rowCount: redeemCarerOutbox.rows.length,
+      channels: redeemOutboxChannels,
+    });
     logPlayerRequestCarerTaskLink({
       logKey: '[PLAYER_REDEEM_TO_CARER_TASK]',
       requestId,
@@ -1328,6 +1374,12 @@ export async function createRedeemRequestInSql(
       JSON.stringify({ requestId, playerUid, type: 'redeem', amount }),
     ]);
     await client.query('COMMIT');
+    console.info('[PLAYER_REQUEST_TX_COMMIT]', {
+      type: 'redeem',
+      playerUid,
+      requestId,
+      taskId: linkedRedeemTask.taskId,
+    });
     console.info('[TASK_CREATE_COMMITTED]', {
       taskId: linkedRedeemTask.taskId,
       requestId,

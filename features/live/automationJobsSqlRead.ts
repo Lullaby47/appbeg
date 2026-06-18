@@ -12,8 +12,10 @@ import {
 import {
   buildCarerJobStreamKey,
   createLiveStreamClientInstanceId,
+  getLiveStreamClientRecentReleaseDelayMs,
   LIVE_STREAM_CLIENT_CLEANUP_DELAY_MS,
   logLiveStreamClientConnect,
+  logLiveStreamClientDisconnect,
   logLiveStreamClientReconnect,
   registerLiveStreamClientOwner,
   releaseLiveStreamClientOwner,
@@ -524,7 +526,7 @@ export function attachAutomationJobsSqlReadListener(
     connectGeneration += 1;
     abortController?.abort();
     abortController = null;
-    releaseLiveStreamClientOwner({
+    logLiveStreamClientDisconnect({
       streamType: 'carer_jobs',
       streamKey,
       instanceId,
@@ -538,18 +540,13 @@ export function attachAutomationJobsSqlReadListener(
     }
 
     closeStream('replace_existing');
-    await waitMs(LIVE_STREAM_CLIENT_CLEANUP_DELAY_MS);
+    await waitMs(
+      Math.max(LIVE_STREAM_CLIENT_CLEANUP_DELAY_MS, getLiveStreamClientRecentReleaseDelayMs(streamKey))
+    );
     if (disposed || fellBack) {
       return;
     }
 
-    registerLiveStreamClientOwner({
-      streamType: 'carer_jobs',
-      streamKey,
-      instanceId,
-      reason: connectReason,
-      supersede: forceDisposeFromRegistry,
-    });
     if (disposed || fellBack) {
       return;
     }

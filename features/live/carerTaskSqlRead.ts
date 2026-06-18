@@ -16,8 +16,10 @@ import {
 import {
   buildCarerTaskStreamKey,
   createLiveStreamClientInstanceId,
+  getLiveStreamClientRecentReleaseDelayMs,
   LIVE_STREAM_CLIENT_CLEANUP_DELAY_MS,
   logLiveStreamClientConnect,
+  logLiveStreamClientDisconnect,
   logLiveStreamClientReconnect,
   registerLiveStreamClientOwner,
   releaseLiveStreamClientOwner,
@@ -348,6 +350,12 @@ export function attachCarerTaskSqlReadListener(
       refetchTimer = null;
     }
     closeEventSource('superseded');
+    releaseLiveStreamClientOwner({
+      streamType: 'carer_tasks',
+      streamKey,
+      instanceId,
+      reason: 'superseded',
+    });
     tasksById.clear();
   };
 
@@ -745,7 +753,7 @@ export function attachCarerTaskSqlReadListener(
     closingSource.onmessage = null;
     closingSource.close();
     eventSource = null;
-    releaseLiveStreamClientOwner({
+    logLiveStreamClientDisconnect({
       streamType: 'carer_tasks',
       streamKey,
       instanceId,
@@ -770,21 +778,13 @@ export function attachCarerTaskSqlReadListener(
     }
 
     closeEventSource('replace_existing');
-    await waitMs(LIVE_STREAM_CLIENT_CLEANUP_DELAY_MS);
+    await waitMs(
+      Math.max(LIVE_STREAM_CLIENT_CLEANUP_DELAY_MS, getLiveStreamClientRecentReleaseDelayMs(streamKey))
+    );
     if (disposed || fellBack) {
       return;
     }
 
-    const ownerClaim = registerLiveStreamClientOwner({
-      streamType: 'carer_tasks',
-      streamKey,
-      instanceId,
-      reason: connectReason,
-      supersede: forceDisposeFromRegistry,
-    });
-    if (ownerClaim === 'duplicate_same_instance' && eventSource) {
-      return;
-    }
     if (disposed || fellBack) {
       return;
     }

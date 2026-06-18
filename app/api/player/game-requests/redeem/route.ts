@@ -148,6 +148,13 @@ export async function POST(request: Request) {
         requestId: result.requestId,
         duplicate: result.duplicate,
       });
+      console.info('[PLAYER_REQUEST_RESPONSE_SENT]', {
+        type: 'redeem',
+        playerUid,
+        requestId: result.requestId,
+        duplicate: result.duplicate,
+        authority: 'sql',
+      });
       return NextResponse.json({
         success: true,
         requestId: result.requestId,
@@ -177,6 +184,12 @@ export async function POST(request: Request) {
     const normalizedGame = normalizeGameName(gameName);
 
     await adminDb.runTransaction(async (transaction) => {
+      console.info('[PLAYER_REQUEST_TX_BEGIN]', {
+        type: 'redeem',
+        playerUid,
+        requestId: requestRef.id,
+        authority: 'firestore',
+      });
       const [playerSnap, loginSnap, existingTaskSnap] = await Promise.all([
         transaction.get(playerRef),
         adminDb.collection('playerGameLogins').where('playerUid', '==', playerUid).get(),
@@ -288,6 +301,13 @@ export async function POST(request: Request) {
           taskId: taskRef.id,
           type: 'redeem',
         });
+        console.info('[PLAYER_REQUEST_TASK_CREATED]', {
+          type: 'redeem',
+          playerUid,
+          requestId: requestRef.id,
+          taskId: taskRef.id,
+          authority: 'firestore',
+        });
       }
     });
     console.info('[GAME_REQUEST_API] request and task committed atomically', {
@@ -295,9 +315,22 @@ export async function POST(request: Request) {
       taskId: taskRef.id,
       type: 'redeem',
     });
+    console.info('[PLAYER_REQUEST_TX_COMMIT]', {
+      type: 'redeem',
+      playerUid,
+      requestId: requestRef.id,
+      taskId: taskRef.id,
+      authority: 'firestore',
+    });
     void mirrorCarerTaskById(taskRef.id, 'appbeg_redeem_request');
     void mirrorPlayerGameRequestById(requestRef.id, 'appbeg_redeem_request');
 
+    console.info('[PLAYER_REQUEST_RESPONSE_SENT]', {
+      type: 'redeem',
+      playerUid,
+      requestId: requestRef.id,
+      authority: 'firestore',
+    });
     return NextResponse.json({ success: true, requestId: requestRef.id });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create redeem request.';

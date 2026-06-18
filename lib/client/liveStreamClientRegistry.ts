@@ -10,6 +10,7 @@ type LiveStreamRegistryEntry = {
 let nextInstanceSeq = 0;
 
 const activeByStreamKey = new Map<string, LiveStreamRegistryEntry>();
+const releasedAtByStreamKey = new Map<string, number>();
 
 export function createLiveStreamClientInstanceId(streamType: LiveStreamClientType) {
   nextInstanceSeq += 1;
@@ -57,6 +58,15 @@ export function registerLiveStreamClientOwner(input: {
   return 'claimed';
 }
 
+export function getLiveStreamClientRecentReleaseDelayMs(streamKey: string) {
+  const releasedAt = releasedAtByStreamKey.get(streamKey);
+  if (!releasedAt) {
+    return 0;
+  }
+  const elapsedMs = Date.now() - releasedAt;
+  return Math.max(0, LIVE_STREAM_CLIENT_CLEANUP_DELAY_MS - elapsedMs);
+}
+
 export function logLiveStreamClientConnect(input: {
   streamType: LiveStreamClientType;
   instanceId: string;
@@ -82,6 +92,21 @@ export function releaseLiveStreamClientOwner(input: {
     return;
   }
   activeByStreamKey.delete(input.streamKey);
+  releasedAtByStreamKey.set(input.streamKey, Date.now());
+  console.info('[LIVE_STREAM_CLIENT_DISCONNECT]', {
+    streamType: input.streamType,
+    instanceId: input.instanceId,
+    reason: input.reason,
+    streamKey: input.streamKey,
+  });
+}
+
+export function logLiveStreamClientDisconnect(input: {
+  streamType: LiveStreamClientType;
+  streamKey: string;
+  instanceId: string;
+  reason: string;
+}) {
   console.info('[LIVE_STREAM_CLIENT_DISCONNECT]', {
     streamType: input.streamType,
     instanceId: input.instanceId,

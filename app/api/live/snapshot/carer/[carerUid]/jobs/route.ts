@@ -14,6 +14,7 @@ import {
   runMirrorClientQuery,
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
+import { logSqlExplainSummary } from '@/lib/sql/sqlExplainSummary';
 
 export const runtime = 'nodejs';
 
@@ -213,72 +214,102 @@ async function fetchSnapshotRowsWithClient(
   carerUid: string
 ) {
   const totalStartedAt = Date.now();
-  const activeByCreatedByPack = await runMirrorClientQuery<Record<string, unknown>>(
-    client,
-    `
-      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}
+  const snapshotSql = `
+    WITH active_created_by AS (
+      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}, 'active_created_by'::text AS snapshot_bucket
       FROM public.automation_jobs_cache
       WHERE deleted_at IS NULL
         AND created_by_uid = $1
         AND status = ANY($2::text[])
       ORDER BY updated_at DESC
-    `,
-    [carerUid, AUTOMATION_JOB_ACTIVE_STATUSES]
-  );
-  const activeByCarerPack = await runMirrorClientQuery<Record<string, unknown>>(
-    client,
-    `
-      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}
+    ),
+    active_carer AS (
+      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}, 'active_carer'::text AS snapshot_bucket
       FROM public.automation_jobs_cache
       WHERE deleted_at IS NULL
         AND carer_uid = $1
         AND status = ANY($2::text[])
       ORDER BY updated_at DESC
-    `,
-    [carerUid, AUTOMATION_JOB_ACTIVE_STATUSES]
-  );
-  const recentByCreatedByPack = await runMirrorClientQuery<Record<string, unknown>>(
-    client,
-    `
-      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}
+    ),
+    recent_created_by AS (
+      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}, 'recent_created_by'::text AS snapshot_bucket
       FROM public.automation_jobs_cache
       WHERE deleted_at IS NULL
         AND created_by_uid = $1
-        AND status = ANY($2::text[])
+        AND status = ANY($3::text[])
       ORDER BY updated_at DESC
-      LIMIT $3
-    `,
-    [carerUid, AUTOMATION_JOB_TERMINAL_STATUSES, AUTOMATION_JOB_RECENT_TERMINAL_LIMIT]
-  );
-  const recentByCarerPack = await runMirrorClientQuery<Record<string, unknown>>(
-    client,
-    `
-      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}
+      LIMIT $4
+    ),
+    recent_carer AS (
+      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}, 'recent_carer'::text AS snapshot_bucket
       FROM public.automation_jobs_cache
       WHERE deleted_at IS NULL
         AND carer_uid = $1
-        AND status = ANY($2::text[])
+        AND status = ANY($3::text[])
       ORDER BY updated_at DESC
-      LIMIT $3
-    `,
-    [carerUid, AUTOMATION_JOB_TERMINAL_STATUSES, AUTOMATION_JOB_RECENT_TERMINAL_LIMIT]
+      LIMIT $4
+    )
+    SELECT *
+    FROM active_created_by
+    UNION ALL
+    SELECT *
+    FROM active_carer
+    UNION ALL
+    SELECT *
+    FROM recent_created_by
+    UNION ALL
+    SELECT *
+    FROM recent_carer
+  `;
+  const snapshotPack = await runMirrorClientQuery<Record<string, unknown>>(
+    client,
+    snapshotSql,
+    [
+      carerUid,
+      AUTOMATION_JOB_ACTIVE_STATUSES,
+      AUTOMATION_JOB_TERMINAL_STATUSES,
+      AUTOMATION_JOB_RECENT_TERMINAL_LIMIT,
+    ]
+  );
+  await logSqlExplainSummary({
+    client,
+    route: '/api/live/snapshot/carer/[carerUid]/jobs',
+    queryName: 'automation_jobs_snapshot_combined',
+    sql: snapshotSql,
+    params: [
+      carerUid,
+      AUTOMATION_JOB_ACTIVE_STATUSES,
+      AUTOMATION_JOB_TERMINAL_STATUSES,
+      AUTOMATION_JOB_RECENT_TERMINAL_LIMIT,
+    ],
+    rowsReturned: snapshotPack.rows.length,
+  });
+  const activeByCreatedByRows = snapshotPack.rows.filter(
+    (row) => cleanText(row.snapshot_bucket) === 'active_created_by'
+  );
+  const activeByCarerRows = snapshotPack.rows.filter(
+    (row) => cleanText(row.snapshot_bucket) === 'active_carer'
+  );
+  const recentByCreatedByRows = snapshotPack.rows.filter(
+    (row) => cleanText(row.snapshot_bucket) === 'recent_created_by'
+  );
+  const recentByCarerRows = snapshotPack.rows.filter(
+    (row) => cleanText(row.snapshot_bucket) === 'recent_carer'
   );
 
   const recentRows = mergeLimitedJobRows(
-    recentByCreatedByPack.rows,
-    recentByCarerPack.rows,
+    recentByCreatedByRows,
+    recentByCarerRows,
     AUTOMATION_JOB_RECENT_TERMINAL_LIMIT,
     updatedAtSortKey
   );
-  const activeRows = [...activeByCreatedByPack.rows, ...activeByCarerPack.rows];
-  const recentQueryExecMs =
-    recentByCreatedByPack.timing.query_exec_ms + recentByCarerPack.timing.query_exec_ms;
-  const activeQueryExecMs =
-    activeByCreatedByPack.timing.query_exec_ms + activeByCarerPack.timing.query_exec_ms;
+  const activeRows = [...activeByCreatedByRows, ...activeByCarerRows];
+  const recentQueryExecMs = 0;
+  const activeQueryExecMs = snapshotPack.timing.query_exec_ms;
 
   const timing = createPlayerMirrorSqlTiming({
     pool_acquire_ms: 0,
-    query_exec_ms: recentQueryExecMs + activeQueryExecMs,
+    query_exec_ms: snapshotPack.timing.query_exec_ms,
     total_ms: Date.now() - totalStartedAt,
   });
 
@@ -301,6 +332,7 @@ async function fetchSnapshotRowsWithClient(
     rawRowCount: merged.size,
     recent_query_exec_ms: recentQueryExecMs,
     active_query_exec_ms: activeQueryExecMs,
+    combined_query_exec_ms: snapshotPack.timing.query_exec_ms,
   };
 }
 
@@ -420,6 +452,7 @@ export async function GET(
       completedRows: snapshotPack.completedRowCount,
       failedRows: snapshotPack.failedRowCount,
       queryMs: snapshotPack.timing.query_exec_ms,
+      combinedQueryMs: snapshotPack.combined_query_exec_ms,
       activeQueryMs: snapshotPack.active_query_exec_ms,
       recentQueryMs: snapshotPack.recent_query_exec_ms,
       outboxQueryMs: outboxPack.timing.query_exec_ms,
