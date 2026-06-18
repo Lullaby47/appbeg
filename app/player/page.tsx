@@ -400,7 +400,10 @@ export default function PlayerPage() {
     type: PlayerGameRequestType;
     gameName: string;
     amountText: string;
+    statusText: string;
+    progress: number;
   }>(null);
+  const requestProgressTimeoutsRef = useRef<number[]>([]);
   const [recentPlayAmounts, setRecentPlayAmounts] = useState<string[]>([]);
   const [isPlayAmountEditable, setIsPlayAmountEditable] = useState(false);
   const [showActiveTableSplash, setShowActiveTableSplash] = useState(false);
@@ -4421,12 +4424,83 @@ export default function PlayerPage() {
     setShowCashoutModal(false);
     setShowLoadCoinPanel(false);
     setShowCoinConfirmSplash(false);
+    clearPlayerRequestProgressTimers(requestIdempotencyKeyRef.current || null, 'maintenance_break', true);
     setPlayRequestSplash(null);
     setRequestLoading(false);
     if (activeView === 'play' || activeView === 'bonus-events' || activeView === 'earn-coins') {
       setActiveView('dashboard');
     }
   }, [activeView, closeActiveTableSplash, maintenanceBreak.enabled, playerCoadminUid, playerUid]);
+
+  function clearPlayerRequestProgressTimers(
+    clientRequestId: string | null,
+    reason?: string,
+    logAbort = false
+  ) {
+    for (const timeoutId of requestProgressTimeoutsRef.current) {
+      window.clearTimeout(timeoutId);
+    }
+    requestProgressTimeoutsRef.current = [];
+    if (logAbort && clientRequestId) {
+      console.info('[PLAYER_REQUEST_PROGRESS_ABORTED]', {
+        clientRequestId,
+        reason: reason || 'aborted',
+      });
+    }
+  }
+
+  function startPlayerRequestProgress(clientRequestId: string, startedAt: number) {
+    clearPlayerRequestProgressTimers(clientRequestId);
+    const nowMs = () =>
+      typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now();
+    const phases = [
+      { delayMs: 0, phase: 'finding_carer', statusText: 'Finding carer...', progress: 15 },
+      { delayMs: 300, phase: 'carer_found', statusText: 'Carer found', progress: 35 },
+      { delayMs: 700, phase: 'sending_request', statusText: 'Sending request...', progress: 60 },
+      {
+        delayMs: 1200,
+        phase: 'securing_request',
+        statusText: 'Securing your request...',
+        progress: 82,
+      },
+      { delayMs: 2000, phase: 'almost_done', statusText: 'Almost done...', progress: 92 },
+    ];
+    const applyPhase = (phase: (typeof phases)[number]) => {
+      setPlayRequestSplash((current) =>
+        current
+          ? {
+              ...current,
+              statusText: phase.statusText,
+              progress: phase.progress,
+            }
+          : current
+      );
+      console.info('[PLAYER_REQUEST_PROGRESS_PHASE]', {
+        clientRequestId,
+        phase: phase.phase,
+        progress: phase.progress,
+        elapsedMs: Math.round(nowMs() - startedAt),
+      });
+    };
+    applyPhase(phases[0]);
+    requestProgressTimeoutsRef.current = phases.slice(1).map((phase) =>
+      window.setTimeout(() => {
+        applyPhase(phase);
+      }, phase.delayMs)
+    );
+  }
+
+  useEffect(() => {
+    return () => {
+      clearPlayerRequestProgressTimers(
+        requestIdempotencyKeyRef.current || null,
+        'component_unmount',
+        true
+      );
+    };
+  }, []);
 
   async function handleGameRequest(
     type: PlayerGameRequestType,
@@ -4474,11 +4548,13 @@ export default function PlayerPage() {
     const amountText = sanitizeWholeAmountText(playAmount);
     flushSync(() => {
       setRequestLoading(true);
-      setMessage('Sending request...');
+      setMessage('Finding carer...');
       setPlayRequestSplash({
         type,
         gameName: selectedGameName,
         amountText,
+        statusText: 'Finding carer...',
+        progress: 15,
       });
     });
     console.info('[PLAYER_REQUEST_PENDING_VISIBLE]', {
@@ -4486,8 +4562,10 @@ export default function PlayerPage() {
       clientRequestId,
       clickToPendingVisibleMs: Math.round(nowMs() - clickStartedAt),
     });
+    startPlayerRequestProgress(clientRequestId, clickStartedAt);
 
     const clearPendingForRetry = (reason: string) => {
+      clearPlayerRequestProgressTimers(clientRequestId, reason, true);
       setRequestLoading(false);
       setPlayRequestSplash(null);
       requestSubmitInFlightRef.current = false;
@@ -4607,6 +4685,23 @@ export default function PlayerPage() {
       );
       setMessage(type === 'redeem' ? PLAYER_REDEEM_SENT_MESSAGE : PLAYER_RECHARGE_SENT_MESSAGE);
       const toastAt = nowMs();
+      clearPlayerRequestProgressTimers(idempotencyKey);
+      flushSync(() => {
+        setPlayRequestSplash((current) =>
+          current
+            ? {
+                ...current,
+                statusText: 'Request sent successfully',
+                progress: 100,
+              }
+            : current
+        );
+      });
+      console.info('[PLAYER_REQUEST_PROGRESS_COMPLETE]', {
+        clientRequestId: idempotencyKey,
+        apiDurationMs: apiStartedAt > 0 ? Math.round(responseAt - apiStartedAt) : null,
+        finalProgress: 100,
+      });
       console.info('[PLAYER_REQUEST_SUCCESS_TOAST_SHOWN]', {
         requestType: type,
         clientRequestId: idempotencyKey,
@@ -4618,6 +4713,11 @@ export default function PlayerPage() {
       setPlayAmount('');
       requestIdempotencyKeyRef.current = '';
     } catch (error) {
+      clearPlayerRequestProgressTimers(
+        requestIdempotencyKeyRef.current || clientRequestId,
+        'api_error',
+        true
+      );
       reportPlayerUiError('player_game_request', error, setMessage, 'Request failed.');
       const errorMeta = error as { status?: unknown; errorCode?: unknown };
       console.info('[PLAYER_REQUEST_ERROR_SHOWN]', {
@@ -6827,9 +6927,22 @@ export default function PlayerPage() {
                 ${playRequestSplash.amountText} USD
               </span>
             </p>
-            <div className="mt-7 flex items-center justify-center gap-2">
-              <i className="fas fa-circle-notch fa-spin text-2xl text-amber-300" aria-hidden></i>
-              <span className="text-sm font-bold text-amber-100/90">Please wait…</span>
+            <div className="mt-7">
+              <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-amber-300 via-orange-300 to-emerald-300 transition-[width] duration-300 ease-out"
+                  style={{ width: `${Math.max(0, Math.min(playRequestSplash.progress, 100))}%` }}
+                />
+              </div>
+              <div className="mt-3 flex items-center justify-center gap-2">
+                <i className="fas fa-circle-notch fa-spin text-2xl text-amber-300" aria-hidden></i>
+                <span className="text-sm font-bold text-amber-100/90">
+                  {playRequestSplash.statusText}
+                </span>
+              </div>
+            </div>
+            <div className="sr-only" aria-live="polite">
+              {playRequestSplash.statusText} {playRequestSplash.progress}%
             </div>
             <p className="mt-4 text-xs text-amber-200/50">
               This will close when your request is finished.

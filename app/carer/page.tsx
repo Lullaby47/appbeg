@@ -329,7 +329,7 @@ function getTimestampMs(value: unknown) {
 function formatTaskTimelineTime(value: unknown) {
   const ms = getTimestampMs(value);
   if (!ms) {
-    return 'Not recorded';
+    return '—';
   }
   return new Intl.DateTimeFormat('en-US', {
     hour: '2-digit',
@@ -338,8 +338,75 @@ function formatTaskTimelineTime(value: unknown) {
   }).format(new Date(ms));
 }
 
-function formatTaskDuration(totalMs: number) {
-  if (!Number.isFinite(totalMs) || totalMs <= 0) {
+type CleanTaskTimeline = {
+  createdMs: number;
+  claimedMs: number;
+  startedMs: number;
+  completedMs: number;
+  totalDurationMs: number | null;
+  claimToCompleteMs: number | null;
+  automationRunMs: number | null;
+  inconsistencies: string[];
+};
+
+function buildCleanTaskTimeline(task: CarerTask): CleanTaskTimeline {
+  const createdMs = getTimestampMs(task.createdAt);
+  const rawClaimedMs = getTimestampMs(task.claimedAt);
+  const rawStartedMs = getTimestampMs(task.startedAt);
+  const completedMs = getTimestampMs(task.completedAt);
+  const inconsistencies: string[] = [];
+
+  let claimedMs = rawClaimedMs;
+  if (claimedMs && createdMs && claimedMs < createdMs) {
+    inconsistencies.push('claimed_before_created');
+    claimedMs = 0;
+  }
+  if (claimedMs && completedMs && claimedMs > completedMs) {
+    inconsistencies.push('claimed_after_completed');
+    claimedMs = 0;
+  }
+
+  let startedMs = rawStartedMs;
+  if (!startedMs && claimedMs) {
+    startedMs = claimedMs;
+  }
+  if (startedMs && createdMs && startedMs < createdMs) {
+    inconsistencies.push('started_before_created');
+    startedMs = claimedMs && (!createdMs || claimedMs >= createdMs) ? claimedMs : 0;
+  }
+  if (startedMs && claimedMs && startedMs < claimedMs) {
+    inconsistencies.push('started_before_claimed');
+    startedMs = claimedMs;
+  }
+  if (startedMs && completedMs && startedMs > completedMs) {
+    inconsistencies.push('started_after_completed');
+    startedMs = claimedMs && claimedMs <= completedMs ? claimedMs : 0;
+  }
+
+  const totalDurationMs =
+    createdMs && completedMs && completedMs >= createdMs ? completedMs - createdMs : null;
+  const claimToCompleteMs =
+    claimedMs && completedMs && completedMs >= claimedMs ? completedMs - claimedMs : null;
+  const automationRunMs =
+    startedMs && completedMs && completedMs >= startedMs ? completedMs - startedMs : null;
+
+  return {
+    createdMs,
+    claimedMs,
+    startedMs,
+    completedMs,
+    totalDurationMs,
+    claimToCompleteMs,
+    automationRunMs,
+    inconsistencies,
+  };
+}
+
+function formatTaskDuration(totalMs: number | null) {
+  if (totalMs == null || !Number.isFinite(totalMs)) {
+    return '—';
+  }
+  if (totalMs <= 0) {
     return 'Under 1s';
   }
   const totalSeconds = Math.max(1, Math.round(totalMs / 1000));
@@ -649,6 +716,7 @@ export default function CarerPage() {
   const [carerIdentity, setCarerIdentity] = useState<CarerIdentity | null>(null);
   const [coadminUid, setCoadminUid] = useState('');
   const baseDataRefreshInFlightRef = useRef(false);
+  const loggedTaskTimelineInconsistenciesRef = useRef<Set<string>>(new Set());
 
   const [players, setPlayers] = useState<PlayerUser[]>([]);
   const [gameOptions, setGameOptions] = useState<GameLogin[]>([]);
@@ -4945,10 +5013,21 @@ export default function CarerPage() {
       (Boolean(task.requestId) &&
         (dismissRedeemRequestId === task.requestId ||
           dismissRechargeRequestId === task.requestId));
-    const createdMs = getTimestampMs(task.createdAt);
-    const completedMs = getTimestampMs(task.completedAt);
-    const totalDurationMs =
-      createdMs && completedMs && completedMs >= createdMs ? completedMs - createdMs : 0;
+    const cleanTimeline = buildCleanTaskTimeline(task);
+    if (section === 'completed' && cleanTimeline.inconsistencies.length > 0) {
+      const logKey = `${task.id}:${cleanTimeline.inconsistencies.join(',')}`;
+      if (!loggedTaskTimelineInconsistenciesRef.current.has(logKey)) {
+        loggedTaskTimelineInconsistenciesRef.current.add(logKey);
+        console.info('[TASK_TIMELINE_INCONSISTENT]', {
+          taskId: task.id,
+          createdAt: formatTaskTimelineTime(task.createdAt),
+          claimedAt: formatTaskTimelineTime(task.claimedAt),
+          startedAt: formatTaskTimelineTime(task.startedAt),
+          completedAt: formatTaskTimelineTime(task.completedAt),
+          reason: cleanTimeline.inconsistencies.join(','),
+        });
+      }
+    }
     const claimedBy =
       String(task.claimedByUsername || task.assignedCarerUsername || '').trim() ||
       String(task.claimedByUid || task.assignedCarerUid || '').trim() ||
@@ -5028,21 +5107,37 @@ export default function CarerPage() {
               <div className="mt-4 border-t border-white/10 pt-3 text-xs text-neutral-300">
                 <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                   <span className="text-neutral-500">Created</span>
-                  <span className="text-white">{formatTaskTimelineTime(task.createdAt)}</span>
+                  <span className="text-white">
+                    {formatTaskTimelineTime(cleanTimeline.createdMs)}
+                  </span>
                   <span className="text-neutral-500">Claimed</span>
-                  <span className="text-white">{formatTaskTimelineTime(task.claimedAt)}</span>
+                  <span className="text-white">
+                    {formatTaskTimelineTime(cleanTimeline.claimedMs)}
+                  </span>
                   <span className="text-neutral-500">Started</span>
-                  <span className="text-white">{formatTaskTimelineTime(task.startedAt)}</span>
+                  <span className="text-white">
+                    {formatTaskTimelineTime(cleanTimeline.startedMs)}
+                  </span>
                   <span className="text-neutral-500">Completed</span>
-                  <span className="text-white">{formatTaskTimelineTime(task.completedAt)}</span>
+                  <span className="text-white">
+                    {formatTaskTimelineTime(cleanTimeline.completedMs)}
+                  </span>
                   <span className="text-neutral-500">Duration</span>
                   <span className="font-semibold text-emerald-200">
-                    {formatTaskDuration(totalDurationMs)}
+                    {formatTaskDuration(cleanTimeline.totalDurationMs)}
+                  </span>
+                  <span className="text-neutral-500">Claim to Complete</span>
+                  <span className="text-white">
+                    {formatTaskDuration(cleanTimeline.claimToCompleteMs)}
+                  </span>
+                  <span className="text-neutral-500">Automation Run</span>
+                  <span className="text-white">
+                    {formatTaskDuration(cleanTimeline.automationRunMs)}
                   </span>
                   <span className="text-neutral-500">Claimed By</span>
-                  <span className="text-white">{claimedBy || 'Not recorded'}</span>
+                  <span className="text-white">{claimedBy || '—'}</span>
                   <span className="text-neutral-500">Completed By</span>
-                  <span className="text-white">{completedBy || 'Not recorded'}</span>
+                  <span className="text-white">{completedBy || '—'}</span>
                 </div>
               </div>
             )}
