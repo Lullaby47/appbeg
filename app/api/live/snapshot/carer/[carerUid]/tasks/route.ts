@@ -24,15 +24,40 @@ export const runtime = 'nodejs';
 
 export const dynamic = 'force-dynamic';
 
-const CARER_TASK_HISTORY_LIMIT = 100;
+const CARER_TASK_RECENT_COMPLETED_LIMIT = 30;
 const CARER_TASK_ACTIVE_STATUSES = ['pending', 'in_progress', 'urgent', 'pending_review'];
+const VERBOSE_CARER_SNAPSHOT_AUDIT = process.env.VERBOSE_CARER_SNAPSHOT_AUDIT === '1';
 
 const RECOMMENDED_SNAPSHOT_INDEXES = [
   'carer_tasks_cache(coadmin_uid, created_at DESC) WHERE deleted_at IS NULL',
   'carer_tasks_cache(coadmin_uid, status, created_at DESC) WHERE deleted_at IS NULL',
   'carer_tasks_cache(assigned_carer_uid, status, created_at DESC) WHERE deleted_at IS NULL',
+  'carer_tasks_cache(coadmin_uid, status, completed_at DESC) WHERE deleted_at IS NULL',
   'live_outbox(channel, outbox_id) WHERE deleted_at IS NULL',
 ];
+
+const SNAPSHOT_TASK_COLUMNS = `
+  firebase_id,
+  coadmin_uid,
+  player_uid,
+  type,
+  status,
+  automation_status,
+  game_name,
+  amount,
+  request_id,
+  assigned_carer_uid,
+  assigned_carer_username,
+  claimed_by_uid,
+  claimed_by_username,
+  created_at,
+  claimed_at,
+  started_at,
+  updated_at,
+  completed_at,
+  completed_by_carer_uid,
+  completed_by_carer_username
+`;
 
 type SnapshotTask = {
   id: string;
@@ -131,6 +156,9 @@ function logCarerSnapshotRowAudit(input: {
   includedInVisibleRows: boolean;
   hiddenReason: string | null;
 }) {
+  if (!VERBOSE_CARER_SNAPSHOT_AUDIT) {
+    return;
+  }
   const taskType = cleanText(input.task.type).toLowerCase();
   if (taskType !== 'recharge' && taskType !== 'redeem') {
     return;
@@ -147,6 +175,25 @@ function logCarerSnapshotRowAudit(input: {
     includedInVisibleRows: input.includedInVisibleRows,
     hiddenReason: input.hiddenReason,
   });
+}
+
+function countSnapshotStatuses(tasks: SnapshotTask[]) {
+  let pendingCount = 0;
+  let inProgressCount = 0;
+  let completedCount = 0;
+
+  for (const task of tasks) {
+    const status = cleanText(task.status).toLowerCase();
+    if (status === 'pending') {
+      pendingCount += 1;
+    } else if (status === 'in_progress') {
+      inProgressCount += 1;
+    } else if (status === 'completed') {
+      completedCount += 1;
+    }
+  }
+
+  return { pendingCount, inProgressCount, completedCount };
 }
 
 function sortByNewest(rows: SnapshotTask[]) {
@@ -204,55 +251,64 @@ async function fetchSnapshotRowsWithClient(
   coadminUid: string
 ) {
   const totalStartedAt = Date.now();
-  const recentPack = await runMirrorClientQuery<Record<string, unknown>>(
-    client,
-    `
-      SELECT *
-      FROM public.carer_tasks_cache
-      WHERE coadmin_uid = $1
-        AND deleted_at IS NULL
-        AND COALESCE(LOWER(status), '') <> 'deleted'
-      ORDER BY created_at DESC NULLS LAST
-      LIMIT $2
-    `,
-    [coadminUid, CARER_TASK_HISTORY_LIMIT]
-  );
   const activePack = await runMirrorClientQuery<Record<string, unknown>>(
     client,
     `
-      SELECT *
+      SELECT ${SNAPSHOT_TASK_COLUMNS}
       FROM public.carer_tasks_cache
       WHERE coadmin_uid = $1
         AND deleted_at IS NULL
-        AND COALESCE(LOWER(status), '') <> 'deleted'
         AND status = ANY($2::text[])
-      ORDER BY created_at DESC NULLS LAST
+      ORDER BY created_at DESC
     `,
     [coadminUid, CARER_TASK_ACTIVE_STATUSES]
+  );
+  const completedPack = await runMirrorClientQuery<Record<string, unknown>>(
+    client,
+    `
+      SELECT ${SNAPSHOT_TASK_COLUMNS}
+      FROM public.carer_tasks_cache
+      WHERE coadmin_uid = $1
+        AND deleted_at IS NULL
+        AND status = 'completed'
+      ORDER BY completed_at DESC
+      LIMIT $2
+    `,
+    [coadminUid, CARER_TASK_RECENT_COMPLETED_LIMIT]
   );
 
   const timing = createPlayerMirrorSqlTiming({
     pool_acquire_ms: 0,
-    query_exec_ms: recentPack.timing.query_exec_ms + activePack.timing.query_exec_ms,
+    query_exec_ms: activePack.timing.query_exec_ms + completedPack.timing.query_exec_ms,
     total_ms: Date.now() - totalStartedAt,
   });
 
   const merged = new Map<string, Record<string, unknown>>();
-  for (const row of [...recentPack.rows, ...activePack.rows]) {
+  for (const row of [...activePack.rows, ...completedPack.rows]) {
     const firebaseId = cleanText(row.firebase_id);
     if (firebaseId) {
       merged.set(firebaseId, row);
     }
   }
+  const activeBreakdown = countSnapshotStatuses(activePack.rows.map(mapSnapshotRow));
+  const completedBreakdown = countSnapshotStatuses(completedPack.rows.map(mapSnapshotRow));
 
   return {
     rows: Array.from(merged.values()),
     timing,
-    recentRowCount: recentPack.rows.length,
+    recentRowCount: completedPack.rows.length,
+    completedRowCount: completedPack.rows.length,
     activeRowCount: activePack.rows.length,
     rawRowCount: merged.size,
-    recent_query_exec_ms: recentPack.timing.query_exec_ms,
+    recent_query_exec_ms: completedPack.timing.query_exec_ms,
+    completed_query_exec_ms: completedPack.timing.query_exec_ms,
     active_query_exec_ms: activePack.timing.query_exec_ms,
+    activePendingCount: activeBreakdown.pendingCount,
+    activeInProgressCount: activeBreakdown.inProgressCount,
+    activeCompletedCount: activeBreakdown.completedCount,
+    completedPendingCount: completedBreakdown.pendingCount,
+    completedInProgressCount: completedBreakdown.inProgressCount,
+    completedCompletedCount: completedBreakdown.completedCount,
   };
 }
 
@@ -407,6 +463,29 @@ export async function GET(
     });
     const tasks = sortByNewest(visible);
     const mergeMs = Date.now() - mergeStartedAt;
+    const totalMs = Date.now() - totalStartedAt;
+    const snapshotCounts = countSnapshotStatuses(tasks);
+
+    console.info('[CARER_SNAPSHOT_SUMMARY]', {
+      ...snapshotCounts,
+      totalRows: tasks.length,
+      rawRowCount: snapshotPack.rawRowCount,
+      mappedRowCount: mapped.length,
+      durationMs: totalMs,
+      latestOutboxId: outboxPack.latestOutboxId,
+    });
+    console.info('[SNAPSHOT_QUERY_BREAKDOWN]', {
+      activeRows: snapshotPack.activeRowCount,
+      completedRows: snapshotPack.completedRowCount,
+      pendingRows: snapshotPack.activePendingCount,
+      inProgressRows: snapshotPack.activeInProgressCount,
+      activeCompletedRows: snapshotPack.activeCompletedCount,
+      completedWindowRows: snapshotPack.completedCompletedCount,
+      queryMs: snapshotPack.timing.query_exec_ms,
+      activeQueryMs: snapshotPack.active_query_exec_ms,
+      completedQueryMs: snapshotPack.completed_query_exec_ms,
+      completedLimit: CARER_TASK_RECENT_COMPLETED_LIMIT,
+    });
 
     logSnapshotTiming({
       ...authTimingDetails(auth.timing),
@@ -417,16 +496,21 @@ export async function GET(
       sql_tasks_pool_acquire_ms: snapshotPack.timing.pool_acquire_ms,
       sql_tasks_query_exec_ms: snapshotPack.timing.query_exec_ms,
       sql_tasks_recent_query_exec_ms: snapshotPack.recent_query_exec_ms,
+      sql_tasks_completed_query_exec_ms: snapshotPack.completed_query_exec_ms,
       sql_tasks_active_query_exec_ms: snapshotPack.active_query_exec_ms,
       sql_latest_outbox_ms: outboxPack.timing.total_ms,
       sql_latest_outbox_pool_acquire_ms: outboxPack.timing.pool_acquire_ms,
       sql_latest_outbox_query_exec_ms: outboxPack.timing.query_exec_ms,
       merge_ms: mergeMs,
-      total_ms: Date.now() - totalStartedAt,
+      total_ms: totalMs,
       carerUid,
       coadminUid: auth.coadminUid,
       recentRowCount: snapshotPack.recentRowCount,
+      recentCompletedLimit: CARER_TASK_RECENT_COMPLETED_LIMIT,
+      completedRowCount: snapshotPack.completedRowCount,
       activeRowCount: snapshotPack.activeRowCount,
+      activePendingCount: snapshotPack.activePendingCount,
+      activeInProgressCount: snapshotPack.activeInProgressCount,
       rawRowCount: snapshotPack.rawRowCount,
       mappedRowCount: mapped.length,
       visibleRowCount: visible.length,

@@ -12,7 +12,6 @@ import { getSqlApiReadHeaders } from '@/lib/client/sqlApiHeaders';
 import {
   buildLiveSnapshotPath,
   parseLiveSnapshotResponse,
-  snapshotFetchRequiresFullBody,
 } from '@/lib/client/liveSnapshotFetch';
 import {
   reconnectRecoveryDelayMs,
@@ -134,6 +133,7 @@ const SAFETY_REFETCH_MS = 45_000;
 const STALL_TIMEOUT_MS = 90_000;
 const INITIAL_RECONNECT_MS = 1_000;
 const MAX_RECONNECT_MS = 30_000;
+const LIVE_REFETCH_DEBOUNCE_MS = 120;
 
 function normalizeTaskType(value: unknown): CarerTask['type'] {
   const normalized = cleanText(value).toLowerCase();
@@ -308,6 +308,10 @@ export function attachCarerTaskSqlReadListener(
   let fellBack = false;
   let refetchTimer: ReturnType<typeof setTimeout> | null = null;
   let refetchInFlight = false;
+  let queuedRefetchReason: string | null = null;
+  let recoveryForceFullUsed = false;
+  let initialSnapshotLoaded = false;
+  let lastSnapshotOutboxId = 0;
   let reconnectAttempt = 0;
   let reconnectBackoffMs = INITIAL_RECONNECT_MS;
   let lastSseActivityAt = Date.now();
@@ -328,7 +332,7 @@ export function attachCarerTaskSqlReadListener(
     console.info('[CARER_TASKS_STATE_UPDATED]', {
       reason,
       count: nextTasks.length,
-      latestOutboxId: lastEventId,
+      latestOutboxId: lastSnapshotOutboxId,
       pendingCount: nextTasks.filter((task) => cleanText(task.status).toLowerCase() === 'pending')
         .length,
       inProgressCount: nextTasks.filter(
@@ -356,6 +360,58 @@ export function attachCarerTaskSqlReadListener(
     );
   };
 
+  const shouldForceFullSnapshot = (reason: string) => {
+    if (!initialSnapshotLoaded && reason === 'bootstrap') {
+      return true;
+    }
+    const recoveryReason =
+      reason === 'visibility' ||
+      reason === 'stall_timeout' ||
+      reason === 'sse_error' ||
+      /^reconnect_attempt_/i.test(reason);
+    if (recoveryReason && !recoveryForceFullUsed) {
+      recoveryForceFullUsed = true;
+      return true;
+    }
+    return false;
+  };
+
+  const logCursorUpdate = (previousLatestOutboxId: number, newLatestOutboxId: number) => {
+    if (newLatestOutboxId === previousLatestOutboxId) {
+      return;
+    }
+    console.info('[CARER_TASK_SNAPSHOT_CURSOR_UPDATED]', {
+      previousLatestOutboxId,
+      newLatestOutboxId,
+    });
+  };
+
+  const updateSnapshotCursor = (nextOutboxId: number) => {
+    const normalizedNextOutboxId = Math.max(0, Number(nextOutboxId || 0));
+    const previousLatestOutboxId = lastSnapshotOutboxId;
+    lastSnapshotOutboxId = Math.max(lastSnapshotOutboxId, normalizedNextOutboxId);
+    lastEventId = Math.max(lastEventId, lastSnapshotOutboxId);
+    logCursorUpdate(previousLatestOutboxId, lastSnapshotOutboxId);
+  };
+
+  const queueRefetchAfterInFlight = (reason: string) => {
+    queuedRefetchReason = queuedRefetchReason || reason;
+    console.info('[CARER_TASK_SNAPSHOT_SKIP]', {
+      reason,
+      skipReason: 'request_in_flight_queued',
+      queuedReason: queuedRefetchReason,
+    });
+  };
+
+  const flushQueuedRefetch = () => {
+    if (fellBack || disposed || refetchInFlight || refetchTimer || !queuedRefetchReason) {
+      return;
+    }
+    const reason = queuedRefetchReason;
+    queuedRefetchReason = null;
+    scheduleLiveRefetch(reason);
+  };
+
   const loadSnapshot = async (
     headers: Record<string, string>,
     reason: string
@@ -366,18 +422,24 @@ export function attachCarerTaskSqlReadListener(
       carerUid: cleanCarerUid,
       coadminUid: cleanCoadminUid,
       lastEventId,
+      latestSnapshotOutboxId: lastSnapshotOutboxId,
     });
-    const requireFull = snapshotFetchRequiresFullBody(reason);
+    const requireFull = shouldForceFullSnapshot(reason);
+    console.info('[CARER_TASK_SNAPSHOT_REQUEST]', {
+      forceFull: requireFull,
+      latestOutboxId: requireFull ? null : lastSnapshotOutboxId,
+      reason,
+    });
     const snapshotPath = buildLiveSnapshotPath(
       `/api/live/snapshot/carer/${encodeURIComponent(cleanCarerUid)}/tasks`,
       {
-        latestOutboxId: lastEventId,
+        latestOutboxId: lastSnapshotOutboxId,
         requireFull,
       }
     );
     const snapshotHeaders = {
       ...headers,
-      ...(!requireFull && lastEventId > 0 ? { 'If-None-Match': `"${lastEventId}"` } : {}),
+      ...(!requireFull ? { 'If-None-Match': `"${lastSnapshotOutboxId}"` } : {}),
     };
     const snapshotResponse = await fetch(snapshotPath, {
       headers: snapshotHeaders,
@@ -385,21 +447,21 @@ export function attachCarerTaskSqlReadListener(
     });
     const parsed = await parseLiveSnapshotResponse<SqlSnapshotResponse>(snapshotResponse);
     if (parsed.unchanged) {
-      const unchangedOutboxId = Number(parsed.snapshot?.latestOutboxId ?? lastEventId);
-      lastEventId = Math.max(lastEventId, unchangedOutboxId);
+      const unchangedOutboxId = Number(parsed.snapshot?.latestOutboxId ?? lastSnapshotOutboxId);
+      updateSnapshotCursor(unchangedOutboxId);
       console.info('[CARER_TASKS_LIVE_REFETCH_RESULT]', {
         reason,
         ok: true,
         unchanged: true,
         count: tasksById.size,
-        latestOutboxId: lastEventId,
+        latestOutboxId: lastSnapshotOutboxId,
       });
       console.info('[CARER_SNAPSHOT_REFRESH]', {
         reason,
         ok: true,
         unchanged: true,
         count: tasksById.size,
-        latestOutboxId: lastEventId,
+        latestOutboxId: lastSnapshotOutboxId,
         durationMs: Date.now() - snapshotStartedAt,
       });
       return true;
@@ -439,7 +501,7 @@ export function attachCarerTaskSqlReadListener(
     if (!ok) {
       return false;
     }
-    lastEventId = Math.max(lastEventId, Number(snapshot.latestOutboxId || 0));
+    updateSnapshotCursor(Number(snapshot.latestOutboxId || 0));
     tasksById.clear();
     for (const row of rows) {
       const mapped = mapSnapshotRowToCarerTask(row, cleanCoadminUid);
@@ -448,6 +510,7 @@ export function attachCarerTaskSqlReadListener(
       }
       applyVisibleTask(mapped, reason);
     }
+    initialSnapshotLoaded = true;
     emitTasks(reason);
     return true;
   };
@@ -457,6 +520,10 @@ export function attachCarerTaskSqlReadListener(
     priority = false
   ): Promise<boolean> => {
     if (fellBack || disposed) {
+      console.info('[CARER_TASK_SNAPSHOT_SKIP]', {
+        reason,
+        skipReason: disposed ? 'disposed' : 'fallback_active',
+      });
       return false;
     }
     if (refetchTimer) {
@@ -464,15 +531,12 @@ export function attachCarerTaskSqlReadListener(
       refetchTimer = null;
     }
     if (refetchInFlight) {
-      if (!priority) {
-        return false;
-      }
-      for (let attempt = 0; attempt < 50 && refetchInFlight; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      if (refetchInFlight) {
-        return false;
-      }
+      console.info('[CARER_TASK_SNAPSHOT_SKIP]', {
+        reason,
+        skipReason: 'request_in_flight',
+        priority,
+      });
+      return false;
     }
     refetchInFlight = true;
     try {
@@ -487,16 +551,40 @@ export function attachCarerTaskSqlReadListener(
       return false;
     } finally {
       refetchInFlight = false;
+      flushQueuedRefetch();
     }
   };
 
   const scheduleLiveRefetch = (reason: string) => {
-    if (fellBack || disposed || refetchTimer) {
+    if (fellBack || disposed) {
+      console.info('[CARER_TASK_SNAPSHOT_SKIP]', {
+        reason,
+        skipReason: disposed ? 'disposed' : 'fallback_active',
+      });
+      return;
+    }
+    if (refetchInFlight) {
+      queueRefetchAfterInFlight(reason);
+      return;
+    }
+    if (refetchTimer) {
+      console.info('[CARER_TASK_SNAPSHOT_SKIP]', {
+        reason,
+        skipReason: 'debounce_coalesced',
+      });
       return;
     }
     refetchTimer = setTimeout(() => {
       refetchTimer = null;
       if (fellBack || disposed || refetchInFlight) {
+        console.info('[CARER_TASK_SNAPSHOT_SKIP]', {
+          reason,
+          skipReason: disposed
+            ? 'disposed'
+            : fellBack
+              ? 'fallback_active'
+              : 'request_in_flight',
+        });
         return;
       }
       refetchInFlight = true;
@@ -512,9 +600,10 @@ export function attachCarerTaskSqlReadListener(
           });
         } finally {
           refetchInFlight = false;
+          flushQueuedRefetch();
         }
       })();
-    }, 120);
+    }, LIVE_REFETCH_DEBOUNCE_MS);
   };
 
   const applyVisibleTask = (task: CarerTask, mergeReason: string) => {
@@ -697,16 +786,9 @@ export function attachCarerTaskSqlReadListener(
     }
 
     if (shouldRefetchForLiveEvent(eventName, entityType)) {
-      if (
-        eventName === 'task.returned_to_pending' ||
-        CARER_TASK_IMMEDIATE_REFETCH_EVENTS.has(eventName)
-      ) {
-        void refetchSnapshotNow(`live_event:${eventName}`, true);
-      } else {
-        scheduleLiveRefetch(`live_event:${eventName}`);
-      }
+      scheduleLiveRefetch(`live_event:${eventName}`);
     } else if (CARER_TASK_IMMEDIATE_REFETCH_EVENTS.has(eventName)) {
-      void refetchSnapshotNow(`live_event:${eventName}`, true);
+      scheduleLiveRefetch(`live_event:${eventName}`);
     }
 
     if (!entityId || !taskId) {
@@ -808,8 +890,17 @@ export function attachCarerTaskSqlReadListener(
       carerUid: cleanCarerUid,
       coadminUid: cleanCoadminUid,
       lastEventId,
+      latestSnapshotOutboxId: lastSnapshotOutboxId,
       idleMs: Date.now() - lastSseActivityAt,
     });
+    if (eventSource && Date.now() - lastSseActivityAt < STALL_TIMEOUT_MS) {
+      console.info('[CARER_TASK_SNAPSHOT_SKIP]', {
+        reason: 'safety_interval',
+        skipReason: 'sse_healthy',
+        idleMs: Date.now() - lastSseActivityAt,
+      });
+      return;
+    }
     void refetchSnapshotNow('safety_interval', true);
   };
 
@@ -847,6 +938,7 @@ export function attachCarerTaskSqlReadListener(
       carerUid: cleanCarerUid,
       coadminUid: cleanCoadminUid,
       lastEventId,
+      latestSnapshotOutboxId: lastSnapshotOutboxId,
     });
     reconnectAttempt = 0;
     reconnectBackoffMs = INITIAL_RECONNECT_MS;
@@ -862,6 +954,7 @@ export function attachCarerTaskSqlReadListener(
           carerUid: cleanCarerUid,
           coadminUid: cleanCoadminUid,
           lastEventId,
+          latestSnapshotOutboxId: lastSnapshotOutboxId,
         });
       });
     })();
@@ -961,13 +1054,13 @@ export function attachCarerTaskSqlReadListener(
         durationMs: Date.now() - snapshotStartedAt,
         extra: {
           count: tasksById.size,
-          latestOutboxId: lastEventId,
+          latestOutboxId: lastSnapshotOutboxId,
         },
       });
       console.info(
         '[CARER_TASKS_SQL_READ] snapshot_loaded count=%s latestOutboxId=%s',
         tasksById.size,
-        lastEventId
+        lastSnapshotOutboxId
       );
 
       lastSseActivityAt = Date.now();

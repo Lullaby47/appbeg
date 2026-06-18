@@ -25,7 +25,7 @@ export type CarerAutomationAutoStateDoc = {
   tickLeaseExpiresAt?: unknown;
 };
 
-const AUTO_STATE_VISIBLE_POLL_MS = 5_000;
+const AUTO_STATE_VISIBLE_POLL_MS = 60_000;
 const AUTO_STATE_HIDDEN_POLL_MS = 60_000;
 
 function resolveAutoStatePollDelayMs() {
@@ -147,6 +147,20 @@ export function subscribeCarerAutomationAutoState(
 ) {
   if (isClientSqlReadMode()) {
     logClientFirestoreSkipped('automation_auto_state', { carerUid });
+    console.info('[POLLING_INVENTORY]', {
+      route: '/api/carer/automation-auto-state',
+      intervalMs: AUTO_STATE_VISIBLE_POLL_MS,
+      hiddenIntervalMs: AUTO_STATE_HIDDEN_POLL_MS,
+      reason: 'automation_toggle_cross_tab_safety_check',
+      trigger: 'subscribeCarerAutomationAutoState',
+      canUseSSE: false,
+      required: 'retained_as_slow_safety_poll_when_automation_enabled',
+    });
+    console.info('[POLLING_RETAINED]', {
+      route: '/api/carer/automation-auto-state',
+      reason: 'automation_auto_state_is_not_on_live_outbox_stream; poll only runs while automation is enabled',
+      intervalMs: AUTO_STATE_VISIBLE_POLL_MS,
+    });
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let automationEnabled = false;

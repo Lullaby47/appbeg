@@ -67,7 +67,6 @@ import {
   deletePendingCarerTask,
   isRealCompletedCarerTask,
   getCurrentUserCoadminUid,
-  listenCarerRechargeRedeemTotalsByCoadmin,
   listenToAvailableCarerTasks,
   releaseExpiredCarerTasks,
   sendCarerEscalationAlert,
@@ -684,9 +683,6 @@ export default function CarerPage() {
   const [deletedCarerTaskIds, setDeletedCarerTaskIds] = useState<Record<string, true>>({});
   const [deletingPendingTaskId, setDeletingPendingTaskId] = useState<string | null>(null);
   const [showRevTotals, setShowRevTotals] = useState(false);
-  const [carerRechargeRedeemTotals, setCarerRechargeRedeemTotals] = useState<
-    Record<string, CarerRechargeRedeemTotals>
-  >({});
 
   const [errorMessage, setErrorMessage] = useState('');
   const [noticeMessage, setNoticeMessage] = useState('');
@@ -908,6 +904,42 @@ export default function CarerPage() {
 
     return { rechargeTotal, redeemTotal, rechargeCount, redeemCount };
   }, [carerIdentity?.uid, tasks]);
+
+  const carerRechargeRedeemTotals = useMemo<Record<string, CarerRechargeRedeemTotals>>(() => {
+    const totals: Record<string, CarerRechargeRedeemTotals> = {};
+    const cutoff = Date.now() - WORK_DETAILS_WINDOW_MS;
+
+    for (const task of tasks) {
+      if (!isRealCompletedCarerTask(task)) {
+        continue;
+      }
+      if (task.type !== 'recharge' && task.type !== 'redeem') {
+        continue;
+      }
+      const completedMs = getTimestampMs(task.completedAt);
+      if (!completedMs || completedMs < cutoff) {
+        continue;
+      }
+      const carerUid = String(task.completedByCarerUid || task.assignedCarerUid || '').trim();
+      if (!carerUid) {
+        continue;
+      }
+      if (!totals[carerUid]) {
+        totals[carerUid] = {
+          totalRechargeAmount: 0,
+          totalRedeemAmount: 0,
+        };
+      }
+      const amount = Number(task.amount || 0);
+      if (task.type === 'recharge') {
+        totals[carerUid].totalRechargeAmount += amount;
+      } else {
+        totals[carerUid].totalRedeemAmount += amount;
+      }
+    }
+
+    return totals;
+  }, [tasks]);
 
   const redeemShareVsRecharge =
     workDetails30d.rechargeTotal > 0
@@ -1800,25 +1832,21 @@ export default function CarerPage() {
 
   useEffect(() => {
     if (!coadminUid) {
-      setCarerRechargeRedeemTotals({});
       return;
     }
-
-    const unsubscribe = listenCarerRechargeRedeemTotalsByCoadmin(
-      coadminUid,
-      setCarerRechargeRedeemTotals,
-      (error) => {
-        reportCarerUiError(
-          'carer_recharge_redeem_totals',
-          error,
-          setErrorMessage,
-          'Failed to load recharge/redeem totals.',
-          { file: 'app/carer/page.tsx', operation: 'listenCarerRechargeRedeemTotalsByCoadmin' }
-        );
-      }
-    );
-
-    return () => unsubscribe();
+    console.info('[POLLING_INVENTORY]', {
+      route: '/api/carer-tasks/cache?scope=carer_totals',
+      intervalMs: 0,
+      previousIntervalMs: 10_000,
+      reason: 'rev_totals_derived_from_live_carer_tasks',
+      trigger: 'carerRechargeRedeemTotals useMemo',
+      canUseSSE: true,
+      required: false,
+    });
+    console.info('[POLLING_DISABLED]', {
+      route: '/api/carer-tasks/cache?scope=carer_totals',
+      replacement: 'derive recharge/redeem totals from task SSE snapshot already in React state',
+    });
   }, [coadminUid]);
 
   useEffect(() => {

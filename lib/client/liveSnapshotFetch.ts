@@ -23,7 +23,7 @@ export function buildLiveSnapshotPath(
   } else if (
     options.latestOutboxId != null &&
     Number.isFinite(options.latestOutboxId) &&
-    options.latestOutboxId > 0
+    options.latestOutboxId >= 0
   ) {
     params.set('latestOutboxId', String(Math.trunc(options.latestOutboxId)));
   }

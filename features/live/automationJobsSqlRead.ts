@@ -5,6 +5,10 @@ import {
 } from '@/features/automation/automationJobs';
 import { logCarerPageStartup, markCarerPageStartupStreamConnected } from '@/features/carer/carerStartupLogs';
 import { getFirebaseApiHeaders } from '@/lib/firebase/apiClient';
+import {
+  buildLiveSnapshotPath,
+  parseLiveSnapshotResponse,
+} from '@/lib/client/liveSnapshotFetch';
 import { isPublicAutomationJobsSqlReadEnabled } from '@/lib/client/sqlPublicFlags';
 
 export const AUTOMATION_JOBS_SQL_READ_ENABLED = isPublicAutomationJobsSqlReadEnabled();
@@ -27,6 +31,7 @@ type SqlSnapshotJob = {
 type SqlSnapshotResponse = {
   jobs?: SqlSnapshotJob[];
   latestOutboxId?: number;
+  unchanged?: boolean;
   source?: string;
 };
 
@@ -222,6 +227,8 @@ function parseSseBlock(block: string) {
   };
 }
 
+const JOB_SNAPSHOT_DEBOUNCE_MS = 120;
+
 export function attachAutomationJobsSqlReadListener(
   carerUid: string,
   coadminUid: string,
@@ -234,9 +241,15 @@ export function attachAutomationJobsSqlReadListener(
   const cleanCarerUid = cleanText(carerUid);
   const cleanCoadminUid = cleanText(coadminUid);
   let lastEventId = 0;
+  let lastSnapshotOutboxId = 0;
   let abortController: AbortController | null = null;
   let disposed = false;
   let fellBack = false;
+  let initialSnapshotLoaded = false;
+  let recoveryForceFullUsed = false;
+  let refetchTimer: ReturnType<typeof setTimeout> | null = null;
+  let refetchInFlight = false;
+  let queuedRefetchReason: string | null = null;
   const jobsById = new Map<string, SqlJobRecord>();
 
   const emitUiState = () => {
@@ -245,6 +258,168 @@ export function attachAutomationJobsSqlReadListener(
     }
     const next = buildUiStateFromJobs(Array.from(jobsById.values()));
     onChange(next.statusByTaskId, next.freshJobByTaskId);
+  };
+
+  const shouldForceFullSnapshot = (reason: string) => {
+    if (!initialSnapshotLoaded && reason === 'bootstrap') {
+      return true;
+    }
+    if ((reason === 'sse_error' || /^reconnect_attempt_/i.test(reason)) && !recoveryForceFullUsed) {
+      recoveryForceFullUsed = true;
+      return true;
+    }
+    return false;
+  };
+
+  const logCursorUpdate = (previousLatestOutboxId: number, newLatestOutboxId: number) => {
+    if (previousLatestOutboxId === newLatestOutboxId) {
+      return;
+    }
+    console.info('[CARER_JOB_SNAPSHOT_CURSOR_UPDATED]', {
+      previousLatestOutboxId,
+      newLatestOutboxId,
+    });
+  };
+
+  const updateSnapshotCursor = (nextOutboxId: number) => {
+    const normalizedNextOutboxId = Math.max(0, Number(nextOutboxId || 0));
+    const previousLatestOutboxId = lastSnapshotOutboxId;
+    lastSnapshotOutboxId = Math.max(lastSnapshotOutboxId, normalizedNextOutboxId);
+    lastEventId = Math.max(lastEventId, lastSnapshotOutboxId);
+    logCursorUpdate(previousLatestOutboxId, lastSnapshotOutboxId);
+  };
+
+  const queueRefetchAfterInFlight = (reason: string) => {
+    queuedRefetchReason = queuedRefetchReason || reason;
+    console.info('[CARER_JOB_SNAPSHOT_SKIP]', {
+      reason,
+      skipReason: 'request_in_flight_queued',
+      queuedReason: queuedRefetchReason,
+    });
+  };
+
+  const scheduleSnapshotRefetch = (reason: string) => {
+    if (disposed || fellBack) {
+      console.info('[CARER_JOB_SNAPSHOT_SKIP]', {
+        reason,
+        skipReason: disposed ? 'disposed' : 'fallback_active',
+      });
+      return;
+    }
+    if (refetchInFlight) {
+      queueRefetchAfterInFlight(reason);
+      return;
+    }
+    if (refetchTimer) {
+      console.info('[CARER_JOB_SNAPSHOT_SKIP]', {
+        reason,
+        skipReason: 'debounce_coalesced',
+      });
+      return;
+    }
+    refetchTimer = setTimeout(() => {
+      refetchTimer = null;
+      if (disposed || fellBack || refetchInFlight) {
+        console.info('[CARER_JOB_SNAPSHOT_SKIP]', {
+          reason,
+          skipReason: disposed
+            ? 'disposed'
+            : fellBack
+              ? 'fallback_active'
+              : 'request_in_flight',
+        });
+        return;
+      }
+      void refetchSnapshotNow(reason);
+    }, JOB_SNAPSHOT_DEBOUNCE_MS);
+  };
+
+  const flushQueuedRefetch = () => {
+    if (disposed || fellBack || refetchInFlight || refetchTimer || !queuedRefetchReason) {
+      return;
+    }
+    const reason = queuedRefetchReason;
+    queuedRefetchReason = null;
+    scheduleSnapshotRefetch(reason);
+  };
+
+  const loadSnapshot = async (
+    headers: Record<string, string>,
+    reason: string
+  ): Promise<boolean> => {
+    const requireFull = shouldForceFullSnapshot(reason);
+    console.info('[CARER_JOB_SNAPSHOT_REQUEST]', {
+      forceFull: requireFull,
+      latestOutboxId: requireFull ? null : lastSnapshotOutboxId,
+      reason,
+    });
+    const snapshotResponse = await fetch(
+      buildLiveSnapshotPath(
+        `/api/live/snapshot/carer/${encodeURIComponent(cleanCarerUid)}/automation-jobs`,
+        {
+          latestOutboxId: lastSnapshotOutboxId,
+          requireFull,
+        }
+      ),
+      {
+        headers: {
+          ...headers,
+          ...(!requireFull ? { 'If-None-Match': `"${lastSnapshotOutboxId}"` } : {}),
+        },
+        cache: 'no-store',
+      }
+    );
+    const parsed = await parseLiveSnapshotResponse<SqlSnapshotResponse>(snapshotResponse);
+    if (parsed.unchanged) {
+      updateSnapshotCursor(Number(parsed.snapshot?.latestOutboxId ?? lastSnapshotOutboxId));
+      return true;
+    }
+
+    const snapshot = parsed.snapshot;
+    const source = cleanText(snapshot?.source);
+    if (
+      !snapshot ||
+      !snapshotResponse.ok ||
+      source === 'postgres_snapshot_failed' ||
+      source === 'postgres_snapshot_unavailable'
+    ) {
+      return false;
+    }
+
+    updateSnapshotCursor(Number(snapshot.latestOutboxId || 0));
+    jobsById.clear();
+    for (const row of Array.isArray(snapshot.jobs) ? snapshot.jobs : []) {
+      const mapped = mapSnapshotRowToJobRecord(row, cleanCarerUid);
+      if (!mapped) {
+        continue;
+      }
+      jobsById.set(mapped.jobId, mapped);
+    }
+    initialSnapshotLoaded = true;
+    emitUiState();
+    return true;
+  };
+
+  const refetchSnapshotNow = async (reason: string): Promise<boolean> => {
+    if (disposed || fellBack) {
+      console.info('[CARER_JOB_SNAPSHOT_SKIP]', {
+        reason,
+        skipReason: disposed ? 'disposed' : 'fallback_active',
+      });
+      return false;
+    }
+    if (refetchInFlight) {
+      queueRefetchAfterInFlight(reason);
+      return false;
+    }
+    refetchInFlight = true;
+    try {
+      const headers = await getFirebaseApiHeaders(false);
+      return await loadSnapshot(headers, reason);
+    } finally {
+      refetchInFlight = false;
+      flushQueuedRefetch();
+    }
   };
 
   const consumeSseChunk = (chunk: string, bufferRef: { value: string }) => {
@@ -275,6 +450,7 @@ export function attachAutomationJobsSqlReadListener(
           parsed.entityId
         );
         emitUiState();
+        scheduleSnapshotRefetch(`live_event:${parsed.event}`);
         continue;
       }
 
@@ -293,6 +469,7 @@ export function attachAutomationJobsSqlReadListener(
           parsed.entityId
         );
         emitUiState();
+        scheduleSnapshotRefetch(`live_event:${parsed.event}`);
       }
     }
   };
@@ -346,41 +523,18 @@ export function attachAutomationJobsSqlReadListener(
         uid: cleanCarerUid,
         role: 'carer',
       });
-      const snapshotResponse = await fetch(
-        `/api/live/snapshot/carer/${encodeURIComponent(cleanCarerUid)}/automation-jobs`,
-        {
-          headers,
-          cache: 'no-store',
-        }
-      );
-
-      const snapshot = (await snapshotResponse.json()) as SqlSnapshotResponse;
-      const source = cleanText(snapshot.source);
-      if (
-        !snapshotResponse.ok ||
-        source === 'postgres_snapshot_failed' ||
-        source === 'postgres_snapshot_unavailable'
-      ) {
+      const snapshotOk = await loadSnapshot(headers, 'bootstrap');
+      if (!snapshotOk) {
         logCarerPageStartup({
           stage: 'jobs_snapshot_done',
           ok: false,
           uid: cleanCarerUid,
           role: 'carer',
           durationMs: Date.now() - snapshotStartedAt,
-          reason: `snapshot_http_${snapshotResponse.status}_${source || 'unknown'}`,
+          reason: 'snapshot_load_failed',
         });
-        triggerFallback(`snapshot_http_${snapshotResponse.status}_${source || 'unknown'}`);
+        triggerFallback('snapshot_load_failed');
         return;
-      }
-
-      lastEventId = Number(snapshot.latestOutboxId || 0);
-      jobsById.clear();
-      for (const row of Array.isArray(snapshot.jobs) ? snapshot.jobs : []) {
-        const mapped = mapSnapshotRowToJobRecord(row, cleanCarerUid);
-        if (!mapped) {
-          continue;
-        }
-        jobsById.set(mapped.jobId, mapped);
       }
 
       logCarerPageStartup({
@@ -391,17 +545,16 @@ export function attachAutomationJobsSqlReadListener(
         durationMs: Date.now() - snapshotStartedAt,
         extra: {
           count: jobsById.size,
-          latestOutboxId: lastEventId,
-          source: source || 'unknown',
+          latestOutboxId: lastSnapshotOutboxId,
+          source: 'postgres_snapshot',
         },
       });
       console.info(
         '[AUTOMATION_JOBS_SQL_READ] snapshot_loaded count=%s latestOutboxId=%s source=%s',
         jobsById.size,
-        lastEventId,
-        source || 'unknown'
+        lastSnapshotOutboxId,
+        'postgres_snapshot'
       );
-      emitUiState();
 
       abortController = new AbortController();
       const sseStartedAt = Date.now();
@@ -421,6 +574,9 @@ export function attachAutomationJobsSqlReadListener(
     } catch (error) {
       if (!disposed) {
         const reason = error instanceof Error ? error.message : 'bootstrap_or_sse_failed';
+        if (initialSnapshotLoaded) {
+          await refetchSnapshotNow('sse_error').catch(() => false);
+        }
         logCarerPageStartup({
           stage: 'jobs_snapshot_done',
           ok: false,
@@ -441,6 +597,10 @@ export function attachAutomationJobsSqlReadListener(
       disposed = true;
       abortController?.abort();
       abortController = null;
+      if (refetchTimer) {
+        clearTimeout(refetchTimer);
+        refetchTimer = null;
+      }
       jobsById.clear();
     },
     hasFallenBack() {

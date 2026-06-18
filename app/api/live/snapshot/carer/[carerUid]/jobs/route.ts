@@ -19,7 +19,7 @@ export const runtime = 'nodejs';
 
 export const dynamic = 'force-dynamic';
 
-const AUTOMATION_JOB_HISTORY_LIMIT = 100;
+const AUTOMATION_JOB_RECENT_TERMINAL_LIMIT = 30;
 const AUTOMATION_JOB_ACTIVE_STATUSES = [
   'pending',
   'claimed',
@@ -32,6 +32,7 @@ const AUTOMATION_JOB_ACTIVE_STATUSES = [
   'processing',
   'waiting',
 ];
+const AUTOMATION_JOB_TERMINAL_STATUSES = ['completed', 'failed'];
 
 const AUTOMATION_JOB_SNAPSHOT_SELECT = `
   job_id,
@@ -65,23 +66,45 @@ function createdAtSortKey(row: Record<string, unknown>) {
   return iso ? new Date(iso).getTime() : 0;
 }
 
-function mergeRecentJobRows(
+function updatedAtSortKey(row: Record<string, unknown>) {
+  const iso = toIsoString(row.updated_at) || toIsoString(row.created_at);
+  return iso ? new Date(iso).getTime() : 0;
+}
+
+function mergeLimitedJobRows(
   createdByRows: Record<string, unknown>[],
   carerRows: Record<string, unknown>[],
-  limit: number
+  limit: number,
+  sortKey: (row: Record<string, unknown>) => number
 ) {
   const merged = new Map<string, Record<string, unknown>>();
   for (const row of [...createdByRows, ...carerRows]) {
     const jobId = cleanText(row.job_id);
     if (!jobId) continue;
     const existing = merged.get(jobId);
-    if (!existing || createdAtSortKey(row) > createdAtSortKey(existing)) {
+    if (!existing || sortKey(row) > sortKey(existing)) {
       merged.set(jobId, row);
     }
   }
   return Array.from(merged.values())
-    .sort((left, right) => createdAtSortKey(right) - createdAtSortKey(left))
+    .sort((left, right) => sortKey(right) - sortKey(left))
     .slice(0, limit);
+}
+
+function countJobStatuses(rows: Record<string, unknown>[]) {
+  let completedRows = 0;
+  let failedRows = 0;
+
+  for (const row of rows) {
+    const status = cleanText(row.status).toLowerCase();
+    if (status === 'completed') {
+      completedRows += 1;
+    } else if (status === 'failed') {
+      failedRows += 1;
+    }
+  }
+
+  return { completedRows, failedRows };
 }
 
 type SnapshotJob = {
@@ -190,30 +213,6 @@ async function fetchSnapshotRowsWithClient(
   carerUid: string
 ) {
   const totalStartedAt = Date.now();
-  const recentByCreatedByPack = await runMirrorClientQuery<Record<string, unknown>>(
-    client,
-    `
-      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}
-      FROM public.automation_jobs_cache
-      WHERE deleted_at IS NULL
-        AND created_by_uid = $1
-      ORDER BY created_at DESC NULLS LAST
-      LIMIT $2
-    `,
-    [carerUid, AUTOMATION_JOB_HISTORY_LIMIT]
-  );
-  const recentByCarerPack = await runMirrorClientQuery<Record<string, unknown>>(
-    client,
-    `
-      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}
-      FROM public.automation_jobs_cache
-      WHERE deleted_at IS NULL
-        AND carer_uid = $1
-      ORDER BY created_at DESC NULLS LAST
-      LIMIT $2
-    `,
-    [carerUid, AUTOMATION_JOB_HISTORY_LIMIT]
-  );
   const activeByCreatedByPack = await runMirrorClientQuery<Record<string, unknown>>(
     client,
     `
@@ -222,7 +221,7 @@ async function fetchSnapshotRowsWithClient(
       WHERE deleted_at IS NULL
         AND created_by_uid = $1
         AND status = ANY($2::text[])
-      ORDER BY updated_at DESC NULLS LAST
+      ORDER BY updated_at DESC
     `,
     [carerUid, AUTOMATION_JOB_ACTIVE_STATUSES]
   );
@@ -234,15 +233,42 @@ async function fetchSnapshotRowsWithClient(
       WHERE deleted_at IS NULL
         AND carer_uid = $1
         AND status = ANY($2::text[])
-      ORDER BY updated_at DESC NULLS LAST
+      ORDER BY updated_at DESC
     `,
     [carerUid, AUTOMATION_JOB_ACTIVE_STATUSES]
   );
+  const recentByCreatedByPack = await runMirrorClientQuery<Record<string, unknown>>(
+    client,
+    `
+      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}
+      FROM public.automation_jobs_cache
+      WHERE deleted_at IS NULL
+        AND created_by_uid = $1
+        AND status = ANY($2::text[])
+      ORDER BY updated_at DESC
+      LIMIT $3
+    `,
+    [carerUid, AUTOMATION_JOB_TERMINAL_STATUSES, AUTOMATION_JOB_RECENT_TERMINAL_LIMIT]
+  );
+  const recentByCarerPack = await runMirrorClientQuery<Record<string, unknown>>(
+    client,
+    `
+      SELECT ${AUTOMATION_JOB_SNAPSHOT_SELECT}
+      FROM public.automation_jobs_cache
+      WHERE deleted_at IS NULL
+        AND carer_uid = $1
+        AND status = ANY($2::text[])
+      ORDER BY updated_at DESC
+      LIMIT $3
+    `,
+    [carerUid, AUTOMATION_JOB_TERMINAL_STATUSES, AUTOMATION_JOB_RECENT_TERMINAL_LIMIT]
+  );
 
-  const recentRows = mergeRecentJobRows(
+  const recentRows = mergeLimitedJobRows(
     recentByCreatedByPack.rows,
     recentByCarerPack.rows,
-    AUTOMATION_JOB_HISTORY_LIMIT
+    AUTOMATION_JOB_RECENT_TERMINAL_LIMIT,
+    updatedAtSortKey
   );
   const activeRows = [...activeByCreatedByPack.rows, ...activeByCarerPack.rows];
   const recentQueryExecMs =
@@ -263,12 +289,15 @@ async function fetchSnapshotRowsWithClient(
       merged.set(jobId, row);
     }
   }
+  const recentBreakdown = countJobStatuses(recentRows);
 
   return {
     rows: Array.from(merged.values()),
     timing,
     recentRowCount: recentRows.length,
     activeRowCount: activeRows.length,
+    completedRowCount: recentBreakdown.completedRows,
+    failedRowCount: recentBreakdown.failedRows,
     rawRowCount: merged.size,
     recent_query_exec_ms: recentQueryExecMs,
     active_query_exec_ms: activeQueryExecMs,
@@ -385,6 +414,18 @@ export async function GET(
     const jobs = sortByNewest(snapshotPack.rows.map(mapSnapshotRow).filter((row) => row.id));
     const mergeMs = Date.now() - mergeStartedAt;
 
+    console.info('[JOB_SNAPSHOT_QUERY_BREAKDOWN]', {
+      activeRows: snapshotPack.activeRowCount,
+      recentRows: snapshotPack.recentRowCount,
+      completedRows: snapshotPack.completedRowCount,
+      failedRows: snapshotPack.failedRowCount,
+      queryMs: snapshotPack.timing.query_exec_ms,
+      activeQueryMs: snapshotPack.active_query_exec_ms,
+      recentQueryMs: snapshotPack.recent_query_exec_ms,
+      outboxQueryMs: outboxPack.timing.query_exec_ms,
+      limit: AUTOMATION_JOB_RECENT_TERMINAL_LIMIT,
+    });
+
     logSnapshotTiming({
       ...authTimingDetails(auth.timing),
       shared_client: false,
@@ -403,7 +444,10 @@ export async function GET(
       carerUid,
       coadminUid: auth.coadminUid,
       recentRowCount: snapshotPack.recentRowCount,
+      recentTerminalLimit: AUTOMATION_JOB_RECENT_TERMINAL_LIMIT,
       activeRowCount: snapshotPack.activeRowCount,
+      completedRowCount: snapshotPack.completedRowCount,
+      failedRowCount: snapshotPack.failedRowCount,
       rawRowCount: snapshotPack.rawRowCount,
       mergedRowCount: jobs.length,
       latestOutboxId: outboxPack.latestOutboxId,

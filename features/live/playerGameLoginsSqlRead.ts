@@ -93,7 +93,19 @@ export function attachPlayerGameLoginsSqlPoll(input: {
   }
 
   let cancelled = false;
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  console.info('[POLLING_INVENTORY]', {
+    route: '/api/player-game-logins/cache',
+    intervalMs: 0,
+    previousIntervalMs: POLL_MS,
+    reason: 'coadmin_player_game_logins_startup_load',
+    trigger: 'listenToPlayerGameLoginsByCoadmin',
+    canUseSSE: true,
+    required: 'initial_load_only',
+  });
+  console.info('[POLLING_DISABLED]', {
+    route: '/api/player-game-logins/cache',
+    replacement: 'initial_fetch_only_for_carer_page; local username mutations update page state and task SSE drives task cards',
+  });
 
   const tick = async () => {
     if (cancelled) {
@@ -105,12 +117,6 @@ export function attachPlayerGameLoginsSqlPoll(input: {
       if (!cancelled) {
         input.onError?.(error instanceof Error ? error : new Error(String(error)));
       }
-    } finally {
-      if (!cancelled) {
-        timer = setTimeout(() => {
-          void tick();
-        }, POLL_MS);
-      }
     }
   };
 
@@ -118,10 +124,6 @@ export function attachPlayerGameLoginsSqlPoll(input: {
 
   return () => {
     cancelled = true;
-    if (timer != null) {
-      clearTimeout(timer);
-      timer = null;
-    }
   };
 }
 
