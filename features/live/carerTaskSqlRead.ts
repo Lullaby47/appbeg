@@ -31,8 +31,16 @@ import {
   waitMs,
 } from '@/lib/client/snapshotPollJitter';
 import { isPublicCarerTasksSqlReadEnabled } from '@/lib/client/sqlPublicFlags';
+import {
+  type CarerTaskFastDispatchSignal,
+  shouldFastDispatchForCarerTaskLiveEvent,
+} from '@/features/live/carerTaskFastDispatch';
 
 export const CARER_TASKS_SQL_READ_ENABLED = isPublicCarerTasksSqlReadEnabled();
+
+export type CarerTaskSqlReadListenerOptions = {
+  onFastDispatchSignal?: (signal: CarerTaskFastDispatchSignal) => void;
+};
 
 type SqlSnapshotTask = {
   id?: string;
@@ -309,8 +317,10 @@ export function attachCarerTaskSqlReadListener(
   carerUid: string,
   coadminUid: string,
   onTasksChange: (tasks: CarerTask[]) => void,
-  onFallback: (reason: string) => void
+  onFallback: (reason: string) => void,
+  options?: CarerTaskSqlReadListenerOptions
 ) {
+  const onFastDispatchSignal = options?.onFastDispatchSignal;
   const cleanCarerUid = cleanText(carerUid);
   const cleanCoadminUid = cleanText(coadminUid);
   const instanceId = createLiveStreamClientInstanceId('carer_tasks');
@@ -951,6 +961,19 @@ export function attachCarerTaskSqlReadListener(
         carerUid: cleanCarerUid,
         coadminUid: cleanCoadminUid,
         outboxId,
+      });
+    }
+
+    if (
+      onFastDispatchSignal &&
+      shouldFastDispatchForCarerTaskLiveEvent(eventName, enrichedPayload) &&
+      isSqlEventVisibleToCarer(enrichedPayload, cleanCarerUid, cleanCoadminUid)
+    ) {
+      onFastDispatchSignal({
+        eventName,
+        taskId: taskId || entityId || '',
+        outboxId,
+        receivedAt: Date.now(),
       });
     }
 

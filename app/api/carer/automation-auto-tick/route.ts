@@ -907,6 +907,11 @@ async function resolveAutoTickTaskRecheck(
 
 export async function POST(request: Request) {
   const routeStartedAt = Date.now();
+  console.info('[AUTO_TICK_ROUTE_ENTER]', {
+    at: routeStartedAt,
+    hasSecretHeader: Boolean(String(request.headers.get('x-carer-automation-tick-secret') || '').trim()),
+    hasAuthorization: Boolean(String(request.headers.get('Authorization') || '').trim()),
+  });
   console.info('[AUTO_TICK] route called', {
     hasSecretHeader: Boolean(String(request.headers.get('x-carer-automation-tick-secret') || '').trim()),
     hasAuthorization: Boolean(String(request.headers.get('Authorization') || '').trim()),

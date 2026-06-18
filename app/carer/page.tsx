@@ -659,7 +659,7 @@ function getRiskCardTone(level: string, score: number) {
 /** Rolling window for Work details recharge / redeem sums. */
 const WORK_DETAILS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const AUTO_PENDING_LISTENER_LIMIT = 5;
-const AUTO_LISTENER_DEBOUNCE_MS = 500;
+const AUTO_LISTENER_DEBOUNCE_MS = 0;
 const RETURN_TO_PENDING_AUTOTICK_COOLDOWN_MS = 30_000;
 const BROWSER_AUTO_TICK_INSTANCE_ID = `carer-ui-${Date.now()}-${Math.random()
   .toString(36)
@@ -1079,6 +1079,13 @@ export default function CarerPage() {
   const autoQueueDrainInFlightRef = useRef(false);
   const autoAutomationEnabledRef = useRef(false);
   const lastAutoDispatchSignatureRef = useRef('');
+  const fastDispatchCoalesceRef = useRef<number | null>(null);
+  const fastDispatchPendingRef = useRef<{
+    eventName: string;
+    taskId: string;
+    receivedAt: number;
+    outboxId: number | null;
+  } | null>(null);
   const pageInitInFlightUidRef = useRef<string | null>(null);
   const startupMountStartedAtRef = useRef<number>(Date.now());
 
@@ -1253,6 +1260,13 @@ export default function CarerPage() {
       instanceId: body.instanceId,
       allowRetryPendingClaim: body.allowRetryPendingClaim,
     });
+    console.info('[AUTO_TICK_REQUEST_SENT]', {
+      source,
+      carerUid: body.carerUid,
+      agentId: body.agentId,
+      instanceId: body.instanceId,
+      sentAt: Date.now(),
+    });
 
     let payload: Record<string, unknown> | null = null;
     let response: Response;
@@ -1326,6 +1340,90 @@ export default function CarerPage() {
 
     console.info(`${logPrefix} response`, logPayload);
     return payload;
+  }
+
+  function requestFastAutomationDispatch(signal: {
+    eventName: string;
+    taskId: string;
+    receivedAt: number;
+    outboxId?: number;
+  }) {
+    const linkedAgentId =
+      String(carerIdentity?.automationAgentId || '').trim() ||
+      String(agentInputDraft || '').trim();
+
+    if (!autoAutomationEnabledRef.current) {
+      console.info('[FAST_DISPATCH_SKIPPED]', {
+        reason: 'automation_disabled',
+        sourceEvent: signal.eventName,
+        taskId: signal.taskId || null,
+      });
+      return;
+    }
+    if (!carerIdentity?.uid || !coadminUid) {
+      console.info('[FAST_DISPATCH_SKIPPED]', {
+        reason: 'missing_carer_or_coadmin',
+        sourceEvent: signal.eventName,
+        taskId: signal.taskId || null,
+      });
+      return;
+    }
+    if (!linkedAgentId) {
+      console.info('[FAST_DISPATCH_SKIPPED]', {
+        reason: 'missing_agent_id',
+        sourceEvent: signal.eventName,
+        taskId: signal.taskId || null,
+      });
+      return;
+    }
+
+    fastDispatchPendingRef.current = {
+      eventName: signal.eventName,
+      taskId: signal.taskId,
+      receivedAt: signal.receivedAt,
+      outboxId: signal.outboxId ?? null,
+    };
+    if (fastDispatchCoalesceRef.current) {
+      return;
+    }
+
+    fastDispatchCoalesceRef.current = window.setTimeout(() => {
+      fastDispatchCoalesceRef.current = null;
+      const pending = fastDispatchPendingRef.current;
+      fastDispatchPendingRef.current = null;
+      if (!pending || !autoAutomationEnabledRef.current) {
+        return;
+      }
+
+      const delayMs = Date.now() - pending.receivedAt;
+      console.info('[FAST_DISPATCH_PATH]', {
+        taskId: pending.taskId || null,
+        sourceEvent: pending.eventName,
+        autoEnabled: true,
+        triggered: true,
+        delayMs,
+        outboxId: pending.outboxId,
+      });
+      console.info('[DISPATCH_TRIGGER]', {
+        source: 'sse_fast_dispatch',
+        carerUid: carerIdentity?.uid || null,
+        coadminUid: coadminUid || null,
+        sourceEvent: pending.eventName,
+        taskId: pending.taskId || null,
+        delayMs,
+      });
+
+      if (autoQueueDrainInFlightRef.current || autoTickRequestInFlightRef.current) {
+        console.info('[FAST_DISPATCH_SKIPPED]', {
+          reason: 'drain_already_running',
+          sourceEvent: pending.eventName,
+          taskId: pending.taskId || null,
+        });
+        return;
+      }
+
+      void drainAutomationQueueUntilEmpty('listener');
+    }, 0);
   }
 
   async function drainAutomationQueueUntilEmpty(source: 'start_button' | 'listener') {
@@ -1550,12 +1648,22 @@ export default function CarerPage() {
         },
         (reason) => {
           console.warn('[CARER_PAGE_STARTUP] tasks live read degraded reason=%s', reason);
+        },
+        {
+          onFastDispatchSignal: (signal) => {
+            requestFastAutomationDispatch(signal);
+          },
         }
       );
       sqlReadDispose = sqlRead.dispose;
     }
 
     return () => {
+      if (fastDispatchCoalesceRef.current) {
+        window.clearTimeout(fastDispatchCoalesceRef.current);
+        fastDispatchCoalesceRef.current = null;
+      }
+      fastDispatchPendingRef.current = null;
       firebaseUnsubscribe?.();
       sqlReadDispose?.();
       liveShadowCompare.dispose();
