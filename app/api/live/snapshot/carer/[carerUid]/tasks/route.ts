@@ -46,10 +46,16 @@ type SnapshotTask = {
   amount: number | null;
   requestId: string | null;
   assignedCarerUid: string | null;
+  assignedCarerUsername: string | null;
   claimedByUid: string | null;
+  claimedByUsername: string | null;
   createdAt: string | null;
+  claimedAt: string | null;
+  startedAt: string | null;
   updatedAt: string | null;
   completedAt: string | null;
+  completedByCarerUid: string | null;
+  completedByCarerUsername: string | null;
 };
 
 function mapSnapshotRow(row: Record<string, unknown>): SnapshotTask {
@@ -65,10 +71,16 @@ function mapSnapshotRow(row: Record<string, unknown>): SnapshotTask {
     amount: Number.isFinite(Number(row.amount)) ? Number(row.amount) : null,
     requestId: cleanText(row.request_id) || null,
     assignedCarerUid: cleanText(row.assigned_carer_uid) || null,
+    assignedCarerUsername: cleanText(row.assigned_carer_username) || null,
     claimedByUid: cleanText(row.claimed_by_uid) || null,
+    claimedByUsername: cleanText(row.claimed_by_username) || null,
     createdAt: toIsoString(row.created_at),
+    claimedAt: toIsoString(row.claimed_at),
+    startedAt: toIsoString(row.started_at),
     updatedAt: toIsoString(row.updated_at),
     completedAt: toIsoString(row.completed_at),
+    completedByCarerUid: cleanText(row.completed_by_carer_uid) || null,
+    completedByCarerUsername: cleanText(row.completed_by_carer_username) || null,
   };
 }
 

@@ -319,7 +319,42 @@ function getTimestampMs(value: unknown) {
     }
   }
 
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
   return 0;
+}
+
+function formatTaskTimelineTime(value: unknown) {
+  const ms = getTimestampMs(value);
+  if (!ms) {
+    return 'Not recorded';
+  }
+  return new Intl.DateTimeFormat('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(new Date(ms));
+}
+
+function formatTaskDuration(totalMs: number) {
+  if (!Number.isFinite(totalMs) || totalMs <= 0) {
+    return 'Under 1s';
+  }
+  const totalSeconds = Math.max(1, Math.round(totalMs / 1000));
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) {
+    return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
 }
 
 function sortByNewest<T extends { createdAt?: unknown; completedAt?: unknown; pokedAt?: unknown }>(
@@ -1363,6 +1398,19 @@ export default function CarerPage() {
             );
           }
           if (!CARER_TASKS_SQL_READ_ENABLED) {
+            console.info('[CARER_TASKS_STATE_UPDATED]', {
+              source: 'firebase_listener',
+              count: incomingTasks.length,
+              pendingCount: incomingTasks.filter(
+                (task) => String(task.status || '').trim().toLowerCase() === 'pending'
+              ).length,
+              inProgressCount: incomingTasks.filter(
+                (task) => String(task.status || '').trim().toLowerCase() === 'in_progress'
+              ).length,
+              completedCount: incomingTasks.filter(
+                (task) => String(task.status || '').trim().toLowerCase() === 'completed'
+              ).length,
+            });
             setTasks(sortByNewest(incomingTasks));
           }
           liveShadowCompare.reportFirebaseSnapshot(incomingTasks);
@@ -1383,6 +1431,19 @@ export default function CarerPage() {
         carerIdentity.uid,
         coadminUid,
         (incomingTasks) => {
+          console.info('[CARER_TASKS_STATE_UPDATED]', {
+            source: 'sql_read_listener',
+            count: incomingTasks.length,
+            pendingCount: incomingTasks.filter(
+              (task) => String(task.status || '').trim().toLowerCase() === 'pending'
+            ).length,
+            inProgressCount: incomingTasks.filter(
+              (task) => String(task.status || '').trim().toLowerCase() === 'in_progress'
+            ).length,
+            completedCount: incomingTasks.filter(
+              (task) => String(task.status || '').trim().toLowerCase() === 'completed'
+            ).length,
+          });
           setTasks(sortByNewest(incomingTasks));
           setErrorMessage('');
         },
@@ -4800,6 +4861,18 @@ export default function CarerPage() {
       (Boolean(task.requestId) &&
         (dismissRedeemRequestId === task.requestId ||
           dismissRechargeRequestId === task.requestId));
+    const createdMs = getTimestampMs(task.createdAt);
+    const completedMs = getTimestampMs(task.completedAt);
+    const totalDurationMs =
+      createdMs && completedMs && completedMs >= createdMs ? completedMs - createdMs : 0;
+    const claimedBy =
+      String(task.claimedByUsername || task.assignedCarerUsername || '').trim() ||
+      String(task.claimedByUid || task.assignedCarerUid || '').trim() ||
+      null;
+    const completedBy =
+      String(task.completedByCarerUsername || '').trim() ||
+      String(task.completedByCarerUid || '').trim() ||
+      null;
 
     return (
       <div
@@ -4865,6 +4938,29 @@ export default function CarerPage() {
                 Assigned Carer:{' '}
                 <span className="text-white">{task.assignedCarerUsername}</span>
               </p>
+            )}
+
+            {section === 'completed' && (
+              <div className="mt-4 border-t border-white/10 pt-3 text-xs text-neutral-300">
+                <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                  <span className="text-neutral-500">Created</span>
+                  <span className="text-white">{formatTaskTimelineTime(task.createdAt)}</span>
+                  <span className="text-neutral-500">Claimed</span>
+                  <span className="text-white">{formatTaskTimelineTime(task.claimedAt)}</span>
+                  <span className="text-neutral-500">Started</span>
+                  <span className="text-white">{formatTaskTimelineTime(task.startedAt)}</span>
+                  <span className="text-neutral-500">Completed</span>
+                  <span className="text-white">{formatTaskTimelineTime(task.completedAt)}</span>
+                  <span className="text-neutral-500">Duration</span>
+                  <span className="font-semibold text-emerald-200">
+                    {formatTaskDuration(totalDurationMs)}
+                  </span>
+                  <span className="text-neutral-500">Claimed By</span>
+                  <span className="text-white">{claimedBy || 'Not recorded'}</span>
+                  <span className="text-neutral-500">Completed By</span>
+                  <span className="text-white">{completedBy || 'Not recorded'}</span>
+                </div>
+              </div>
             )}
           </div>
 

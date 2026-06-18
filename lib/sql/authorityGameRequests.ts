@@ -56,6 +56,36 @@ export const PLAYER_IN_GAME_REDEEM_MESSAGE =
 export const PLAYER_FAKE_REDEEM_DEFAULT_MESSAGE =
   'Redeem could not be completed because the game balance is lower than the requested redeem amount.';
 
+function durationBetweenMs(start: unknown, end: unknown) {
+  const startIso = toIsoString(start);
+  const endIso = toIsoString(end);
+  if (!startIso || !endIso) {
+    return null;
+  }
+  const startMs = Date.parse(startIso);
+  const endMs = Date.parse(endIso);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    return null;
+  }
+  return Math.max(0, endMs - startMs);
+}
+
+function logTaskLifecycleDuration(input: {
+  taskId: string;
+  createdAt?: unknown;
+  claimedAt?: unknown;
+  startedAt?: unknown;
+  completedAt?: unknown;
+}) {
+  console.info('[TASK_LIFECYCLE_DURATION]', {
+    taskId: input.taskId,
+    createToClaimMs: durationBetweenMs(input.createdAt, input.claimedAt),
+    claimToStartMs: durationBetweenMs(input.claimedAt, input.startedAt),
+    startToCompleteMs: durationBetweenMs(input.startedAt, input.completedAt),
+    totalMs: durationBetweenMs(input.createdAt, input.completedAt),
+  });
+}
+
 function formatFakeRedeemAmount(value: number) {
   if (Number.isInteger(value)) {
     return String(value);
@@ -999,6 +1029,15 @@ export async function createRechargeRequestInSql(
         })
     );
     const rechargeOutboxChannels = carerOutbox.channels;
+    console.info('[TASK_OUTBOX_EMITTED]', {
+      taskId: linkedRechargeTask.taskId,
+      requestId,
+      phase: 'create',
+      flowName: 'recharge_create',
+      rowCount: carerOutbox.rows.length,
+      channels: rechargeOutboxChannels,
+      eventType: 'task.upserted',
+    });
     logPlayerRequestCarerTaskLink({
       logKey: '[PLAYER_RECHARGE_TO_CARER_TASK]',
       requestId,
@@ -1053,6 +1092,13 @@ export async function createRechargeRequestInSql(
       () => client.query('COMMIT')
     );
     waterfall.flushSummary();
+    console.info('[TASK_CREATE_COMMITTED]', {
+      taskId: linkedRechargeTask.taskId,
+      requestId,
+      createdAt: nowIso,
+      status: 'pending',
+      type: 'recharge',
+    });
     scheduleAutoClaimPendingTaskOnCreate({
       taskId: linkedRechargeTask.taskId,
       coadminUid,
@@ -1241,6 +1287,15 @@ export async function createRedeemRequestInSql(
       outboxFlowName: 'redeem_create',
     });
     const redeemOutboxChannels = redeemCarerOutbox.channels;
+    console.info('[TASK_OUTBOX_EMITTED]', {
+      taskId: linkedRedeemTask.taskId,
+      requestId,
+      phase: 'create',
+      flowName: 'redeem_create',
+      rowCount: redeemCarerOutbox.rows.length,
+      channels: redeemOutboxChannels,
+      eventType: 'task.upserted',
+    });
     logPlayerRequestCarerTaskLink({
       logKey: '[PLAYER_REDEEM_TO_CARER_TASK]',
       requestId,
@@ -1273,6 +1328,13 @@ export async function createRedeemRequestInSql(
       JSON.stringify({ requestId, playerUid, type: 'redeem', amount }),
     ]);
     await client.query('COMMIT');
+    console.info('[TASK_CREATE_COMMITTED]', {
+      taskId: linkedRedeemTask.taskId,
+      requestId,
+      createdAt: nowIso,
+      status: 'pending',
+      type: 'redeem',
+    });
     scheduleAutoClaimPendingTaskOnCreate({
       taskId: linkedRedeemTask.taskId,
       coadminUid,
@@ -1598,6 +1660,13 @@ export async function completeRechargeRedeemTaskInSql(
       sourceTaskId: taskId,
       sourceRequestId: requestId,
     });
+    console.info('[TASK_COMPLETED]', {
+      taskId,
+      completedAt: nowIso,
+      completedBy: actorUid,
+      requestId,
+      requestType,
+    });
 
     if (totalAwardNpr > 0 && handlerSnapshot) {
       await insertAuthorityLedgerEvent(client, {
@@ -1678,6 +1747,15 @@ export async function completeRechargeRedeemTaskInSql(
       ],
       outboxFlowName: 'complete_recharge_redeem',
     });
+    console.info('[TASK_OUTBOX_EMITTED]', {
+      taskId,
+      requestId,
+      phase: 'complete',
+      flowName: 'complete_recharge_redeem',
+      rowCount: completeCarerOutbox.rows.length,
+      channels: completeCarerOutbox.channels,
+      eventType: 'task.completed',
+    });
     console.info('[PLAYER_RECHARGE_SUCCESS_TOAST_QUEUED]', {
       requestId,
       playerUid,
@@ -1700,6 +1778,13 @@ export async function completeRechargeRedeemTaskInSql(
       }),
     ]);
     await client.query('COMMIT');
+    logTaskLifecycleDuration({
+      taskId,
+      createdAt: task.created_at,
+      claimedAt: task.claimed_at,
+      startedAt: task.started_at,
+      completedAt: nowIso,
+    });
     console.info('[AUTHORITY_RECHARGE_COMPLETE_DONE]', {
       taskId,
       requestId,

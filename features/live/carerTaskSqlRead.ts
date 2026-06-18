@@ -36,10 +36,16 @@ type SqlSnapshotTask = {
   amount?: number | null;
   requestId?: string | null;
   assignedCarerUid?: string | null;
+  assignedCarerUsername?: string | null;
   claimedByUid?: string | null;
+  claimedByUsername?: string | null;
   createdAt?: string | null;
+  claimedAt?: string | null;
+  startedAt?: string | null;
   updatedAt?: string | null;
   completedAt?: string | null;
+  completedByCarerUid?: string | null;
+  completedByCarerUsername?: string | null;
 };
 
 type SqlSnapshotResponse = {
@@ -62,6 +68,9 @@ type SqlTaskPayload = {
   amount?: unknown;
   requestId?: unknown;
   updatedAt?: unknown;
+  claimedAt?: unknown;
+  startedAt?: unknown;
+  completedAt?: unknown;
 };
 
 function cleanText(value: unknown) {
@@ -258,11 +267,16 @@ function mapSnapshotRowToCarerTask(row: SqlSnapshotTask, fallbackCoadminUid: str
     requestId: cleanText(row.requestId) || null,
     status: normalizeCarerTaskStatus(row.status),
     assignedCarerUid: cleanText(row.assignedCarerUid) || null,
-    assignedCarerUsername: null,
+    assignedCarerUsername: cleanText(row.assignedCarerUsername) || null,
     claimedByUid: cleanText(row.claimedByUid) || null,
+    claimedByUsername: cleanText(row.claimedByUsername) || null,
     automationStatus: (cleanText(row.automationStatus) || null) as CarerTask['automationStatus'],
     createdAt: isoToTimestamp(row.createdAt),
+    claimedAt: isoToTimestamp(row.claimedAt),
+    startedAt: isoToTimestamp(row.startedAt),
     completedAt: isoToTimestamp(row.completedAt),
+    completedByCarerUid: cleanText(row.completedByCarerUid) || null,
+    completedByCarerUsername: cleanText(row.completedByCarerUsername) || null,
   };
 }
 
@@ -346,6 +360,7 @@ export function attachCarerTaskSqlReadListener(
     headers: Record<string, string>,
     reason: string
   ): Promise<boolean> => {
+    const snapshotStartedAt = Date.now();
     console.info('[CARER_TASKS_LIVE_REFETCH_START]', {
       reason,
       carerUid: cleanCarerUid,
@@ -379,6 +394,14 @@ export function attachCarerTaskSqlReadListener(
         count: tasksById.size,
         latestOutboxId: lastEventId,
       });
+      console.info('[CARER_SNAPSHOT_REFRESH]', {
+        reason,
+        ok: true,
+        unchanged: true,
+        count: tasksById.size,
+        latestOutboxId: lastEventId,
+        durationMs: Date.now() - snapshotStartedAt,
+      });
       return true;
     }
     const snapshot = parsed.snapshot;
@@ -403,6 +426,15 @@ export function attachCarerTaskSqlReadListener(
       count: rows.length,
       latestOutboxId: Number(snapshot.latestOutboxId || 0),
       source: source || 'unknown',
+    });
+    console.info('[CARER_SNAPSHOT_REFRESH]', {
+      reason,
+      ok,
+      status: snapshotResponse.status,
+      count: rows.length,
+      latestOutboxId: Number(snapshot.latestOutboxId || 0),
+      source: source || 'unknown',
+      durationMs: Date.now() - snapshotStartedAt,
     });
     if (!ok) {
       return false;
@@ -628,6 +660,14 @@ export function attachCarerTaskSqlReadListener(
       outboxId,
       eventType: eventName,
       entityId: entityId || null,
+      carerUid: cleanCarerUid,
+      coadminUid: cleanCoadminUid,
+    });
+    console.info('[CARER_SSE_EVENT_RECEIVED]', {
+      outboxId,
+      eventType: eventName,
+      entityId: entityId || null,
+      taskId: cleanText(payload.taskId) || null,
       carerUid: cleanCarerUid,
       coadminUid: cleanCoadminUid,
     });

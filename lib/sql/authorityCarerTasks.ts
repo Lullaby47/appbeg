@@ -101,6 +101,10 @@ type SqlTaskRow = {
   automation_error: string | null;
   retry_pending: boolean | null;
   returned_to_pending_at: string | null;
+  created_at: string | null;
+  claimed_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
   raw_firestore_data: Record<string, unknown>;
 };
 
@@ -216,8 +220,26 @@ function taskFromRow(row: Record<string, unknown>): SqlTaskRow {
     automation_error: cleanText(row.automation_error) || null,
     retry_pending: row.retry_pending === true ? true : row.retry_pending === false ? false : null,
     returned_to_pending_at: toIsoString(row.returned_to_pending_at),
+    created_at: toIsoString(row.created_at),
+    claimed_at: toIsoString(row.claimed_at),
+    started_at: toIsoString(row.started_at),
+    completed_at: toIsoString(row.completed_at),
     raw_firestore_data: raw,
   };
+}
+
+function durationBetweenMs(start: unknown, end: unknown) {
+  const startIso = toIsoString(start);
+  const endIso = toIsoString(end);
+  if (!startIso || !endIso) {
+    return null;
+  }
+  const startMs = Date.parse(startIso);
+  const endMs = Date.parse(endIso);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    return null;
+  }
+  return Math.max(0, endMs - startMs);
 }
 
 function taskHasRetryPending(task: SqlTaskRow): boolean {
@@ -1477,6 +1499,18 @@ export async function claimCarerTaskInTxn(
     if (!result) {
       throw new Error('Failed to claim task: no automation job was created.');
     }
+    console.info('[TASK_CLAIMED]', {
+      taskId,
+      claimedAt: nowIso,
+      carerUid: currentUserUid,
+      createToClaimMs: durationBetweenMs(task.created_at, nowIso),
+    });
+    console.info('[TASK_STARTED]', {
+      taskId,
+      startedAt: nowIso,
+      carerUid: currentUserUid,
+      claimToStartMs: durationBetweenMs(nowIso, nowIso),
+    });
 
     const claimOutboxRows: LiveOutboxInsertInput[] = [
       ...buildTaskOutboxRows({
@@ -1532,6 +1566,13 @@ export async function claimCarerTaskInTxn(
     }
     await insertLiveOutboxEventsBatch(client, claimOutboxRows, {
       flowName: 'carer_task_claim',
+    });
+    console.info('[TASK_OUTBOX_EMITTED]', {
+      taskId,
+      phase: 'claim',
+      flowName: 'carer_task_claim',
+      rowCount: claimOutboxRows.length,
+      eventTypes: claimOutboxRows.map((row) => row.eventType),
     });
 
   return result;
@@ -2459,6 +2500,19 @@ export async function completeUsernameTasksInSql(input: {
         updatedAt: nowIso,
       };
       await patchCarerTaskInTxn(client, taskId, rawPatch, 'authority_complete_username');
+      console.info('[TASK_COMPLETED]', {
+        taskId,
+        completedAt: nowIso,
+        completedBy: input.actorUid,
+        taskType: cleanText(task.type),
+      });
+      console.info('[TASK_LIFECYCLE_DURATION]', {
+        taskId,
+        createToClaimMs: durationBetweenMs(task.created_at, task.claimed_at),
+        claimToStartMs: durationBetweenMs(task.claimed_at, task.started_at),
+        startToCompleteMs: durationBetweenMs(task.started_at, nowIso),
+        totalMs: durationBetweenMs(task.created_at, nowIso),
+      });
       const linkedJobId = cleanText(task.automation_job_id);
       if (linkedJobId) {
         const jobs = await loadJobsForTask(client, taskId, [linkedJobId]);
@@ -2490,6 +2544,13 @@ export async function completeUsernameTasksInSql(input: {
         type: cleanText(task.type),
         gameName,
         updatedAt: nowIso,
+        eventType: 'task.completed',
+      });
+      console.info('[TASK_OUTBOX_EMITTED]', {
+        taskId,
+        phase: 'complete',
+        flowName: 'carer_task_complete_username',
+        rowCount: 1,
         eventType: 'task.completed',
       });
       if (rewardAmountNpr > 0) {
