@@ -25,8 +25,9 @@ export type CarerAutomationAutoStateDoc = {
   tickLeaseExpiresAt?: unknown;
 };
 
-const AUTO_STATE_VISIBLE_POLL_MS = 60_000;
-const AUTO_STATE_HIDDEN_POLL_MS = 60_000;
+const AUTO_STATE_PREVIOUS_POLL_MS = 60_000;
+const AUTO_STATE_VISIBLE_POLL_MS = 300_000;
+const AUTO_STATE_HIDDEN_POLL_MS = 300_000;
 
 function resolveAutoStatePollDelayMs() {
   if (isDocumentHidden()) {
@@ -160,6 +161,13 @@ export function subscribeCarerAutomationAutoState(
       route: '/api/carer/automation-auto-state',
       reason: 'automation_auto_state_is_not_on_live_outbox_stream; poll only runs while automation is enabled',
       intervalMs: AUTO_STATE_VISIBLE_POLL_MS,
+    });
+    console.info('[POLLING_INTERVAL_CHANGED]', {
+      route: '/api/carer/automation-auto-state',
+      previousIntervalMs: AUTO_STATE_PREVIOUS_POLL_MS,
+      intervalMs: AUTO_STATE_VISIBLE_POLL_MS,
+      hiddenIntervalMs: AUTO_STATE_HIDDEN_POLL_MS,
+      reason: 'minimize_cross_tab_safety_poll_after_fanout_enabled',
     });
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;

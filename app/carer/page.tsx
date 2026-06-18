@@ -648,6 +648,7 @@ export default function CarerPage() {
   const [activeView, setActiveView] = useState<CarerView>('dashboard');
   const [carerIdentity, setCarerIdentity] = useState<CarerIdentity | null>(null);
   const [coadminUid, setCoadminUid] = useState('');
+  const baseDataRefreshInFlightRef = useRef(false);
 
   const [players, setPlayers] = useState<PlayerUser[]>([]);
   const [gameOptions, setGameOptions] = useState<GameLogin[]>([]);
@@ -2475,6 +2476,23 @@ export default function CarerPage() {
     if (!nextCoadminUid) {
       return;
     }
+    if (baseDataRefreshInFlightRef.current) {
+      console.info('[POLLING_DISABLED]', {
+        route: '/api/carer/base-data',
+        replacement: 'single_flight_skip_duplicate_refresh',
+        trigger: 'refreshPageData',
+      });
+      return;
+    }
+
+    console.info('[POLLING_INVENTORY]', {
+      route: '/api/carer/base-data',
+      intervalMs: 0,
+      reason: showLoader ? 'initial_or_manual_page_refresh' : 'action_requested_refresh',
+      trigger: 'refreshPageData',
+      canUseSSE: true,
+      required: showLoader ? 'initial_load_and_manual_refresh' : 'not_required_for_live_task_updates',
+    });
 
     logCarerAction({
       action: 'refresh_page_data',
@@ -2491,6 +2509,7 @@ export default function CarerPage() {
     if (showLoader) {
       setRefreshing(true);
     }
+    baseDataRefreshInFlightRef.current = true;
 
     const bootstrapStartedAt = Date.now();
     logCarerPageStartup({
@@ -2570,7 +2589,21 @@ export default function CarerPage() {
       if (showLoader) {
         setRefreshing(false);
       }
+    } finally {
+      baseDataRefreshInFlightRef.current = false;
     }
+  }
+
+  async function refreshPageDataAfterMutation(reason: string, nextCoadminUid = coadminUid) {
+    if (isClientSqlReadMode()) {
+      console.info('[POLLING_DISABLED]', {
+        route: '/api/carer/base-data',
+        replacement: 'task_and_job_sse_plus_local_state',
+        trigger: reason,
+      });
+      return;
+    }
+    await refreshPageData(false, nextCoadminUid);
   }
 
   async function persistCarerAutomationEnabled(
@@ -2641,7 +2674,7 @@ export default function CarerPage() {
       );
       if (enabled && source === 'dashboard') {
         setActiveView('tasks');
-        void refreshPageData();
+        void refreshPageDataAfterMutation('start_automation_dashboard');
       }
     } catch (error) {
       reportCarerActionError(
@@ -2991,27 +3024,50 @@ export default function CarerPage() {
         });
       }
 
+      let savedLoginId = loginToUpdate?.id || '';
+      const savedLoginFields = {
+        gameName: gameName.trim(),
+        gameUsername: gameUsername.trim(),
+        gamePassword,
+        siteUrl: resolvedFrontendUrl,
+        frontendUrl: resolvedFrontendUrl,
+      };
+
       if (loginToUpdate) {
         await updatePlayerGameLogin(loginToUpdate.id, {
-          gameName: gameName.trim(),
-          gameUsername: gameUsername.trim(),
-          gamePassword,
-          siteUrl: resolvedFrontendUrl,
-          frontendUrl: resolvedFrontendUrl,
+          ...savedLoginFields,
         });
         setNoticeMessage('Game username updated successfully.');
       } else {
-        await createPlayerGameLogin({
+        savedLoginId = await createPlayerGameLogin({
           playerUid: selectedPlayer.uid,
           playerUsername: selectedPlayer.username || 'Unknown player',
-          gameName: gameName.trim(),
-          gameUsername: gameUsername.trim(),
-          gamePassword,
-          siteUrl: resolvedFrontendUrl,
-          frontendUrl: resolvedFrontendUrl,
+          ...savedLoginFields,
           coadminUid,
-        });
+        }) || '';
         setNoticeMessage('Game username created successfully.');
+      }
+
+      if (savedLoginId) {
+        setAllPlayerLogins((previous) => {
+          const nextLogin: PlayerGameLogin = {
+            id: savedLoginId,
+            playerUid: selectedPlayer.uid,
+            playerUsername: selectedPlayer.username || 'Unknown player',
+            gameName: savedLoginFields.gameName,
+            gameUsername: savedLoginFields.gameUsername,
+            gamePassword: savedLoginFields.gamePassword,
+            siteUrl: savedLoginFields.siteUrl,
+            frontendUrl: savedLoginFields.frontendUrl,
+            coadminUid,
+            createdBy: coadminUid,
+            createdAt: loginToUpdate?.createdAt || new Date(),
+          };
+          return sortByNewest([
+            nextLogin,
+            ...previous.filter((login) => login.id !== savedLoginId),
+          ]);
+        });
       }
 
       const rewardSummary = await completeUsernameTaskForPlayerGame(
@@ -3035,7 +3091,7 @@ export default function CarerPage() {
           )} added to Cash Box.`
         );
       }
-      await refreshPageData(false, coadminUid);
+      await refreshPageDataAfterMutation('username_submit', coadminUid);
       resetUsernameForm();
     } catch (error) {
       reportCarerActionError(
@@ -3193,7 +3249,7 @@ export default function CarerPage() {
         reusedExistingJob: claimResult.reusedExistingJob,
         createdAutomationJobId: claimResult.jobId,
       });
-      await refreshPageData(false);
+      await refreshPageDataAfterMutation('start_task_success');
       setNoticeMessage(
         claimResult.reusedExistingJob
           ? claimResult.status === 'running'
@@ -3236,7 +3292,7 @@ export default function CarerPage() {
       if (isConcurrencyIssue) {
         console.error('[START_TASK] commit failed code=%s', String((error as { code?: string } | null | undefined)?.code || 'failed-precondition'));
         console.info('[START_TASK] refetch after failed-precondition');
-        await refreshPageData(false);
+        await refreshPageDataAfterMutation('start_task_concurrency_error');
         if (!isClientSqlReadMode()) {
           try {
             const latestSnap = await getDocFromServer(doc(db, 'carerTasks', task.id));
@@ -3248,7 +3304,7 @@ export default function CarerPage() {
         console.info('[START_TASK] restoring UI taskId=%s', task.id);
         setErrorMessage('Task was already changed. Please refresh and try again.');
       } else if (fallback === 'Task already claimed' && isClientSqlReadMode()) {
-        await refreshPageData(false);
+        await refreshPageDataAfterMutation('start_task_already_claimed_sql');
         setErrorMessage(
           'This task was already claimed or changed. The latest state has been refreshed.'
         );
@@ -3290,7 +3346,7 @@ export default function CarerPage() {
           activeJobs,
           latestJobs,
         });
-        await refreshPageData(false);
+        await refreshPageDataAfterMutation('start_task_already_claimed_firebase');
         if (activeJobs.length > 0) {
           setErrorMessage(
             `This task still has an active automation job (${activeJobs[0].status}). Return it to pending, wait a moment, then try again.`
@@ -3355,7 +3411,7 @@ export default function CarerPage() {
       setTasks((previous) => previous.filter((current) => current.id !== task.id));
       setNoticeMessage('Pending redeem request dismissed.');
       console.info('[CARER_DELETE_TASK] refreshAfterDelete=true');
-      await refreshPageData(false);
+      await refreshPageDataAfterMutation('dismiss_pending_redeem');
     } catch (error) {
       reportCarerActionError(
         'dismiss_redeem',
@@ -3544,7 +3600,7 @@ export default function CarerPage() {
       }));
       console.info('[CARER_DELETE_TASK] refreshAfterDelete=false sqlMode=%s', isClientSqlReadMode());
       if (!isClientSqlReadMode()) {
-        await refreshPageData(false);
+        await refreshPageDataAfterMutation('delete_pending_task_firebase');
       }
       setNoticeMessage('Pending task deleted.');
     } catch (error) {
@@ -3578,7 +3634,7 @@ export default function CarerPage() {
           rewardSummary.totalAwardNpr
         )} added to Cash Box.`
       );
-      await refreshPageData(false);
+      await refreshPageDataAfterMutation('complete_recharge_redeem');
     } catch (error) {
       reportCarerActionError(
         'complete_recharge_redeem',
@@ -3677,7 +3733,7 @@ export default function CarerPage() {
         ...previous,
         [task.id]: true,
       }));
-      await refreshPageData(false);
+      await refreshPageDataAfterMutation('return_to_pending_success');
       console.info('[carer-ui] reset-automation:success', {
         taskId: task.id,
         pendingOverrideSet: true,
@@ -3692,7 +3748,7 @@ export default function CarerPage() {
         lower.includes('contention') ||
         lower.includes('updated at the same time');
       if (isConcurrencyIssue) {
-        await refreshPageData(false);
+        await refreshPageDataAfterMutation('return_to_pending_concurrency_error');
       }
       console.error('[carer-ui] reset-automation:error', {
         taskId: task.id,
@@ -4100,7 +4156,7 @@ export default function CarerPage() {
         await blockPlayer(player);
       }
 
-      await refreshPageData(false);
+      await refreshPageDataAfterMutation('block_unblock_player');
       setNoticeMessage(
         `Player ${player.status === 'disabled' ? 'unblocked' : 'blocked'} successfully.`
       );

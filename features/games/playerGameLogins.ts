@@ -270,7 +270,7 @@ export async function createPlayerGameLogin(values: {
       result: 'ok',
       fallbackUsed: false,
     });
-    return;
+    return id;
   }
 
   const currentUser = auth.currentUser;
@@ -291,6 +291,7 @@ export async function createPlayerGameLogin(values: {
     createdAt: serverTimestamp(),
   });
   void mirrorPlayerGameLoginCacheBestEffort(loginRef.id);
+  return loginRef.id;
 }
 
 export async function updatePlayerGameLogin(

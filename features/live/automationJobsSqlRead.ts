@@ -9,6 +9,16 @@ import {
   buildLiveSnapshotPath,
   parseLiveSnapshotResponse,
 } from '@/lib/client/liveSnapshotFetch';
+import {
+  buildCarerJobStreamKey,
+  createLiveStreamClientInstanceId,
+  LIVE_STREAM_CLIENT_CLEANUP_DELAY_MS,
+  logLiveStreamClientConnect,
+  logLiveStreamClientReconnect,
+  registerLiveStreamClientOwner,
+  releaseLiveStreamClientOwner,
+} from '@/lib/client/liveStreamClientRegistry';
+import { reconnectRecoveryDelayMs, waitMs } from '@/lib/client/snapshotPollJitter';
 import { isPublicAutomationJobsSqlReadEnabled } from '@/lib/client/sqlPublicFlags';
 
 export const AUTOMATION_JOBS_SQL_READ_ENABLED = isPublicAutomationJobsSqlReadEnabled();
@@ -228,6 +238,8 @@ function parseSseBlock(block: string) {
 }
 
 const JOB_SNAPSHOT_DEBOUNCE_MS = 120;
+const INITIAL_RECONNECT_MS = 1_000;
+const MAX_RECONNECT_MS = 30_000;
 
 export function attachAutomationJobsSqlReadListener(
   carerUid: string,
@@ -240,9 +252,15 @@ export function attachAutomationJobsSqlReadListener(
 ) {
   const cleanCarerUid = cleanText(carerUid);
   const cleanCoadminUid = cleanText(coadminUid);
+  const instanceId = createLiveStreamClientInstanceId('carer_jobs');
+  const streamKey = buildCarerJobStreamKey(cleanCarerUid);
   let lastEventId = 0;
   let lastSnapshotOutboxId = 0;
   let abortController: AbortController | null = null;
+  let connectGeneration = 0;
+  let streamLoopPromise: Promise<void> | null = null;
+  let reconnectAttempt = 0;
+  let reconnectBackoffMs = INITIAL_RECONNECT_MS;
   let disposed = false;
   let fellBack = false;
   let initialSnapshotLoaded = false;
@@ -251,6 +269,34 @@ export function attachAutomationJobsSqlReadListener(
   let refetchInFlight = false;
   let queuedRefetchReason: string | null = null;
   const jobsById = new Map<string, SqlJobRecord>();
+
+  const forceDisposeFromRegistry = () => {
+    if (disposed) {
+      return;
+    }
+    disposed = true;
+    abortController?.abort();
+    abortController = null;
+    if (refetchTimer) {
+      clearTimeout(refetchTimer);
+      refetchTimer = null;
+    }
+    releaseLiveStreamClientOwner({
+      streamType: 'carer_jobs',
+      streamKey,
+      instanceId,
+      reason: 'superseded',
+    });
+    jobsById.clear();
+  };
+
+  registerLiveStreamClientOwner({
+    streamType: 'carer_jobs',
+    streamKey,
+    instanceId,
+    reason: 'attach',
+    supersede: forceDisposeFromRegistry,
+  });
 
   const emitUiState = () => {
     if (fellBack || disposed) {
@@ -474,16 +520,63 @@ export function attachAutomationJobsSqlReadListener(
     }
   };
 
-  const connectStream = async (headers: Record<string, string>) => {
+  const closeStream = (reason: string) => {
+    connectGeneration += 1;
+    abortController?.abort();
+    abortController = null;
+    releaseLiveStreamClientOwner({
+      streamType: 'carer_jobs',
+      streamKey,
+      instanceId,
+      reason,
+    });
+  };
+
+  const connectStream = async (headers: Record<string, string>, connectReason: string) => {
+    if (disposed || fellBack) {
+      return;
+    }
+
+    closeStream('replace_existing');
+    await waitMs(LIVE_STREAM_CLIENT_CLEANUP_DELAY_MS);
+    if (disposed || fellBack) {
+      return;
+    }
+
+    registerLiveStreamClientOwner({
+      streamType: 'carer_jobs',
+      streamKey,
+      instanceId,
+      reason: connectReason,
+      supersede: forceDisposeFromRegistry,
+    });
+    if (disposed || fellBack) {
+      return;
+    }
+
+    connectGeneration += 1;
+    const generation = connectGeneration;
+    abortController = new AbortController();
+
     const channel = encodeURIComponent(carerJobLiveChannel(cleanCarerUid));
     const url = `/api/live/stream?channels=${channel}&lastEventId=${lastEventId}`;
+    logLiveStreamClientConnect({
+      streamType: 'carer_jobs',
+      instanceId,
+      reason: connectReason,
+      streamKey,
+    });
+
     const response = await fetch(url, {
       headers,
-      signal: abortController?.signal,
+      signal: abortController.signal,
       cache: 'no-store',
     });
     if (!response.ok || !response.body) {
       throw new Error(`sse_http_${response.status}`);
+    }
+    if (disposed || fellBack || generation !== connectGeneration) {
+      return;
     }
     markCarerPageStartupStreamConnected('automation_jobs');
 
@@ -491,13 +584,78 @@ export function attachAutomationJobsSqlReadListener(
     const decoder = new TextDecoder();
     const bufferRef = { value: '' };
 
-    while (!disposed && !fellBack) {
+    while (!disposed && !fellBack && generation === connectGeneration) {
       const { done, value } = await reader.read();
       if (done) {
         throw new Error('sse_stream_closed');
       }
+      if (generation !== connectGeneration) {
+        return;
+      }
       consumeSseChunk(decoder.decode(value, { stream: true }), bufferRef);
     }
+  };
+
+  const runLiveStreamLoop = async () => {
+    while (!disposed && !fellBack) {
+      const connectReason =
+        reconnectAttempt === 0 ? 'bootstrap' : `reconnect_attempt_${reconnectAttempt}`;
+      if (reconnectAttempt > 0) {
+        logLiveStreamClientReconnect({
+          streamType: 'carer_jobs',
+          instanceId,
+          reason: connectReason,
+          streamKey,
+          extra: {
+            backoffMs: reconnectBackoffMs,
+            carerUid: cleanCarerUid,
+            lastEventId,
+          },
+        });
+      }
+      try {
+        const headers = await getFirebaseApiHeaders(false);
+        if (disposed || fellBack) {
+          break;
+        }
+        await connectStream(headers, connectReason);
+        break;
+      } catch (error) {
+        if (disposed || fellBack) {
+          break;
+        }
+        const aborted =
+          error instanceof DOMException && error.name === 'AbortError'
+            ? true
+            : error instanceof Error && error.message.includes('aborted');
+        if (aborted) {
+          break;
+        }
+        closeStream('sse_error');
+        reconnectAttempt += 1;
+        if (initialSnapshotLoaded) {
+          await refetchSnapshotNow('sse_error').catch(() => false);
+        }
+        await new Promise((resolve) => setTimeout(resolve, reconnectBackoffMs));
+        reconnectBackoffMs = Math.min(reconnectBackoffMs * 2, MAX_RECONNECT_MS);
+        await waitMs(reconnectRecoveryDelayMs());
+        await refetchSnapshotNow(`reconnect_attempt_${reconnectAttempt}`).catch(() => false);
+        if (reconnectAttempt >= 8) {
+          const reason = error instanceof Error ? error.message : 'sse_stream_failed';
+          triggerFallback(reason);
+          break;
+        }
+      }
+    }
+  };
+
+  const startLiveStreamLoop = () => {
+    if (streamLoopPromise) {
+      return;
+    }
+    streamLoopPromise = runLiveStreamLoop().finally(() => {
+      streamLoopPromise = null;
+    });
   };
 
   const triggerFallback = (reason: string) => {
@@ -505,8 +663,7 @@ export function attachAutomationJobsSqlReadListener(
       return;
     }
     fellBack = true;
-    abortController?.abort();
-    abortController = null;
+    closeStream('fallback');
     console.info('[AUTOMATION_JOBS_SQL_READ] fallback_to_firebase reason=%s', reason);
     onFallback(reason);
   };
@@ -556,9 +713,9 @@ export function attachAutomationJobsSqlReadListener(
         'postgres_snapshot'
       );
 
-      abortController = new AbortController();
+      abortController = null;
       const sseStartedAt = Date.now();
-      await connectStream(headers);
+      startLiveStreamLoop();
       logCarerPageStartup({
         stage: 'sse_start',
         ok: !fellBack,
@@ -568,9 +725,6 @@ export function attachAutomationJobsSqlReadListener(
         reason: fellBack ? 'sse_stream_closed' : null,
         extra: { channel: 'automation_jobs', bootstrapMs: Date.now() - bootstrapStartedAt },
       });
-      if (!disposed && !fellBack) {
-        triggerFallback('sse_stream_closed');
-      }
     } catch (error) {
       if (!disposed) {
         const reason = error instanceof Error ? error.message : 'bootstrap_or_sse_failed';
@@ -595,8 +749,14 @@ export function attachAutomationJobsSqlReadListener(
   return {
     dispose() {
       disposed = true;
-      abortController?.abort();
-      abortController = null;
+      connectGeneration += 1;
+      closeStream('dispose');
+      releaseLiveStreamClientOwner({
+        streamType: 'carer_jobs',
+        streamKey,
+        instanceId,
+        reason: 'dispose',
+      });
       if (refetchTimer) {
         clearTimeout(refetchTimer);
         refetchTimer = null;
