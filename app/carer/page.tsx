@@ -152,6 +152,7 @@ type BrowserWarmupGameResult = {
 };
 
 const DEBUG_TAB_FILTER_LOGS = false;
+const CARER_COMPLETED_RENDER_STEP = 7;
 const CREATE_USERNAME_UI_GRACE_MS = 5 * 60 * 1000;
 const TASK_CLAIM_STALE_TIMEOUT_MS = 5 * 60 * 1000;
 const WARMUP_GAME_NAMES = [
@@ -752,6 +753,7 @@ export default function CarerPage() {
   const [deletedCarerTaskIds, setDeletedCarerTaskIds] = useState<Record<string, true>>({});
   const [deletingPendingTaskId, setDeletingPendingTaskId] = useState<string | null>(null);
   const [showRevTotals, setShowRevTotals] = useState(false);
+  const [completedVisibleLimit, setCompletedVisibleLimit] = useState(CARER_COMPLETED_RENDER_STEP);
 
   const [errorMessage, setErrorMessage] = useState('');
   const [noticeMessage, setNoticeMessage] = useState('');
@@ -916,10 +918,26 @@ export default function CarerPage() {
         );
         return included;
       });
-      return sortByNewest(filtered).slice(0, 30);
+      return sortByNewest(filtered);
     },
     [tasks]
   );
+
+  const renderedCompletedTasks = useMemo(
+    () => completedTasks.slice(0, completedVisibleLimit),
+    [completedTasks, completedVisibleLimit]
+  );
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'development') {
+      return;
+    }
+    console.info('[CARER_COMPLETED_RENDER_LIMIT]', {
+      totalCompleted: completedTasks.length,
+      renderedCompleted: renderedCompletedTasks.length,
+      visibleLimit: completedVisibleLimit,
+    });
+  }, [completedTasks.length, renderedCompletedTasks.length, completedVisibleLimit]);
 
   const workDetails30d = useMemo(() => {
     const carerUid = carerIdentity?.uid?.trim();
@@ -5530,12 +5548,49 @@ export default function CarerPage() {
           </div>
 
           <div className="rounded-2xl border border-green-500/20 bg-green-500/10 p-5">
-            <h3 className="mb-4 text-xl font-bold text-green-200">Completed Tasks</h3>
+            <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
+              <h3 className="text-xl font-bold text-green-200">Completed Tasks</h3>
+              {completedTasks.length > 0 ? (
+                <span className="text-xs font-semibold text-green-100/65">
+                  Showing {renderedCompletedTasks.length} of {completedTasks.length}
+                </span>
+              ) : null}
+            </div>
             {completedTasks.length === 0 ? (
               <p className="text-sm text-green-100/70">No completed tasks yet.</p>
             ) : (
               <div className="space-y-3">
-                {completedTasks.map((task) => renderTaskCard(task, 'completed'))}
+                {renderedCompletedTasks.map((task) => renderTaskCard(task, 'completed'))}
+                {completedTasks.length > renderedCompletedTasks.length ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCompletedVisibleLimit((previousLimit) => {
+                        const newLimit = previousLimit + CARER_COMPLETED_RENDER_STEP;
+                        if (process.env.NODE_ENV === 'development') {
+                          console.info('[CARER_COMPLETED_SEE_MORE]', {
+                            previousLimit,
+                            newLimit,
+                          });
+                        }
+                        return newLimit;
+                      });
+                    }}
+                    className="w-full rounded-xl border border-green-300/30 bg-green-300/10 px-4 py-2 text-sm font-bold text-green-100 hover:bg-green-300/20"
+                  >
+                    See more completed
+                  </button>
+                ) : null}
+                {completedVisibleLimit > CARER_COMPLETED_RENDER_STEP &&
+                completedTasks.length > CARER_COMPLETED_RENDER_STEP ? (
+                  <button
+                    type="button"
+                    onClick={() => setCompletedVisibleLimit(CARER_COMPLETED_RENDER_STEP)}
+                    className="w-full rounded-xl border border-white/10 px-4 py-2 text-xs font-semibold text-green-100/70 hover:bg-white/5"
+                  >
+                    Show less
+                  </button>
+                ) : null}
               </div>
             )}
           </div>
