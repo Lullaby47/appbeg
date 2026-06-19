@@ -33,6 +33,8 @@ interface Props {
   hasMoreOlderMessages?: boolean;
   loadingOlderMessages?: boolean;
   onLoadOlderMessages?: () => void;
+  disableLoadOlder?: boolean;
+  playerLightweightMode?: boolean;
   onSelectUser: (user: AdminUser) => void;
   onMessageChange: (value: string) => void;
   onMessageFocus?: () => void;
@@ -62,16 +64,22 @@ export default function ReachOutView({
   hasMoreOlderMessages = false,
   loadingOlderMessages = false,
   onLoadOlderMessages,
+  disableLoadOlder = false,
+  playerLightweightMode = false,
   onlineByUid = {},
   nameMode = 'player',
 }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const lastScrolledIdRef = useRef<string | null>(null);
+  const nearBottomRef = useRef(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showEmojis, setShowEmojis] = useState(false);
+  const [showNewMessagePill, setShowNewMessagePill] = useState(false);
 
   useEffect(() => {
     lastScrolledIdRef.current = null;
+    nearBottomRef.current = true;
+    setShowNewMessagePill(false);
   }, [selectedChatUser?.id]);
 
   useEffect(() => {
@@ -83,8 +91,32 @@ export default function ReachOutView({
       return;
     }
     lastScrolledIdRef.current = last;
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    const nearBottom = nearBottomRef.current;
+    if (process.env.NODE_ENV === 'development') {
+      const el = messagesScrollRef?.current ?? null;
+      console.info('[CHAT_AUTOSCROLL]', {
+        chatType: playerLightweightMode ? 'player_agent' : 'agent_shared',
+        reason: 'new_message',
+        nearBottom,
+      });
+      if (el) {
+        console.info('[CHAT_RENDER_STATE]', {
+          chatType: playerLightweightMode ? 'player_agent' : 'agent_shared',
+          messageCount: messages.length,
+          renderedCount: messages.length,
+          containerHeight: el.clientHeight,
+          scrollHeight: el.scrollHeight,
+          isOverflowing: el.scrollHeight > el.clientHeight,
+        });
+      }
+    }
+    if (nearBottom) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      setShowNewMessagePill(false);
+      return;
+    }
+    setShowNewMessagePill(true);
+  }, [messages, messagesScrollRef, playerLightweightMode]);
 
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString([], {
@@ -116,6 +148,8 @@ export default function ReachOutView({
     const name = getMaskedDisplayName(user).trim();
     return (name.charAt(0) || '?').toUpperCase();
   };
+
+  const allowLoadOlder = !disableLoadOlder && Boolean(onLoadOlderMessages) && hasMoreOlderMessages;
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col gap-4 overflow-hidden xl:grid xl:max-h-full xl:min-h-0 xl:grid-cols-[minmax(0,300px)_1fr] xl:grid-rows-1 xl:gap-6">
@@ -240,9 +274,16 @@ export default function ReachOutView({
                 </div>
 
                 <div>
-                  <h3 className="font-semibold">
-                    {getMaskedDisplayName(selectedChatUser)}
-                  </h3>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-semibold">
+                      {getMaskedDisplayName(selectedChatUser)}
+                    </h3>
+                    {playerLightweightMode ? (
+                      <span className="rounded-full border border-amber-300/40 bg-amber-300/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-100">
+                        Agent
+                      </span>
+                    ) : null}
+                  </div>
                   <p className="text-xs text-neutral-400">
                     {getOnlineStatusLabel(onlineByUid, selectedChatUser)} ·{' '}
                     {reachOutAgentRoleLabel(selectedChatUser)}
@@ -253,14 +294,22 @@ export default function ReachOutView({
 
             <div
               ref={messagesScrollRef}
-              className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain p-3 xl:p-4"
+              onScroll={(event) => {
+                const el = event.currentTarget;
+                const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 96;
+                nearBottomRef.current = nearBottom;
+                if (nearBottom) {
+                  setShowNewMessagePill(false);
+                }
+              }}
+              className="relative min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain p-3 xl:p-4"
             >
-              {onLoadOlderMessages && hasMoreOlderMessages ? (
+              {allowLoadOlder ? (
                 <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-center">
                   <button
                     type="button"
                     disabled={loadingOlderMessages}
-                    onClick={() => onLoadOlderMessages()}
+                    onClick={() => onLoadOlderMessages?.()}
                     className="rounded-full border border-amber-500/30 bg-black/50 px-4 py-2 text-xs font-semibold text-amber-100/90 shadow-sm backdrop-blur-sm hover:border-amber-400/50 hover:bg-black/60 disabled:opacity-50"
                   >
                     {loadingOlderMessages
@@ -270,8 +319,17 @@ export default function ReachOutView({
                 </div>
               ) : null}
               {messages.length === 0 ? (
-                <div className="flex h-full items-center justify-center text-sm text-neutral-500">
-                  No messages yet. Start the conversation.
+                <div className="flex h-full items-center justify-center px-6 text-center text-sm text-neutral-400">
+                  <div className="max-w-xs space-y-2">
+                    <p className="text-base font-semibold text-amber-100">
+                      {playerLightweightMode ? 'Your VIP chat is ready' : 'No messages yet'}
+                    </p>
+                    <p>
+                      {playerLightweightMode
+                        ? 'Agents usually reply fast. Send a message when you need help.'
+                        : 'Start the conversation.'}
+                    </p>
+                  </div>
                 </div>
               ) : (
                 messages.map((msg) => (
@@ -282,7 +340,7 @@ export default function ReachOutView({
                     }`}
                   >
                     <div
-                      className={`max-w-[85%] rounded-2xl px-4 py-2 shadow-md sm:max-w-[70%] ${
+                      className={`max-w-[85%] overflow-hidden rounded-2xl px-4 py-2 shadow-md [overflow-wrap:anywhere] sm:max-w-[70%] ${
                         msg.sender === 'admin'
                           ? 'bg-gradient-to-br from-amber-100 to-amber-200 text-black'
                           : 'border border-white/10 bg-neutral-800/90 text-white'
@@ -293,11 +351,11 @@ export default function ReachOutView({
                           src={msg.imageUrl}
                           alt=""
                           loading="lazy"
-                          className="mb-2 max-h-48 w-full rounded-lg object-cover"
+                          className="mb-2 max-h-48 max-w-full rounded-lg object-contain"
                         />
                       ) : null}
                       {msg.text ? (
-                        <p className="break-words text-sm">{msg.text}</p>
+                        <p className="break-words text-sm [overflow-wrap:anywhere]">{msg.text}</p>
                       ) : null}
                       <p
                         className={`mt-1 text-xs ${
@@ -314,12 +372,32 @@ export default function ReachOutView({
               )}
 
               <div ref={messagesEndRef} />
+              {showNewMessagePill ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                    nearBottomRef.current = true;
+                    setShowNewMessagePill(false);
+                    if (process.env.NODE_ENV === 'development') {
+                      console.info('[CHAT_AUTOSCROLL]', {
+                        chatType: playerLightweightMode ? 'player_agent' : 'agent_shared',
+                        reason: 'new_message_pill',
+                        nearBottom: false,
+                      });
+                    }
+                  }}
+                  className="sticky bottom-2 z-10 mx-auto block rounded-full border border-amber-300/50 bg-amber-300 px-3 py-1 text-xs font-bold text-black shadow-lg shadow-black/30"
+                >
+                  New message
+                </button>
+              ) : null}
             </div>
 
             <form
               onSubmit={onSendMessage}
               onClick={onMessageFocus}
-              className="shrink-0 border-t border-white/10 bg-black/40 p-3 xl:p-4"
+              className="shrink-0 border-t border-white/10 bg-black/40 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] xl:p-4"
             >
               {imagePreview && (
                 <div className="mb-3 flex items-center gap-2 rounded-lg bg-white/5 p-3">

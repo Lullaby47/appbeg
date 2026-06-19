@@ -47,7 +47,8 @@ const DIRECT_CONVERSATIONS = 'playerConversations';
 const GROUP_CONVERSATIONS = 'playerGroupConversations';
 const GLOBAL_GROUP_ID = 'global';
 const RATE_LIMIT_MS = 900;
-const DIRECT_MESSAGE_LIVE_WINDOW = 50;
+export const PLAYER_CHAT_RENDER_LIMIT = 7;
+const DIRECT_MESSAGE_LIVE_WINDOW = PLAYER_CHAT_RENDER_LIMIT;
 
 export type PlayerPeer = {
   uid: string;

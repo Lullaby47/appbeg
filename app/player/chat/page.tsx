@@ -42,8 +42,34 @@ import {
   sendDirectTextMessage,
   setDirectConversationMuted,
   setDirectTyping,
+  PLAYER_CHAT_RENDER_LIMIT,
 } from '@/features/messages/playerChat';
 import { markPlayerChatThreadRead, type PlayerChatReadType } from '@/features/messages/playerChatRead';
+
+const PLAYER_CHAT_RENDER_MAX = 10;
+
+function trimRenderedPlayerMessages(messages: PlayerChatMessage[]) {
+  return messages.slice(-PLAYER_CHAT_RENDER_LIMIT);
+}
+
+function logChatMessageLimitApplied(beforeCount: number, afterCount: number) {
+  if (process.env.NODE_ENV !== 'development' || beforeCount <= afterCount) {
+    return;
+  }
+  console.info('[CHAT_MESSAGE_LIMIT_APPLIED]', {
+    chatType: 'player_player',
+    beforeCount,
+    afterCount,
+    limit: PLAYER_CHAT_RENDER_LIMIT,
+  });
+}
+
+function isNearScrollBottom(el: HTMLElement | null, threshold = 96) {
+  if (!el) {
+    return true;
+  }
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+}
 
 function toTime(value: { toMillis?: () => number } | null | undefined) {
   const ms = value?.toMillis?.() ?? 0;
@@ -84,6 +110,12 @@ export default function PlayerChatPage() {
   const [selfUid, setSelfUid] = useState('');
   const [chatLoading, setChatLoading] = useState(true);
   const [chatLoadError, setChatLoadError] = useState('');
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const nearBottomRef = useRef(true);
+  const pendingScrollToBottomRef = useRef(false);
+  const [showNewMessagePill, setShowNewMessagePill] = useState(false);
+  const [failedDraft, setFailedDraft] = useState('');
   const chatReadInFlightRef = useRef<Set<string>>(new Set());
   const lastChatReadClearAtRef = useRef<Record<string, number>>({});
 
@@ -318,14 +350,22 @@ export default function PlayerChatPage() {
     if (!isPlayerRole || !selectedPeer) return;
     const unsubMessages = listenDirectMessages(selectedPeer.uid, (list) => {
       const visible = filterVisibleDirectMessages(list, selfUid);
+      const rendered = trimRenderedPlayerMessages(visible);
+      logChatMessageLimitApplied(visible.length, rendered.length);
       setRawMessageCount(list.length);
-      setMessages(visible);
+      if (nearBottomRef.current) {
+        pendingScrollToBottomRef.current = true;
+      } else {
+        setShowNewMessagePill(true);
+      }
+      setMessages(rendered);
       console.info('[CHAT_MESSAGES_FILTERED]', {
         conversationId: [selfUid, selectedPeer.uid].sort().join('__'),
         currentUid: selfUid,
         participantIds: [selfUid, selectedPeer.uid],
         totalMessages: list.length,
         visibleMessages: visible.length,
+        renderedMessages: rendered.length,
         messageIds: list.slice(0, 5).map((message) => message.id),
         visibleMessageIds: visible.slice(0, 5).map((message) => message.id),
         messages: list.slice(0, 5).map((message) => ({
@@ -340,7 +380,7 @@ export default function PlayerChatPage() {
       console.info('[CHAT_DELETE_UI_REFRESH]', {
         reason: 'live_messages_refresh',
         peerUid: selectedPeer.uid,
-        visibleCount: visible.length,
+        visibleCount: rendered.length,
         rawCount: list.length,
       });
     });
@@ -356,6 +396,9 @@ export default function PlayerChatPage() {
   useEffect(() => {
     setShowRewardPanel(false);
     setRewardNotice('');
+    setShowNewMessagePill(false);
+    nearBottomRef.current = true;
+    pendingScrollToBottomRef.current = true;
   }, [selectedPeer?.uid]);
 
   const rewardFeePreview = useMemo(() => {
@@ -380,6 +423,23 @@ export default function PlayerChatPage() {
 
   useEffect(() => {
     if (!selectedPeer) return;
+    if (pendingScrollToBottomRef.current) {
+      pendingScrollToBottomRef.current = false;
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      setShowNewMessagePill(false);
+      nearBottomRef.current = true;
+    }
+    const el = messagesScrollRef.current;
+    if (process.env.NODE_ENV === 'development' && el) {
+      console.info('[CHAT_RENDER_STATE]', {
+        chatType: 'player_player',
+        messageCount: rawMessageCount,
+        renderedCount: messages.length,
+        containerHeight: el.clientHeight,
+        scrollHeight: el.scrollHeight,
+        isOverflowing: el.scrollHeight > el.clientHeight,
+      });
+    }
     console.info('[CHAT_MESSAGES_RENDER]', {
       conversationId: [selfUid, selectedPeer.uid].sort().join('__'),
       currentUid: selfUid,
@@ -392,11 +452,16 @@ export default function PlayerChatPage() {
 
   async function onSend(e: React.FormEvent) {
     e.preventDefault();
+    await sendCurrentTextMessage(newMessage);
+  }
+
+  async function sendCurrentTextMessage(value: string) {
     if (!selectedPeer || sending) return;
-    const body = newMessage.trim();
+    const body = value.trim();
     if (!body) return;
     setSending(true);
     setMessageError('');
+    setFailedDraft('');
     try {
       await sendDirectTextMessage(selectedPeer.uid, body, {
         replyToMessageId: replyTarget?.id || '',
@@ -406,6 +471,7 @@ export default function PlayerChatPage() {
       setReplyTarget(null);
       await markDirectConversationSeen(selectedPeer.uid);
     } catch (error) {
+      setFailedDraft(body);
       setMessageError(error instanceof Error ? error.message : 'Failed to send message.');
     } finally {
       setSending(false);
@@ -447,7 +513,7 @@ export default function PlayerChatPage() {
     });
     try {
       await deleteDirectMessageForMe(selectedPeer.uid, message.id);
-      setMessages((current) => current.filter((item) => item.id !== message.id));
+      setMessages((current) => current.filter((item) => item.id !== message.id).slice(-PLAYER_CHAT_RENDER_MAX));
       setChatList((current) => ({
         ...current,
         [selectedPeer.uid]: {
@@ -489,17 +555,19 @@ export default function PlayerChatPage() {
     try {
       await deleteDirectMessageForEveryone(selectedPeer.uid, message.id);
       setMessages((current) =>
-        current.map((item) =>
-          item.id === message.id
-            ? {
-                ...item,
-                text: '',
-                imageUrl: '',
-                imagePublicId: '',
-                deletedForEveryone: true,
-              }
-            : item
-        )
+        current
+          .map((item) =>
+            item.id === message.id
+              ? {
+                  ...item,
+                  text: '',
+                  imageUrl: '',
+                  imagePublicId: '',
+                  deletedForEveryone: true,
+                }
+              : item
+          )
+          .slice(-PLAYER_CHAT_RENDER_MAX)
       );
       setChatList((current) => ({
         ...current,
@@ -587,9 +655,9 @@ export default function PlayerChatPage() {
 
   return (
     <>
-    <main className="min-h-screen bg-[#050509] text-white">
-        <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-4 lg:h-screen lg:flex-row lg:gap-5 lg:p-5">
-          <aside className="fire-panel fire-violet w-full rounded-2xl border border-violet-400/30 bg-black/50 p-4 lg:w-[320px] lg:shrink-0">
+    <main className="min-h-[100dvh] overflow-hidden bg-[#050509] text-white">
+        <div className="mx-auto flex h-[100dvh] min-h-0 w-full max-w-7xl flex-col gap-4 overflow-hidden p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] lg:flex-row lg:gap-5 lg:p-5">
+          <aside className="fire-panel fire-violet flex max-h-[34dvh] min-h-0 w-full shrink-0 flex-col overflow-hidden rounded-2xl border border-violet-400/30 bg-black/50 p-4 lg:max-h-none lg:w-[320px]">
             <div className="mb-4 flex items-center justify-between">
               <h1 className="text-xl font-black tracking-wide text-amber-200">Player Chat</h1>
               <Link
@@ -619,7 +687,7 @@ export default function PlayerChatPage() {
               placeholder="Search players"
               className="mb-3 w-full rounded-xl border border-white/15 bg-black/45 px-3 py-2 text-sm"
             />
-            <div className="max-h-[32dvh] space-y-2 overflow-y-auto pr-1 lg:max-h-[70dvh]">
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain pr-1">
               {chatLoading ? (
                 <p className="rounded-xl border border-white/10 bg-black/40 p-3 text-sm text-amber-100/60">
                   Chat loading...
@@ -672,7 +740,7 @@ export default function PlayerChatPage() {
             </div>
           </aside>
 
-          <section className="fire-panel fire-orange flex min-h-[60dvh] flex-1 flex-col rounded-2xl border border-amber-400/20 bg-black/45">
+          <section className="fire-panel fire-orange flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-amber-400/20 bg-black/45">
             {!selectedPeer ? (
               <div className="m-auto p-8 text-center text-amber-100/65">
                 <p className="text-4xl">💬</p>
@@ -680,7 +748,7 @@ export default function PlayerChatPage() {
               </div>
             ) : (
               <>
-                <header className="flex flex-wrap items-center gap-2 border-b border-white/10 p-3">
+                <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-white/10 p-3">
                   <h2 className="mr-auto text-lg font-bold">{selectedPeerDisplayName}</h2>
                   {typing ? <span className="text-xs text-emerald-300">typing...</span> : null}
                   {!selectedFriend ? (
@@ -727,7 +795,7 @@ export default function PlayerChatPage() {
                   </p>
                 ) : null}
                 {showRewardPanel ? (
-                  <div className="flex flex-wrap items-center gap-2 border-b border-white/10 bg-black/20 p-2">
+                  <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-white/10 bg-black/20 p-2">
                     <input
                       type="number"
                       min={1}
@@ -753,7 +821,7 @@ export default function PlayerChatPage() {
                   </div>
                 ) : null}
 
-                <div className="flex items-center gap-2 border-b border-white/10 p-2">
+                <div className="flex shrink-0 items-center gap-2 border-b border-white/10 p-2">
                   <input
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
@@ -770,7 +838,7 @@ export default function PlayerChatPage() {
                 </div>
 
                 {searchResults.length > 0 ? (
-                  <div className="max-h-28 space-y-1 overflow-y-auto border-b border-white/10 bg-black/25 p-2">
+                  <div className="max-h-28 shrink-0 space-y-1 overflow-y-auto overflow-x-hidden border-b border-white/10 bg-black/25 p-2">
                     {searchResults.map((m) => (
                       <div key={m.id} className="rounded bg-white/5 px-2 py-1 text-xs text-amber-100/80">
                         {m.text || 'Image'} · {toTime(m.createdAt)}
@@ -779,7 +847,24 @@ export default function PlayerChatPage() {
                   </div>
                 ) : null}
 
-                <div className="flex-1 space-y-2 overflow-y-auto p-3">
+                <div
+                  ref={messagesScrollRef}
+                  onScroll={(event) => {
+                    const nearBottom = isNearScrollBottom(event.currentTarget);
+                    nearBottomRef.current = nearBottom;
+                    if (nearBottom) {
+                      setShowNewMessagePill(false);
+                    }
+                    if (process.env.NODE_ENV === 'development') {
+                      console.info('[CHAT_AUTOSCROLL]', {
+                        chatType: 'player_player',
+                        reason: 'user_scroll',
+                        nearBottom,
+                      });
+                    }
+                  }}
+                  className="relative min-h-0 flex-1 space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain p-3"
+                >
                   {chatLoading ? (
                     <div className="pt-14 text-center text-sm text-amber-100/45">
                       Chat loading...
@@ -801,7 +886,7 @@ export default function PlayerChatPage() {
                       return (
                         <div key={m.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
                           <div
-                            className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${
+                            className={`max-w-[85%] overflow-hidden rounded-2xl px-3 py-2 text-sm [overflow-wrap:anywhere] ${
                               mine
                                 ? 'bg-gradient-to-br from-amber-200 to-amber-300 text-black'
                                 : 'border border-white/10 bg-white/5 text-white'
@@ -817,9 +902,9 @@ export default function PlayerChatPage() {
                             ) : (
                               <>
                                 {m.imageUrl ? (
-                                  <img src={m.imageUrl} alt="" loading="lazy" className="mb-2 max-h-48 rounded-lg" />
+                                  <img src={m.imageUrl} alt="" loading="lazy" className="mb-2 max-h-48 max-w-full rounded-lg object-contain" />
                                 ) : null}
-                                {m.text ? <p className="break-words">{m.text}</p> : null}
+                                {m.text ? <p className="break-words [overflow-wrap:anywhere]">{m.text}</p> : null}
                               </>
                             )}
                             <div className="mt-1 flex items-center justify-between gap-3 text-[10px] opacity-70">
@@ -854,10 +939,32 @@ export default function PlayerChatPage() {
                       );
                     })
                   )}
+                  <div ref={messagesEndRef} />
+                  {showNewMessagePill ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        pendingScrollToBottomRef.current = false;
+                        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                        nearBottomRef.current = true;
+                        setShowNewMessagePill(false);
+                        if (process.env.NODE_ENV === 'development') {
+                          console.info('[CHAT_AUTOSCROLL]', {
+                            chatType: 'player_player',
+                            reason: 'new_message_pill',
+                            nearBottom: false,
+                          });
+                        }
+                      }}
+                      className="sticky bottom-2 z-10 mx-auto block rounded-full border border-amber-300/50 bg-amber-300 px-3 py-1 text-xs font-bold text-black shadow-lg shadow-black/30"
+                    >
+                      New message
+                    </button>
+                  ) : null}
                 </div>
 
                 {replyTarget ? (
-                  <div className="border-t border-white/10 bg-black/20 px-3 py-2 text-xs text-amber-100/75">
+                  <div className="shrink-0 border-t border-white/10 bg-black/20 px-3 py-2 text-xs text-amber-100/75">
                     Replying to: {replyTarget.text || 'Image'}
                     <button
                       type="button"
@@ -872,7 +979,7 @@ export default function PlayerChatPage() {
                 <form
                   onSubmit={onSend}
                   onClick={() => markThreadReadOnPlayerChatFocus(selectedPeer.uid, 'player_player', 'input')}
-                  className="border-t border-white/10 p-3"
+                  className="shrink-0 border-t border-white/10 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]"
                 >
                   <div className="mb-2 flex gap-2">
                     <input
@@ -902,18 +1009,29 @@ export default function PlayerChatPage() {
                         void setDirectTyping(selectedPeer.uid, e.target.value.trim().length > 0);
                       }}
                       placeholder="Type a message"
-                      className="flex-1 rounded-xl border border-white/15 bg-black/55 px-3 py-2 text-sm"
+                      className="min-w-0 flex-1 rounded-xl border border-white/15 bg-black/55 px-3 py-2 text-sm [overflow-wrap:anywhere]"
                     />
                     <button
                       type="submit"
                       disabled={sending || !newMessage.trim()}
                       className="rounded-xl bg-amber-300 px-4 py-2 text-sm font-bold text-black disabled:opacity-50"
                     >
-                      Send
+                      {sending ? 'Sending...' : 'Send'}
                     </button>
                   </div>
                   {messageError ? (
-                    <p className="mt-2 text-xs text-red-300">{messageError}</p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-red-300">
+                      <span>{messageError}</span>
+                      {failedDraft ? (
+                        <button
+                          type="button"
+                          onClick={() => void sendCurrentTextMessage(failedDraft)}
+                          className="rounded-full border border-red-300/40 px-2 py-0.5 font-semibold text-red-100 hover:bg-red-500/15"
+                        >
+                          Retry
+                        </button>
+                      ) : null}
+                    </div>
                   ) : null}
                 </form>
               </>

@@ -58,6 +58,7 @@ import {
   type PlayerRequestOutcomeLiveEvent,
 } from '@/features/live/playerRequestSqlRead';
 import {
+  PLAYER_AGENT_CHAT_RECENT_MESSAGE_WINDOW,
   listenToUnreadCounts,
   mapFirestoreChatToDisplay,
   sendChatMessage,
@@ -1000,6 +1001,7 @@ export default function PlayerPage() {
   const pagedAgentChat = usePaginatedChatMessages(selectedAgent?.uid ?? null, {
     scrollContainerRef: agentsScrollRef,
     requirePlayerRole: true,
+    recentWindowSize: PLAYER_AGENT_CHAT_RECENT_MESSAGE_WINDOW,
     onWindowMessages: () => {
       if (selectedAgent && (unreadCounts[selectedAgent.uid] || 0) > 0) {
         markThreadReadOnPlayerChatFocus(

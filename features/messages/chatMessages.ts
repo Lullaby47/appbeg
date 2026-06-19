@@ -109,6 +109,8 @@ export function getConversationId(uid1: string, uid2: string) {
 
 /** Newest messages for the live window (realtime listener + pagination). */
 export const CHAT_RECENT_MESSAGE_WINDOW = 50;
+/** Player-facing messenger keeps the live UI intentionally lightweight. */
+export const PLAYER_AGENT_CHAT_RECENT_MESSAGE_WINDOW = 7;
 /** How many older messages to fetch per "Load previous" action. */
 export const CHAT_OLDER_MESSAGE_PAGE_SIZE = 50;
 

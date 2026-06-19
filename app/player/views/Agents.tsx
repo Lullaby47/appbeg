@@ -36,9 +36,11 @@ export default function Agents(props: Props) {
                   imagePreview={imagePreview}
                   sendingImage={sendingImage}
                   messagesScrollRef={agentsScrollRef}
-                  hasMoreOlderMessages={pagedAgentChat.hasMoreOlder}
+                  hasMoreOlderMessages={false}
                   loadingOlderMessages={pagedAgentChat.loadingOlder}
-                  onLoadOlderMessages={pagedAgentChat.loadOlder}
+                  onLoadOlderMessages={undefined}
+                  disableLoadOlder
+                  playerLightweightMode
                   onSelectUser={handleAgentSelect}
                   onMessageChange={setNewMessage}
                   onMessageFocus={onMessageFocus}
