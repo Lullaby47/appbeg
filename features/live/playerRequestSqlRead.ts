@@ -325,6 +325,7 @@ type SqlRequestPayload = {
   requestId?: unknown;
   playerUid?: unknown;
   type?: unknown;
+  direction?: unknown;
   requestType?: unknown;
   status?: unknown;
   outcomeType?: unknown;
@@ -808,7 +809,10 @@ export function attachPlayerRequestSqlReadListener(
     onRechargeSuccessEvent?: (event: PlayerRechargeSuccessLiveEvent) => void;
     onRedeemDismissEvent?: (event: PlayerRedeemDismissLiveEvent) => void;
     onFreeplayGivenEvent?: (event: PlayerFreeplayGivenLiveEvent) => void;
-    onBalanceUpdate?: (reason: string) => void;
+    onBalanceUpdate?: (
+      reason: string,
+      meta?: { direction?: 'cash_to_coin' | 'coin_to_cash' | null }
+    ) => void;
     onPlayerGameLoginUpdated?: (
       reason: string,
       meta?: {
@@ -1181,12 +1185,20 @@ export function attachPlayerRequestSqlReadListener(
     }
 
     if (eventName === 'balance_update') {
+      const direction = cleanText(payload.direction);
+      const transferDirection =
+        direction === 'cash_to_coin' || direction === 'coin_to_cash'
+          ? direction
+          : null;
       console.info('[PLAYER_BALANCE_EVENT]', {
         playerUid: cleanPlayerUid,
         requestId: cleanText(payload.requestId) || null,
+        direction: transferDirection,
         refunded: payload.refunded === true,
       });
-      options?.onBalanceUpdate?.(`sse_event:${eventName}`);
+      options?.onBalanceUpdate?.(`sse_event:${eventName}`, {
+        direction: transferDirection,
+      });
       void refetchSnapshotNow(`sse_event:${eventName}`, true);
       return;
     }

@@ -3615,10 +3615,18 @@ export default function PlayerPage() {
           onRechargeDismissEvent: showRechargeDismissFromLiveEvent,
           onRechargeSuccessEvent: showRechargeSuccessFromLiveEvent,
           onRedeemDismissEvent: showRedeemDismissFromLiveEvent,
-          onBalanceUpdate: (reason) => {
+          onBalanceUpdate: (reason, meta) => {
             void loadPlayerProfileSnapshotOnce().then((profile) => {
               if (profile) {
                 applyPlayerProfileSnapshot(profile, playerUid);
+              }
+              if (meta?.direction === 'cash_to_coin' || meta?.direction === 'coin_to_cash') {
+                console.info('[CONVERSION_SSE_RECONCILED]', {
+                  type: meta.direction,
+                  reason,
+                  updatedCoinBalance: profile?.coin ?? null,
+                  updatedCashBalance: profile?.cash ?? null,
+                });
               }
               console.info('[PLAYER_BALANCE_EVENT] profile_refreshed', {
                 reason,
@@ -5345,9 +5353,30 @@ export default function PlayerPage() {
         transferId,
         amount: parsedAmount,
       });
+      console.info('[CONVERSION_SUBMIT]', {
+        type: isCashToCoinTransfer ? 'cash_to_coin' : 'coin_to_cash',
+        amount: parsedAmount,
+      });
       if (isCashToCoinTransfer) {
         const result = await createCashToCoinTransferRequest(parsedAmount, transferId);
-        setWallet({ cash: Number(result.cash || 0), coin: Number(result.coin || 0) });
+        const updatedCashBalance = Number(result.cashBalance ?? result.cash ?? 0);
+        const updatedCoinBalance = Number(result.coinBalance ?? result.coin ?? 0);
+        console.info('[CONVERSION_API_SUCCESS]', {
+          type: 'cash_to_coin',
+          updatedCoinBalance,
+          updatedCashBalance,
+          updatedCashBoxNpr: result.cashBoxNpr ?? null,
+          transferAmount: result.transferAmount,
+          feeAmount: result.feeAmount,
+          transactionId: result.eventId || result.transferId || transferId,
+        });
+        setWallet({ cash: updatedCashBalance, coin: updatedCoinBalance });
+        console.info('[CONVERSION_LOCAL_BALANCE_UPDATED]', {
+          type: 'cash_to_coin',
+          source: 'api_response',
+          updatedCoinBalance,
+          updatedCashBalance,
+        });
         setMessage('Cash converted to coins successfully.');
         console.info('[PLAYER_TRANSFER_SUCCESS_TOAST_SHOW]', {
           direction: 'cash_to_coin',
@@ -5356,7 +5385,24 @@ export default function PlayerPage() {
         });
       } else {
         const result = await createCoinToCashTransferRequest(parsedAmount, transferId);
-        setWallet({ cash: Number(result.cash || 0), coin: Number(result.coin || 0) });
+        const updatedCashBalance = Number(result.cashBalance ?? result.cash ?? 0);
+        const updatedCoinBalance = Number(result.coinBalance ?? result.coin ?? 0);
+        console.info('[CONVERSION_API_SUCCESS]', {
+          type: 'coin_to_cash',
+          updatedCoinBalance,
+          updatedCashBalance,
+          updatedCashBoxNpr: result.cashBoxNpr ?? null,
+          transferAmount: result.transferAmount,
+          feeAmount: result.feeAmount,
+          transactionId: result.eventId || result.transferId || transferId,
+        });
+        setWallet({ cash: updatedCashBalance, coin: updatedCoinBalance });
+        console.info('[CONVERSION_LOCAL_BALANCE_UPDATED]', {
+          type: 'coin_to_cash',
+          source: 'api_response',
+          updatedCoinBalance,
+          updatedCashBalance,
+        });
         setMessage('Coins converted to cash successfully.');
         console.info('[PLAYER_TRANSFER_SUCCESS_TOAST_SHOW]', {
           direction: 'coin_to_cash',

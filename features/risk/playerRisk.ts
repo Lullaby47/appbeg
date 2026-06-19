@@ -32,11 +32,16 @@ type PlayerTransferApiPayload = {
   message?: string;
   cash?: number;
   coin?: number;
+  cashBalance?: number;
+  coinBalance?: number;
+  cashBoxNpr?: number | null;
   transferAmount?: number;
   feeAmount?: number;
   tipAmount?: number;
   coinsReceived?: number;
   cashReceived?: number;
+  transferId?: string;
+  eventId?: string;
   authority?: string;
 };
 
@@ -691,10 +696,15 @@ export async function createCashToCoinTransferRequest(
     message: 'Cash transferred to coin.',
     cash: payload.cash ?? 0,
     coin: payload.coin ?? 0,
+    cashBalance: payload.cashBalance ?? payload.cash ?? 0,
+    coinBalance: payload.coinBalance ?? payload.coin ?? 0,
+    cashBoxNpr: payload.cashBoxNpr ?? null,
     transferAmount: payload.transferAmount ?? requestedAmountNpr ?? 0,
     feeAmount: payload.feeAmount ?? 0,
     tipAmount: payload.tipAmount ?? 0,
     coinsReceived: payload.coinsReceived ?? 0,
+    transferId: payload.transferId ?? transferId ?? '',
+    eventId: payload.eventId ?? '',
   };
 }
 
@@ -714,10 +724,15 @@ export async function createCoinToCashTransferRequest(
     message: 'Coin transferred to cash.',
     cash: payload.cash ?? 0,
     coin: payload.coin ?? 0,
+    cashBalance: payload.cashBalance ?? payload.cash ?? 0,
+    coinBalance: payload.coinBalance ?? payload.coin ?? 0,
+    cashBoxNpr: payload.cashBoxNpr ?? null,
     transferAmount: payload.transferAmount ?? requestedAmountCoins ?? 0,
     feeAmount: payload.feeAmount ?? 0,
     tipAmount: payload.tipAmount ?? 0,
     cashReceived: payload.cashReceived ?? 0,
+    transferId: payload.transferId ?? transferId ?? '',
+    eventId: payload.eventId ?? '',
   };
 }
 
