@@ -1,5 +1,6 @@
 import { apiError, requireCarerApiUser, scopedCoadminUid } from '@/lib/firebase/apiAuth';
 import { isAuthSqlReadEnabled } from '@/lib/server/authSqlRead';
+import { firestoreFallbackRemovedResponse } from '@/lib/server/cacheSqlRead';
 
 import { getAutomationAutoStateSql, postAutomationAutoStateSql } from './sqlRoute';
 import { logAutomationAutoStateRouteVersion } from './routeVersion';
@@ -38,10 +39,10 @@ export async function GET(request: Request) {
     });
   }
 
-  const { getAutomationAutoStateLegacy } = await import('./legacyRoute');
-  return getAutomationAutoStateLegacy({
+  return firestoreFallbackRemovedResponse('/api/carer/automation-auto-state', {
+    method: 'GET',
     carerUid: auth.user.uid,
-    startedAt,
+    sqlMode,
   });
 }
 
@@ -89,10 +90,9 @@ export async function POST(request: Request) {
     });
   }
 
-  const { postAutomationAutoStateLegacy } = await import('./legacyRoute');
-  return postAutomationAutoStateLegacy({
+  return firestoreFallbackRemovedResponse('/api/carer/automation-auto-state', {
+    method: 'POST',
     carerUid: auth.user.uid,
-    enabled,
-    startedAt,
+    sqlMode,
   });
 }

@@ -58,6 +58,26 @@ export function logCacheFirestoreFallbackBlocked(
   });
 }
 
+export function firestoreFallbackRemovedResponse(
+  route: string,
+  details: Record<string, unknown> = {}
+) {
+  console.warn('[FIRESTORE_FALLBACK_REMOVED]', {
+    route,
+    reason: 'sql_authority_required',
+    ...details,
+  });
+  return NextResponse.json(
+    {
+      error: 'Firestore fallback removed; SQL authority required',
+      source: 'postgres',
+      firestore_fallback: false,
+      reason: 'sql_authority_required',
+    },
+    { status: 503 }
+  );
+}
+
 export function mirrorSqlSkipResponse(
   route: string,
   collection: string,

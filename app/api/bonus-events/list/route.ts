@@ -1,10 +1,9 @@
 import { NextResponse } from 'next/server';
 
-import { adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
 import {
+  firestoreFallbackRemovedResponse,
   isCacheSqlAuthoritative,
-  logCacheFirestoreFallbackBlocked,
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
 import {
@@ -177,24 +176,8 @@ async function loadGameNames(coadminUid: string, sqlReadMode: boolean) {
       new Set(cached.map((entry) => String(entry.gameName || '').trim()).filter(Boolean))
     );
   }
-  if (sqlReadMode) {
-    logCacheFirestoreFallbackBlocked(ROUTE, 'gameLogins', {
-      coadminUid,
-      reason: 'game_logins_cache_miss',
-    });
-    return [];
-  }
-
-  const gameSnap = await adminDb
-    .collection('gameLogins')
-    .where('coadminUid', '==', coadminUid)
-    .get();
-  return Array.from(
-    new Set(
-      gameSnap.docs
-        .map((d) => String((d.data() as { gameName?: string }).gameName || '').trim())
-        .filter(Boolean)
-    )
+  throw new Error(
+    `sql_required:game_logins_cache:${sqlReadMode ? 'cache_miss' : 'sql_mode_disabled'}`
   );
 }
 
@@ -207,41 +190,9 @@ async function loadBonusEvents(coadminUid: string, sqlReadMode: boolean) {
   if (cached !== null) {
     return cached;
   }
-  if (sqlReadMode) {
-    logCacheFirestoreFallbackBlocked(ROUTE, 'bonus_events_cache', {
-      coadminUid,
-      reason: 'postgres_unavailable',
-    });
-    return [];
-  }
-
-  const snap = await adminDb
-    .collection('bonusEvents')
-    .where('coadminUid', '==', coadminUid)
-    .get();
-
-  return snap.docs.map((d) => {
-    const data = d.data() as Record<string, unknown>;
-    return {
-      id: d.id,
-      coadminUid,
-      bonusName: String(data.bonusName || ''),
-      gameName: String(data.gameName || ''),
-      amountNpr: Number(data.amountNpr ?? data.amount ?? 0),
-      description: String(data.description || ''),
-      bonusPercentage: Number(data.bonusPercentage ?? data.bonus_percentage ?? 0),
-      createdByUid: String(data.createdByUid ?? data.created_by ?? ''),
-      createdByUsername: String(data.createdByUsername || 'User'),
-      createdByRole: String(data.createdByRole ?? data.creator_role ?? ''),
-      status: String(data.status || 'active'),
-      startDate: null,
-      endDate: null,
-      createdAt: null,
-      created_at: null,
-      updatedAt: null,
-      updated_at: null,
-    } satisfies CachedBonusEvent;
-  });
+  throw new Error(
+    `sql_required:bonus_events_cache:${sqlReadMode ? 'cache_miss' : 'sql_mode_disabled'}`
+  );
 }
 
 export async function GET(request: Request) {
@@ -337,10 +288,19 @@ export async function GET(request: Request) {
 
     const sqlReadMode = isCacheSqlAuthoritative();
     const sqlStartedAt = Date.now();
-    const [gameNames, rawEvents] = await Promise.all([
-      loadGameNames(coadminUid, sqlReadMode),
-      loadBonusEvents(coadminUid, sqlReadMode),
-    ]);
+    let gameNames: string[];
+    let rawEvents: CachedBonusEvent[];
+    try {
+      [gameNames, rawEvents] = await Promise.all([
+        loadGameNames(coadminUid, sqlReadMode),
+        loadBonusEvents(coadminUid, sqlReadMode),
+      ]);
+    } catch (error) {
+      return firestoreFallbackRemovedResponse(ROUTE, {
+        coadminUid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     const events = decorateLegacyBonusEvents(rawEvents, gameNames);
     const sql_ms = Date.now() - sqlStartedAt;
 

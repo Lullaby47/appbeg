@@ -1,7 +1,5 @@
-import type { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
-import { adminDb } from '@/lib/firebase/admin';
 import {
   apiError,
   belongsToScope,
@@ -11,8 +9,7 @@ import {
   type ApiUser,
 } from '@/lib/firebase/apiAuth';
 import {
-  isCacheSqlAuthoritative,
-  logCacheFirestoreFallbackBlocked,
+  firestoreFallbackRemovedResponse,
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
 import {
@@ -96,53 +93,6 @@ function logRouteTiming(
 
 function cleanText(value: unknown) {
   return String(value || '').trim();
-}
-
-function toIsoString(value: unknown): string | null {
-  if (!value || typeof value !== 'object') return null;
-  const maybe = value as { toDate?: () => Date; toMillis?: () => number; seconds?: number };
-  if (typeof maybe.toDate === 'function') return maybe.toDate().toISOString();
-  if (typeof maybe.toMillis === 'function') return new Date(maybe.toMillis()).toISOString();
-  if (typeof maybe.seconds === 'number') return new Date(maybe.seconds * 1000).toISOString();
-  return null;
-}
-
-function mapFirestoreDoc(docSnap: QueryDocumentSnapshot): CachedGameLogin {
-  const data = docSnap.data() as Record<string, unknown>;
-  return {
-    id: docSnap.id,
-    gameName: cleanText(data.gameName),
-    username: cleanText(data.username),
-    password: String(data.password || ''),
-    backendUrl: cleanText(data.backendUrl),
-    frontendUrl: cleanText(data.frontendUrl),
-    siteUrl: cleanText(data.siteUrl || data.backendUrl),
-    createdBy: cleanText(data.createdBy),
-    coadminUid: cleanText(data.coadminUid) || undefined,
-    createdAt: toIsoString(data.createdAt),
-    status: cleanText(data.status) || 'active',
-  };
-}
-
-async function getFirestoreGameLoginsByField(
-  field: GameLoginField,
-  value: string
-): Promise<CachedGameLogin[]> {
-  const snapshot = await adminDb.collection('gameLogins').where(field, '==', value).get();
-  return snapshot.docs.map(mapFirestoreDoc);
-}
-
-async function getFirestoreGameLoginsByCoadmin(coadminUid: string): Promise<CachedGameLogin[]> {
-  const [coadminOwned, legacyOwned] = await Promise.all([
-    getFirestoreGameLoginsByField('coadminUid', coadminUid),
-    getFirestoreGameLoginsByField('createdBy', coadminUid),
-  ]);
-
-  return Array.from(
-    new Map(
-      [...coadminOwned, ...legacyOwned].map((gameLogin) => [gameLogin.id, gameLogin])
-    ).values()
-  );
 }
 
 function resolveExplicitCoadminUid(request: Request) {
@@ -285,36 +235,25 @@ export async function GET(request: Request) {
       console.warn('[GAME_LOGINS_CACHE] postgres read failed', { field, value: fieldValue, error });
     }
 
-    if (isCacheSqlAuthoritative()) {
-      logCacheFirestoreFallbackBlocked(ROUTE, 'gameLogins', { field, value: fieldValue });
-      return timedJson({ gameLogins: [], source: 'postgres' }, totalStartedAt, routeTiming, {
-        field,
-        value: fieldValue,
-        source: 'postgres',
-      });
-    }
-
-    routeTiming.firebaseFallback = true;
-    console.info('[GAME_LOGINS_CACHE] fallback firestore', {
-      field,
-      value: fieldValue,
-      reason: 'cache_miss_or_unavailable',
-    });
-    const gameLogins = await getFirestoreGameLoginsByField(field, fieldValue);
     routeTiming.fallback_check_ms = Date.now() - fallbackStartedAt;
-    return timedJson({ gameLogins, source: 'firestore' }, totalStartedAt, routeTiming, {
+    routeTiming.total_ms = Date.now() - totalStartedAt;
+    logRouteTiming(routeTiming, {
       field,
       value: fieldValue,
-      source: 'firestore',
+      source: 'postgres',
+      reason: 'sql_cache_unavailable',
+    });
+    return firestoreFallbackRemovedResponse(ROUTE, {
+      field,
+      value: fieldValue,
     });
   }
 
   const coadminUid = resolveRequestedCoadminUid(request, scoped);
   if (!coadminUid) {
-    const emptySource = isCacheSqlAuthoritative() ? 'postgres' : 'firestore';
-    return timedJson({ gameLogins: [], source: emptySource }, totalStartedAt, routeTiming, {
+    return timedJson({ gameLogins: [], source: 'postgres' }, totalStartedAt, routeTiming, {
       reason: 'missing_coadmin_uid',
-      source: emptySource,
+      source: 'postgres',
     });
   }
 
@@ -353,25 +292,14 @@ export async function GET(request: Request) {
     console.warn('[GAME_LOGINS_CACHE] postgres read failed', { coadminUid, error });
   }
 
-  if (isCacheSqlAuthoritative()) {
-    logCacheFirestoreFallbackBlocked(ROUTE, 'gameLogins', { coadminUid });
-    return timedJson({ gameLogins: [], source: 'postgres' }, totalStartedAt, routeTiming, {
-      coadminUid,
-      source: 'postgres',
-    });
-  }
-
-  routeTiming.firebaseFallback = true;
-  console.info('[GAME_LOGINS_CACHE] fallback firestore', {
-    coadminUid,
-    reason: 'cache_miss_or_unavailable',
-  });
-  const gameLogins = await getFirestoreGameLoginsByCoadmin(coadminUid);
   routeTiming.fallback_check_ms = Date.now() - fallbackStartedAt;
-  return timedJson({ gameLogins, source: 'firestore' }, totalStartedAt, routeTiming, {
+  routeTiming.total_ms = Date.now() - totalStartedAt;
+  logRouteTiming(routeTiming, {
     coadminUid,
-    source: 'firestore',
+    source: 'postgres',
+    reason: 'sql_cache_unavailable',
   });
+  return firestoreFallbackRemovedResponse(ROUTE, { coadminUid });
 }
 
 export async function POST(request: Request) {

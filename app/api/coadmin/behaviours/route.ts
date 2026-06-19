@@ -1,13 +1,11 @@
 import { NextResponse } from 'next/server';
 
-import { adminDb } from '@/lib/firebase/admin';
 import { requireApiUser } from '@/lib/firebase/apiAuth';
 import {
+  firestoreFallbackRemovedResponse,
   isCacheSqlAuthoritative,
-  logCacheFirestoreFallbackBlocked,
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
-import { logFirestoreTouch } from '@/lib/server/firestoreTouchAudit';
 import {
 
   loadCoadminBehavioursDataFromSql,
@@ -285,35 +283,6 @@ function buildStaffBehavioursRows(
     });
 }
 
-async function loadBehavioursDataFromFirestore(coadminUid: string) {
-  logFirestoreTouch({
-    firestore_touch_type: 'legacy_read_remove_now',
-    route: ROUTE,
-    operation: 'read',
-    collection: 'users,playerCashoutTasks,playerGameRequests',
-    sql_read_mode: false,
-    details: { coadminUid },
-  });
-
-  const [staffSnap, playersSnap, cashoutsSnap, requestsSnap] = await Promise.all([
-    adminDb.collection('users').where('role', '==', 'staff').where('coadminUid', '==', coadminUid).get(),
-    adminDb.collection('users').where('role', '==', 'player').where('coadminUid', '==', coadminUid).get(),
-    adminDb.collection('playerCashoutTasks').where('coadminUid', '==', coadminUid).get(),
-    adminDb
-      .collection('playerGameRequests')
-      .where('coadminUid', '==', coadminUid)
-      .where('type', '==', 'redeem')
-      .get(),
-  ]);
-
-  return {
-    staffDocs: staffSnap.docs.map((d) => ({ id: d.id, ...(d.data() as AnyDoc) })),
-    playerDocs: playersSnap.docs.map((d) => ({ id: d.id, ...(d.data() as AnyDoc) })),
-    cashoutDocs: cashoutsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as AnyDoc) })),
-    redeemRequestDocs: requestsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as AnyDoc) })),
-  };
-}
-
 export async function GET(request: Request) {
   try {
     const auth = await requireApiUser(request, ['coadmin']);
@@ -346,13 +315,7 @@ export async function GET(request: Request) {
     if (sqlReadMode) {
       data = await loadCoadminBehavioursDataFromSql(callerUid);
       if (!data) {
-        logCacheFirestoreFallbackBlocked(ROUTE, 'users,playerCashoutTasks,playerGameRequests', {
-          coadminUid: callerUid,
-        });
-        return NextResponse.json(
-          { error: 'SQL cache is unavailable. Configure DATABASE_URL on the server.' },
-          { status: 503 }
-        );
+        return firestoreFallbackRemovedResponse(ROUTE, { coadminUid: callerUid });
       }
       logCacheSqlRead(ROUTE, {
         coadminUid: callerUid,
@@ -362,7 +325,10 @@ export async function GET(request: Request) {
         redeemCount: data.redeemRequestDocs.length,
       });
     } else {
-      data = await loadBehavioursDataFromFirestore(callerUid);
+      return firestoreFallbackRemovedResponse(ROUTE, {
+        coadminUid: callerUid,
+        sqlReadMode,
+      });
     }
 
     const rows = buildStaffBehavioursRows(
@@ -376,7 +342,7 @@ export async function GET(request: Request) {
     return NextResponse.json({
       success: true,
       staffBehaviours: rows,
-      source: sqlReadMode ? 'postgres' : 'firestore',
+      source: 'postgres',
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to load behaviours.';
