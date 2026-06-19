@@ -255,6 +255,14 @@ const GAME_VAULT_MIDNIGHT_PARTY_WARNING_MARKER =
 const GAME_VAULT_MIDNIGHT_PARTY_PLAYER_MESSAGE =
   'Recharge blocked: Please open Game Vault and choose whether to participate in the Midnight Party program for your previous deposit before depositing again.';
 const PLAYER_PWA_EXIT_GUARD_HISTORY_KEY = 'royalVipBackGuard';
+const PLAYER_BACK_NAVIGATION_ORDER: PlayerView[] = [
+  'dashboard',
+  'play',
+  'bonus-events',
+  'earn-coins',
+  'agents',
+  'usernames',
+];
 
 function requestMatchesMidnightPartyDismiss(input: {
   dismissReasonCode?: string | null;
@@ -359,6 +367,7 @@ export default function PlayerPage() {
   const router = useRouter();
   const isPlayerRole = useIsPlayerSessionRole();
   const [activeView, setActiveView] = useState<PlayerView>('dashboard');
+  const activeViewRef = useRef<PlayerView>('dashboard');
   const [playerUid, setPlayerUid] = useState('');
 
   const [agents, setAgents] = useState<AdminUser[]>([]);
@@ -1433,14 +1442,21 @@ export default function PlayerPage() {
   }, []);
 
   useEffect(() => {
-    if (typeof window === 'undefined' || !isStandaloneMode() || !isAndroidDevice()) {
+    activeViewRef.current = activeView;
+  }, [activeView]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
       return undefined;
     }
     if (window.location.pathname !== '/player') {
       return undefined;
     }
 
-    console.info('[PWA_BACK] standalone detected');
+    console.info('[PWA_BACK] player back guard enabled', {
+      standalone: isStandaloneMode(),
+      android: isAndroidDevice(),
+    });
 
     const hasExitGuardState = () => {
       const state = window.history.state as Record<string, unknown> | null;
@@ -1460,6 +1476,34 @@ export default function PlayerPage() {
         window.location.href
       );
       console.info('[PWA_BACK] guard pushed');
+    };
+
+    const getPreviousPlayerSection = (view: PlayerView) => {
+      const currentIndex = PLAYER_BACK_NAVIGATION_ORDER.indexOf(view);
+      if (currentIndex <= 0) {
+        return null;
+      }
+      return PLAYER_BACK_NAVIGATION_ORDER[currentIndex - 1];
+    };
+
+    const navigateToPreviousPlayerSection = () => {
+      const fromSection = activeViewRef.current;
+      const toSection = getPreviousPlayerSection(fromSection);
+      if (!toSection) {
+        return false;
+      }
+
+      console.info('[PLAYER_BACK_NAVIGATION]', {
+        fromSection,
+        toSection,
+      });
+      setActiveView(toSection);
+      setMobileMenuOpen(false);
+      requestAnimationFrame(() => {
+        pageScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      });
+      return true;
     };
 
     const closeTopPlayerOverlay = () => {
@@ -1558,8 +1602,16 @@ export default function PlayerPage() {
         return;
       }
 
+      if (navigateToPreviousPlayerSection()) {
+        pushExitGuardState();
+        return;
+      }
+
       pushExitGuardState();
       setShowPwaExitConfirm(true);
+      console.info('[PLAYER_BACK_EXIT_MODAL]', {
+        section: 'lobby',
+      });
       console.info('[BEFORE_UNLOAD_TRIGGERED]', {
         reason: 'pwa_back_no_overlay',
         currentPath: window.location.pathname,
@@ -1572,8 +1624,8 @@ export default function PlayerPage() {
       window.removeEventListener('popstate', onPlayerPwaBack);
     };
   }, [
-    bonusErrorSplashMessage,
     closeIosGuide,
+    bonusErrorSplashMessage,
     coinLoading,
     dismissRedeemLoadingId,
     earnedRewardSplashCoins,
@@ -7672,26 +7724,36 @@ export default function PlayerPage() {
           aria-modal="true"
           aria-labelledby="player-pwa-exit-title"
           className={`${PLAYER_SPLASH_BACKDROP_CENTER} z-[128] bg-black/88 px-4 backdrop-blur-2xl`}
-          onClick={() => setShowPwaExitConfirm(false)}
+          onClick={() => {
+            console.info('[PLAYER_BACK_EXIT_CANCELLED]');
+            setShowPwaExitConfirm(false);
+          }}
         >
           <div
             onClick={(event) => event.stopPropagation()}
             className="fire-panel fire-orange w-full max-w-sm rounded-3xl border border-amber-300/45 bg-gradient-to-br from-amber-950/95 via-zinc-950 to-black/95 p-6 text-center text-white shadow-2xl shadow-amber-900/30"
           >
             <h3 id="player-pwa-exit-title" className="text-2xl font-black">
-              Do you want to exit the app?
+              Exit Royal VIP?
             </h3>
+            <p className="mt-3 text-sm text-amber-100/75">
+              Do you want to exit the app?
+            </p>
             <div className="mt-6 flex gap-3">
               <button
                 type="button"
-                onClick={() => setShowPwaExitConfirm(false)}
+                onClick={() => {
+                  console.info('[PLAYER_BACK_EXIT_CANCELLED]');
+                  setShowPwaExitConfirm(false);
+                }}
                 className="flex-1 rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-sm font-bold text-white hover:bg-white/15"
               >
-                Cancel
+                Stay
               </button>
               <button
                 type="button"
                 onClick={() => {
+                  console.info('[PLAYER_BACK_EXIT_CONFIRMED]');
                   console.info('[PWA_BACK] exit confirmed');
                   pwaExitConfirmedRef.current = true;
                   setShowPwaExitConfirm(false);
