@@ -398,6 +398,22 @@ function logSqlPoolAcquire(
     slow_acquire: acquireMs >= POOL_ACQUIRE_SLOW_MS,
   });
   if (acquireMs >= POOL_ACQUIRE_SLOW_MS || statsBefore.waitingCount > 0 || stats.waitingCount > 0) {
+    if (acquireMs >= 1_000 || statsBefore.totalCount === 0) {
+      console.warn('[SQL_POOL_COLD_START]', {
+        route: acquireContext?.route ?? acquireContext?.context ?? 'unspecified',
+        acquireMs,
+        totalCount: stats.totalCount,
+        idleCount: stats.idleCount,
+        waitingCount: stats.waitingCount,
+      });
+    }
+    console.warn('[SQL_POOL_PRESSURE]', {
+      route: acquireContext?.route ?? acquireContext?.context ?? 'unspecified',
+      totalCount: stats.totalCount,
+      idleCount: stats.idleCount,
+      waitingCount: stats.waitingCount,
+      acquireMs,
+    });
     logPlayerMirrorPoolStats(`slow_acquire:${acquireContext?.context ?? 'unspecified'}`);
   }
   if (statsBefore.idleCount === 0) {

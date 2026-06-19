@@ -15,6 +15,7 @@ import RoleSidebarLayout, { type NavigationItem } from '@/components/navigation/
 import { auth } from '@/lib/firebase/client';
 import { getApiAuthHeaders } from '@/lib/firebase/apiClient';
 import { belongsToCoadmin } from '@/lib/coadmin/scope';
+import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 
 import {
   approveCarerCreationRequest,
@@ -61,6 +62,11 @@ const NPR_TO_USD = 0.0075;
 
 export default function AdminPage() {
   const [activeView, setActiveView] = useState<AdminView>('dashboard');
+  const startupInFlightRef = useRef(new Map<string, Promise<unknown>>());
+  const dashboardStartedRef = useRef(false);
+  const [adminStartupReady, setAdminStartupReady] = useState(false);
+  const [presenceEnabled, setPresenceEnabled] = useState(false);
+  const [unreadPollingEnabled, setUnreadPollingEnabled] = useState(false);
 
   const [coadminUsername, setCoadminUsername] = useState('');
   const [coadminPassword, setCoadminPassword] = useState('');
@@ -162,34 +168,116 @@ export default function AdminPage() {
   ]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    async function warmAdminSession() {
+      const cached = getCachedSessionUser();
+      if (cached?.role === 'admin') {
+        console.info('[ADMIN_STARTUP_FETCH]', {
+          endpoint: '/api/auth/session/me',
+          reason: 'admin_session_gate',
+          critical: true,
+          deferred: false,
+          deduped: true,
+        });
+        setAdminStartupReady(true);
+        return;
+      }
+
+      console.info('[ADMIN_STARTUP_FETCH]', {
+        endpoint: '/api/auth/session/me',
+        reason: 'admin_session_gate',
+        critical: true,
+        deferred: false,
+        deduped: false,
+      });
+      const sessionUser = await getSessionUserOnce().catch(() => null);
+      if (cancelled) {
+        return;
+      }
+      setAdminStartupReady(sessionUser?.role === 'admin');
+    }
+
+    void warmAdminSession();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!adminStartupReady) {
+      return;
+    }
+
     if (activeView === 'dashboard') {
-      loadCoadmins();
-      loadStaffList();
-      loadChatUsers();
-      loadPendingCarerRequests();
+      if (!dashboardStartedRef.current) {
+        dashboardStartedRef.current = true;
+        void (async () => {
+          await loadCoadmins('dashboard_core');
+          console.info('[ADMIN_STARTUP_DEFERRED]', {
+            endpoint: '/api/users/cache?role=staff',
+            reason: 'stagger_after_coadmins',
+          });
+          window.setTimeout(() => {
+            void loadStaffList('dashboard_core_staggered', true);
+          }, 150);
+        })();
+        const carerTimer = window.setTimeout(() => {
+          console.info('[ADMIN_STARTUP_DEFERRED]', {
+            endpoint: '/api/admin/carer-creation-requests',
+            reason: 'dashboard_badge_after_first_paint',
+          });
+          void loadPendingCarerRequests('dashboard_deferred', true);
+        }, 900);
+        const presenceTimer = window.setTimeout(() => {
+          console.info('[ADMIN_STARTUP_DEFERRED]', {
+            endpoint: '/api/presence/batch',
+            reason: 'presence_after_core_admin_data',
+          });
+          setPresenceEnabled(true);
+        }, 1200);
+        const unreadTimer = window.setTimeout(() => {
+          console.info('[ADMIN_STARTUP_DEFERRED]', {
+            endpoint: '/api/chat/messages',
+            reason: 'unread_poll_after_core_admin_data',
+          });
+          setUnreadPollingEnabled(true);
+        }, 1400);
+        return () => {
+          window.clearTimeout(carerTimer);
+          window.clearTimeout(presenceTimer);
+          window.clearTimeout(unreadTimer);
+        };
+      }
     }
 
     if (activeView === 'view-coadmins') {
-      loadCoadmins();
-      loadAllStaffForCoadmins();
+      loadCoadmins('view_coadmins');
+      loadAllStaffForCoadmins('view_coadmins');
     }
 
     if (activeView === 'view-staff') {
-      loadStaffList();
+      loadStaffList('view_staff');
     }
 
     if (activeView === 'players') {
-      loadCoadmins();
-      loadPlayers();
-      loadDeletedPlayers();
+      loadCoadmins('players_transfer_options');
+      loadPlayers('players_core');
+      window.setTimeout(() => {
+        void loadDeletedPlayers('players_deferred', true);
+      }, 250);
     }
 
     if (activeView === 'reach-out') {
-      loadChatUsers();
+      loadChatUsers('reach_out');
     }
-  }, [activeView]);
+  }, [activeView, adminStartupReady]);
 
   useEffect(() => {
+    if (!unreadPollingEnabled) {
+      return;
+    }
+
     const currentUser = auth.currentUser;
 
     if (!currentUser) {
@@ -199,7 +287,7 @@ export default function AdminPage() {
     const unsubscribe = listenToUnreadCounts(setUnreadCounts);
 
     return () => unsubscribe();
-  }, []);
+  }, [unreadPollingEnabled]);
 
   useEffect(() => {
     if (totalUnreadCount > previousTotalUnreadRef.current) {
@@ -218,12 +306,56 @@ export default function AdminPage() {
     });
   }
 
-  async function loadCoadmins() {
+  function logAdminStartupFetch(
+    endpoint: string,
+    reason: string,
+    deduped: boolean,
+    deferred = false,
+    critical = false
+  ) {
+    console.info('[ADMIN_STARTUP_FETCH]', {
+      endpoint,
+      reason,
+      critical,
+      deduped,
+      deferred,
+    });
+  }
+
+  async function runAdminStartupFetch<T>(
+    endpoint: string,
+    reason: string,
+    fetcher: () => Promise<T>,
+    deferred = false
+  ): Promise<T> {
+    const existing = startupInFlightRef.current.get(endpoint) as Promise<T> | undefined;
+    if (existing) {
+      console.info('[ADMIN_STARTUP_DEDUPED_REQUEST]', { endpoint });
+      console.info('[ADMIN_STARTUP_REQUEST_DEDUPED]', { endpoint });
+      logAdminStartupFetch(endpoint, reason, true, deferred);
+      return existing;
+    }
+
+    logAdminStartupFetch(endpoint, reason, false, deferred);
+    const promise = fetcher().finally(() => {
+      startupInFlightRef.current.delete(endpoint);
+    });
+    startupInFlightRef.current.set(endpoint, promise);
+    return promise;
+  }
+
+  async function loadCoadmins(reason = 'manual', deferred = false) {
     setLoadingList(true);
 
     try {
-      const list = await getCoadmins();
+      const list = await runAdminStartupFetch(
+        '/api/users/cache?role=coadmin',
+        reason,
+        () => getCoadmins(),
+        deferred
+      );
       setCoadmins(list);
+      setChatUsers(list);
     } catch (err: any) {
       setMessage(err.message || 'Failed to load co-admins.');
     } finally {
@@ -231,12 +363,17 @@ export default function AdminPage() {
     }
   }
 
- async function loadStaffList() {
+ async function loadStaffList(reason = 'manual', deferred = false) {
   setLoadingList(true);
 
   try {
     const actorUid = await getAdminActorUid();
-    const list = await getStaff();
+    const list = await runAdminStartupFetch(
+      '/api/users/cache?role=staff',
+      reason,
+      () => getStaff(),
+      deferred
+    );
 
     const adminStaff = list.filter(
       (staff) => staff.createdBy === actorUid
@@ -250,11 +387,16 @@ export default function AdminPage() {
   }
 }
 
-  async function loadPlayers() {
+  async function loadPlayers(reason = 'manual', deferred = false) {
     setLoadingList(true);
 
     try {
-      const list = await getPlayers({ all: true });
+      const list = await runAdminStartupFetch(
+        '/api/users/cache?role=player&includeDisabled=true',
+        reason,
+        () => getPlayers({ all: true }),
+        deferred
+      );
       setPlayers(list);
     } catch (err: any) {
       setMessage(err.message || 'Failed to load players.');
@@ -263,36 +405,62 @@ export default function AdminPage() {
     }
   }
 
-  async function loadDeletedPlayers() {
+  async function loadDeletedPlayers(reason = 'manual', deferred = false) {
     try {
-      const list = await getDeletedPlayers();
+      const list = await runAdminStartupFetch(
+        '/api/admin/player-archive',
+        reason,
+        () => getDeletedPlayers(),
+        deferred
+      );
       setDeletedPlayers(list);
     } catch (err: any) {
       setMessage(err.message || 'Failed to load deleted players.');
     }
   }
 
-  async function loadAllStaffForCoadmins() {
+  async function loadAllStaffForCoadmins(reason = 'manual', deferred = false) {
     try {
-      const list = await getStaff({ all: true });
+      const list = await runAdminStartupFetch(
+        '/api/users/cache?role=staff&all=true',
+        reason,
+        () => getStaff({ all: true }),
+        deferred
+      );
       setAllStaffForCoadmins(list);
     } catch (err: any) {
       setMessage(err.message || 'Failed to load co-admin staff list.');
     }
   }
 
-  async function loadPendingCarerRequests() {
+  async function loadPendingCarerRequests(reason = 'manual', deferred = false) {
     try {
-      const requests = await getPendingCarerCreationRequests();
+      const requests = await runAdminStartupFetch(
+        '/api/admin/carer-creation-requests',
+        reason,
+        () => getPendingCarerCreationRequests(),
+        deferred
+      );
       setPendingCarerRequests(requests);
     } catch (err: any) {
       setMessage(err.message || 'Failed to load pending carer requests.');
     }
   }
 
-  async function loadChatUsers() {
+  async function loadChatUsers(reason = 'manual', deferred = false) {
   try {
-    const coadminsList = await getCoadmins();
+    if (coadmins.length > 0) {
+      logAdminStartupFetch('/api/users/cache?role=coadmin', reason, true, deferred);
+      setChatUsers(coadmins);
+      return;
+    }
+
+    const coadminsList = await runAdminStartupFetch(
+      '/api/users/cache?role=coadmin',
+      reason,
+      () => getCoadmins(),
+      deferred
+    );
 
     // ONLY coadmins, no staff
     setChatUsers(coadminsList);
@@ -751,13 +919,16 @@ export default function AdminPage() {
   });
 
   const adminPresenceUids = useMemo(() => {
+    if (!presenceEnabled) {
+      return [];
+    }
     const s = new Set<string>();
     for (const u of coadmins) s.add(u.uid);
     for (const u of staffList) s.add(u.uid);
     for (const u of players) s.add(u.uid);
     for (const u of chatUsers) s.add(u.uid);
     return Array.from(s);
-  }, [coadmins, staffList, players, chatUsers]);
+  }, [presenceEnabled, coadmins, staffList, players, chatUsers]);
 
   const adminOnlineByUid = usePresenceOnlineMap(adminPresenceUids);
 

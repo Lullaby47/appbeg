@@ -97,6 +97,47 @@ let playerReferralBackfillAttempted = false;
 const USERS_CACHE_TIMEOUT_MS = 5_000;
 const PLAYERS_CACHE_TIMEOUT_MS = 5_000;
 const CARER_CREATION_REQUESTS_CACHE_TIMEOUT_MS = 5_000;
+const usersCacheInFlight = new Map<string, Promise<unknown>>();
+const adminEndpointInFlight = new Map<string, Promise<unknown>>();
+
+function singleFlight<T>(
+  key: string,
+  factory: () => Promise<T>,
+  logEndpoint?: string
+): Promise<T> {
+  const existing = usersCacheInFlight.get(key) as Promise<T> | undefined;
+  if (existing) {
+    if (logEndpoint) {
+      console.info('[ADMIN_STARTUP_DEDUPED_REQUEST]', { endpoint: logEndpoint });
+      console.info('[ADMIN_STARTUP_REQUEST_DEDUPED]', { endpoint: logEndpoint });
+    }
+    return existing;
+  }
+
+  const promise = factory().finally(() => {
+    usersCacheInFlight.delete(key);
+  });
+  usersCacheInFlight.set(key, promise);
+  return promise;
+}
+
+function singleFlightAdminEndpoint<T>(
+  key: string,
+  factory: () => Promise<T>
+): Promise<T> {
+  const existing = adminEndpointInFlight.get(key) as Promise<T> | undefined;
+  if (existing) {
+    console.info('[ADMIN_STARTUP_DEDUPED_REQUEST]', { endpoint: key });
+    console.info('[ADMIN_STARTUP_REQUEST_DEDUPED]', { endpoint: key });
+    return existing;
+  }
+
+  const promise = factory().finally(() => {
+    adminEndpointInFlight.delete(key);
+  });
+  adminEndpointInFlight.set(key, promise);
+  return promise;
+}
 
 async function fetchWithCacheTimeout(
   input: RequestInfo | URL,
@@ -163,11 +204,12 @@ async function tryReadUsersCacheByRole<T extends ManagedUser | CoadminUser>(
   if (role === 'player' && !params.has('status')) {
     params.set('includeDisabled', 'true');
   }
+  const endpoint = `/api/users/cache?${params.toString()}`;
 
-  try {
+  return singleFlight(`users:${params.toString()}`, async () => {
     const headers = await getUsersCacheReadHeaders();
     const response = await fetchWithCacheTimeout(
-      `/api/users/cache?${params.toString()}`,
+      endpoint,
       {
         method: 'GET',
         headers,
@@ -196,16 +238,16 @@ async function tryReadUsersCacheByRole<T extends ManagedUser | CoadminUser>(
       return payload.users;
     }
     return null;
-  } catch (error) {
-    console.info('[USERS_CACHE_READ] source=firestore_fallback', {
-      role,
-      coadminUid: coadminUid || '',
-      reason: 'cache_api_failed',
-      durationMs: Date.now() - startedAt,
-      error,
+  }, endpoint).catch((error) => {
+      console.info('[USERS_CACHE_READ] source=firestore_fallback', {
+        role,
+        coadminUid: coadminUid || '',
+        reason: 'cache_api_failed',
+        durationMs: Date.now() - startedAt,
+        error,
+      });
+      return null;
     });
-    return null;
-  }
 }
 
 async function getUsersByRoleSqlFirst<T extends ManagedUser | CoadminUser>(
@@ -609,15 +651,17 @@ export async function requestCarerCreation(username: string) {
 }
 
 export async function getPendingCarerCreationRequests(): Promise<CarerCreationRequest[]> {
-  const response = await fetch('/api/admin/carer-creation-requests', {
-    method: 'GET',
-    headers: await getApiAuthHeaders(false, { action: 'read' }),
+  return singleFlightAdminEndpoint('/api/admin/carer-creation-requests', async () => {
+    const response = await fetch('/api/admin/carer-creation-requests', {
+      method: 'GET',
+      headers: await getApiAuthHeaders(false, { action: 'read' }),
+    });
+    const data = await parseApiResponse(response);
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to load carer requests.');
+    }
+    return (data.requests || []) as CarerCreationRequest[];
   });
-  const data = await parseApiResponse(response);
-  if (!response.ok) {
-    throw new Error(data.error || 'Failed to load carer requests.');
-  }
-  return (data.requests || []) as CarerCreationRequest[];
 }
 
 export async function getMyPendingCarerCreationRequests(): Promise<CarerCreationRequest[]> {

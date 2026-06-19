@@ -1,9 +1,12 @@
+import Script from 'next/script';
+
 export default function PwaInstallPromptBootstrapScript() {
   return (
-    <script
+    <Script
       id="royal-vip-pwa-install-prompt"
-      dangerouslySetInnerHTML={{
-        __html: `
+      strategy="beforeInteractive"
+    >
+      {`
         (function () {
           if (window.__royalVipPwaInstallBootstrapAttached) return;
           window.__royalVipPwaInstallBootstrapAttached = true;
@@ -31,8 +34,7 @@ export default function PwaInstallPromptBootstrapScript() {
             window.__royalVipNotifyPwaInstallSubscribers();
           });
         })();
-      `,
-      }}
-    />
+      `}
+    </Script>
   );
 }

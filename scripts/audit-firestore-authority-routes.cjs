@@ -20,7 +20,7 @@ const ROUTE_CLASSIFICATION = [
   { route: '/api/admin/create-staff', classification: 'migrate_now_sql_authority', status: 'sql_gated_firestore_mirror_blocked' },
   { route: '/api/admin/delete-user', classification: 'migrate_now_sql_authority', status: 'sql_gated_firestore_mirror_blocked' },
   { route: '/api/admin/reset-user-password', classification: 'migrate_now_sql_authority', status: 'sql_gated' },
-  { route: '/api/admin/carer-creation-requests', classification: 'migrate_now_sql_authority', status: 'sql_gated_firestore_mirror_blocked' },
+  { route: '/api/admin/carer-creation-requests', classification: 'firestore_removed_sql_only', status: 'sql_only_no_firestore_runtime' },
   { route: '/api/coadmin/reset-worker-credentials', classification: 'migrate_now_sql_authority', status: 'sql_gated' },
   { route: '/api/admin/transfer-player-coadmin', classification: 'migrate_now_sql_authority', status: 'sql_gated' },
   { route: '/api/admin/player-archive', classification: 'migrate_now_sql_authority', status: 'sql_gated' },

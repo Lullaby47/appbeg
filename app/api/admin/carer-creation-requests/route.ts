@@ -1,29 +1,110 @@
 import { NextResponse } from 'next/server';
 
-import { adminAuth, adminDb } from '@/lib/firebase/admin';
-import { requireApiUser } from '@/lib/firebase/apiAuth';
-import {
-  isAuthoritySqlWriteEnabled,
-  logAuthorityFirestoreFallbackBlocked,
-} from '@/lib/server/authoritySqlWrite';
+import { adminAuth } from '@/lib/firebase/adminAuth';
+import { lookupAppSessionWithClient } from '@/lib/sql/appSessions';
 import {
   getCarerCreationRequestSql,
   listPendingCarerCreationRequestsSql,
-  mapFirestoreCarerCreationRequest,
-  mirrorCarerCreationRequestById,
   updateCarerCreationRequestStatusSql,
-  type CarerCreationRequestRecord,
 } from '@/lib/sql/carerCreationRequestsCache';
+import { acquirePlayerMirrorClient, cleanText } from '@/lib/sql/playerMirrorCommon';
+import { lookupApiUserProfileFromSqlCache } from '@/lib/sql/playersCache';
 import {
   createUserDirectoryInSql,
   isActiveUsernameTakenInSql,
 } from '@/lib/sql/userDirectoryWrite';
-import { mirrorUserBalanceSnapshotById } from '@/lib/sql/userBalanceSnapshotsCache';
 
 export const runtime = 'nodejs';
 
+const ROUTE = '/api/admin/carer-creation-requests';
+
 function makeHiddenEmail(username: string) {
   return `${username}@app.local`;
+}
+
+async function requireAdminSqlAppSession(request: Request) {
+  const sessionId = cleanText(request.headers.get('X-App-Session-Id'));
+  if (!sessionId) {
+    return {
+      response: NextResponse.json(
+        { error: 'App session required.', reason: 'app_session_required' },
+        { status: 401 }
+      ),
+    } as const;
+  }
+
+  const acquired = await acquirePlayerMirrorClient({
+    context: 'admin_carer_creation_requests_auth',
+    route: ROUTE,
+  });
+  if (!acquired) {
+    return {
+      response: NextResponse.json(
+        { error: 'SQL authority required for admin auth.', reason: 'postgres_unavailable' },
+        { status: 503 }
+      ),
+    } as const;
+  }
+
+  let session;
+  let profileLookup;
+  try {
+    session = await lookupAppSessionWithClient(sessionId, acquired.client);
+    if (!session) {
+      return {
+        response: NextResponse.json(
+          { error: 'Invalid or expired app session.', reason: 'app_session_invalid' },
+          { status: 401 }
+        ),
+      } as const;
+    }
+
+    profileLookup = await lookupApiUserProfileFromSqlCache(session.uid, acquired.client);
+  } finally {
+    acquired.client.release();
+  }
+
+  const profile = profileLookup.profile;
+  if (!profile) {
+    return {
+      response: NextResponse.json(
+        { error: 'Admin profile not found in SQL.', reason: profileLookup.missReason },
+        { status: 401 }
+      ),
+    } as const;
+  }
+
+  if (profile.role !== 'admin') {
+    return {
+      response: NextResponse.json(
+        { error: 'Admin access required.', reason: 'role_not_allowed' },
+        { status: 403 }
+      ),
+    } as const;
+  }
+
+  if (profile.status && profile.status !== 'active') {
+    return {
+      response: NextResponse.json(
+        { error: 'Admin account is not active.', reason: 'account_not_active' },
+        { status: 403 }
+      ),
+    } as const;
+  }
+
+  console.info('[ADMIN_CARER_CREATION_REQUESTS_AUTH]', {
+    auth_path: 'app_session_sql',
+    uid: profile.uid,
+    app_session_used: true,
+  });
+
+  return {
+    user: {
+      uid: profile.uid,
+      username: profile.username || 'Admin',
+    },
+    authPath: 'app_session_sql' as const,
+  };
 }
 
 async function rollbackFirebaseUser(uid: string) {
@@ -34,65 +115,10 @@ async function rollbackFirebaseUser(uid: string) {
   }
 }
 
-async function getFirestorePendingRequests(): Promise<CarerCreationRequestRecord[]> {
-  const snapshot = await adminDb
-    .collection('carerCreationRequests')
-    .where('status', '==', 'pending')
-    .get();
-  return snapshot.docs
-    .map((docSnap) =>
-      mapFirestoreCarerCreationRequest(docSnap.id, (docSnap.data() || {}) as Record<string, unknown>)
-    )
-    .sort((a, b) => {
-      const aMs = a.requestedAt ? new Date(a.requestedAt).getTime() : 0;
-      const bMs = b.requestedAt ? new Date(b.requestedAt).getTime() : 0;
-      return bMs - aMs;
-    });
-}
-
-async function resolveCarerCreationRequest(
-  requestId: string
-): Promise<CarerCreationRequestRecord | null> {
-  const sqlRecord = await getCarerCreationRequestSql(requestId);
-  if (sqlRecord) {
-    return sqlRecord;
-  }
-
-  await mirrorCarerCreationRequestById(requestId);
-  const hydrated = await getCarerCreationRequestSql(requestId);
-  if (hydrated) {
-    return hydrated;
-  }
-
-  const requestSnap = await adminDb.collection('carerCreationRequests').doc(requestId).get();
-  if (!requestSnap.exists) {
-    return null;
-  }
-  return mapFirestoreCarerCreationRequest(
-    requestSnap.id,
-    (requestSnap.data() || {}) as Record<string, unknown>
-  );
-}
-
-async function mirrorFirestoreRequestStatus(
-  requestId: string,
-  update: {
-    status: 'approved' | 'rejected';
-    reviewedAt: Date;
-    reviewedByUid: string;
-    reviewedByUsername: string;
-    createdCarerUid?: string | null;
-    note?: string | null;
-  }
-) {
-  const requestRef = adminDb.collection('carerCreationRequests').doc(requestId);
-  await requestRef.update({
-    status: update.status,
-    reviewedAt: update.reviewedAt,
-    reviewedByUid: update.reviewedByUid,
-    reviewedByUsername: update.reviewedByUsername,
-    ...(update.createdCarerUid ? { createdCarerUid: update.createdCarerUid } : {}),
-    ...(update.note !== undefined ? { note: update.note } : {}),
+function logFirestoreRemoved(method: string) {
+  console.info('[ADMIN_CARER_CREATION_REQUESTS_FIRESTORE_REMOVED]', {
+    route: ROUTE,
+    method,
   });
 }
 
@@ -100,34 +126,46 @@ export async function GET(request: Request) {
   const startedAt = Date.now();
 
   try {
-    const auth = await requireApiUser(request, ['admin']);
+    const auth = await requireAdminSqlAppSession(request);
     if ('response' in auth) {
       return auth.response;
     }
-    console.info('[ADMIN_CARER_CREATION_REQUESTS_AUTH]', {
-      auth_path: auth.authPath,
-      uid: auth.user.uid,
-      app_session_used: auth.authPath.startsWith('app_session'),
-    });
+    logFirestoreRemoved('GET');
 
-    let source: 'postgres' | 'firestore' = 'postgres';
-    let requests = await listPendingCarerCreationRequestsSql();
-    if (!requests || requests.length === 0) {
-      source = 'firestore';
-      requests = await getFirestorePendingRequests();
+    const requests = await listPendingCarerCreationRequestsSql();
+    if (!requests) {
+      console.warn('[ADMIN_CARER_CREATION_REQUESTS_SQL]', {
+        count: 0,
+        source: 'sql_unavailable',
+        firestore_fallback: false,
+        durationMs: Date.now() - startedAt,
+      });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'SQL authority required for carer creation requests.',
+          requests: [],
+          source: 'sql_unavailable',
+          firestore_fallback: false,
+        },
+        { status: 503 }
+      );
     }
 
-    console.info('[CARER_CREATION_REQUEST_SQL]', {
+    console.info('[ADMIN_CARER_CREATION_REQUESTS_SQL]', {
       action: 'list_pending',
-      requestId: '',
-      coadminUid: '',
-      sql_ok: source === 'postgres',
-      firestore_mirror_ok: source === 'firestore',
       count: requests.length,
+      source: requests.length > 0 ? 'sql' : 'sql_empty',
+      firestore_fallback: false,
       durationMs: Date.now() - startedAt,
     });
 
-    return NextResponse.json({ requests, source });
+    return NextResponse.json({
+      ok: true,
+      requests,
+      source: requests.length > 0 ? 'sql' : 'sql_empty',
+      firestore_fallback: false,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to load requests.';
     return NextResponse.json({ error: message }, { status: 500 });
@@ -140,7 +178,7 @@ export async function POST(request: Request) {
   let requestId = '';
 
   try {
-    const auth = await requireApiUser(request, ['admin']);
+    const auth = await requireAdminSqlAppSession(request);
     if ('response' in auth) {
       return auth.response;
     }
@@ -148,11 +186,7 @@ export async function POST(request: Request) {
       uid: auth.user.uid,
       username: auth.user.username || 'Admin',
     };
-    console.info('[ADMIN_CARER_CREATION_REQUESTS_AUTH]', {
-      auth_path: auth.authPath,
-      uid: admin.uid,
-      app_session_used: auth.authPath.startsWith('app_session'),
-    });
+    logFirestoreRemoved('POST');
     const body = (await request.json()) as {
       requestId?: string;
       password?: string;
@@ -172,7 +206,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Password must be at least 6 characters.' }, { status: 400 });
     }
 
-    const requestRecord = await resolveCarerCreationRequest(requestId);
+    const requestRecord = await getCarerCreationRequestSql(requestId);
     if (!requestRecord) {
       return NextResponse.json({ error: 'Request not found.' }, { status: 404 });
     }
@@ -191,44 +225,21 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'Failed to reject request in SQL.' }, { status: 500 });
       }
 
-      let firestoreMirrorOk = false;
-      if (isAuthoritySqlWriteEnabled()) {
-        logAuthorityFirestoreFallbackBlocked('/api/admin/carer-creation-requests', 'carerCreationRequests.update', {
-          requestId,
-          action: 'reject',
-        });
-      } else {
-        try {
-          await mirrorFirestoreRequestStatus(requestId, {
-            status: 'rejected',
-            reviewedAt: new Date(),
-            reviewedByUid: admin.uid,
-            reviewedByUsername: admin.username,
-            note: null,
-          });
-          firestoreMirrorOk = true;
-        } catch (error) {
-          console.warn('[CARER_CREATION_REQUEST_SQL] firestore mirror failed', {
-            action: 'reject',
-            requestId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-
-      console.info('[CARER_CREATION_REQUEST_SQL]', {
+      console.info('[ADMIN_CARER_CREATION_REQUESTS_SQL]', {
         action: 'reject',
         requestId,
         coadminUid: requestRecord.coadminUid,
         sql_ok: true,
-        firestore_mirror_ok: firestoreMirrorOk,
+        firestore_fallback: false,
         durationMs: Date.now() - startedAt,
       });
 
       return NextResponse.json({
         success: true,
         sqlOk: true,
-        firestoreMirrorOk,
+        firestoreMirrorOk: false,
+        firestore_fallback: false,
+        source: 'sql',
         message: 'Carer request rejected.',
       });
     }
@@ -239,11 +250,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Request payload is invalid.' }, { status: 400 });
     }
 
-    const authoritySql = isAuthoritySqlWriteEnabled();
-    const usernameTakenInFirestore = authoritySql
-      ? false
-      : !(await adminDb.collection('users').where('username', '==', requestedUsername).limit(1).get()).empty;
-    if (usernameTakenInFirestore || (await isActiveUsernameTakenInSql(requestedUsername))) {
+    if (await isActiveUsernameTakenInSql(requestedUsername)) {
       const rejectionNote = 'Username already exists at approval time.';
       const sqlRejectOk = await updateCarerCreationRequestStatusSql({
         requestId,
@@ -253,39 +260,12 @@ export async function POST(request: Request) {
         rejectionReason: rejectionNote,
       });
 
-      let firestoreMirrorOk = false;
-      if (authoritySql) {
-        logAuthorityFirestoreFallbackBlocked('/api/admin/carer-creation-requests', 'carerCreationRequests.update', {
-          requestId,
-          action: 'reject',
-          reason: 'username_exists_at_approval',
-        });
-      } else {
-        try {
-          await mirrorFirestoreRequestStatus(requestId, {
-            status: 'rejected',
-            reviewedAt: new Date(),
-            reviewedByUid: admin.uid,
-            reviewedByUsername: admin.username,
-            note: rejectionNote,
-          });
-          firestoreMirrorOk = true;
-        } catch (error) {
-          console.warn('[CARER_CREATION_REQUEST_SQL] firestore mirror failed', {
-            action: 'reject',
-            requestId,
-            reason: 'username_exists_auto_reject',
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-
-      console.info('[CARER_CREATION_REQUEST_SQL]', {
+      console.info('[ADMIN_CARER_CREATION_REQUESTS_SQL]', {
         action: 'reject',
         requestId,
         coadminUid: ownerCoadminUid,
         sql_ok: sqlRejectOk,
-        firestore_mirror_ok: firestoreMirrorOk,
+        firestore_fallback: false,
         durationMs: Date.now() - startedAt,
         reason: 'username_exists_at_approval',
       });
@@ -349,26 +329,6 @@ export async function POST(request: Request) {
       throw error;
     }
 
-    let firestoreUserMirrorOk = false;
-    if (isAuthoritySqlWriteEnabled()) {
-      logAuthorityFirestoreFallbackBlocked('/api/admin/carer-creation-requests', 'users.set', {
-        uid: authUser.uid,
-      });
-    } else {
-      try {
-        await adminDb.collection('users').doc(authUser.uid).set(carerUser);
-        firestoreUserMirrorOk = true;
-        void mirrorUserBalanceSnapshotById(authUser.uid, 'appbeg_create_carer');
-      } catch (error) {
-        console.warn('[USER_DIRECTORY_SQL] firestore mirror failed', {
-          action: 'create_user',
-          route: 'approve_carer_request',
-          uid: authUser.uid,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
     const sqlApproveOk = await updateCarerCreationRequestStatusSql({
       requestId,
       status: 'approved',
@@ -383,32 +343,6 @@ export async function POST(request: Request) {
       });
     }
 
-    let firestoreRequestMirrorOk = false;
-    if (isAuthoritySqlWriteEnabled()) {
-      logAuthorityFirestoreFallbackBlocked('/api/admin/carer-creation-requests', 'carerCreationRequests.update', {
-        requestId,
-        action: 'approve',
-      });
-    } else {
-      try {
-        await mirrorFirestoreRequestStatus(requestId, {
-          status: 'approved',
-          reviewedAt: new Date(),
-          reviewedByUid: admin.uid,
-          reviewedByUsername: admin.username,
-          createdCarerUid: authUser.uid,
-          note: null,
-        });
-        firestoreRequestMirrorOk = true;
-      } catch (error) {
-        console.warn('[CARER_CREATION_REQUEST_SQL] firestore mirror failed', {
-          action: 'approve',
-          requestId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
     createdAuthUid = null;
 
     console.info('[USER_DIRECTORY_SQL]', {
@@ -419,16 +353,17 @@ export async function POST(request: Request) {
       actorUid: admin.uid,
       sql_ok: true,
       firebase_create_ok: firebaseCreateOk,
-      firestore_mirror_ok: firestoreUserMirrorOk,
+      firestore_mirror_ok: false,
+      firestore_fallback: false,
       durationMs: Date.now() - approveStartedAt,
     });
 
-    console.info('[CARER_CREATION_REQUEST_SQL]', {
+    console.info('[ADMIN_CARER_CREATION_REQUESTS_SQL]', {
       action: 'approve',
       requestId,
       coadminUid: ownerCoadminUid,
       sql_ok: sqlApproveOk,
-      firestore_mirror_ok: firestoreRequestMirrorOk,
+      firestore_fallback: false,
       durationMs: Date.now() - startedAt,
     });
 
@@ -438,9 +373,11 @@ export async function POST(request: Request) {
       message: 'Carer created after admin approval.',
       sqlOk: true,
       firebaseMirrorOk: firebaseCreateOk,
-      firestoreMirrorOk: firestoreUserMirrorOk,
+      firestoreMirrorOk: false,
       requestSqlOk: sqlApproveOk,
-      requestFirestoreMirrorOk: firestoreRequestMirrorOk,
+      requestFirestoreMirrorOk: false,
+      firestore_fallback: false,
+      source: 'sql',
     });
   } catch (error) {
     if (createdAuthUid) {
@@ -457,7 +394,7 @@ export async function POST(request: Request) {
       requestId,
       coadminUid: '',
       sql_ok: false,
-      firestore_mirror_ok: false,
+      firestore_fallback: false,
       durationMs: Date.now() - startedAt,
       error: message,
     });

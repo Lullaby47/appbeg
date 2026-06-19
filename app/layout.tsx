@@ -64,8 +64,8 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <PwaInstallPromptBootstrapScript />
       <body className="min-h-full flex flex-col">
+        <PwaInstallPromptBootstrapScript />
         <PwaInstallPromptCapture />
         <ClientFirestoreRuntimeAudit />
         <LoginProgressOverlay />
