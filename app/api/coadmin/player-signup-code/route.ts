@@ -11,7 +11,11 @@ export async function GET(request: Request) {
   try {
     return NextResponse.json({ code: await getOrCreateCoadminPlayerSignupCode(auth.user.uid) });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Unable to load player signup code.' }, { status: 500 });
+    console.error('[COADMIN_PLAYER_SIGNUP_CODE] load failed', {
+      coadminUid: auth.user.uid,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return NextResponse.json({ error: 'Player signup code is temporarily unavailable. Please try again later.' }, { status: 503 });
   }
 }
 
@@ -21,6 +25,10 @@ export async function POST(request: Request) {
   try {
     return NextResponse.json({ code: await rotateCoadminPlayerSignupCode(auth.user.uid) });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Unable to rotate player signup code.' }, { status: 500 });
+    console.error('[COADMIN_PLAYER_SIGNUP_CODE] rotation failed', {
+      coadminUid: auth.user.uid,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return NextResponse.json({ error: 'Unable to generate a new player signup code. Please try again later.' }, { status: 503 });
   }
 }

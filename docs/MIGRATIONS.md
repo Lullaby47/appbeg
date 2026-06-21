@@ -2,6 +2,28 @@
 
 AppBeg uses SQL as the runtime authority when `AUTHORITY_SQL_WRITE=1` and SQL read flags are enabled. Apply pending migrations before deploying.
 
+## Player signup-code repair (VPS / production)
+
+If the coadmin dashboard reports that `coadmin_player_signup_codes` does not exist, deploy the current code and run this idempotent repair against the same production `DATABASE_URL`:
+
+```bash
+node scripts/run-sql-file.cjs migrations/061_repair_coadmin_player_signup_codes.sql
+```
+
+Or with `psql`:
+
+```bash
+psql "$DATABASE_URL" -f migrations/061_repair_coadmin_player_signup_codes.sql
+```
+
+Verify it on the VPS:
+
+```bash
+psql "$DATABASE_URL" -c "SELECT to_regclass('public.coadmin_player_signup_codes') AS signup_code_table;"
+```
+
+The expected value is `coadmin_player_signup_codes`. Once present, opening the coadmin dashboard creates that coadmin's first code; **Copy** reads it and **Generate New Code** replaces it while recording only hashes in the audit table.
+
 ## Required production order (034–038)
 
 When `AUTHORITY_SQL_WRITE=1`, production startup requires **all** authority tables below. Apply migrations in this exact order on the **same `DATABASE_URL` Vercel uses**:

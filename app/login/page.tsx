@@ -54,6 +54,9 @@ function canUseLegacyFirebaseLoginFallback() {
 
 export default function LoginPage() {
   const router = useRouter();
+  const signupInputClass =
+    'h-12 w-full rounded-xl border border-slate-400 bg-slate-50 px-4 text-base text-slate-900 caret-blue-700 shadow-sm outline-none transition-all duration-200 placeholder:text-slate-500 focus:border-blue-600 focus:bg-white focus:ring-4 focus:ring-blue-600/15 focus:shadow-md disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 disabled:opacity-100';
+  const signupLabelClass = 'mb-1.5 block text-sm font-semibold text-slate-800';
 
   const [adminExists, setAdminExists] = useState<boolean | null>(null);
 
@@ -685,19 +688,40 @@ export default function LoginPage() {
                       <p className="mt-1 text-sm text-slate-500">Verify your email before your account is created.</p>
                     </div>
                     {!signupId ? (
-                      <form onSubmit={handleSignupRequest} className="space-y-3">
-                        <input value={signupEmail} onChange={(e) => setSignupEmail(e.target.value)} type="email" required autoComplete="email" placeholder="Email address" className="h-12 w-full rounded-xl border border-slate-200 px-4 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200" />
-                        <input value={signupUsername} onChange={(e) => setSignupUsername(e.target.value)} required placeholder="Desired username" className="h-12 w-full rounded-xl border border-slate-200 px-4 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200" />
-                        <input value={signupPassword} onChange={(e) => setSignupPassword(e.target.value)} type="password" minLength={6} required autoComplete="new-password" placeholder="Password (at least 6 characters)" className="h-12 w-full rounded-xl border border-slate-200 px-4 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200" />
-                        <input value={signupConfirmPassword} onChange={(e) => setSignupConfirmPassword(e.target.value)} type="password" minLength={6} required autoComplete="new-password" placeholder="Confirm password" className="h-12 w-full rounded-xl border border-slate-200 px-4 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200" />
-                        <input value={signupCoadminCode} onChange={(e) => setSignupCoadminCode(e.target.value.toUpperCase())} required placeholder="Coadmin signup code" className="h-12 w-full rounded-xl border border-slate-200 px-4 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200" />
-                        <input value={signupReferralCode} onChange={(e) => setSignupReferralCode(e.target.value)} placeholder="Referral code (optional)" className="h-12 w-full rounded-xl border border-slate-200 px-4 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200" />
+                      <form onSubmit={handleSignupRequest} className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-3 sm:p-4">
+                        <div>
+                          <label htmlFor="signup-email" className={signupLabelClass}>Email address</label>
+                          <input id="signup-email" value={signupEmail} onChange={(e) => setSignupEmail(e.target.value)} type="email" required autoComplete="email" placeholder="you@example.com" className={signupInputClass} />
+                        </div>
+                        <div>
+                          <label htmlFor="signup-username" className={signupLabelClass}>Desired username</label>
+                          <input id="signup-username" value={signupUsername} onChange={(e) => setSignupUsername(e.target.value)} required placeholder="Example: Player22" className={signupInputClass} />
+                        </div>
+                        <div>
+                          <label htmlFor="signup-password" className={signupLabelClass}>Password</label>
+                          <input id="signup-password" value={signupPassword} onChange={(e) => setSignupPassword(e.target.value)} type="password" minLength={6} required autoComplete="new-password" placeholder="At least 6 characters" className={signupInputClass} />
+                        </div>
+                        <div>
+                          <label htmlFor="signup-confirm-password" className={signupLabelClass}>Confirm password</label>
+                          <input id="signup-confirm-password" value={signupConfirmPassword} onChange={(e) => setSignupConfirmPassword(e.target.value)} type="password" minLength={6} required autoComplete="new-password" placeholder="Enter the same password again" className={signupInputClass} />
+                        </div>
+                        <div>
+                          <label htmlFor="signup-coadmin-code" className={signupLabelClass}>Coadmin signup code</label>
+                          <input id="signup-coadmin-code" value={signupCoadminCode} onChange={(e) => setSignupCoadminCode(e.target.value.toUpperCase())} required placeholder="Example: ABG-7K92QX" className={signupInputClass} />
+                        </div>
+                        <div>
+                          <label htmlFor="signup-referral-code" className={signupLabelClass}>Referral code <span className="font-normal text-slate-600">(optional)</span></label>
+                          <input id="signup-referral-code" value={signupReferralCode} onChange={(e) => setSignupReferralCode(e.target.value)} placeholder="Enter a referral code, if you have one" className={signupInputClass} />
+                        </div>
                         <button type="submit" disabled={signupLoading} className="h-12 w-full rounded-xl bg-gradient-to-r from-blue-600 to-blue-500 font-semibold text-white disabled:opacity-60">{signupLoading ? 'Sending...' : 'Send verification code'}</button>
                       </form>
                     ) : (
-                      <form onSubmit={handleSignupVerify} className="space-y-3">
+                      <form onSubmit={handleSignupVerify} className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-3 sm:p-4">
                         <p className="rounded-xl bg-blue-50 p-3 text-sm text-blue-700">Verification email sent to {signupEmail}.</p>
-                        <input value={verificationCode} onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" required placeholder="Six-digit verification code" className="h-12 w-full rounded-xl border border-slate-200 px-4 text-center tracking-[0.35em] outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200" />
+                        <div>
+                          <label htmlFor="signup-verification-code" className={signupLabelClass}>Verification code</label>
+                          <input id="signup-verification-code" value={verificationCode} onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" required placeholder="Six-digit code" className={`${signupInputClass} text-center tracking-[0.35em]`} />
+                        </div>
                         <button type="submit" disabled={signupLoading} className="h-12 w-full rounded-xl bg-gradient-to-r from-blue-600 to-blue-500 font-semibold text-white disabled:opacity-60">{signupLoading ? 'Verifying...' : 'Verify and create account'}</button>
                       </form>
                     )}
