@@ -27,6 +27,7 @@ import { readGameLoginsCacheByCoadminWithClient } from '@/lib/sql/gameLoginsCach
 import { cleanText, getPlayerMirrorPool, toIsoString } from '@/lib/sql/playerMirrorCommon';
 import { updatePlayerBalancesInTxn } from '@/lib/sql/authorityGameRequestHelpers';
 import { upsertGameUsernameForPlayerInTxn } from '@/lib/sql/gameUsernameRegistrySql';
+import { PlayerUsernameValidationError, validatePlayerUsernameForCreation } from '@/lib/server/playerUsernameForCreation';
 
 type GameLoginSeed = {
   id: string;
@@ -239,13 +240,7 @@ export async function createPlayerInSql(input: CreatePlayerInSqlInput): Promise<
   try {
     await client.query('BEGIN');
 
-    const existing = await client.query(
-      `SELECT uid FROM public.players_cache WHERE LOWER(username) = LOWER($1) AND deleted_at IS NULL LIMIT 1 FOR UPDATE`,
-      [username]
-    );
-    if (existing.rows.length) {
-      throw new Error('Username already exists.');
-    }
+    await validatePlayerUsernameForCreation(username, ownerCoadminUid, { client });
 
     let referredByUid: string | null = null;
     let referredByUsername: string | null = null;
@@ -463,6 +458,10 @@ export async function createPlayerInSql(input: CreatePlayerInSqlInput): Promise<
     };
   } catch (error) {
     await client.query('ROLLBACK');
+    if ((error as { code?: string })?.code === '23505') {
+      console.info('[PLAYER_USERNAME_CREATION] conflictConcurrentDuplicate', { username, ownerCoadminUid });
+      throw new PlayerUsernameValidationError('Username already exists.', 'duplicate', 'players_cache');
+    }
     throw error;
   } finally {
     client.release();

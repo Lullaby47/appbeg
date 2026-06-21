@@ -4,7 +4,7 @@ import { createHash, randomInt, randomUUID } from 'crypto';
 
 import { adminAuth } from '@/lib/firebase/admin';
 import { hashPassword, verifyPassword } from '@/lib/auth/passwordHash';
-import { assertValidGameUsername } from '@/lib/games/gameUsernameRule';
+import { PlayerUsernameValidationError, validatePlayerUsernameForCreation } from '@/lib/server/playerUsernameForCreation';
 import { completeCanonicalPlayerCreation } from '@/lib/server/canonicalPlayerCreation';
 import { lookupReferrerByCodeFromSql } from '@/lib/sql/authorityReferralCodes';
 import { lookupUserDirectoryFromSql } from '@/lib/sql/authorityLookup';
@@ -50,7 +50,7 @@ async function assertAvailable(email: string, username: string) {
   );
   const row = existing.rows[0] as { username?: string; email?: string } | undefined;
   if (row?.email && String(row.email).toLowerCase() === email) throw new Error('Email already in use.');
-  if (row) throw new Error('Username already taken.');
+  if (row) throw new Error('Username already exists.');
   try { await adminAuth.getUserByEmail(email); throw new Error('Email already in use.'); } catch (error) {
     if ((error as { code?: string })?.code !== 'auth/user-not-found') throw error;
   }
@@ -70,16 +70,31 @@ async function sendCode(email: string, code: string) {
 export async function startPlayerSelfSignup(request: Request, body: Record<string, unknown>) {
   const email = normalizedEmail(body.email); const username = cleanText(body.username); const password = String(body.password || ''); const referralCode = cleanText(body.referralCode); const coadminSignupCode = cleanText(body.coadminSignupCode).toUpperCase();
   if (!EMAIL.test(email)) throw new Error('Enter a valid email address.');
-  assertValidGameUsername(username);
   if (password.length < 6) throw new Error('Password must be at least 6 characters.');
   if (!coadminSignupCode) throw new Error('Coadmin signup code is required.');
   await enforceRateLimit(request, 'signup_code_lookup', 10);
   await logEvent('signup_code_lookup', request, { email, username });
   const ownerCoadminUid = await resolveCoadminUidByPlayerSignupCode(coadminSignupCode);
   if (!ownerCoadminUid) throw new Error('Invalid coadmin signup code.');
+  console.info('[SELF_SIGNUP_USERNAME] validateStart', { usernameEntered: String(body.username || '') });
+  try {
+    const validated = await validatePlayerUsernameForCreation(username, ownerCoadminUid);
+    console.info('[SELF_SIGNUP_USERNAME] normalized', { username: validated.username });
+    console.info('[SELF_SIGNUP_USERNAME] valid', { username: validated.username });
+  } catch (error) {
+    if (error instanceof PlayerUsernameValidationError) {
+      if (error.kind === 'duplicate') {
+        console.info('[SELF_SIGNUP_USERNAME] duplicateFound', { username, duplicateTable: error.duplicateTable || null });
+        console.info('[SELF_SIGNUP_USERNAME] duplicateTable', { table: error.duplicateTable || null });
+      } else {
+        console.info('[SELF_SIGNUP_USERNAME] ruleRejected', { username, message: error.message });
+      }
+    }
+    throw error;
+  }
   if (referralCode && !await lookupReferrerByCodeFromSql(referralCode)) throw new Error('Invalid referral code.');
   await enforceRateLimit(request, 'signup_requested', 5);
-  await assertAvailable(email, username);
+    await assertAvailable(email, username);
   const db = getPlayerMirrorPool(); if (!db) throw new Error('Signup is temporarily unavailable.');
   const code = String(randomInt(100000, 1000000)); const hashed = await hashPassword(password); const id = randomUUID();
   await db.query(`DELETE FROM public.player_signup_requests WHERE lower(email)=lower($1) AND verified_at IS NULL`, [email]);
@@ -163,12 +178,20 @@ export async function verifyPlayerSelfSignup(request: Request, body: Record<stri
     await client.query(`UPDATE public.player_signup_requests SET verified_at=COALESCE(verified_at,now()),account_created_at=now(),setup_source='player_self_signup',updated_at=now() WHERE id=$1::uuid`, [id]);
     await client.query('COMMIT');
     console.info('[SELF_SIGNUP_PLAYER_CREATED]', { signupId: id, playerUid: authUid, coadminUid: ownerCoadminUid, taskCount: setup.createdTaskIds.length });
+    console.info('[SELF_SIGNUP_USERNAME] createCommitted', { signupId: id, playerUid: authUid, username });
     setup.createdTaskIds.forEach((taskId) => console.info('[SELF_SIGNUP_GAME_USERNAME_TASK_CREATED]', { signupId: id, playerUid: authUid, taskId }));
     await logEvent('verification_succeeded', request, { signupId: id, email, username, uid: authUid });
     await logEvent('account_created', request, { signupId: id, email, username, uid: authUid });
     return { username };
   } catch (error) {
     try { await client.query('ROLLBACK'); } catch {}
+    if (error instanceof PlayerUsernameValidationError && error.kind === 'duplicate') {
+      console.info('[SELF_SIGNUP_USERNAME] conflictConcurrentDuplicate', {
+        signupId: id,
+        username: cleanText(body.username),
+        duplicateTable: error.duplicateTable || null,
+      });
+    }
     if (createdAuthThisAttempt && authUid) await adminAuth.deleteUser(authUid).catch(() => undefined);
     await logEvent('verification_failed', request, { signupId: id, reason: error instanceof Error ? error.message : 'unknown' });
     throw error;
