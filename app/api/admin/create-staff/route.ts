@@ -25,7 +25,7 @@ import {
   logAuthorityFirestoreFallbackBlocked,
   logAuthoritySqlWrite,
 } from '@/lib/server/authoritySqlWrite';
-import { createPlayerInSql } from '@/lib/sql/authorityAdminPlayer';
+import { completeCanonicalPlayerCreation } from '@/lib/server/canonicalPlayerCreation';
 import { scheduleAutoClaimPendingTaskOnCreate } from '@/lib/sql/authorityAutoClaim';
 import { lookupReferrerByCodeFromSql } from '@/lib/sql/authorityReferralCodes';
 import { lookupUserDirectoryFromSql } from '@/lib/sql/authorityLookup';
@@ -366,7 +366,7 @@ export async function POST(request: Request) {
     let referredByCode: string | null = null;
 
     if (role === 'player' && authoritySql) {
-      const sqlResult = await createPlayerInSql({
+      const sqlResult = await completeCanonicalPlayerCreation({
         uid: authUser.uid,
         username,
         email,
@@ -384,11 +384,6 @@ export async function POST(request: Request) {
       referredByUsername = sqlResult.referredByUsername;
       sqlResult.createdTaskIds.forEach((taskId) => {
         console.info('[CREATE_PLAYER_TASK] task created id=%s authority=sql', taskId);
-      });
-      await recordPlayerLoginUsernameAfterFirebaseSave({
-        username,
-        playerUid: authUser.uid,
-        coadminUid: ownerCoadminUid,
       });
       logAuthoritySqlWrite('/api/admin/create-staff', {
         role: 'player',

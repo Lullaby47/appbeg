@@ -72,6 +72,7 @@ async function upsertCreateUsernameTaskInTxn(
     playerPassword: string;
     game: GameLoginSeed;
     nowIso: string;
+    source: string;
   }
 ) {
   const access = resolveTaskGameAccess(input.game);
@@ -98,6 +99,7 @@ async function upsertCreateUsernameTaskInTxn(
     isPoked: false,
     playerLoginUsername: input.playerUsername,
     playerLoginPassword: input.playerPassword,
+    source: input.source,
     ...access,
   };
   await client.query(
@@ -113,8 +115,8 @@ async function upsertCreateUsernameTaskInTxn(
         $1, $2, $3, $4, $5, $6, $7, NULL, NULL, 'pending',
         NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, ''),
         NULLIF($13, ''), NULLIF($14, ''), FALSE,
-        $15::timestamptz, $15::timestamptz, $15::timestamptz, 'authority_create_player', now(), NULL,
-        $16::jsonb
+        $15::timestamptz, $15::timestamptz, $15::timestamptz, $16, now(), NULL,
+        $17::jsonb
       )
       ON CONFLICT (firebase_id) DO UPDATE SET
         status = EXCLUDED.status,
@@ -142,6 +144,7 @@ async function upsertCreateUsernameTaskInTxn(
       access.gameCredentialUsername,
       access.gameCredentialPassword,
       input.nowIso,
+      input.source,
       JSON.stringify(raw),
     ]
   );
@@ -156,7 +159,7 @@ async function upsertCreateUsernameTaskInTxn(
     eventType: 'task.created',
     entityType: 'carer_task',
     entityId: input.taskId,
-    source: 'authority_create_player',
+    source: input.source,
     mirroredAt: input.nowIso,
     payload: {
       entityId: input.taskId,
@@ -166,7 +169,7 @@ async function upsertCreateUsernameTaskInTxn(
       type: 'create_game_username',
       gameName: input.game.gameName,
       updatedAt: input.nowIso,
-      source: 'authority',
+      source: input.source,
     },
   });
 }
@@ -201,6 +204,7 @@ export type CreatePlayerInSqlInput = {
   referralCodeInput?: string | null;
   actorUid: string;
   actorRole: string;
+  source?: string;
 };
 
 export type CreatePlayerInSqlResult = {
@@ -220,6 +224,7 @@ export async function createPlayerInSql(input: CreatePlayerInSqlInput): Promise<
   const username = cleanText(input.username);
   const email = cleanText(input.email);
   const ownerCoadminUid = cleanText(input.ownerCoadminUid);
+  const source = cleanText(input.source) || 'authority_create_player';
   if (!uid || !username || !email || !ownerCoadminUid) {
     throw new Error('uid, username, email, and ownerCoadminUid are required.');
   }
@@ -294,6 +299,7 @@ export async function createPlayerInSql(input: CreatePlayerInSqlInput): Promise<
       referralQualifiedAt: null,
       referralRewardClaimedAt: null,
       createdByStaffId: cleanText(input.createdByStaffId) || null,
+      signupSource: source,
     };
 
     await client.query(
@@ -308,7 +314,7 @@ export async function createPlayerInSql(input: CreatePlayerInSqlInput): Promise<
           $1, $2, $3, 'player', 'active', $4, $4, NULLIF($5, ''),
           0, 0, 0, $6, NULLIF($7, ''), NULLIF($8, ''), $9,
           $10::timestamptz, NULLIF($11, ''),
-          $12::timestamptz, $12::timestamptz, $13::jsonb, 'authority_create_player', now(), NULL
+          $12::timestamptz, $12::timestamptz, $13::jsonb, $14, now(), NULL
         )
       `,
       [
@@ -325,6 +331,7 @@ export async function createPlayerInSql(input: CreatePlayerInSqlInput): Promise<
         referralApplied ? 'pending_first_recharge' : null,
         nowIso,
         JSON.stringify(rawPlayer),
+        source,
       ]
     );
 
@@ -353,7 +360,7 @@ export async function createPlayerInSql(input: CreatePlayerInSqlInput): Promise<
         )
         VALUES (
           $1, $2, $3, 'player', 'active', $4, $4, 0, 0, 0,
-          $5::timestamptz, $5::timestamptz, 'authority_create_player', now(), NULL, $6::jsonb
+          $5::timestamptz, $5::timestamptz, $6, now(), NULL, $7::jsonb
         )
         ON CONFLICT (firebase_id) DO UPDATE SET
           username = EXCLUDED.username,
@@ -371,17 +378,17 @@ export async function createPlayerInSql(input: CreatePlayerInSqlInput): Promise<
           deleted_at = NULL,
           raw_firestore_data = EXCLUDED.raw_firestore_data
       `,
-      [uid, username, email, ownerCoadminUid, nowIso, JSON.stringify(rawPlayer)]
+      [uid, username, email, ownerCoadminUid, nowIso, source, JSON.stringify(rawPlayer)]
     );
 
     await upsertGameUsernameForPlayerInTxn(client, {
       username,
       playerUid: uid,
       coadminUid: ownerCoadminUid,
-      source: 'authority_create_player',
+      source,
     });
 
-    await upsertReferralCodeInTxn(client, nextReferralCode, uid, nowIso, 'authority_create_player');
+    await upsertReferralCodeInTxn(client, nextReferralCode, uid, nowIso, source);
 
     if (referralApplied && referredByUid) {
       referralId = randomUUID();
@@ -400,7 +407,7 @@ export async function createPlayerInSql(input: CreatePlayerInSqlInput): Promise<
           qualifiedAt: null,
           claimedAt: null,
         },
-        'authority_create_player'
+        source
       );
     }
 
@@ -422,6 +429,7 @@ export async function createPlayerInSql(input: CreatePlayerInSqlInput): Promise<
         playerPassword: input.password,
         game,
         nowIso,
+        source,
       });
       createdTaskIds.push(taskId);
       console.info('[CREATE_USERNAME_TASK_CREATED]', {
@@ -439,7 +447,7 @@ export async function createPlayerInSql(input: CreatePlayerInSqlInput): Promise<
       scheduleAutoClaimPendingTaskOnCreate({
         taskId,
         coadminUid: ownerCoadminUid,
-        trigger: 'authority_create_player',
+        trigger: source,
       });
     }
     return {

@@ -72,6 +72,18 @@ export default function LoginPage() {
       : '';
   });
   const [loading, setLoading] = useState(false);
+  const [signupOpen, setSignupOpen] = useState(false);
+  const [signupId, setSignupId] = useState('');
+  const [signupEmail, setSignupEmail] = useState('');
+  const [signupUsername, setSignupUsername] = useState('');
+  const [signupPassword, setSignupPassword] = useState('');
+  const [signupConfirmPassword, setSignupConfirmPassword] = useState('');
+  const [signupCoadminCode, setSignupCoadminCode] = useState('');
+  const [signupReferralCode, setSignupReferralCode] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [signupMessage, setSignupMessage] = useState('');
+  const [signupError, setSignupError] = useState('');
+  const [signupLoading, setSignupLoading] = useState(false);
   const loginInProgressRef = useRef(false);
 
   useEffect(() => {
@@ -511,6 +523,40 @@ export default function LoginPage() {
     }
   }
 
+  async function handleSignupRequest(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (signupPassword !== signupConfirmPassword) {
+      setSignupError('Passwords do not match.');
+      return;
+    }
+    setSignupLoading(true); setSignupError(''); setSignupMessage('');
+    try {
+      const response = await fetch('/api/auth/player-signup/request', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: signupEmail, username: signupUsername, password: signupPassword, coadminSignupCode: signupCoadminCode, referralCode: signupReferralCode }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to send verification email.');
+      setSignupId(data.signupId); setSignupMessage(data.message || 'Verification email sent.');
+    } catch (err) { setSignupError(err instanceof Error ? err.message : 'Unable to start signup.'); }
+    finally { setSignupLoading(false); }
+  }
+
+  async function handleSignupVerify(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault(); setSignupLoading(true); setSignupError('');
+    try {
+      const response = await fetch('/api/auth/player-signup/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ signupId, code: verificationCode, password: signupPassword }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to verify email.');
+      setSignupMessage(data.message || 'Email verified. Account created successfully. You can now log in.');
+      setSignupId(''); setSignupPassword(''); setSignupConfirmPassword(''); setVerificationCode('');
+    } catch (err) { setSignupError(err instanceof Error ? err.message : 'Unable to verify email.'); }
+    finally { setSignupLoading(false); }
+  }
+
   if (adminExists === null) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 via-white to-blue-50/30 px-4">
@@ -575,7 +621,7 @@ export default function LoginPage() {
                   </p>
                 </div>
 
-                <form onSubmit={handleLogin} className="space-y-5">
+                {!signupOpen ? <form onSubmit={handleLogin} className="space-y-5">
                   <div>
                     <input
                       id="login-username"
@@ -624,7 +670,42 @@ export default function LoginPage() {
                     <div className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/20 to-transparent transition-transform duration-500 group-hover:translate-x-full" />
                   </button>
 
-                </form>
+                  <button
+                    type="button"
+                    onClick={() => { setSignupOpen(true); setError(''); }}
+                    className="h-12 w-full rounded-xl border border-blue-200 bg-blue-50 font-semibold text-blue-700 transition hover:bg-blue-100"
+                  >
+                    Create Account
+                  </button>
+
+                </form> : (
+                  <div className="space-y-5">
+                    <div className="text-center">
+                      <h2 className="text-xl font-bold text-slate-800">Create your player account</h2>
+                      <p className="mt-1 text-sm text-slate-500">Verify your email before your account is created.</p>
+                    </div>
+                    {!signupId ? (
+                      <form onSubmit={handleSignupRequest} className="space-y-3">
+                        <input value={signupEmail} onChange={(e) => setSignupEmail(e.target.value)} type="email" required autoComplete="email" placeholder="Email address" className="h-12 w-full rounded-xl border border-slate-200 px-4 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200" />
+                        <input value={signupUsername} onChange={(e) => setSignupUsername(e.target.value)} required placeholder="Desired username" className="h-12 w-full rounded-xl border border-slate-200 px-4 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200" />
+                        <input value={signupPassword} onChange={(e) => setSignupPassword(e.target.value)} type="password" minLength={6} required autoComplete="new-password" placeholder="Password (at least 6 characters)" className="h-12 w-full rounded-xl border border-slate-200 px-4 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200" />
+                        <input value={signupConfirmPassword} onChange={(e) => setSignupConfirmPassword(e.target.value)} type="password" minLength={6} required autoComplete="new-password" placeholder="Confirm password" className="h-12 w-full rounded-xl border border-slate-200 px-4 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200" />
+                        <input value={signupCoadminCode} onChange={(e) => setSignupCoadminCode(e.target.value.toUpperCase())} required placeholder="Coadmin signup code" className="h-12 w-full rounded-xl border border-slate-200 px-4 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200" />
+                        <input value={signupReferralCode} onChange={(e) => setSignupReferralCode(e.target.value)} placeholder="Referral code (optional)" className="h-12 w-full rounded-xl border border-slate-200 px-4 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200" />
+                        <button type="submit" disabled={signupLoading} className="h-12 w-full rounded-xl bg-gradient-to-r from-blue-600 to-blue-500 font-semibold text-white disabled:opacity-60">{signupLoading ? 'Sending...' : 'Send verification code'}</button>
+                      </form>
+                    ) : (
+                      <form onSubmit={handleSignupVerify} className="space-y-3">
+                        <p className="rounded-xl bg-blue-50 p-3 text-sm text-blue-700">Verification email sent to {signupEmail}.</p>
+                        <input value={verificationCode} onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" required placeholder="Six-digit verification code" className="h-12 w-full rounded-xl border border-slate-200 px-4 text-center tracking-[0.35em] outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200" />
+                        <button type="submit" disabled={signupLoading} className="h-12 w-full rounded-xl bg-gradient-to-r from-blue-600 to-blue-500 font-semibold text-white disabled:opacity-60">{signupLoading ? 'Verifying...' : 'Verify and create account'}</button>
+                      </form>
+                    )}
+                    {signupMessage && <p className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-medium text-emerald-700">{signupMessage}</p>}
+                    {signupError && <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-600">{signupError}</p>}
+                    <button type="button" onClick={() => { setSignupOpen(false); setSignupError(''); }} className="w-full text-sm font-medium text-slate-500 hover:text-slate-700">Back to login</button>
+                  </div>
+                )}
               </>
             )}
           </div>

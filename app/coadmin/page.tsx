@@ -550,6 +550,9 @@ export default function CoadminPage() {
   const [maintenanceBusy, setMaintenanceBusy] = useState(false);
   const [freeplayGiveBusy, setFreeplayGiveBusy] = useState(false);
   const [freeplayGiveTargetUid, setFreeplayGiveTargetUid] = useState<string | null>(null);
+  const [playerSignupCode, setPlayerSignupCode] = useState('');
+  const [playerSignupCodeLoading, setPlayerSignupCodeLoading] = useState(false);
+  const [playerSignupCodeRotating, setPlayerSignupCodeRotating] = useState(false);
 
   const [chatUsers, setChatUsers] = useState<AdminUser[]>([]);
   const [reachOutChatUser, setReachOutChatUser] = useState<AdminUser | null>(null);
@@ -605,6 +608,58 @@ export default function CoadminPage() {
       setMessage('Outlook connection failed');
     }
   }, []);
+
+  async function loadPlayerSignupCode() {
+    setPlayerSignupCodeLoading(true);
+    try {
+      const response = await fetch('/api/coadmin/player-signup-code', {
+        headers: await getApiAuthHeaders(false, { action: 'read' }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to load player signup code.');
+      setPlayerSignupCode(String(data.code || ''));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to load player signup code.');
+    } finally {
+      setPlayerSignupCodeLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadPlayerSignupCode();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  async function handleCopyPlayerSignupCode() {
+    if (!playerSignupCode) return;
+    try {
+      await navigator.clipboard.writeText(playerSignupCode);
+      setMessage('Player Signup Code copied.');
+    } catch {
+      setMessage('Unable to copy the Player Signup Code.');
+    }
+  }
+
+  async function handleRotatePlayerSignupCode() {
+    if (!window.confirm('Changing your signup code will immediately invalidate your old signup code. Existing players will not be affected.')) return;
+    setPlayerSignupCodeRotating(true);
+    try {
+      const response = await fetch('/api/coadmin/player-signup-code', {
+        method: 'POST',
+        headers: await getApiAuthHeaders(true, { action: 'update' }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to rotate player signup code.');
+      setPlayerSignupCode(String(data.code || ''));
+      setMessage('Player Signup Code rotated.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to rotate player signup code.');
+    } finally {
+      setPlayerSignupCodeRotating(false);
+    }
+  }
   const [showCarerEscalationSplash, setShowCarerEscalationSplash] = useState(false);
   const [recentCarerEscalations, setRecentCarerEscalations] = useState<
     CarerEscalationAlert[]
@@ -4035,6 +4090,22 @@ export default function CoadminPage() {
                 <p className="mt-2 text-3xl font-bold">{gameLogins.length}</p>
               </div>
             </div>
+
+            <section className="mt-4 rounded-2xl border border-cyan-400/25 bg-cyan-500/10 p-5">
+              <p className="text-sm font-semibold uppercase tracking-wide text-cyan-200">Player Signup Code</p>
+              <p className="mt-2 text-sm text-neutral-300">
+                Give this code to players so their self-created account connects to your coadmin account.
+              </p>
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                <code className="rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-lg font-bold tracking-wider text-white">
+                  {playerSignupCodeLoading ? 'Loading…' : playerSignupCode || 'Unavailable'}
+                </code>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => void handleCopyPlayerSignupCode()} disabled={!playerSignupCode || playerSignupCodeLoading} className="rounded-xl bg-cyan-400 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-300 disabled:opacity-50">Copy</button>
+                  <button type="button" onClick={() => void handleRotatePlayerSignupCode()} disabled={playerSignupCodeRotating || playerSignupCodeLoading} className="rounded-xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-bold text-white transition hover:bg-white/15 disabled:opacity-50">{playerSignupCodeRotating ? 'Generating…' : 'Generate New Code'}</button>
+                </div>
+              </div>
+            </section>
 
             {/* Maintenance Break card — render for coadmin pages regardless of active view so it's reachable */}
             <div
