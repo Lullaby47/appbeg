@@ -352,6 +352,26 @@ function readApiError(messageFallback: string, payload: unknown) {
   return messageFallback;
 }
 
+const PLAYER_SAFE_BONUS_ABUSE_CASHOUT_ERROR =
+  'Cashout is temporarily unavailable for this account. Please contact support.';
+
+function isPossibleBonusAbusePayloadValue(value: unknown) {
+  return String(value || '').trim().toLowerCase() === 'possible bonus abuse';
+}
+
+function isPossibleBonusAbusePayload(payload: {
+  error?: string | null;
+  message?: string | null;
+  reason?: string | null;
+}) {
+  return (
+    isPossibleBonusAbusePayloadValue(payload.error) ||
+    isPossibleBonusAbusePayloadValue(payload.message) ||
+    isPossibleBonusAbusePayloadValue(payload.reason) ||
+    String(payload.reason || '').trim().toLowerCase() === 'possible_bonus_abuse'
+  );
+}
+
 function requestPlayerCashoutRefresh(reason: string, taskId?: string | null) {
   if (typeof window === 'undefined') {
     return;
@@ -398,6 +418,8 @@ export async function createPlayerCashoutTask(values: {
   });
   const payload = (await response.json().catch(() => ({}))) as {
     error?: string;
+    message?: string;
+    reason?: string;
     taskId?: string;
     success?: boolean;
     authority?: string;
@@ -407,8 +429,13 @@ export async function createPlayerCashoutTask(values: {
     console.error('[PLAYER_CASHOUT_ERROR]', {
       status: response.status,
       error: payload.error || null,
+      message: payload.message || null,
+      reason: payload.reason || null,
       body: requestBody,
     });
+    if (isPossibleBonusAbusePayload(payload)) {
+      throw new Error(PLAYER_SAFE_BONUS_ABUSE_CASHOUT_ERROR);
+    }
     throw new Error(readApiError('Failed to create cashout request.', payload));
   }
 

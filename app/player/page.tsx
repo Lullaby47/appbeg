@@ -254,6 +254,8 @@ const GAME_VAULT_MIDNIGHT_PARTY_WARNING_MARKER =
   'players can only deposit again after selecting whether or not to participate in the midnight party program';
 const GAME_VAULT_MIDNIGHT_PARTY_PLAYER_MESSAGE =
   'Recharge blocked: Please open Game Vault and choose whether to participate in the Midnight Party program for your previous deposit before depositing again.';
+const PLAYER_SAFE_BONUS_ABUSE_CASHOUT_ERROR =
+  'Cashout is temporarily unavailable for this account. Please contact support.';
 const PLAYER_PWA_EXIT_GUARD_HISTORY_KEY = 'royalVipBackGuard';
 const PLAYER_BACK_NAVIGATION_ORDER: PlayerView[] = [
   'dashboard',
@@ -5441,6 +5443,57 @@ export default function PlayerPage() {
     }
   }
 
+  function isPossibleBonusAbuseCashoutError(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error || '');
+    return (
+      message.trim() === PLAYER_SAFE_BONUS_ABUSE_CASHOUT_ERROR ||
+      /possible[\s_-]*bonus[\s_-]*abuse/i.test(message)
+    );
+  }
+
+  function isMissingPreviousPaymentDetailsCashoutError(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error || '');
+    return /no[\s_-]*previous[\s_-]*payment[\s_-]*details/i.test(message);
+  }
+
+  function showPlayerCashoutError(
+    source: string,
+    error: unknown,
+    fallbackMessage = 'Unable to create cashout request. Please try again.'
+  ) {
+    const rawError = error instanceof Error ? error.message : String(error || '');
+
+    if (isPossibleBonusAbuseCashoutError(error)) {
+      console.info('[PLAYER_CASHOUT_FRIENDLY_ERROR]', {
+        source,
+        rawError,
+        friendlyMessage: PLAYER_SAFE_BONUS_ABUSE_CASHOUT_ERROR,
+      });
+      setMessage(PLAYER_SAFE_BONUS_ABUSE_CASHOUT_ERROR);
+      return;
+    }
+
+    if (isMissingPreviousPaymentDetailsCashoutError(error)) {
+      console.info('[PLAYER_CASHOUT_FRIENDLY_ERROR]', {
+        source,
+        rawError,
+        friendlyMessage:
+          'No previous payment details found. Please upload a QR or enter payment app details first.',
+      });
+      setMessage(
+        'No previous payment details found. Please upload a QR or enter payment app details first.'
+      );
+      return;
+    }
+
+    console.info('[PLAYER_CASHOUT_FRIENDLY_ERROR]', {
+      source,
+      rawError,
+      friendlyMessage: fallbackMessage,
+    });
+    setMessage(fallbackMessage);
+  }
+
   async function handlePlayerCashoutRequest() {
     console.info('[PLAYER_CASHOUT_CLICK]', {
       playerUid: playerUid || auth.currentUser?.uid || null,
@@ -5529,11 +5582,10 @@ export default function PlayerPage() {
         coadminUid: playerCoadminUid || null,
         error: error instanceof Error ? error.message : String(error),
       });
-      reportPlayerUiError(
+      showPlayerCashoutError(
         'player_cashout_create',
         error,
-        setMessage,
-        'Failed to create cashout request.'
+        'Unable to create cashout request. Please try again.'
       );
     } finally {
       setCashoutLoading(false);
@@ -5601,11 +5653,10 @@ export default function PlayerPage() {
         coadminUid: playerCoadminUid || null,
         error: error instanceof Error ? error.message : String(error),
       });
-      reportPlayerUiError(
+      showPlayerCashoutError(
         'player_cashout_reuse_last',
         error,
-        setMessage,
-        'Failed to create cashout request using last payment details.'
+        'Unable to create cashout request. Please try again.'
       );
     } finally {
       setCashoutLoading(false);

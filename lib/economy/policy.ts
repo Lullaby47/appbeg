@@ -29,23 +29,12 @@ export function getTransferableCoinBalance(totalCoins: unknown, lockedPromoCoins
 }
 
 export function evaluateWithdrawalPolicy(
-  input: WithdrawalPolicyInput
+  _input: WithdrawalPolicyInput
 ): WithdrawalPolicyDecision {
-  const amountNpr = toWhole(input.amountNpr);
-  const completedWithdrawalCount = toWhole(input.completedWithdrawalCount);
-  const lastRechargeAmountNpr = toWhole(input.lastRechargeAmountNpr);
-
-  if (
-    completedWithdrawalCount > 0 &&
-    lastRechargeAmountNpr > 0 &&
-    amountNpr >= lastRechargeAmountNpr
-  ) {
-    return {
-      allowed: false,
-      code: 'possible_bonus_abuse',
-      message: 'Possible Bonus Abuse',
-    };
-  }
+  void _input;
+  // TODO: Replace this with a source-aware withdrawal policy once callers pass
+  // cash-source breakdowns. The old amount-vs-last-recharge heuristic caused
+  // false positives for valid redeem winnings after tiny later recharges.
 
   return {
     allowed: true,
