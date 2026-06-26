@@ -119,6 +119,9 @@ async function hasActivePublicChatProfile(uid: string) {
         AND is_active = TRUE
         AND review_status = 'approved'
         AND (suspended_until IS NULL OR suspended_until < now())
+        AND btrim(avatar_emoji) <> ''
+        AND gender IN ('male', 'female')
+        AND btrim(bio) <> ''
       LIMIT 1
     `,
     [cleanUid]

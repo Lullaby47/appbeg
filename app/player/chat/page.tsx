@@ -8,7 +8,6 @@ import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
 import { getCachedSessionUser, getSessionUserOnce } from '@/features/auth/sessionUser';
 import { computeRewardCoinsAfterFee } from '@/lib/rewardCoinTransferFee';
-import { getPublicDisplayName } from '@/lib/player/publicDisplayName';
 import { logChatPageMount } from '@/lib/client/chatLogoutDiagnostics';
 import { shouldSkipClientFirestore } from '@/lib/client/clientFirestoreGuard';
 import { useIsPlayerSessionRole } from '@/features/player/useIsPlayerSessionRole';
@@ -55,6 +54,17 @@ import { markPlayerChatThreadRead, type PlayerChatReadType } from '@/features/me
 const PLAYER_CHAT_RENDER_MAX = 10;
 const PLAYER_CHAT_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
 const PLAYER_CHAT_PHOTO_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const PLAYER_CHAT_AVATAR_GROUPS = [
+  { label: 'Faces', values: ['😀', '😎', '😇', '🥳', '🤠', '😈', '👽', '🤖', '🐵'] },
+  {
+    label: 'People',
+    values: ['👨', '👩', '🧑', '👦', '👧', '👱‍♂️', '👱‍♀️', '🧔', '👸', '🤴', '🧙‍♂️', '🧙‍♀️', '🦸‍♂️', '🦸‍♀️'],
+  },
+  {
+    label: 'Animals',
+    values: ['🐶', '🐱', '🦊', '🐻', '🐼', '🐯', '🦁', '🐸', '🐵', '🐰', '🐺', '🐨', '🐮', '🐷', '🐲', '🦄'],
+  },
+];
 
 function trimRenderedPlayerMessages(messages: PlayerChatMessage[]) {
   return messages.slice(-PLAYER_CHAT_RENDER_LIMIT);
@@ -110,6 +120,21 @@ function validatePhotoFile(file: File) {
   return '';
 }
 
+function normalizeGender(value: string | null | undefined) {
+  const gender = String(value || '').trim().toLowerCase();
+  return gender === 'male' || gender === 'female' ? gender : '';
+}
+
+function isCompletePlayerChatProfile(profile: PlayerChatProfile | null) {
+  return Boolean(
+    profile?.isActive &&
+      profile.avatarEmoji.trim() &&
+      profile.avatarName.trim() &&
+      normalizeGender(profile.gender) &&
+      profile.bio.trim()
+  );
+}
+
 export default function PlayerChatPage() {
   const isPlayerRole = useIsPlayerSessionRole();
   const mountLoggedRef = useRef(false);
@@ -153,7 +178,9 @@ export default function PlayerChatPage() {
   const [failedDraft, setFailedDraft] = useState('');
   const [failedDraftIdempotencyKey, setFailedDraftIdempotencyKey] = useState('');
   const [chatProfile, setChatProfile] = useState<PlayerChatProfile | null>(null);
+  const [profileDraftAvatarEmoji, setProfileDraftAvatarEmoji] = useState('');
   const [profileDraftName, setProfileDraftName] = useState('');
+  const [profileDraftGender, setProfileDraftGender] = useState('');
   const [profileDraftBio, setProfileDraftBio] = useState('');
   const [profileLoading, setProfileLoading] = useState(true);
   const [profileSaving, setProfileSaving] = useState(false);
@@ -361,9 +388,11 @@ export default function PlayerChatPage() {
         const profile = await getMyPlayerChatProfile();
         if (cancelled) return;
         setChatProfile(profile);
+        setProfileDraftAvatarEmoji(profile.avatarEmoji);
         setProfileDraftName(profile.avatarName);
+        setProfileDraftGender(normalizeGender(profile.gender));
         setProfileDraftBio(profile.bio);
-        setProfileEditing(!profile.isActive);
+        setProfileEditing(!isCompletePlayerChatProfile(profile));
       } catch (error) {
         if (cancelled) return;
         setChatProfile(null);
@@ -489,6 +518,7 @@ export default function PlayerChatPage() {
   const selectedMuted = selectedPeer ? Boolean(chatList[selectedPeer.uid]?.muted) : false;
   const selectedFriend = selectedPeer ? friendByUid[selectedPeer.uid] : null;
   const selectedPeerDisplayName = selectedPeer ? selectedPeer.avatarName : '';
+  const chatProfileComplete = isCompletePlayerChatProfile(chatProfile);
   const filteredPlayers = useMemo(() => {
     const term = playerSearchTerm.trim().toLowerCase();
     if (!term) {
@@ -731,8 +761,8 @@ export default function PlayerChatPage() {
     setReferralError('');
     setReferralNotice('');
     try {
-      const matched = await sendFriendRequestByReferralCode(code);
-      setReferralNotice(`Friend request sent to ${getPublicDisplayName(matched.username)}.`);
+      await sendFriendRequestByReferralCode(code);
+      setReferralNotice('Friend request sent.');
       setReferralInput('');
     } catch (error) {
       setReferralError(error instanceof Error ? error.message : 'Failed to add friend.');
@@ -781,12 +811,21 @@ export default function PlayerChatPage() {
   }
 
   function validateProfileDraft(options?: { activating?: boolean }) {
+    const avatarEmoji = profileDraftAvatarEmoji.trim();
     const avatarName = profileDraftName.trim().replace(/\s+/g, ' ');
+    const gender = normalizeGender(profileDraftGender);
     const bio = profileDraftBio.trim().replace(/\s+/g, ' ');
+    const requireComplete = options?.activating || chatProfile?.isActive === true;
+    if (requireComplete && !avatarEmoji) {
+      return 'Choose an avatar before using Player Chat.';
+    }
     if (avatarName.length < 3 || avatarName.length > 32) {
       return 'Avatar Name must be 3-32 characters.';
     }
-    if (options?.activating && !bio) {
+    if (requireComplete && !gender) {
+      return 'Choose Male or Female before using Player Chat.';
+    }
+    if (requireComplete && !bio) {
       return 'Short Bio is required to activate Player Chat.';
     }
     if (bio.length > 120) {
@@ -808,14 +847,18 @@ export default function PlayerChatPage() {
     setProfileNotice('');
     try {
       const saved = await updateMyPlayerChatProfile({
+        avatarEmoji: profileDraftAvatarEmoji,
         avatarName: profileDraftName,
+        gender: profileDraftGender,
         bio: profileDraftBio,
       });
       const next = options?.activate ? await activateMyPlayerChatProfile() : saved;
       setChatProfile(next);
+      setProfileDraftAvatarEmoji(next.avatarEmoji);
       setProfileDraftName(next.avatarName);
+      setProfileDraftGender(normalizeGender(next.gender));
       setProfileDraftBio(next.bio);
-      setProfileEditing(!next.isActive);
+      setProfileEditing(!isCompletePlayerChatProfile(next));
       setProfileNotice(
         options?.activate ? 'Player Chat activated.' : 'Player Chat profile saved.'
       );
@@ -835,7 +878,9 @@ export default function PlayerChatPage() {
     try {
       const next = await deactivateMyPlayerChatProfile();
       setChatProfile(next);
+      setProfileDraftAvatarEmoji(next.avatarEmoji);
       setProfileDraftName(next.avatarName);
+      setProfileDraftGender(normalizeGender(next.gender));
       setProfileDraftBio(next.bio);
       setProfileEditing(true);
       setProfileNotice('Player Chat deactivated.');
@@ -846,6 +891,185 @@ export default function PlayerChatPage() {
     } finally {
       setProfileSaving(false);
     }
+  }
+
+  function renderProfileFields(options: { activate: boolean; showTitle?: boolean }) {
+    const activateLabel = chatProfile?.isActive ? 'Complete Profile' : 'Activate Chat';
+    return (
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void saveProfileDraft({ activate: options.activate });
+        }}
+      >
+        {options.showTitle ? (
+          <div>
+            <h1 className="text-2xl font-black text-amber-200">
+              {chatProfile?.isActive ? 'Complete Your Chat Profile' : 'Create Your Chat Profile'}
+            </h1>
+            <p className="mt-1 text-sm text-amber-100/65">
+              Choose a public avatar, name, gender, and short bio to enter Player Chat.
+            </p>
+          </div>
+        ) : null}
+        <div>
+          <p className="mb-2 text-xs font-semibold text-amber-100/70">Avatar Emoji</p>
+          <div className="space-y-2">
+            {PLAYER_CHAT_AVATAR_GROUPS.map((group) => (
+              <div key={group.label}>
+                <p className="mb-1 text-[11px] uppercase tracking-[0.14em] text-amber-100/45">
+                  {group.label}
+                </p>
+                <div className="grid grid-cols-7 gap-1.5 sm:grid-cols-9">
+                  {group.values.map((emoji) => {
+                    const selected = profileDraftAvatarEmoji === emoji;
+                    return (
+                      <button
+                        key={`${group.label}-${emoji}`}
+                        type="button"
+                        aria-pressed={selected}
+                        onClick={() => setProfileDraftAvatarEmoji(emoji)}
+                        className={`h-9 rounded-lg border text-lg transition ${
+                          selected
+                            ? 'border-amber-300 bg-amber-300/25 shadow-[0_0_0_2px_rgba(252,211,77,0.22)]'
+                            : 'border-white/10 bg-black/35 hover:border-amber-200/50'
+                        }`}
+                      >
+                        {emoji}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-semibold text-amber-100/70">
+            Avatar Name
+          </label>
+          <input
+            value={profileDraftName}
+            maxLength={32}
+            onChange={(event) => setProfileDraftName(event.target.value)}
+            className="w-full rounded-lg border border-white/15 bg-black/45 px-3 py-2 text-sm"
+            placeholder="3-32 characters"
+          />
+        </div>
+        <div>
+          <p className="mb-1 block text-xs font-semibold text-amber-100/70">Gender</p>
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              { value: 'male', label: 'Male' },
+              { value: 'female', label: 'Female' },
+            ].map((option) => {
+              const selected = profileDraftGender === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => setProfileDraftGender(option.value)}
+                  className={`rounded-lg border px-3 py-2 text-sm font-semibold transition ${
+                    selected
+                      ? 'border-emerald-300 bg-emerald-300/20 text-emerald-100'
+                      : 'border-white/15 bg-black/35 text-amber-100/75 hover:border-emerald-200/50'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-semibold text-amber-100/70">
+            Short Bio
+          </label>
+          <textarea
+            value={profileDraftBio}
+            maxLength={120}
+            onChange={(event) => setProfileDraftBio(event.target.value)}
+            className="min-h-[70px] w-full resize-none rounded-lg border border-white/15 bg-black/45 px-3 py-2 text-sm"
+            placeholder="A short public bio"
+          />
+          <p className="mt-1 text-right text-[11px] text-amber-100/45">
+            {profileDraftBio.length}/120
+          </p>
+        </div>
+        {profileError ? <p className="text-xs text-red-300">{profileError}</p> : null}
+        {profileNotice ? <p className="text-xs text-emerald-300">{profileNotice}</p> : null}
+        <div className="flex flex-wrap gap-2">
+          {chatProfile?.isActive && chatProfileComplete ? (
+            <>
+              <button
+                type="submit"
+                disabled={profileSaving}
+                className="rounded-lg bg-amber-300 px-3 py-1.5 text-xs font-bold text-black disabled:opacity-50"
+              >
+                {profileSaving ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                type="button"
+                disabled={profileSaving}
+                onClick={() => {
+                  setProfileDraftAvatarEmoji(chatProfile.avatarEmoji);
+                  setProfileDraftName(chatProfile.avatarName);
+                  setProfileDraftGender(normalizeGender(chatProfile.gender));
+                  setProfileDraftBio(chatProfile.bio);
+                  setProfileEditing(false);
+                  setProfileError('');
+                  setProfileNotice('');
+                }}
+                className="rounded-lg border border-white/20 px-3 py-1.5 text-xs hover:bg-white/10 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              type="submit"
+              disabled={profileSaving}
+              className="rounded-lg bg-emerald-300 px-3 py-1.5 text-xs font-bold text-black disabled:opacity-50"
+            >
+              {profileSaving ? 'Activating...' : activateLabel}
+            </button>
+          )}
+        </div>
+      </form>
+    );
+  }
+
+  if (isPlayerRole && profileLoading) {
+    return (
+      <main className="min-h-[100dvh] bg-[#050509] p-4 text-white">
+        <section className="fire-panel fire-violet mx-auto mt-8 max-w-lg rounded-2xl border border-violet-400/30 bg-black/50 p-5">
+          <p className="text-sm text-amber-100/65">Loading profile...</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (isPlayerRole && !chatProfileComplete) {
+    return (
+      <main className="min-h-[100dvh] bg-[#050509] p-4 text-white">
+        <section className="fire-panel fire-violet mx-auto mt-4 max-w-2xl rounded-2xl border border-violet-400/30 bg-black/50 p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <span className="text-sm font-bold uppercase tracking-[0.18em] text-amber-200/80">
+              Player Chat
+            </span>
+            <Link
+              href="/player"
+              className="rounded-lg border border-white/15 px-3 py-1.5 text-xs text-amber-100/80 hover:bg-white/10"
+            >
+              Back
+            </Link>
+          </div>
+          {renderProfileFields({ activate: true, showTitle: true })}
+        </section>
+      </main>
+    );
   }
 
   return (
@@ -877,88 +1101,22 @@ export default function PlayerChatPage() {
               {profileLoading ? (
                 <p className="text-sm text-amber-100/60">Loading profile...</p>
               ) : !chatProfile?.isActive || profileEditing ? (
-                <form
-                  className="space-y-2"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void saveProfileDraft({ activate: !chatProfile?.isActive });
-                  }}
-                >
-                  <div>
-                    <label className="mb-1 block text-xs font-semibold text-amber-100/70">
-                      Avatar Name
-                    </label>
-                    <input
-                      value={profileDraftName}
-                      maxLength={32}
-                      onChange={(event) => setProfileDraftName(event.target.value)}
-                      className="w-full rounded-lg border border-white/15 bg-black/45 px-3 py-2 text-sm"
-                      placeholder="3-32 characters"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-xs font-semibold text-amber-100/70">
-                      Short Bio
-                    </label>
-                    <textarea
-                      value={profileDraftBio}
-                      maxLength={120}
-                      onChange={(event) => setProfileDraftBio(event.target.value)}
-                      className="min-h-[70px] w-full resize-none rounded-lg border border-white/15 bg-black/45 px-3 py-2 text-sm"
-                      placeholder="A short public bio"
-                    />
-                    <p className="mt-1 text-right text-[11px] text-amber-100/45">
-                      {profileDraftBio.length}/120
-                    </p>
-                  </div>
-                  {profileError ? <p className="text-xs text-red-300">{profileError}</p> : null}
-                  {profileNotice ? <p className="text-xs text-emerald-300">{profileNotice}</p> : null}
-                  <div className="flex flex-wrap gap-2">
-                    {chatProfile?.isActive ? (
-                      <>
-                        <button
-                          type="submit"
-                          disabled={profileSaving}
-                          className="rounded-lg bg-amber-300 px-3 py-1.5 text-xs font-bold text-black disabled:opacity-50"
-                        >
-                          {profileSaving ? 'Saving...' : 'Save'}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={profileSaving}
-                          onClick={() => {
-                            setProfileDraftName(chatProfile.avatarName);
-                            setProfileDraftBio(chatProfile.bio);
-                            setProfileEditing(false);
-                            setProfileError('');
-                            setProfileNotice('');
-                          }}
-                          className="rounded-lg border border-white/20 px-3 py-1.5 text-xs hover:bg-white/10 disabled:opacity-50"
-                        >
-                          Cancel
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="submit"
-                        disabled={profileSaving}
-                        className="rounded-lg bg-emerald-300 px-3 py-1.5 text-xs font-bold text-black disabled:opacity-50"
-                      >
-                        {profileSaving ? 'Activating...' : 'Activate Chat'}
-                      </button>
-                    )}
-                  </div>
-                </form>
+                renderProfileFields({ activate: !chatProfile?.isActive })
               ) : (
                 <div className="space-y-2">
                   <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-bold text-white">
-                        {chatProfile.avatarName}
-                      </p>
-                      <p className="mt-1 line-clamp-2 text-xs text-amber-100/60">
-                        {chatProfile.bio}
-                      </p>
+                    <div className="flex min-w-0 gap-2">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/15 bg-black/50 text-xl">
+                        {chatProfile.avatarEmoji}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-bold text-white">
+                          {chatProfile.avatarName}
+                        </p>
+                        <p className="mt-1 line-clamp-2 text-xs text-amber-100/60">
+                          {chatProfile.bio}
+                        </p>
+                      </div>
                     </div>
                     <span className="shrink-0 rounded-full border border-emerald-300/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-200">
                       Active
@@ -1042,6 +1200,10 @@ export default function PlayerChatPage() {
                               className="block h-full w-full bg-cover bg-center"
                               style={{ backgroundImage: `url(${p.avatarImageUrl})` }}
                             />
+                          ) : p.avatarEmoji ? (
+                            <span className="flex h-full w-full items-center justify-center text-xl">
+                              {p.avatarEmoji}
+                            </span>
                           ) : (
                             <span className="flex h-full w-full items-center justify-center text-sm font-black text-amber-100">
                               {initials}

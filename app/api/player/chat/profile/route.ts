@@ -12,7 +12,7 @@ export const dynamic = 'force-dynamic';
 function statusForProfileError(message: string) {
   if (/authorization|token|session|authenticated/i.test(message)) return 401;
   if (/only players|forbidden/i.test(message)) return 403;
-  if (/required|Avatar Name|Bio|reserved|characters|profile not found|scope/i.test(message)) {
+  if (/required|Avatar Name|Bio|Gender|Avatar Emoji|reserved|characters|profile not found|scope/i.test(message)) {
     return 400;
   }
   if (/Postgres|unavailable/i.test(message)) return 503;
@@ -43,7 +43,9 @@ export async function PUT(request: Request) {
     }
 
     const body = (await request.json().catch(() => ({}))) as {
+      avatarEmoji?: unknown;
       avatarName?: unknown;
+      gender?: unknown;
       bio?: unknown;
       avatarImageUrl?: unknown;
       avatarImagePublicId?: unknown;
@@ -51,7 +53,9 @@ export async function PUT(request: Request) {
 
     const profile = await upsertMyPlayerChatProfileInSql({
       playerUid: auth.user.uid,
+      avatarEmoji: body.avatarEmoji,
       avatarName: body.avatarName,
+      gender: body.gender,
       bio: body.bio,
       avatarImageUrl: body.avatarImageUrl,
       avatarImagePublicId: body.avatarImagePublicId,

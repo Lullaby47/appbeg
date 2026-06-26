@@ -18,7 +18,9 @@ const RESERVED_AVATAR_NAMES = new Set([
 
 export type PlayerChatProfilePublic = {
   isActive: boolean;
+  avatarEmoji: string;
   avatarName: string;
+  gender: string;
   bio: string;
   avatarImageUrl: string | null;
   reviewStatus: string;
@@ -28,7 +30,9 @@ export type PlayerChatProfilePublic = {
 
 export type PlayerChatProfileDraftInput = {
   playerUid: string;
+  avatarEmoji?: unknown;
   avatarName?: unknown;
+  gender?: unknown;
   bio?: unknown;
   avatarImageUrl?: unknown;
   avatarImagePublicId?: unknown;
@@ -44,7 +48,9 @@ type PlayerProfileRow = {
 
 type ChatProfileRow = {
   is_active?: unknown;
+  avatar_emoji?: unknown;
   avatar_name?: unknown;
+  gender?: unknown;
   bio?: unknown;
   avatar_image_url?: unknown;
   review_status?: unknown;
@@ -66,6 +72,14 @@ function normalizeAvatarName(value: unknown) {
 
 function normalizeBio(value: unknown) {
   return cleanText(value).replace(/\s+/g, ' ');
+}
+
+function normalizeAvatarEmoji(value: unknown) {
+  return cleanText(value);
+}
+
+function normalizeGender(value: unknown) {
+  return cleanText(value).toLowerCase();
 }
 
 function normalizeNullableUrl(value: unknown) {
@@ -101,10 +115,40 @@ function validateBio(value: unknown, options?: { required?: boolean }) {
   return bio;
 }
 
+function validateAvatarEmoji(value: unknown, options?: { required?: boolean }) {
+  const avatarEmoji = normalizeAvatarEmoji(value);
+  if (!avatarEmoji) {
+    if (options?.required) {
+      throw new Error('Avatar Emoji is required.');
+    }
+    return avatarEmoji;
+  }
+  if (avatarEmoji.length > 24) {
+    throw new Error('Avatar Emoji is too long.');
+  }
+  return avatarEmoji;
+}
+
+function validateGender(value: unknown, options?: { required?: boolean }) {
+  const gender = normalizeGender(value);
+  if (!gender) {
+    if (options?.required) {
+      throw new Error('Gender is required.');
+    }
+    return gender;
+  }
+  if (gender !== 'male' && gender !== 'female') {
+    throw new Error('Gender must be male or female.');
+  }
+  return gender;
+}
+
 function mapProfileRow(row: ChatProfileRow | null): PlayerChatProfilePublic {
   return {
     isActive: row?.is_active === true,
+    avatarEmoji: cleanText(row?.avatar_emoji),
     avatarName: cleanText(row?.avatar_name),
+    gender: normalizeGender(row?.gender),
     bio: cleanText(row?.bio),
     avatarImageUrl: cleanText(row?.avatar_image_url) || null,
     reviewStatus: cleanText(row?.review_status) || 'approved',
@@ -116,7 +160,9 @@ function mapProfileRow(row: ChatProfileRow | null): PlayerChatProfilePublic {
 function defaultProfile(): PlayerChatProfilePublic {
   return {
     isActive: false,
+    avatarEmoji: '',
     avatarName: '',
+    gender: '',
     bio: '',
     avatarImageUrl: null,
     reviewStatus: 'approved',
@@ -175,7 +221,7 @@ async function readProfileRow(playerUid: string) {
   }
   const result = await db.query<ChatProfileRow>(
     `
-      SELECT is_active, avatar_name, bio, avatar_image_url, review_status,
+      SELECT is_active, avatar_emoji, avatar_name, gender, bio, avatar_image_url, review_status,
              suspended_until, activated_at
       FROM public.player_chat_profiles
       WHERE player_uid = $1
@@ -200,7 +246,9 @@ export async function upsertMyPlayerChatProfileInSql(
   const player = await readPlayerForSelfProfile(input.playerUid);
   const existing = await readProfileRow(player.playerUid);
   const wasActive = existing?.is_active === true;
+  const avatarEmoji = validateAvatarEmoji(input.avatarEmoji, { required: wasActive });
   const avatarName = validateAvatarName(input.avatarName, { required: wasActive });
+  const gender = validateGender(input.gender, { required: wasActive });
   const bio = validateBio(input.bio, { required: wasActive });
   const avatarImageUrl = normalizeNullableUrl(input.avatarImageUrl);
   const avatarImagePublicId = normalizeNullableUrl(input.avatarImagePublicId);
@@ -213,29 +261,33 @@ export async function upsertMyPlayerChatProfileInSql(
   const result = await db.query<ChatProfileRow>(
     `
       INSERT INTO public.player_chat_profiles (
-        player_uid, coadmin_uid, is_active, avatar_name, bio,
+        player_uid, coadmin_uid, is_active, avatar_emoji, avatar_name, gender, bio,
         avatar_image_url, avatar_image_public_id, review_status,
         created_at, updated_at
       )
       VALUES (
-        $1, $2, FALSE, $3, $4,
-        $5, $6, 'approved',
+        $1, $2, FALSE, $3, $4, $5, $6,
+        $7, $8, 'approved',
         now(), now()
       )
       ON CONFLICT (player_uid) DO UPDATE SET
         coadmin_uid = EXCLUDED.coadmin_uid,
+        avatar_emoji = EXCLUDED.avatar_emoji,
         avatar_name = EXCLUDED.avatar_name,
+        gender = EXCLUDED.gender,
         bio = EXCLUDED.bio,
         avatar_image_url = EXCLUDED.avatar_image_url,
         avatar_image_public_id = EXCLUDED.avatar_image_public_id,
         updated_at = now()
-      RETURNING is_active, avatar_name, bio, avatar_image_url, review_status,
+      RETURNING is_active, avatar_emoji, avatar_name, gender, bio, avatar_image_url, review_status,
                 suspended_until, activated_at
     `,
     [
       player.playerUid,
       player.coadminUid,
+      avatarEmoji,
       avatarName,
+      gender,
       bio,
       avatarImageUrl,
       avatarImagePublicId,
@@ -251,10 +303,12 @@ export async function activateMyPlayerChatProfileInSql(input: {
   const player = await readPlayerForSelfProfile(input.playerUid);
   const existing = await readProfileRow(player.playerUid);
   if (!existing) {
-    throw new Error('Save your Avatar Name and Bio before activating Player Chat.');
+    throw new Error('Save your Chat Profile before activating Player Chat.');
   }
 
+  const avatarEmoji = validateAvatarEmoji(cleanText(existing.avatar_emoji), { required: true });
   const avatarName = validateAvatarName(cleanText(existing.avatar_name), { required: true });
+  const gender = validateGender(cleanText(existing.gender), { required: true });
   const bio = validateBio(cleanText(existing.bio), { required: true });
   const reviewStatus = cleanText(existing.review_status) || 'approved';
   if (reviewStatus !== 'approved') {
@@ -275,16 +329,18 @@ export async function activateMyPlayerChatProfileInSql(input: {
       UPDATE public.player_chat_profiles
       SET coadmin_uid = $2,
           is_active = TRUE,
-          avatar_name = $3,
-          bio = $4,
+          avatar_emoji = $3,
+          avatar_name = $4,
+          gender = $5,
+          bio = $6,
           updated_at = now(),
           activated_at = COALESCE(activated_at, now()),
           deactivated_at = NULL
       WHERE player_uid = $1
-      RETURNING is_active, avatar_name, bio, avatar_image_url, review_status,
+      RETURNING is_active, avatar_emoji, avatar_name, gender, bio, avatar_image_url, review_status,
                 suspended_until, activated_at
     `,
-    [player.playerUid, player.coadminUid, avatarName, bio]
+    [player.playerUid, player.coadminUid, avatarEmoji, avatarName, gender, bio]
   );
 
   return mapProfileRow(result.rows[0] || null);
@@ -311,7 +367,7 @@ export async function deactivateMyPlayerChatProfileInSql(input: {
         is_active = FALSE,
         updated_at = now(),
         deactivated_at = now()
-      RETURNING is_active, avatar_name, bio, avatar_image_url, review_status,
+      RETURNING is_active, avatar_emoji, avatar_name, gender, bio, avatar_image_url, review_status,
                 suspended_until, activated_at
     `,
     [player.playerUid, player.coadminUid]

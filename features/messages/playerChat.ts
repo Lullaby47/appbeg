@@ -51,7 +51,9 @@ const DIRECT_MESSAGE_LIVE_WINDOW = PLAYER_CHAT_RENDER_LIMIT;
 
 export type PlayerPeer = {
   uid: string;
+  avatarEmoji: string;
   avatarName: string;
+  gender?: string;
   bio: string;
   avatarImageUrl?: string | null;
   lastSeenAt?: string | null;
@@ -102,7 +104,9 @@ export type FriendLink = {
 
 export type PlayerChatProfile = {
   isActive: boolean;
+  avatarEmoji: string;
   avatarName: string;
+  gender: string;
   bio: string;
   avatarImageUrl: string | null;
   reviewStatus: string;
@@ -111,14 +115,18 @@ export type PlayerChatProfile = {
 };
 
 export type PlayerChatProfileInput = {
+  avatarEmoji: string;
   avatarName: string;
+  gender: string;
   bio: string;
 };
 
 function defaultPlayerChatProfile(): PlayerChatProfile {
   return {
     isActive: false,
+    avatarEmoji: '',
     avatarName: '',
+    gender: '',
     bio: '',
     avatarImageUrl: null,
     reviewStatus: 'approved',
@@ -130,7 +138,9 @@ function defaultPlayerChatProfile(): PlayerChatProfile {
 function mapPlayerChatProfile(value: Partial<PlayerChatProfile> | null | undefined): PlayerChatProfile {
   return {
     isActive: value?.isActive === true,
+    avatarEmoji: cleanText(value?.avatarEmoji || ''),
     avatarName: cleanText(value?.avatarName || ''),
+    gender: cleanText(value?.gender || '').toLowerCase(),
     bio: cleanText(value?.bio || ''),
     avatarImageUrl: cleanText(value?.avatarImageUrl || '') || null,
     reviewStatus: cleanText(value?.reviewStatus || '') || 'approved',
@@ -171,7 +181,9 @@ export async function updateMyPlayerChatProfile(input: PlayerChatProfileInput) {
     method: 'PUT',
     headers,
     body: JSON.stringify({
+      avatarEmoji: input.avatarEmoji,
       avatarName: input.avatarName,
+      gender: input.gender,
       bio: input.bio,
     }),
     cache: 'no-store',
@@ -240,7 +252,9 @@ export async function fetchPlayerChatBootstrap(search = '') {
   return (payload.players || [])
     .map((player) => ({
       uid: cleanText(player.uid),
+      avatarEmoji: cleanText(player.avatarEmoji),
       avatarName: cleanText(player.avatarName) || 'Player',
+      gender: cleanText(String(player.gender || '')).toLowerCase(),
       bio: cleanText(player.bio),
       avatarImageUrl: cleanText(String(player.avatarImageUrl || '')) || null,
       lastSeenAt: cleanText(String(player.lastSeenAt || '')) || null,

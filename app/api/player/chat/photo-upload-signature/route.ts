@@ -50,6 +50,9 @@ async function readActivePlayerChatProfile(playerUid: string) {
           profile.is_active = TRUE
           AND profile.review_status = 'approved'
           AND (profile.suspended_until IS NULL OR profile.suspended_until < now())
+          AND btrim(profile.avatar_emoji) <> ''
+          AND profile.gender IN ('male', 'female')
+          AND btrim(profile.bio) <> ''
         ) AS profile_active
       FROM public.players_cache player
       LEFT JOIN public.player_chat_profiles profile

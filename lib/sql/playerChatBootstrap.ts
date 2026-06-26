@@ -10,6 +10,7 @@ import { readUserPresenceCacheByUids } from '@/lib/sql/userPresenceCache';
 
 export type PlayerChatPeer = {
   uid: string;
+  avatarEmoji: string;
   avatarName: string;
   bio: string;
   avatarImageUrl: string | null;
@@ -24,6 +25,7 @@ function mapPeerRow(row: Record<string, unknown>): PlayerChatPeer | null {
   }
   return {
     uid,
+    avatarEmoji: cleanText(row.avatar_emoji),
     avatarName,
     bio: cleanText(row.bio),
     avatarImageUrl: cleanText(row.avatar_image_url) || null,
@@ -64,6 +66,7 @@ export async function readPlayerChatPeers(input: {
       `
         SELECT
           player.uid,
+          profile.avatar_emoji,
           profile.avatar_name,
           profile.bio,
           profile.avatar_image_url,
@@ -81,6 +84,9 @@ export async function readPlayerChatPeers(input: {
           AND profile.is_active = TRUE
           AND profile.review_status = 'approved'
           AND (profile.suspended_until IS NULL OR profile.suspended_until < now())
+          AND btrim(profile.avatar_emoji) <> ''
+          AND profile.gender IN ('male', 'female')
+          AND btrim(profile.bio) <> ''
           ${searchSql}
         ORDER BY
           COALESCE(profile.activated_at, profile.updated_at) DESC NULLS LAST,
