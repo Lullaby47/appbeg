@@ -154,6 +154,89 @@ export default function ReachOutView({
   const allowLoadOlder = !disableLoadOlder && Boolean(onLoadOlderMessages) && hasMoreOlderMessages;
   const canSend = Boolean(newMessage.trim() || imagePreview) && !sendingImage;
 
+  if (playerLightweightMode && !selectedChatUser) {
+    return (
+      <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden rounded-3xl border border-amber-300/20 bg-gradient-to-b from-[#1d1009] to-[#0d0705] p-3 shadow-2xl shadow-black/35 sm:p-4">
+        <div className="mb-3 flex shrink-0 items-center justify-between">
+          <h2 className="text-lg font-black tracking-tight text-amber-100 lg:text-xl">
+            Agents
+          </h2>
+
+          {totalUnread > 0 && (
+            <span className="rounded-full bg-red-500 px-2.5 py-1 text-xs font-bold text-white">
+              {totalUnread} unread
+            </span>
+          )}
+        </div>
+
+        {chatUsers.length === 0 ? (
+          <div className="flex min-h-[220px] items-center justify-center text-center text-sm text-amber-100/55">
+            No agents available.
+          </div>
+        ) : (
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              {chatUsers.map((user) => {
+                const unreadCount = unreadCounts[user.uid] || 0;
+
+                return (
+                  <button
+                    key={user.id}
+                    onClick={() => onSelectUser(user)}
+                    className={`flex w-full min-w-0 items-center gap-3 rounded-2xl border p-3 text-left shadow-lg transition active:scale-[0.99] ${
+                      unreadCount > 0
+                        ? 'border-red-400/30 bg-red-500/10 text-white shadow-red-950/20 hover:bg-red-500/15'
+                        : 'border-amber-200/10 bg-amber-100/8 text-amber-50 shadow-black/20 hover:border-amber-200/20 hover:bg-amber-100/10'
+                    }`}
+                  >
+                    <div className="relative shrink-0">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-full border border-amber-200/20 bg-gradient-to-br from-[#4b2d18] to-[#1f1008] text-base font-black text-amber-100">
+                        {getAvatarLetter(user)}
+                      </div>
+
+                      {unreadCount > 0 && (
+                        <div className="absolute -right-1 -top-1 z-[1] flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold text-white">
+                          {unreadCount > 9 ? '9+' : unreadCount}
+                        </div>
+                      )}
+
+                      <div className="absolute bottom-0 right-0 z-[1]">
+                        <OnlineIndicator
+                          online={Boolean(onlineByUid[user.uid])}
+                          sizeClassName="h-3 w-3"
+                          ringClassName="ring-[#1d1009]"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 items-center justify-between gap-2">
+                        <p className="truncate text-sm font-black">
+                          {getMaskedDisplayName(user)}
+                        </p>
+
+                        {unreadCount > 0 && (
+                          <span className="shrink-0 rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold text-white">
+                            NEW
+                          </span>
+                        )}
+                      </div>
+
+                      <p className="truncate text-xs font-medium text-amber-100/50">
+                        {getOnlineStatusLabel(onlineByUid, user)} -{' '}
+                        {reachOutAgentRoleLabel(user)}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (playerLightweightMode && selectedChatUser) {
     return (
       <div className="flex h-[calc(100dvh-7rem)] min-h-[520px] w-full min-w-0 flex-1 flex-col overflow-hidden rounded-3xl border border-amber-300/20 bg-[#170c07] shadow-2xl shadow-black/40 sm:h-[calc(100dvh-8rem)]">
