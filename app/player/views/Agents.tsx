@@ -24,10 +24,17 @@ export default function Agents(props: Props) {
     setNewMessage,
     unreadCounts,
   } = props;
+  const isChatOpen = Boolean(selectedAgent);
 
   return (
 
-              <div className="flex min-h-0 min-w-0 max-h-[min(78dvh,calc(100dvh-11rem))] flex-1 flex-col overflow-hidden sm:max-h-[min(82dvh,calc(100dvh-10rem))]">
+              <div
+                className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${
+                  isChatOpen
+                    ? 'h-[calc(100dvh_-_12.5rem_-_env(safe-area-inset-bottom))] max-h-[calc(100dvh_-_12.5rem_-_env(safe-area-inset-bottom))] lg:h-[calc(100dvh_-_7rem)] lg:max-h-[calc(100dvh_-_7rem)]'
+                    : 'max-h-[min(78dvh,calc(100dvh-11rem))] sm:max-h-[min(82dvh,calc(100dvh-10rem))]'
+                }`}
+              >
                 <ReachOutView
                   chatUsers={agents}
                   selectedChatUser={selectedAgent}

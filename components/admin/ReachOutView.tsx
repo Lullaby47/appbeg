@@ -239,7 +239,7 @@ export default function ReachOutView({
 
   if (playerLightweightMode && selectedChatUser) {
     return (
-      <div className="flex h-[calc(100dvh-7rem)] min-h-[520px] w-full min-w-0 flex-1 flex-col overflow-hidden rounded-3xl border border-amber-300/20 bg-[#170c07] shadow-2xl shadow-black/40 sm:h-[calc(100dvh-8rem)]">
+      <div className="flex h-full max-h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden rounded-3xl border border-amber-300/20 bg-[#170c07] shadow-2xl shadow-black/40">
         <div className="sticky top-0 z-20 shrink-0 border-b border-amber-200/10 bg-[#130a06]/95 px-3 py-3 shadow-lg shadow-black/25 backdrop-blur-xl">
           <div className="flex min-w-0 items-center gap-3">
             <button
