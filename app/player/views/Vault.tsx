@@ -198,7 +198,7 @@ export default function Vault(props: Props) {
                           }
                         >
                           {lowPerformanceMode && gameCardBackgroundImage ? (
-                            <div className="relative mb-3 h-24 overflow-hidden rounded-2xl border border-amber-200/15 bg-black/35">
+                            <div className="relative mb-3 h-32 overflow-hidden rounded-2xl border border-amber-200/15 bg-black/35">
                               <img
                                 src={gameCardBackgroundImage}
                                 alt=""
@@ -214,7 +214,7 @@ export default function Vault(props: Props) {
                               />
                             </div>
                           ) : null}
-                          <div className="mb-3 flex items-start justify-between gap-3 border-b border-amber-200/10 pb-2.5">
+                          <div className="mb-2 flex items-start justify-between gap-3 border-b border-amber-200/10 pb-2">
                             <div className="min-w-0">
                               <p className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-amber-100/50">
                                 🎮 Game
@@ -238,10 +238,10 @@ export default function Vault(props: Props) {
                             </span>
                           </div>
 
-                          <div className="space-y-2.5">
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+                          <div className="space-y-2">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.05] px-2.5 py-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
                               <div className="flex items-center justify-between gap-2">
-                                <p className="text-[0.72rem] font-black uppercase tracking-[0.18em] text-amber-100/58">
+                                <p className="whitespace-nowrap text-[0.66rem] font-black uppercase leading-tight tracking-[0.14em] text-amber-100/58">
                                   Username
                                 </p>
                                 <button
@@ -253,19 +253,19 @@ export default function Vault(props: Props) {
                                       clickEvent
                                     )
                                   }
-                                  className="rounded-xl border border-amber-300/35 bg-amber-400/10 px-3 py-1 text-[0.72rem] font-black text-amber-50 transition hover:bg-amber-400/20"
+                                  className="rounded-xl border border-amber-300/35 bg-amber-400/10 px-2.5 py-0.5 text-[0.68rem] font-black leading-tight text-amber-50 transition hover:bg-amber-400/20"
                                 >
                                   Copy
                                 </button>
                               </div>
-                              <p className="mt-1.5 break-words rounded-xl border border-black/10 bg-black/30 px-3 py-1 font-mono text-[0.95rem] font-bold tracking-[0.08em] text-white shadow-inner">
+                              <p className="mt-1 truncate rounded-xl border border-black/10 bg-black/30 px-2.5 py-0.5 font-mono text-[0.9rem] font-bold leading-tight tracking-[0.06em] text-white shadow-inner">
                                 {displayUsername || '—'}
                               </p>
                             </div>
 
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.05] px-2.5 py-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
                               <div className="flex items-center justify-between gap-2">
-                                <p className="text-[0.72rem] font-black uppercase tracking-[0.18em] text-amber-100/58">
+                                <p className="whitespace-nowrap text-[0.66rem] font-black uppercase leading-tight tracking-[0.14em] text-amber-100/58">
                                   Password
                                 </p>
                                 <div className="flex gap-2">
@@ -279,21 +279,21 @@ export default function Vault(props: Props) {
                                       )
                                     }
                                     disabled={!visible}
-                                    className="rounded-xl border border-violet-300/35 bg-violet-400/10 px-3 py-1 text-[0.72rem] font-black text-violet-50 transition hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+                                    className="rounded-xl border border-violet-300/35 bg-violet-400/10 px-2.5 py-0.5 text-[0.68rem] font-black leading-tight text-violet-50 transition hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-40"
                                   >
                                     Copy
                                   </button>
                                   <button
                                     type="button"
                                     onClick={() => togglePassword(login.id)}
-                                    className="rounded-xl border border-amber-200/30 bg-amber-400 px-3 py-1 text-sm font-black text-black transition hover:bg-amber-300"
+                                    className="rounded-xl border border-amber-200/30 bg-amber-400 px-2.5 py-0.5 text-xs font-black leading-tight text-black transition hover:bg-amber-300"
                                     aria-label={visible ? 'Hide password' : 'Show password'}
                                   >
                                     {visible ? '🙈' : '👁️'}
                                   </button>
                                 </div>
                               </div>
-                              <p className="mt-1.5 break-all rounded-xl border border-black/10 bg-black/30 px-3 py-1 font-mono text-[0.95rem] font-bold tracking-[0.18em] text-white shadow-inner">
+                              <p className="mt-1 truncate rounded-xl border border-black/10 bg-black/30 px-2.5 py-0.5 font-mono text-[0.9rem] font-bold leading-tight tracking-[0.14em] text-white shadow-inner">
                                 {visible ? displayPassword : '••••••••••••••••'}
                               </p>
                             </div>

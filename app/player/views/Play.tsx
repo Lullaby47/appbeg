@@ -198,7 +198,7 @@ export default function Play(props: Props) {
                             }
                           >
                             {lowPerformanceMode && gameCardBackgroundImage ? (
-                              <div className="relative mb-2 h-20 overflow-hidden rounded-xl border border-amber-200/15 bg-black/35">
+                              <div className="relative mb-2 h-24 overflow-hidden rounded-xl border border-amber-200/15 bg-black/35">
                                 <img
                                   src={gameCardBackgroundImage}
                                   alt=""
@@ -223,9 +223,9 @@ export default function Play(props: Props) {
                               </div>
                             </div>
                             {hasUsername && (
-                              <div className="relative mt-1.5 rounded-xl border border-white/10 bg-black/35 px-2 py-1">
-                                <div className="flex items-start justify-between gap-1">
-                                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-100/55">
+                              <div className="relative mt-1 rounded-xl border border-white/10 bg-black/35 px-2 py-0.5">
+                                <div className="flex items-center justify-between gap-1">
+                                  <p className="whitespace-nowrap text-[9px] font-bold uppercase leading-tight tracking-[0.16em] text-amber-100/55">
                                     Game username
                                   </p>
                                   <button
@@ -235,16 +235,16 @@ export default function Play(props: Props) {
                                       event.stopPropagation();
                                       void copyCredentialValue(resolvedUsername, 'Username', event);
                                     }}
-                                    className="shrink-0 rounded-lg border border-amber-300/35 bg-amber-400/10 px-2 py-0.5 text-[10px] font-black text-amber-50 transition hover:bg-amber-400/20"
+                                    className="shrink-0 rounded-lg border border-amber-300/35 bg-amber-400/10 px-2 py-0.5 text-[9px] font-black leading-tight text-amber-50 transition hover:bg-amber-400/20"
                                   >
                                     Copy
                                   </button>
                                 </div>
-                                <p className="mt-0.5 truncate font-mono text-xs font-bold text-white">
+                                <p className="truncate font-mono text-xs font-bold leading-tight text-white">
                                   {resolvedUsername}
                                 </p>
-                                <div className="mt-1.5 flex items-start justify-between gap-1">
-                                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-amber-100/55 leading-tight">
+                                <div className="mt-1 flex items-center justify-between gap-1">
+                                  <p className="whitespace-nowrap text-[9px] font-bold uppercase leading-tight tracking-[0.12em] text-amber-100/55">
                                     Game password
                                   </p>
                                   <div className="flex shrink-0 items-center gap-1">
@@ -265,7 +265,7 @@ export default function Play(props: Props) {
                                           event
                                         );
                                       }}
-                                      className="rounded-lg border border-violet-300/35 bg-violet-400/10 px-2 py-0.5 text-[10px] font-black text-violet-50 transition hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+                                      className="rounded-lg border border-violet-300/35 bg-violet-400/10 px-2 py-0.5 text-[9px] font-black leading-tight text-violet-50 transition hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-40"
                                     >
                                       Copy
                                     </button>
@@ -275,7 +275,7 @@ export default function Play(props: Props) {
                                         event.stopPropagation();
                                         togglePassword(game.id);
                                       }}
-                                      className="cursor-pointer rounded-lg border border-amber-400/40 bg-amber-500/20 px-2 py-0.5 text-xs font-black text-amber-100 hover:bg-amber-500/30"
+                                      className="cursor-pointer rounded-lg border border-amber-400/40 bg-amber-500/20 px-2 py-0.5 text-[11px] font-black leading-tight text-amber-100 hover:bg-amber-500/30"
                                       aria-label={isPasswordVisible ? 'Hide password' : 'Show password'}
                                       role="button"
                                       onKeyDown={(event) => {
