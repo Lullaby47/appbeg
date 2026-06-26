@@ -20,6 +20,7 @@ import {
   coadminCashoutLiveChannel,
   insertLiveOutboxEventWithClient,
   playerCashoutLiveChannel,
+  playerRequestLiveChannel,
 } from '@/lib/sql/liveOutbox';
 
 export const PLAYER_CASHOUT_MAX_NPR_PER_24_H = 1000;
@@ -495,6 +496,45 @@ async function writeCashoutOutbox(
   });
 }
 
+async function writeCashoutBalanceOutbox(
+  client: PoolClient,
+  input: {
+    playerUid: string;
+    taskId: string;
+    cash: number;
+    coin: number;
+    updatedAt: string;
+  }
+) {
+  await insertLiveOutboxEventWithClient(client, {
+    channel: playerRequestLiveChannel(input.playerUid),
+    eventType: 'balance_update',
+    entityType: 'player_balance',
+    entityId: input.playerUid,
+    source: 'authority_cashout_create',
+    mirroredAt: input.updatedAt,
+    payload: {
+      entityId: input.playerUid,
+      playerUid: input.playerUid,
+      cash: input.cash,
+      coin: input.coin,
+      reason: 'cashout_request_deduct',
+      cashoutTaskId: input.taskId,
+      updatedAt: input.updatedAt,
+      source: 'authority',
+    },
+  });
+  console.info('[CASHOUT_BALANCE_OUTBOX_EVENT_CREATED]', {
+    taskId: input.taskId,
+    playerUid: input.playerUid,
+    eventType: 'balance_update',
+    channel: playerRequestLiveChannel(input.playerUid),
+    reason: 'cashout_request_deduct',
+    cash: input.cash,
+    coin: input.coin,
+  });
+}
+
 export async function createPlayerCashoutTaskInSql(
   input: AuthorityCashoutCreateInput
 ): Promise<AuthorityCashoutCreateResult> {
@@ -773,6 +813,13 @@ export async function createPlayerCashoutTaskInSql(
       status: 'pending',
       amountNpr: amountThisRequest,
       eventType: 'cashout_task_created',
+      updatedAt: nowIso,
+    });
+    await writeCashoutBalanceOutbox(client, {
+      playerUid,
+      taskId,
+      cash: newCash,
+      coin: Math.max(0, Number(player.coin || 0)),
       updatedAt: nowIso,
     });
     console.info('[CASHOUT_OUTBOX_EVENT_CREATED]', {

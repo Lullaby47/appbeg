@@ -73,8 +73,13 @@ export function attachPlayerProfileSqlPoll(
   );
 }
 
-export async function loadPlayerProfileSnapshotOnce(): Promise<PlayerProfileSqlSnapshot | null> {
+export async function loadPlayerProfileSnapshotOnce(options?: {
+  force?: boolean;
+}): Promise<PlayerProfileSqlSnapshot | null> {
   logClientFirestoreSkipped('player_profile_once', { route: '/api/auth/session/me' });
-  const payload = await getSessionMeOnce({ maxAgeMs: 1_000 });
+  const payload = await getSessionMeOnce({
+    maxAgeMs: options?.force ? 0 : 1_000,
+    force: options?.force,
+  });
   return payload ? mapSessionMeToProfile(payload) : null;
 }

@@ -5494,6 +5494,21 @@ export default function PlayerPage() {
     setMessage(fallbackMessage);
   }
 
+  async function refreshPlayerWalletAfterCashout(source: string, taskId?: string | null) {
+    const profile = await loadPlayerProfileSnapshotOnce({ force: true });
+    if (profile) {
+      applyPlayerProfileSnapshot(profile, playerUid || auth.currentUser?.uid || '');
+    }
+    console.info('[PLAYER_CASHOUT_PROFILE_REFRESH_DONE]', {
+      source,
+      taskId: taskId || null,
+      playerUid: playerUid || auth.currentUser?.uid || null,
+      profileFound: Boolean(profile),
+      cash: profile?.cash ?? null,
+      coin: profile?.coin ?? null,
+    });
+  }
+
   async function handlePlayerCashoutRequest() {
     console.info('[PLAYER_CASHOUT_CLICK]', {
       playerUid: playerUid || auth.currentUser?.uid || null,
@@ -5569,6 +5584,7 @@ export default function PlayerPage() {
         duplicate: result.duplicate ?? false,
       });
 
+      await refreshPlayerWalletAfterCashout('player_cashout_create', result.taskId || null);
       setMessage('Cashout request sent. Waiting for confirmation.');
       setShowCashoutModal(false);
       setCashoutPayoutMethod('qr');
@@ -5640,6 +5656,7 @@ export default function PlayerPage() {
         duplicate: result.duplicate ?? false,
       });
 
+      await refreshPlayerWalletAfterCashout('player_cashout_reuse_last', result.taskId || null);
       setMessage('Cashout request sent using your last payment details.');
       setShowCashoutModal(false);
       setCashoutPayoutMethod('qr');

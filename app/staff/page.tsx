@@ -177,6 +177,23 @@ function getRiskPlayerCardClass(level: string, score: number, hasUnread: boolean
     : 'rounded-2xl border border-white/10 bg-white/5 p-5';
 }
 
+function isAutoDismissStaffSuccessMessage(value: string) {
+  const message = value.trim();
+  if (!message) {
+    return false;
+  }
+  if (/^(failed|failure|error|unable|could not|not enough|enter |select |session )/i.test(message)) {
+    return false;
+  }
+  return (
+    /^(loaded|created|saved|sent|claimed|completed|released|declined|approved|dismissed|processed|updated|deleted|unblocked|blocked)/i.test(
+      message
+    ) ||
+    /\bsuccessfully\b/i.test(message) ||
+    /\balready processed\b/i.test(message)
+  );
+}
+
 export default function StaffPage() {
   const [activeView, setActiveView] = useState<StaffView>('dashboard');
   const [creatorRole, setCreatorRole] = useState<'admin' | 'coadmin' | null>(null);
@@ -310,6 +327,18 @@ export default function StaffPage() {
     () => players.reduce((sum, player) => sum + (unreadCounts[player.uid] || 0), 0),
     [players, unreadCounts]
   );
+
+  useEffect(() => {
+    if (!isAutoDismissStaffSuccessMessage(message)) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setMessage((current) => (current === message ? '' : current));
+    }, 3000);
+
+    return () => window.clearTimeout(timer);
+  }, [message]);
 
   useEffect(() => {
     const returnedMessages = pagedStaffPlayerChat.items.length;
