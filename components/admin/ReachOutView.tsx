@@ -41,6 +41,7 @@ interface Props {
   onSendMessage: (e: React.FormEvent) => void;
   onImageSelect?: (file: File) => void;
   onClearImage?: () => void;
+  onBackToList?: () => void;
   /** Real-time: uid was active recently (for green dot). */
   onlineByUid?: Record<string, boolean>;
   nameMode?: PanelNameMode;
@@ -60,6 +61,7 @@ export default function ReachOutView({
   onSendMessage,
   onImageSelect,
   onClearImage,
+  onBackToList,
   messagesScrollRef,
   hasMoreOlderMessages = false,
   loadingOlderMessages = false,
@@ -150,6 +152,279 @@ export default function ReachOutView({
   };
 
   const allowLoadOlder = !disableLoadOlder && Boolean(onLoadOlderMessages) && hasMoreOlderMessages;
+  const canSend = Boolean(newMessage.trim() || imagePreview) && !sendingImage;
+
+  if (playerLightweightMode && selectedChatUser) {
+    return (
+      <div className="flex h-[calc(100dvh-7rem)] min-h-[520px] w-full min-w-0 flex-1 flex-col overflow-hidden rounded-3xl border border-amber-300/20 bg-[#170c07] shadow-2xl shadow-black/40 sm:h-[calc(100dvh-8rem)]">
+        <div className="sticky top-0 z-20 shrink-0 border-b border-amber-200/10 bg-[#130a06]/95 px-3 py-3 shadow-lg shadow-black/25 backdrop-blur-xl">
+          <div className="flex min-w-0 items-center gap-3">
+            <button
+              type="button"
+              onClick={onBackToList}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-amber-200/15 bg-amber-100/10 text-sm font-black text-amber-100 transition hover:bg-amber-100/15"
+              aria-label="Back to agents"
+            >
+              Back
+            </button>
+
+            <div className="relative shrink-0">
+              <div className="flex h-11 w-11 items-center justify-center rounded-full border border-amber-200/25 bg-gradient-to-br from-[#4b2d18] to-[#1f1008] text-base font-black text-amber-100 shadow-inner shadow-amber-200/10">
+                {getAvatarLetter(selectedChatUser)}
+              </div>
+              <div className="absolute bottom-0 right-0 z-[1]">
+                <OnlineIndicator
+                  online={Boolean(onlineByUid[selectedChatUser.uid])}
+                  sizeClassName="h-3 w-3"
+                  ringClassName="ring-[#130a06]"
+                />
+              </div>
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <h3 className="truncate text-base font-black tracking-tight text-amber-50">
+                  {getMaskedDisplayName(selectedChatUser)}
+                </h3>
+                <span className="shrink-0 rounded-full border border-amber-300/35 bg-amber-200/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-amber-100">
+                  Agent
+                </span>
+              </div>
+              <p className="truncate text-xs font-medium text-amber-100/55">
+                {getOnlineStatusLabel(onlineByUid, selectedChatUser)} -{' '}
+                {reachOutAgentRoleLabel(selectedChatUser)}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div
+          ref={messagesScrollRef}
+          onScroll={(event) => {
+            const el = event.currentTarget;
+            const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 96;
+            nearBottomRef.current = nearBottom;
+            if (nearBottom) {
+              setShowNewMessagePill(false);
+            }
+          }}
+          className="relative min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain bg-[radial-gradient(circle_at_top,rgba(180,120,45,0.16),transparent_32%),linear-gradient(180deg,#1d1009_0%,#0d0705_100%)] px-3 py-4 sm:px-5"
+        >
+          <div className="sticky top-1 z-10 mb-4 flex justify-center">
+            <span className="rounded-full border border-amber-200/15 bg-[#20100a]/85 px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-amber-100/70 shadow-lg shadow-black/25 backdrop-blur">
+              Today
+            </span>
+          </div>
+
+          {allowLoadOlder ? (
+            <div className="mb-4 flex justify-center">
+              <button
+                type="button"
+                disabled={loadingOlderMessages}
+                onClick={() => onLoadOlderMessages?.()}
+                className="rounded-full border border-amber-300/25 bg-black/35 px-4 py-2 text-xs font-semibold text-amber-100/90 shadow-sm backdrop-blur-sm hover:border-amber-300/45 hover:bg-black/45 disabled:opacity-50"
+              >
+                {loadingOlderMessages ? 'Loading...' : 'Load previous messages'}
+              </button>
+            </div>
+          ) : null}
+
+          {messages.length === 0 ? (
+            <div className="flex min-h-full items-center justify-center px-6 text-center text-sm text-amber-100/55">
+              <div className="max-w-xs space-y-2">
+                <p className="text-base font-black text-amber-50">
+                  Your VIP chat is ready
+                </p>
+                <p>Send a message when you need help.</p>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-1 pb-2">
+              {messages.map((msg, index) => {
+                const previous = messages[index - 1];
+                const next = messages[index + 1];
+                const fromPlayer = msg.sender === 'admin';
+                const senderChanged = !previous || previous.sender !== msg.sender;
+                const groupEnds = !next || next.sender !== msg.sender;
+
+                return (
+                  <div
+                    key={msg.id}
+                    className={`flex ${fromPlayer ? 'justify-end' : 'justify-start'} ${
+                      senderChanged ? 'pt-4' : 'pt-1'
+                    }`}
+                  >
+                    <div className={`flex max-w-[86%] flex-col sm:max-w-[68%] ${fromPlayer ? 'items-end' : 'items-start'}`}>
+                      <div
+                        className={`overflow-hidden px-4 py-2.5 shadow-lg [overflow-wrap:anywhere] ${
+                          fromPlayer
+                            ? 'rounded-[1.35rem] rounded-br-md bg-gradient-to-br from-amber-200 via-yellow-100 to-[#d69b3d] text-[#160b05] shadow-amber-950/30'
+                            : 'rounded-[1.35rem] rounded-bl-md border border-amber-100/10 bg-[#2a1810]/95 text-amber-50 shadow-black/25'
+                        }`}
+                      >
+                        {msg.imageUrl ? (
+                          <img
+                            src={msg.imageUrl}
+                            alt=""
+                            loading="lazy"
+                            className="mb-2 max-h-56 max-w-full rounded-2xl object-contain"
+                          />
+                        ) : null}
+                        {msg.text ? (
+                          <p className="whitespace-pre-wrap break-words text-[15px] leading-relaxed [overflow-wrap:anywhere]">
+                            {msg.text}
+                          </p>
+                        ) : null}
+                      </div>
+
+                      {groupEnds ? (
+                        <p className={`mt-1 px-1 text-[11px] font-medium ${fromPlayer ? 'text-amber-100/45' : 'text-amber-100/40'}`}>
+                          {formatTime(msg.timestamp)}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div ref={messagesEndRef} />
+          {showNewMessagePill ? (
+            <button
+              type="button"
+              onClick={() => {
+                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                nearBottomRef.current = true;
+                setShowNewMessagePill(false);
+                if (process.env.NODE_ENV === 'development') {
+                  console.info('[CHAT_AUTOSCROLL]', {
+                    chatType: 'player_agent',
+                    reason: 'new_message_pill',
+                    nearBottom: false,
+                  });
+                }
+              }}
+              className="sticky bottom-3 z-10 mx-auto block rounded-full border border-amber-200/70 bg-gradient-to-r from-amber-200 to-[#d69b3d] px-4 py-2 text-xs font-black text-[#170c07] shadow-lg shadow-black/30"
+            >
+              New message
+            </button>
+          ) : null}
+        </div>
+
+        <form
+          onSubmit={onSendMessage}
+          onClick={onMessageFocus}
+          className="shrink-0 border-t border-amber-200/10 bg-[#130a06]/95 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] shadow-[0_-14px_38px_rgba(0,0,0,0.35)] backdrop-blur-xl sm:p-4"
+        >
+          {imagePreview && (
+            <div className="mb-3 flex items-center gap-3 rounded-2xl border border-amber-200/15 bg-amber-100/10 p-3">
+              <img
+                src={imagePreview}
+                alt="preview"
+                loading="lazy"
+                className="h-16 w-16 rounded-xl object-cover"
+              />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold text-amber-50">Photo ready</p>
+                <p className="text-xs text-amber-100/45">Send when you are ready.</p>
+              </div>
+              <button
+                type="button"
+                onClick={onClearImage}
+                className="rounded-full border border-amber-200/15 px-3 py-1.5 text-xs font-bold text-amber-100/70 hover:bg-amber-100/10 hover:text-amber-50"
+              >
+                Remove
+              </button>
+            </div>
+          )}
+
+          <div className="flex items-end gap-2 rounded-[1.6rem] border border-amber-200/15 bg-[#24140d]/95 p-2 shadow-inner shadow-black/30">
+            <div className="relative shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowEmojis(!showEmojis)}
+                className="flex h-10 w-10 items-center justify-center rounded-full text-sm font-black text-amber-100/65 transition hover:bg-amber-100/10 hover:text-amber-50"
+              >
+                :-)
+              </button>
+
+              {showEmojis && (
+                <div className="absolute bottom-full left-0 mb-3 grid w-48 grid-cols-5 gap-1 rounded-2xl border border-amber-200/15 bg-[#20100a] p-2 shadow-2xl shadow-black/50">
+                  {EMOJIS.map((emoji) => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      onClick={() => {
+                        onMessageChange(`${newMessage}${emoji}`);
+                        setShowEmojis(false);
+                      }}
+                      className="rounded-xl bg-amber-100/10 p-2 text-lg hover:bg-amber-100/15"
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {onImageSelect ? (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      onImageSelect(file);
+                    }
+                    e.target.value = '';
+                  }}
+                  className="hidden"
+                />
+
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-black text-amber-100/65 transition hover:bg-amber-100/10 hover:text-amber-50"
+                  aria-label="Attach photo"
+                >
+                  +
+                </button>
+              </>
+            ) : null}
+
+            <textarea
+              value={newMessage}
+              onChange={(e) => onMessageChange(e.target.value)}
+              onInput={(event) => {
+                event.currentTarget.style.height = 'auto';
+                event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 128)}px`;
+              }}
+              onFocus={onMessageFocus}
+              onClick={onMessageFocus}
+              rows={1}
+              placeholder="Message..."
+              className="max-h-32 min-h-10 min-w-0 flex-1 resize-none bg-transparent px-1 py-2 text-base leading-6 text-amber-50 placeholder:text-amber-100/35 focus:outline-none"
+            />
+
+            <button
+              type="submit"
+              disabled={!canSend}
+              className={`flex h-10 min-w-16 shrink-0 items-center justify-center rounded-full px-4 text-sm font-black transition ${
+                canSend
+                  ? 'bg-gradient-to-r from-amber-200 via-yellow-100 to-[#d69b3d] text-[#170c07] shadow-lg shadow-amber-950/30 hover:brightness-110'
+                  : 'bg-amber-100/10 text-amber-100/35'
+              } disabled:cursor-not-allowed`}
+            >
+              {sendingImage ? '...' : 'Send'}
+            </button>
+          </div>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col gap-4 overflow-hidden xl:grid xl:max-h-full xl:min-h-0 xl:grid-cols-[minmax(0,300px)_1fr] xl:grid-rows-1 xl:gap-6">

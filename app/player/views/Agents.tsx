@@ -13,6 +13,7 @@ export default function Agents(props: Props) {
     handleClearImage,
     handleImageSelect,
     handleSendMessage,
+    onBackToAgents,
     imagePreview,
     messages,
     newMessage,
@@ -47,6 +48,7 @@ export default function Agents(props: Props) {
                   onSendMessage={handleSendMessage}
                   onImageSelect={handleImageSelect}
                   onClearImage={handleClearImage}
+                  onBackToList={onBackToAgents}
                   onlineByUid={agentOnlineByUid}
                 />
               </div>
