@@ -9,6 +9,7 @@ import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { AnimatePresence, motion } from 'motion/react';
+import { ArrowRight, Zap } from 'lucide-react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, onSnapshot, updateDoc } from 'firebase/firestore';
 
@@ -7523,11 +7524,23 @@ export default function PlayerPage() {
                 type="button"
                 onClick={() => void handlePlayerCashoutUsingLastDetails()}
                 disabled={cashoutLoading || cashoutThisRequestNpr <= 0}
-                className="w-full rounded-xl border border-emerald-300/35 bg-emerald-500/15 px-4 py-3 text-left text-sm font-black text-emerald-50 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-55"
+                className="group flex min-h-[64px] w-full items-center justify-between gap-3 rounded-xl border border-emerald-200/45 bg-gradient-to-r from-emerald-400/30 via-teal-400/20 to-cyan-400/20 px-4 py-3.5 text-left text-emerald-50 outline-none ring-1 ring-white/10 transition duration-200 hover:-translate-y-0.5 hover:border-emerald-100/70 hover:from-emerald-300/35 hover:via-teal-300/25 hover:to-cyan-300/25 hover:shadow-[0_14px_32px_rgba(16,185,129,0.22)] focus-visible:border-cyan-100/80 focus-visible:ring-2 focus-visible:ring-cyan-200/70 active:translate-y-0 active:scale-[0.99] active:shadow-[0_8px_22px_rgba(16,185,129,0.24)] disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:translate-y-0 disabled:hover:shadow-none"
               >
-                {cashoutLoading ? 'Sending...' : 'Send Using Last Payment Details'}
-                <span className="mt-1 block text-xs font-semibold text-emerald-100/70">
-                  Sends immediately with your most recent saved payout details.
+                <span className="flex min-w-0 items-center gap-3">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-white/15 bg-black/25 text-emerald-100 transition group-hover:border-emerald-100/35 group-hover:bg-black/15 group-active:scale-95">
+                    <Zap className="h-5 w-5" aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-[15px] font-black leading-tight tracking-normal sm:text-base">
+                      {cashoutLoading ? 'Sending...' : 'Send Using Last Payment Details'}
+                    </span>
+                    <span className="mt-1 block text-xs font-semibold leading-snug text-emerald-50/75 sm:text-[13px]">
+                      Instant cashout using your most recently saved payout details.
+                    </span>
+                  </span>
+                </span>
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/10 text-cyan-50 transition group-hover:translate-x-0.5 group-hover:bg-white/15 group-active:translate-x-1">
+                  <ArrowRight className="h-5 w-5" aria-hidden="true" />
                 </span>
               </button>
 
