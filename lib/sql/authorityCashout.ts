@@ -34,6 +34,7 @@ export type AuthorityCashoutCreateInput = {
   paymentAppName?: string | null;
   paymentAppCashTag?: string | null;
   paymentAppAccountName?: string | null;
+  reuseLastPaymentDetails?: boolean;
   idempotencyKey?: string | null;
   requestedCoadminUid?: string | null;
 };
@@ -42,6 +43,16 @@ export type AuthorityCashoutCreateResult = {
   success: true;
   duplicate: boolean;
   taskId: string;
+};
+
+type ResolvedCashoutPaymentDetails = {
+  paymentDetails: string;
+  payoutMethod: 'qr' | 'app';
+  qrImageUrl: string | null;
+  paymentAppName: string | null;
+  paymentAppCashTag: string | null;
+  paymentAppAccountName: string | null;
+  reusedFromCashoutTaskId: string | null;
 };
 
 export type AuthorityCashoutCompleteInput = {
@@ -122,6 +133,96 @@ function cashoutClaimConflictFromTaskRow(taskId: string, task: Record<string, un
 
 function ttlAfterDays(days: number) {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function buildPaymentDetails(input: {
+  payoutMethod: string | null;
+  qrImageUrl: string | null;
+  paymentAppName: string | null;
+  paymentAppCashTag: string | null;
+  paymentAppAccountName: string | null;
+}) {
+  if (input.payoutMethod === 'qr') {
+    return input.qrImageUrl ? `Payout method: QR\nQR image: ${input.qrImageUrl}` : '';
+  }
+  if (input.payoutMethod === 'app') {
+    return [
+      'Payout method: Payment app',
+      input.paymentAppName ? `App name: ${input.paymentAppName}` : '',
+      input.paymentAppCashTag ? `Cash tag: ${input.paymentAppCashTag}` : '',
+      input.paymentAppAccountName ? `Name on app: ${input.paymentAppAccountName}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
+}
+
+async function resolveLastCashoutPaymentDetailsWithClient(
+  client: PoolClient,
+  playerUid: string
+): Promise<ResolvedCashoutPaymentDetails | null> {
+  const result = await client.query(
+    `
+      SELECT
+        firebase_id,
+        payout_method,
+        qr_image_url,
+        payment_app_name,
+        payment_app_cash_tag,
+        payment_app_account_name
+      FROM public.player_cashout_tasks_cache
+      WHERE deleted_at IS NULL
+        AND player_uid = $1::text
+        AND LOWER(COALESCE(status, '')) = 'completed'
+        AND (
+          (
+            LOWER(COALESCE(payout_method, '')) = 'qr'
+            AND NULLIF(BTRIM(COALESCE(qr_image_url, '')), '') IS NOT NULL
+          )
+          OR (
+            LOWER(COALESCE(payout_method, '')) = 'app'
+            AND NULLIF(BTRIM(COALESCE(payment_app_name, '')), '') IS NOT NULL
+            AND NULLIF(BTRIM(COALESCE(payment_app_cash_tag, '')), '') IS NOT NULL
+            AND NULLIF(BTRIM(COALESCE(payment_app_account_name, '')), '') IS NOT NULL
+          )
+        )
+      ORDER BY completed_at DESC NULLS LAST, created_at DESC NULLS LAST
+      LIMIT 1
+    `,
+    [playerUid]
+  );
+  const row = result.rows[0] as Record<string, unknown> | undefined;
+  if (!row) {
+    return null;
+  }
+
+  const payoutMethod = cleanText(row.payout_method).toLowerCase();
+  const qrImageUrl = cleanText(row.qr_image_url) || null;
+  const paymentAppName = cleanText(row.payment_app_name) || null;
+  const paymentAppCashTag = cleanText(row.payment_app_cash_tag) || null;
+  const paymentAppAccountName = cleanText(row.payment_app_account_name) || null;
+  const paymentDetails = buildPaymentDetails({
+    payoutMethod,
+    qrImageUrl,
+    paymentAppName,
+    paymentAppCashTag,
+    paymentAppAccountName,
+  });
+
+  if (paymentDetails.length < 5 || (payoutMethod !== 'qr' && payoutMethod !== 'app')) {
+    return null;
+  }
+
+  return {
+    paymentDetails,
+    payoutMethod,
+    qrImageUrl: payoutMethod === 'qr' ? qrImageUrl : null,
+    paymentAppName: payoutMethod === 'app' ? paymentAppName : null,
+    paymentAppCashTag: payoutMethod === 'app' ? paymentAppCashTag : null,
+    paymentAppAccountName: payoutMethod === 'app' ? paymentAppAccountName : null,
+    reusedFromCashoutTaskId: cleanText(row.firebase_id) || null,
+  };
 }
 
 function readRawField(raw: unknown, field: string) {
@@ -398,14 +499,25 @@ export async function createPlayerCashoutTaskInSql(
   input: AuthorityCashoutCreateInput
 ): Promise<AuthorityCashoutCreateResult> {
   const playerUid = cleanText(input.playerUid);
-  const paymentDetails = cleanText(input.paymentDetails);
+  const reuseLastPaymentDetails = input.reuseLastPaymentDetails === true;
+  let paymentDetails = reuseLastPaymentDetails ? '' : cleanText(input.paymentDetails);
+  let payoutMethod = reuseLastPaymentDetails ? null : cleanText(input.payoutMethod) || null;
+  let qrImageUrl = reuseLastPaymentDetails ? null : cleanText(input.qrImageUrl) || null;
+  let paymentAppName = reuseLastPaymentDetails ? null : cleanText(input.paymentAppName) || null;
+  let paymentAppCashTag = reuseLastPaymentDetails
+    ? null
+    : cleanText(input.paymentAppCashTag) || null;
+  let paymentAppAccountName = reuseLastPaymentDetails
+    ? null
+    : cleanText(input.paymentAppAccountName) || null;
+  let reusedFromCashoutTaskId: string | null = null;
   const idempotencyKey = cleanText(input.idempotencyKey);
   console.info('[CASHOUT_CREATE_START]', {
     playerUid,
     requestedCoadminUid: cleanText(input.requestedCoadminUid) || null,
+    reuseLastPaymentDetails,
   });
   if (!playerUid) throw new Error('Player profile not found.');
-  if (paymentDetails.length < 5) throw new Error('Please provide clear payment details.');
 
   const resolvedIdempotencyKey = idempotencyKey || randomUUID();
   const operationKey = `cashout_create:${playerUid}:${resolvedIdempotencyKey}`;
@@ -440,6 +552,31 @@ export async function createPlayerCashoutTaskInSql(
         return { success: true, duplicate: true, taskId: cleanText(payload.taskId) };
       }
       throw new Error('Duplicate cashout create idempotency conflict.');
+    }
+
+    if (reuseLastPaymentDetails) {
+      const resolved = await resolveLastCashoutPaymentDetailsWithClient(client, playerUid);
+      if (!resolved) {
+        throw new Error(
+          'No previous payment details found. Please upload a QR or enter payment app details first.'
+        );
+      }
+      paymentDetails = resolved.paymentDetails;
+      payoutMethod = resolved.payoutMethod;
+      qrImageUrl = resolved.qrImageUrl;
+      paymentAppName = resolved.paymentAppName;
+      paymentAppCashTag = resolved.paymentAppCashTag;
+      paymentAppAccountName = resolved.paymentAppAccountName;
+      reusedFromCashoutTaskId = resolved.reusedFromCashoutTaskId;
+      console.info('[CASHOUT_CREATE_REUSED_PAYMENT_DETAILS]', {
+        playerUid,
+        reusedFromCashoutTaskId,
+        payoutMethod,
+      });
+    }
+
+    if (paymentDetails.length < 5) {
+      throw new Error('Please provide clear payment details.');
     }
 
     const [rollingUsed, completedCashoutCount, lastRechargeAmountNpr] = await Promise.all([
@@ -538,11 +675,13 @@ export async function createPlayerCashoutTaskInSql(
       playerUsername,
       amountNpr: amountThisRequest,
       paymentDetails,
-      payoutMethod: cleanText(input.payoutMethod) || null,
-      qrImageUrl: cleanText(input.qrImageUrl) || null,
-      paymentAppName: cleanText(input.paymentAppName) || null,
-      paymentAppCashTag: cleanText(input.paymentAppCashTag) || null,
-      paymentAppAccountName: cleanText(input.paymentAppAccountName) || null,
+      payoutMethod,
+      qrImageUrl,
+      paymentAppName,
+      paymentAppCashTag,
+      paymentAppAccountName,
+      reusedPaymentDetails: reuseLastPaymentDetails,
+      reusedFromCashoutTaskId,
       cashDeductedOnRequest: true,
       status: 'pending',
       assignedHandlerUid: null,
@@ -565,7 +704,7 @@ export async function createPlayerCashoutTaskInSql(
       amountNpr: amountThisRequest,
       table: 'player_cashout_tasks_cache',
       status: 'pending',
-      payoutMethod: cleanText(input.payoutMethod) || null,
+      payoutMethod,
     });
 
     const rawEvent = {

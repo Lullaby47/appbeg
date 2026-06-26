@@ -5540,6 +5540,78 @@ export default function PlayerPage() {
     }
   }
 
+  async function handlePlayerCashoutUsingLastDetails() {
+    console.info('[PLAYER_CASHOUT_REUSE_LAST_CLICK]', {
+      playerUid: playerUid || auth.currentUser?.uid || null,
+      coadminUid: playerCoadminUid || null,
+      amountNpr: cashoutThisRequestNpr,
+      hasClientLastDetails: Boolean(lastUsedQrCashout || lastUsedAppCashout),
+    });
+
+    if (maintenanceBreak.enabled) {
+      console.info('[MAINTENANCE] blocked player action', {
+        action: 'cashout',
+        playerUid: playerUid || auth.currentUser?.uid || null,
+        coadminUid: playerCoadminUid || null,
+      });
+      setMessage(maintenanceBreak.message);
+      return;
+    }
+
+    if (!playerCoadminUid) {
+      setMessage('Coadmin not found for this player.');
+      return;
+    }
+
+    if (cashoutThisRequestNpr <= 0) {
+      setMessage('No cashout amount is available right now.');
+      return;
+    }
+
+    setCashoutLoading(true);
+    setMessage('');
+
+    try {
+      const idempotencyKey =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? `cashout-reuse-last:${crypto.randomUUID()}`
+          : `cashout-reuse-last:${Date.now()}`;
+      const result = await createPlayerCashoutTask({
+        coadminUid: playerCoadminUid,
+        reuseLastPaymentDetails: true,
+        idempotencyKey,
+      });
+
+      console.info('[PLAYER_CASHOUT_REUSE_LAST_RESPONSE]', {
+        taskId: result.taskId || null,
+        authority: result.authority || null,
+        duplicate: result.duplicate ?? false,
+      });
+
+      setMessage('Cashout request sent using your last payment details.');
+      setShowCashoutModal(false);
+      setCashoutPayoutMethod('qr');
+      setCashoutQrUrl('');
+      setCashoutAppName('');
+      setCashoutCashTag('');
+      setCashoutAccountName('');
+    } catch (error) {
+      console.error('[PLAYER_CASHOUT_REUSE_LAST_ERROR]', {
+        playerUid: playerUid || auth.currentUser?.uid || null,
+        coadminUid: playerCoadminUid || null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      reportPlayerUiError(
+        'player_cashout_reuse_last',
+        error,
+        setMessage,
+        'Failed to create cashout request using last payment details.'
+      );
+    } finally {
+      setCashoutLoading(false);
+    }
+  }
+
   async function handleActivateBonusEvent(bonusEvent: BonusEvent) {
     if (maintenanceBreak.enabled) {
       console.info('[MAINTENANCE] blocked player action', {
@@ -7379,6 +7451,18 @@ export default function PlayerPage() {
             </div>
 
             <div className="mt-4 space-y-2">
+              <button
+                type="button"
+                onClick={() => void handlePlayerCashoutUsingLastDetails()}
+                disabled={cashoutLoading || cashoutThisRequestNpr <= 0}
+                className="w-full rounded-xl border border-emerald-300/35 bg-emerald-500/15 px-4 py-3 text-left text-sm font-black text-emerald-50 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-55"
+              >
+                {cashoutLoading ? 'Sending...' : 'Send Using Last Payment Details'}
+                <span className="mt-1 block text-xs font-semibold text-emerald-100/70">
+                  Sends immediately with your most recent saved payout details.
+                </span>
+              </button>
+
               {lastUsedQrCashout?.payment.qrImageUrl ? (
                 <button
                   type="button"

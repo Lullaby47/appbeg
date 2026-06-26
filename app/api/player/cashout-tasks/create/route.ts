@@ -38,7 +38,19 @@ type Body = {
   paymentAppName?: unknown;
   paymentAppCashTag?: unknown;
   paymentAppAccountName?: unknown;
+  reuseLastPaymentDetails?: unknown;
   idempotencyKey?: unknown;
+};
+
+type ResolvedCashoutPaymentDetails = {
+  paymentDetails: string;
+  payoutMethod: 'qr' | 'app';
+  qrImageUrl: string | null;
+  paymentAppName: string | null;
+  paymentAppCashTag: string | null;
+  paymentAppAccountName: string | null;
+  reusedPaymentDetails: boolean;
+  reusedFromCashoutTaskId: string | null;
 };
 
 async function fetchRolling24hCashoutUsageNprForPlayer(playerUid: string): Promise<number> {
@@ -84,6 +96,105 @@ function ttlAfterDays(days: number) {
   return new Date(Date.now() + days * DAY_MS);
 }
 
+function buildPaymentDetails(input: {
+  payoutMethod: string | null;
+  qrImageUrl: string | null;
+  paymentAppName: string | null;
+  paymentAppCashTag: string | null;
+  paymentAppAccountName: string | null;
+}) {
+  if (input.payoutMethod === 'qr') {
+    return input.qrImageUrl ? `Payout method: QR\nQR image: ${input.qrImageUrl}` : '';
+  }
+  if (input.payoutMethod === 'app') {
+    return [
+      'Payout method: Payment app',
+      input.paymentAppName ? `App name: ${input.paymentAppName}` : '',
+      input.paymentAppCashTag ? `Cash tag: ${input.paymentAppCashTag}` : '',
+      input.paymentAppAccountName ? `Name on app: ${input.paymentAppAccountName}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
+}
+
+async function resolveLastPaymentDetailsFromFirestore(
+  playerUid: string
+): Promise<ResolvedCashoutPaymentDetails | null> {
+  const snapshot = await adminDb
+    .collection('playerCashoutTasks')
+    .where('playerUid', '==', playerUid)
+    .where('status', '==', 'completed')
+    .get();
+
+  const candidates = snapshot.docs
+    .map((docSnap) => {
+      const data = docSnap.data() as Record<string, unknown>;
+      const payoutMethod = String(data.payoutMethod || '').trim().toLowerCase();
+      const qrImageUrl = String(data.qrImageUrl || '').trim();
+      const paymentAppName = String(data.paymentAppName || '').trim();
+      const paymentAppCashTag = String(data.paymentAppCashTag || '').trim();
+      const paymentAppAccountName = String(data.paymentAppAccountName || '').trim();
+      const completedAtMs =
+        typeof (data.completedAt as { toMillis?: () => number } | undefined)?.toMillis === 'function'
+          ? (data.completedAt as { toMillis: () => number }).toMillis()
+          : 0;
+      const createdAtMs =
+        typeof (data.createdAt as { toMillis?: () => number } | undefined)?.toMillis === 'function'
+          ? (data.createdAt as { toMillis: () => number }).toMillis()
+          : 0;
+      return {
+        id: docSnap.id,
+        payoutMethod,
+        qrImageUrl,
+        paymentAppName,
+        paymentAppCashTag,
+        paymentAppAccountName,
+        sortMs: Math.max(completedAtMs, createdAtMs),
+      };
+    })
+    .filter((entry) => {
+      if (entry.payoutMethod === 'qr') {
+        return Boolean(entry.qrImageUrl);
+      }
+      if (entry.payoutMethod === 'app') {
+        return Boolean(
+          entry.paymentAppName && entry.paymentAppCashTag && entry.paymentAppAccountName
+        );
+      }
+      return false;
+    })
+    .sort((left, right) => right.sortMs - left.sortMs);
+
+  const picked = candidates[0];
+  if (!picked) {
+    return null;
+  }
+
+  const paymentDetails = buildPaymentDetails({
+    payoutMethod: picked.payoutMethod,
+    qrImageUrl: picked.qrImageUrl || null,
+    paymentAppName: picked.paymentAppName || null,
+    paymentAppCashTag: picked.paymentAppCashTag || null,
+    paymentAppAccountName: picked.paymentAppAccountName || null,
+  });
+  if (paymentDetails.length < 5) {
+    return null;
+  }
+
+  return {
+    paymentDetails,
+    payoutMethod: picked.payoutMethod as 'qr' | 'app',
+    qrImageUrl: picked.payoutMethod === 'qr' ? picked.qrImageUrl : null,
+    paymentAppName: picked.payoutMethod === 'app' ? picked.paymentAppName : null,
+    paymentAppCashTag: picked.payoutMethod === 'app' ? picked.paymentAppCashTag : null,
+    paymentAppAccountName: picked.payoutMethod === 'app' ? picked.paymentAppAccountName : null,
+    reusedPaymentDetails: true,
+    reusedFromCashoutTaskId: picked.id,
+  };
+}
+
 /** Staff/coadmin read SQL cache — create must write SQL when reads are SQL-authoritative. */
 function shouldCreateCashoutInSql() {
   return (
@@ -112,11 +223,22 @@ export async function POST(request: Request) {
     });
 
     const body = (await request.json()) as Body;
-    const paymentDetails = String(body.paymentDetails || '').trim();
-    const payoutMethod = String(body.payoutMethod || '').trim() || null;
-    if (paymentDetails.length < 5) {
-      return apiError('Please provide clear payment details.', 400);
-    }
+    const reuseLastPaymentDetails = body.reuseLastPaymentDetails === true;
+    let paymentDetails = reuseLastPaymentDetails ? '' : String(body.paymentDetails || '').trim();
+    let payoutMethod = reuseLastPaymentDetails
+      ? null
+      : String(body.payoutMethod || '').trim() || null;
+    let qrImageUrl = reuseLastPaymentDetails ? null : String(body.qrImageUrl || '').trim() || null;
+    let paymentAppName = reuseLastPaymentDetails
+      ? null
+      : String(body.paymentAppName || '').trim() || null;
+    let paymentAppCashTag = reuseLastPaymentDetails
+      ? null
+      : String(body.paymentAppCashTag || '').trim() || null;
+    let paymentAppAccountName = reuseLastPaymentDetails
+      ? null
+      : String(body.paymentAppAccountName || '').trim() || null;
+    let reusedFromCashoutTaskId: string | null = null;
 
     const idempotencyKey =
       String(body.idempotencyKey || request.headers.get('Idempotency-Key') || '').trim() || null;
@@ -150,10 +272,11 @@ export async function POST(request: Request) {
         playerUsername: auth.user.username,
         paymentDetails,
         payoutMethod,
-        qrImageUrl: String(body.qrImageUrl || '').trim() || null,
-        paymentAppName: String(body.paymentAppName || '').trim() || null,
-        paymentAppCashTag: String(body.paymentAppCashTag || '').trim() || null,
-        paymentAppAccountName: String(body.paymentAppAccountName || '').trim() || null,
+        qrImageUrl,
+        paymentAppName,
+        paymentAppCashTag,
+        paymentAppAccountName,
+        reuseLastPaymentDetails,
         idempotencyKey,
         requestedCoadminUid,
       });
@@ -201,6 +324,27 @@ export async function POST(request: Request) {
     }
 
     await rejectIfPlayerMaintenanceBreak(auth.user.uid, 'cashout');
+
+    if (reuseLastPaymentDetails) {
+      const resolved = await resolveLastPaymentDetailsFromFirestore(auth.user.uid);
+      if (!resolved) {
+        return apiError(
+          'No previous payment details found. Please upload a QR or enter payment app details first.',
+          400
+        );
+      }
+      paymentDetails = resolved.paymentDetails;
+      payoutMethod = resolved.payoutMethod;
+      qrImageUrl = resolved.qrImageUrl;
+      paymentAppName = resolved.paymentAppName;
+      paymentAppCashTag = resolved.paymentAppCashTag;
+      paymentAppAccountName = resolved.paymentAppAccountName;
+      reusedFromCashoutTaskId = resolved.reusedFromCashoutTaskId;
+    }
+
+    if (paymentDetails.length < 5) {
+      return apiError('Please provide clear payment details.', 400);
+    }
 
     const playerUid = auth.user.uid;
     const [rollingUsed, completedCashoutCount, lastRechargeAmountNpr] = await Promise.all([
@@ -268,11 +412,13 @@ export async function POST(request: Request) {
         playerUsername: String(playerData.username || '').trim() || 'Player',
         amountNpr: amountThisRequest,
         paymentDetails,
-        payoutMethod: String(body.payoutMethod || '').trim() || null,
-        qrImageUrl: String(body.qrImageUrl || '').trim() || null,
-        paymentAppName: String(body.paymentAppName || '').trim() || null,
-        paymentAppCashTag: String(body.paymentAppCashTag || '').trim() || null,
-        paymentAppAccountName: String(body.paymentAppAccountName || '').trim() || null,
+        payoutMethod,
+        qrImageUrl,
+        paymentAppName,
+        paymentAppCashTag,
+        paymentAppAccountName,
+        reusedPaymentDetails: reuseLastPaymentDetails,
+        reusedFromCashoutTaskId,
         cashDeductedOnRequest: true,
         status: 'pending',
         assignedHandlerUid: null,
@@ -305,7 +451,7 @@ export async function POST(request: Request) {
         : '';
     const isValidation =
       !pgCode &&
-      /Maximum withdrawal|Possible Bonus|No cash|Please provide|Only players|Duplicate cashout/i.test(
+      /Maximum withdrawal|Possible Bonus|No cash|Please provide|Only players|Duplicate cashout|No previous payment details/i.test(
         message
       );
     if (isValidation) {

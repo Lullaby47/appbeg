@@ -368,12 +368,13 @@ function requestPlayerCashoutRefresh(reason: string, taskId?: string | null) {
 
 export async function createPlayerCashoutTask(values: {
   coadminUid: string;
-  paymentDetails: string;
+  paymentDetails?: string;
   payoutMethod?: PlayerCashoutPayoutMethod;
   qrImageUrl?: string;
   paymentAppName?: string;
   paymentAppCashTag?: string;
   paymentAppAccountName?: string;
+  reuseLastPaymentDetails?: boolean;
   idempotencyKey?: string;
 }) {
   const idempotencyKey =
