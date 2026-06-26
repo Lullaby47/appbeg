@@ -1260,3 +1260,83 @@
     filter: none !important;
   }
 }
+
+.player-fire-page.low-performance-mode,
+.player-fire-page.low-performance-mode *,
+.player-fire-page.low-performance-mode *::before,
+.player-fire-page.low-performance-mode *::after {
+  animation: none !important;
+  scroll-behavior: auto !important;
+}
+
+.player-fire-page.low-performance-mode .fire-panel,
+.player-fire-page.low-performance-mode .fire-button,
+.player-fire-page.low-performance-mode .fire-surface,
+.player-fire-page.low-performance-mode [class*="backdrop-blur"] {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+.player-fire-page.low-performance-mode .fire-panel,
+.player-fire-page.low-performance-mode .fire-button,
+.player-fire-page.low-performance-mode .fire-surface,
+.player-fire-page.low-performance-mode [class*="shadow-"] {
+  box-shadow:
+    0 0 0 1px rgba(255, 244, 214, 0.08) inset,
+    0 6px 16px rgba(0, 0, 0, 0.24) !important;
+}
+
+.player-fire-page.low-performance-mode [class*="blur-"],
+.player-fire-page.low-performance-mode [class*="drop-shadow"],
+.player-fire-page.low-performance-mode [style*="background-image"] {
+  filter: none !important;
+}
+
+.player-fire-page.low-performance-mode .pointer-events-none[class*="blur-"],
+.player-fire-page.low-performance-mode .pointer-events-none [class*="blur-"] {
+  opacity: 0.1 !important;
+}
+
+.player-fire-page.low-performance-mode .ember-overlay,
+.player-fire-page.low-performance-mode .ember-overlay::before,
+.player-fire-page.low-performance-mode .ember-overlay::after,
+.player-fire-page.low-performance-mode .fire-panel::before,
+.player-fire-page.low-performance-mode .fire-panel::after,
+.player-fire-page.low-performance-mode .fire-button::before,
+.player-fire-page.low-performance-mode .fire-button::after,
+.player-fire-page.low-performance-mode .fire-surface::before,
+.player-fire-page.low-performance-mode .fire-surface::after,
+.player-fire-page.low-performance-mode .player-dashboard-hero::after {
+  background-image: none !important;
+  filter: none !important;
+  opacity: 0.12 !important;
+  transform: none !important;
+  will-change: auto !important;
+}
+
+.player-fire-page.low-performance-mode .fire-panel:hover,
+.player-fire-page.low-performance-mode .fire-panel:focus-within,
+.player-fire-page.low-performance-mode .fire-button:hover,
+.player-fire-page.low-performance-mode .fire-button:focus-visible,
+.player-fire-page.low-performance-mode .fire-button:active,
+.player-fire-page.low-performance-mode .group:hover,
+.player-fire-page.low-performance-mode [class*="hover:scale"]:hover,
+.player-fire-page.low-performance-mode [class*="hover:-translate"]:hover,
+.player-fire-page.low-performance-mode [class*="active:scale"]:active {
+  transform: none !important;
+}
+
+.player-fire-page.low-performance-mode [class*="transition-all"] {
+  transition-property: color, background-color, border-color, opacity !important;
+}
+
+.player-fire-page.low-performance-mode [class*="duration-"] {
+  transition-duration: 120ms !important;
+}
+
+.player-fire-page.low-performance-mode .player-dashboard-hero__intro h2,
+.player-fire-page.low-performance-mode h1,
+.player-fire-page.low-performance-mode h2,
+.player-fire-page.low-performance-mode h3 {
+  text-shadow: none !important;
+}

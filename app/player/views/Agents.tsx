@@ -1,8 +1,10 @@
 'use client';
 
+import { useRef } from 'react';
 import ReachOutView from '@/components/admin/ReachOutView';
 
 type Props = Record<string, any>;
+const PLAYER_RENDER_DEBUG = process.env.NEXT_PUBLIC_PLAYER_RENDER_DEBUG === '1';
 
 export default function Agents(props: Props) {
   const {
@@ -24,7 +26,20 @@ export default function Agents(props: Props) {
     setNewMessage,
     unreadCounts,
   } = props;
+  const renderDebugCountRef = useRef(0);
   const isChatOpen = Boolean(selectedAgent);
+
+  if (PLAYER_RENDER_DEBUG) {
+    renderDebugCountRef.current += 1;
+    console.info('[PLAYER_RENDER_DEBUG]', {
+      component: 'Agents',
+      count: renderDebugCountRef.current,
+      isChatOpen,
+      agentCount: agents.length,
+      unreadThreadCount: Object.keys(unreadCounts || {}).length,
+      atMs: Date.now(),
+    });
+  }
 
   return (
 

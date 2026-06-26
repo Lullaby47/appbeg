@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import type { PlayerGameLogin } from '@/features/games/playerGameLogins';
 import { UNKNOWN_CREATOR_FILTER_KEY } from '../constants';
@@ -10,6 +10,9 @@ type Props = Record<string, any>;
 
 const MOBILE_CREDENTIAL_INITIAL_LIMIT = 10;
 const MOBILE_CREDENTIAL_INCREMENT = 10;
+const LOW_PERFORMANCE_CREDENTIAL_INITIAL_LIMIT = 8;
+const LOW_PERFORMANCE_CREDENTIAL_INCREMENT = 8;
+const PLAYER_RENDER_DEBUG = process.env.NEXT_PUBLIC_PLAYER_RENDER_DEBUG === '1';
 
 function getMobileLowEndMode() {
   if (typeof window === 'undefined') {
@@ -30,6 +33,7 @@ export default function Vault(props: Props) {
     gameBackgroundImageByKey,
     gameLogins,
     loadingList,
+    lowPerformanceMode = false,
     openCredentialResetModal,
     selectedCreatorUid,
     setSelectedCreatorUid,
@@ -40,10 +44,30 @@ export default function Vault(props: Props) {
     visiblePasswords,
   } = props;
 
+  const renderDebugCountRef = useRef(0);
   const [mobileLowEndMode, setMobileLowEndMode] = useState(getMobileLowEndMode);
+  const credentialInitialLimit = lowPerformanceMode
+    ? LOW_PERFORMANCE_CREDENTIAL_INITIAL_LIMIT
+    : MOBILE_CREDENTIAL_INITIAL_LIMIT;
+  const credentialIncrement = lowPerformanceMode
+    ? LOW_PERFORMANCE_CREDENTIAL_INCREMENT
+    : MOBILE_CREDENTIAL_INCREMENT;
+  const shouldPageCredentials = mobileLowEndMode || lowPerformanceMode;
   const [visibleCredentialCount, setVisibleCredentialCount] = useState(
-    MOBILE_CREDENTIAL_INITIAL_LIMIT
+    credentialInitialLimit
   );
+
+  if (PLAYER_RENDER_DEBUG) {
+    renderDebugCountRef.current += 1;
+    console.info('[PLAYER_RENDER_DEBUG]', {
+      component: 'Vault',
+      count: renderDebugCountRef.current,
+      lowPerformanceMode,
+      credentialCount: usernamesVisibleLogins.length,
+      visibleCredentialCount,
+      atMs: Date.now(),
+    });
+  }
 
   useEffect(() => {
     const mobileQuery = window.matchMedia('(max-width: 767px)');
@@ -62,18 +86,18 @@ export default function Vault(props: Props) {
   }, []);
 
   useEffect(() => {
-    setVisibleCredentialCount(MOBILE_CREDENTIAL_INITIAL_LIMIT);
-  }, [mobileLowEndMode, selectedCreatorUid, usernamesVisibleLogins.length]);
+    setVisibleCredentialCount(credentialInitialLimit);
+  }, [credentialInitialLimit, selectedCreatorUid, shouldPageCredentials, usernamesVisibleLogins.length]);
 
   const visibleCredentials = useMemo(
     () =>
-      mobileLowEndMode
+      shouldPageCredentials
         ? usernamesVisibleLogins.slice(0, visibleCredentialCount)
         : usernamesVisibleLogins,
-    [mobileLowEndMode, usernamesVisibleLogins, visibleCredentialCount]
+    [shouldPageCredentials, usernamesVisibleLogins, visibleCredentialCount]
   );
   const hasMoreCredentials =
-    mobileLowEndMode && visibleCredentialCount < usernamesVisibleLogins.length;
+    shouldPageCredentials && visibleCredentialCount < usernamesVisibleLogins.length;
 
   return (
 
@@ -159,10 +183,10 @@ export default function Vault(props: Props) {
                       return (
                         <motion.div
                           key={login.id}
-                          layout={mobileLowEndMode ? false : true}
+                          layout={shouldPageCredentials ? false : true}
                           className="fire-panel fire-orange group rounded-[1.7rem] border border-amber-300/25 bg-gradient-to-br from-[#3a140b]/88 via-[#5d2411]/78 to-[#261018]/92 p-3 shadow-[0_18px_40px_-18px_rgba(56,11,4,0.9)] backdrop-blur-xl transition-all sm:p-3.5 sm:hover:border-amber-300/45 sm:hover:shadow-[0_0_30px_-10px_rgba(251,191,36,0.38)]"
                           style={
-                            gameCardBackgroundImage
+                            gameCardBackgroundImage && !lowPerformanceMode
                               ? {
                                   backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.24) 0%, rgba(0, 0, 0, 0.54) 100%), url("${gameCardBackgroundImage}")`,
                                   backgroundSize: '100% 100%',
@@ -283,10 +307,10 @@ export default function Vault(props: Props) {
                       type="button"
                       onClick={() =>
                         setVisibleCredentialCount((count) =>
-                          Math.min(
-                            usernamesVisibleLogins.length,
-                            count + MOBILE_CREDENTIAL_INCREMENT
-                          )
+                            Math.min(
+                              usernamesVisibleLogins.length,
+                              count + credentialIncrement
+                            )
                         )
                       }
                       className="mt-3 min-h-[44px] w-full rounded-2xl border border-amber-400/35 bg-black/45 px-4 py-3 text-sm font-black text-amber-100"

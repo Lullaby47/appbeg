@@ -329,6 +329,9 @@ function getCashToCoinCashoutLimitFee(amount: number) {
 
 type PlayerTransferDirection = 'cash_to_coin' | 'coin_to_cash';
 
+const PLAYER_RENDER_DEBUG = process.env.NEXT_PUBLIC_PLAYER_RENDER_DEBUG === '1';
+const LOW_PERFORMANCE_REQUEST_HISTORY_DISPLAY = 12;
+
 // Legacy helper retained only to avoid a broad page rewrite in this pass.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function FloatingCasinoBackdrop() {
@@ -365,15 +368,173 @@ function playerStartupJitterMs(minMs: number, maxMs: number) {
   return minMs + Math.floor(Math.random() * (maxMs - minMs + 1));
 }
 
+function detectLowPerformanceMode() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
+  const mobileViewport = window.matchMedia('(max-width: 767px)').matches;
+  const deviceMemory = Number((navigator as Navigator & { deviceMemory?: number }).deviceMemory);
+  const lowDeviceMemory = Number.isFinite(deviceMemory) && deviceMemory <= 4;
+
+  return reducedMotion || lowDeviceMemory || (coarsePointer && mobileViewport);
+}
+
+function areWalletsEqual(left: PlayerWallet, right: PlayerWallet) {
+  return Number(left.coin || 0) === Number(right.coin || 0) && Number(left.cash || 0) === Number(right.cash || 0);
+}
+
+function areUnreadCountsEqual(
+  left: Record<string, number>,
+  right: Record<string, number>
+) {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+  return leftKeys.every((key) => Number(left[key] || 0) === Number(right[key] || 0));
+}
+
+function arePlayerGameLoginsEqual(left: PlayerGameLogin[], right: PlayerGameLogin[]) {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((item, index) => {
+    const next = right[index];
+    return (
+      item.id === next?.id &&
+      item.gameName === next.gameName &&
+      item.gameUsername === next.gameUsername &&
+      item.gamePassword === next.gamePassword &&
+      item.frontendUrl === next.frontendUrl &&
+      item.siteUrl === next.siteUrl &&
+      item.createdBy === next.createdBy &&
+      item.createdAt === next.createdAt
+    );
+  });
+}
+
+function arePlayerRequestsEqual(left: PlayerGameRequest[], right: PlayerGameRequest[]) {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((item, index) => {
+    const next = right[index];
+    return (
+      item.id === next?.id &&
+      item.status === next.status &&
+      item.type === next.type &&
+      item.gameName === next.gameName &&
+      Number(item.amount || 0) === Number(next.amount || 0) &&
+      getTimestampMs(item.createdAt) === getTimestampMs(next.createdAt) &&
+      getTimestampMs(item.completedAt) === getTimestampMs(next.completedAt) &&
+      item.automationStatus === next.automationStatus &&
+      item.pokeMessage === next.pokeMessage &&
+      item.dismissReasonCode === next.dismissReasonCode &&
+      item.dismissReasonMessage === next.dismissReasonMessage
+    );
+  });
+}
+
+function arePlayerCashoutTasksEqual(left: PlayerCashoutTask[], right: PlayerCashoutTask[]) {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((item, index) => {
+    const next = right[index];
+    return (
+      item.id === next?.id &&
+      item.status === next.status &&
+      item.assignedHandlerUid === next.assignedHandlerUid &&
+      Number(item.amountNpr || 0) === Number(next.amountNpr || 0) &&
+      getTimestampMs(item.createdAt) === getTimestampMs(next.createdAt) &&
+      getTimestampMs(item.completedAt) === getTimestampMs(next.completedAt) &&
+      getPlayerCashoutPaymentDisplay(item).method === getPlayerCashoutPaymentDisplay(next).method
+    );
+  });
+}
+
+function areStringRecordsEqual(left: Record<string, string>, right: Record<string, string>) {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+  return leftKeys.every((key) => left[key] === right[key]);
+}
+
+function areStringArrayRecordsEqual(
+  left: Record<string, string[]>,
+  right: Record<string, string[]>
+) {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+  return leftKeys.every((key) => {
+    const leftItems = left[key] || [];
+    const rightItems = right[key] || [];
+    return (
+      leftItems.length === rightItems.length &&
+      leftItems.every((item, index) => item === rightItems[index])
+    );
+  });
+}
+
+function areAgentsEqual(left: AdminUser[], right: AdminUser[]) {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((item, index) => {
+    const next = right[index];
+    return (
+      item.id === next?.id &&
+      item.uid === next.uid &&
+      item.username === next.username &&
+      item.email === next.email &&
+      item.role === next.role &&
+      item.status === next.status &&
+      item.createdBy === next.createdBy &&
+      item.coadminUid === next.coadminUid
+    );
+  });
+}
+
+function areReferralRewardGroupsEqual(
+  left: ReferralRewardGroup[],
+  right: ReferralRewardGroup[]
+) {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((item, index) => {
+    const next = right[index];
+    return (
+      item.referredPlayerUid === next?.referredPlayerUid &&
+      item.referredPlayerName === next.referredPlayerName &&
+      Number(item.pendingRewardCoins || 0) === Number(next.pendingRewardCoins || 0) &&
+      item.hasClaimableReward === next.hasClaimableReward
+    );
+  });
+}
+
 
 export default function PlayerPage() {
   const router = useRouter();
   const isPlayerRole = useIsPlayerSessionRole();
+  const [lowPerformanceMode, setLowPerformanceMode] = useState(false);
   const [activeView, setActiveView] = useState<PlayerView>('dashboard');
   const activeViewRef = useRef<PlayerView>('dashboard');
   const [playerUid, setPlayerUid] = useState('');
 
   const [agents, setAgents] = useState<AdminUser[]>([]);
+  const setAgentsIfChanged = useCallback((nextAgents: AdminUser[]) => {
+    setAgents((current) => (areAgentsEqual(current, nextAgents) ? current : nextAgents));
+  }, []);
   const [selectedAgent, setSelectedAgent] = useState<AdminUser | null>(null);
 
   const [gameLogins, setGameLogins] = useState<PlayerGameLogin[]>([]);
@@ -383,7 +544,15 @@ export default function PlayerPage() {
   const [bonusEvents, setBonusEvents] = useState<BonusEvent[]>([]);
   const [bonusEventsSessionLoading, setBonusEventsSessionLoading] = useState(false);
   const [usernameCarersByGame, setUsernameCarersByGame] = useState<Record<string, string[]>>({});
+  const setUsernameCarersByGameIfChanged = useCallback((nextMap: Record<string, string[]>) => {
+    setUsernameCarersByGame((current) =>
+      areStringArrayRecordsEqual(current, nextMap) ? current : nextMap
+    );
+  }, []);
   const [creatorNames, setCreatorNames] = useState<Record<string, string>>({});
+  const setCreatorNamesIfChanged = useCallback((nextNames: Record<string, string>) => {
+    setCreatorNames((current) => (areStringRecordsEqual(current, nextNames) ? current : nextNames));
+  }, []);
   const [selectedCreatorUid, setSelectedCreatorUid] = useState<string | null>(null);
   const [playerCoadminUid, setPlayerCoadminUid] = useState('');
   const [baseDataLoaded, setBaseDataLoaded] = useState(false);
@@ -431,11 +600,19 @@ export default function PlayerPage() {
     normalizeMaintenanceBreak(null)
   );
   const [wallet, setWallet] = useState<PlayerWallet>({ coin: 0, cash: 0 });
+  const setWalletIfChanged = useCallback((nextWallet: PlayerWallet) => {
+    setWallet((current) => (areWalletsEqual(current, nextWallet) ? current : nextWallet));
+  }, []);
   const [playerUsername, setPlayerUsername] = useState('');
   const [referralCode, setReferralCode] = useState('');
   const [referredByPlayerName, setReferredByPlayerName] = useState('');
   const [referredByPlayerUid, setReferredByPlayerUid] = useState('');
   const [referralRewardGroups, setReferralRewardGroups] = useState<ReferralRewardGroup[]>([]);
+  const setReferralRewardGroupsIfChanged = useCallback((nextGroups: ReferralRewardGroup[]) => {
+    setReferralRewardGroups((current) =>
+      areReferralRewardGroupsEqual(current, nextGroups) ? current : nextGroups
+    );
+  }, []);
   const [referralRewardsLoading, setReferralRewardsLoading] = useState(false);
   const [claimingReferredPlayerUid, setClaimingReferredPlayerUid] = useState<string | null>(null);
   const [earnedRewardSplashCoins, setEarnedRewardSplashCoins] = useState<number | null>(null);
@@ -492,6 +669,9 @@ export default function PlayerPage() {
   const [sendingImage, setSendingImage] = useState(false);
 
   const pageScrollRef = useRef<HTMLElement | null>(null);
+  const renderDebugCountRef = useRef(0);
+  const cashoutModalRenderDebugCountRef = useRef(0);
+  const activeTableRenderDebugCountRef = useRef(0);
   const previousUnreadRef = useRef(0);
   const chatReadInFlightRef = useRef<Set<string>>(new Set());
   const lastChatReadClearAtRef = useRef<Record<string, number>>({});
@@ -500,6 +680,43 @@ export default function PlayerPage() {
   const cashoutListenerStartedForUidRef = useRef('');
   const resolvedPlayerRole = isPlayerRole ? 'player' : null;
   const [startupPulse, setStartupPulse] = useState(0);
+
+  if (PLAYER_RENDER_DEBUG) {
+    renderDebugCountRef.current += 1;
+    console.info('[PLAYER_RENDER_DEBUG]', {
+      component: 'PlayerPage',
+      count: renderDebugCountRef.current,
+      activeView,
+      lowPerformanceMode,
+      showCashoutModal,
+      showActiveTableSplash,
+      requestHistoryCount: requestHistory.length,
+      cashoutTaskCount: playerCashoutTasks.length,
+      gameLoginCount: gameLogins.length,
+      unreadThreadCount: Object.keys(unreadCounts).length,
+      atMs: Date.now(),
+    });
+    if (showCashoutModal) {
+      cashoutModalRenderDebugCountRef.current += 1;
+      console.info('[PLAYER_RENDER_DEBUG]', {
+        component: 'CashoutModal',
+        count: cashoutModalRenderDebugCountRef.current,
+        lowPerformanceMode,
+        atMs: Date.now(),
+      });
+    }
+    if (showActiveTableSplash) {
+      activeTableRenderDebugCountRef.current += 1;
+      console.info('[PLAYER_RENDER_DEBUG]', {
+        component: 'ActiveTableModal',
+        count: activeTableRenderDebugCountRef.current,
+        lowPerformanceMode,
+        selectedGameName,
+        atMs: Date.now(),
+      });
+    }
+  }
+
   const playerStartupRef = useRef<{
     startedAt: number;
     events: Array<{
@@ -713,6 +930,30 @@ export default function PlayerPage() {
     },
     [classifyStartupRequest, logPlayerStartupWaterfall, startupNow]
   );
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const mobileQuery = window.matchMedia('(max-width: 767px)');
+    const pointerQuery = window.matchMedia('(pointer: coarse)');
+    const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const updateLowPerformanceMode = () => {
+      setLowPerformanceMode(detectLowPerformanceMode());
+    };
+
+    updateLowPerformanceMode();
+    mobileQuery.addEventListener('change', updateLowPerformanceMode);
+    pointerQuery.addEventListener('change', updateLowPerformanceMode);
+    motionQuery.addEventListener('change', updateLowPerformanceMode);
+
+    return () => {
+      mobileQuery.removeEventListener('change', updateLowPerformanceMode);
+      pointerQuery.removeEventListener('change', updateLowPerformanceMode);
+      motionQuery.removeEventListener('change', updateLowPerformanceMode);
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -1727,7 +1968,11 @@ export default function PlayerPage() {
   const totalUnread = agents.reduce((total, agent) => {
     return total + (unreadCounts[agent.uid] || 0);
   }, 0);
-  const agentPresenceUids = useMemo(() => agents.map((a) => a.uid), [agents]);
+  const shouldLoadAgentPresence = activeView === 'agents' || Boolean(selectedAgent);
+  const agentPresenceUids = useMemo(
+    () => (shouldLoadAgentPresence ? agents.map((a) => a.uid) : []),
+    [agents, shouldLoadAgentPresence]
+  );
   const agentOnlineByUid = usePresenceOnlineMap(agentPresenceUids);
   const playerBonusEvents = useMemo(
     () => getBonusEventsForPlayerDisplay(bonusEvents),
@@ -2098,9 +2343,12 @@ export default function PlayerPage() {
     []
   );
 
+  const requestHistoryDisplayLimit = lowPerformanceMode
+    ? LOW_PERFORMANCE_REQUEST_HISTORY_DISPLAY
+    : MAX_REQUEST_HISTORY_DISPLAY;
   const displayedRequestHistory = useMemo(
-    () => requestHistory.slice(0, MAX_REQUEST_HISTORY_DISPLAY),
-    [requestHistory]
+    () => requestHistory.slice(0, requestHistoryDisplayLimit),
+    [requestHistory, requestHistoryDisplayLimit]
   );
 
   function requestNeedsPlayerExit(request: PlayerGameRequest) {
@@ -2667,7 +2915,7 @@ export default function PlayerPage() {
   }
 
   function applyPlayerProfileSnapshot(profile: PlayerProfileSqlSnapshot, currentPlayerUid: string) {
-    setWallet({
+    setWalletIfChanged({
       coin: Number(profile.coin || 0),
       cash: Number(profile.cash || 0),
     });
@@ -2785,7 +3033,7 @@ export default function PlayerPage() {
         cache: 'no-store',
       });
       if (!response.ok) {
-        setAgents([]);
+        setAgentsIfChanged([]);
         console.info('[PLAYER_STAFF_LIST]', {
           ok: false,
           status: response.status,
@@ -2799,7 +3047,7 @@ export default function PlayerPage() {
         source?: string;
       };
       const staff = Array.isArray(payload.staff) ? payload.staff : [];
-      setAgents(staff);
+      setAgentsIfChanged(staff);
       console.info('[PLAYER_STAFF_LIST]', {
         ok: true,
         count: staff.length,
@@ -2816,7 +3064,7 @@ export default function PlayerPage() {
         });
         return;
       }
-      setAgents([]);
+      setAgentsIfChanged([]);
       reportPlayerUiError('player_staff_list', error, setMessage, 'Failed to load agents.');
       console.info('[PLAYER_STAFF_LIST]', {
         ok: false,
@@ -2831,7 +3079,7 @@ export default function PlayerPage() {
     async (currentPlayerUid: string, sortedLogins: PlayerGameLogin[]) => {
       try {
         const carerMapping = await getCompletedUsernameCarersByPlayer(currentPlayerUid);
-        setUsernameCarersByGame(carerMapping);
+        setUsernameCarersByGameIfChanged(carerMapping);
 
         const creatorUids = [
           ...new Set(
@@ -2860,7 +3108,7 @@ export default function PlayerPage() {
         for (const [uid, label] of nameEntries) {
           nextCreatorNames[uid] = label;
         }
-        setCreatorNames(nextCreatorNames);
+        setCreatorNamesIfChanged(nextCreatorNames);
       } catch (error) {
         reportPlayerUiError(
           'player_credential_sidecars',
@@ -2907,7 +3155,7 @@ export default function PlayerPage() {
 
     const clearPlayerState = () => {
       setIsBlockedPlayer(false);
-      setWallet({ coin: 0, cash: 0 });
+      setWalletIfChanged({ coin: 0, cash: 0 });
       setPlayerUsername('');
       setPlayerCoadminUid('');
       setPaymentDetailsNoticeVersion(0);
@@ -2917,13 +3165,13 @@ export default function PlayerPage() {
       knownCompletedCashoutTaskIdsRef.current = new Set();
       cashoutSplashSeenIdsRef.current = new Set();
       knownCashoutStatusByIdRef.current = {};
-      setAgents([]);
-      setGameLogins([]);
+      setAgentsIfChanged([]);
+      setGameLogins((current) => (current.length === 0 ? current : []));
       setBonusEvents([]);
-      setUsernameCarersByGame({});
-      setCreatorNames({});
+      setUsernameCarersByGameIfChanged({});
+      setCreatorNamesIfChanged({});
       setSelectedCreatorUid(null);
-      setRequestHistory([]);
+      setRequestHistory((current) => (current.length === 0 ? current : []));
       syncedRuntimePlayerUidRef.current = '';
     };
 
@@ -2954,7 +3202,7 @@ export default function PlayerPage() {
             | { status?: string; coin?: number; cash?: number; username?: string }
             | undefined;
           setIsBlockedPlayer(playerData?.status === 'disabled');
-          setWallet({
+          setWalletIfChanged({
             coin: Number(playerData?.coin || 0),
             cash: Number(playerData?.cash || 0),
           });
@@ -2970,11 +3218,11 @@ export default function PlayerPage() {
         }
       } catch {
         setIsBlockedPlayer(false);
-        setWallet({ coin: 0, cash: 0 });
+        setWalletIfChanged({ coin: 0, cash: 0 });
         setPlayerUsername('');
         setPlayerCoadminUid('');
         setBonusEvents([]);
-        setUsernameCarersByGame({});
+        setUsernameCarersByGameIfChanged({});
       }
     };
 
@@ -3242,7 +3490,7 @@ export default function PlayerPage() {
         console.info('[PLAYER_CHAT_READ] refreshReadStateLoaded', {
           threadCount: Object.keys(counts).length,
         });
-        setUnreadCounts(counts);
+        setUnreadCounts((current) => (areUnreadCountsEqual(current, counts) ? current : counts));
       }, { requirePlayerRole: true });
     }, delayMs);
     return () => {
@@ -3283,7 +3531,9 @@ export default function PlayerPage() {
       playerUid,
       (list) => {
         const sorted = sortByNewest(list);
-        setGameLogins(sorted);
+        setGameLogins((current) =>
+          arePlayerGameLoginsEqual(current, sorted) ? current : sorted
+        );
         setLoadingList(false);
         if (!playPanelGameLoginsLoadedLoggedRef.current) {
           playPanelGameLoginsLoadedLoggedRef.current = true;
@@ -3327,7 +3577,10 @@ export default function PlayerPage() {
       unsubscribeRequests = listenToPlayerGameRequestsByPlayer(
         playerUid,
         (requests) => {
-          setRequestHistory(sortByNewest(requests));
+          const sortedRequests = sortByNewest(requests);
+          setRequestHistory((current) =>
+            arePlayerRequestsEqual(current, sortedRequests) ? current : sortedRequests
+          );
           liveShadowCompare.reportFirebaseSnapshot(requests);
         },
         (error) => {
@@ -3594,7 +3847,10 @@ export default function PlayerPage() {
               source: '/api/live/snapshot/player/[playerUid]/requests',
               count: requests.length,
             });
-            setRequestHistory(sortByNewest(requests));
+            const sortedRequests = sortByNewest(requests);
+            setRequestHistory((current) =>
+              arePlayerRequestsEqual(current, sortedRequests) ? current : sortedRequests
+            );
             setMessage('');
           },
           (reason) => {
@@ -3702,8 +3958,11 @@ export default function PlayerPage() {
             }
             void getPlayerGameLoginsByPlayer(playerUid)
               .then((logins) => {
-                setGameLogins(sortByNewest(logins));
-                void syncCredentialSidecarsForPlayer(playerUid, logins);
+                const sortedLogins = sortByNewest(logins);
+                setGameLogins((current) =>
+                  arePlayerGameLoginsEqual(current, sortedLogins) ? current : sortedLogins
+                );
+                void syncCredentialSidecarsForPlayer(playerUid, sortedLogins);
                 console.info('[PLAYER_PLAYTAB_GAMES_SQL_READ]', {
                   playerUid,
                   count: logins.length,
@@ -3818,7 +4077,9 @@ export default function PlayerPage() {
             source: '/api/player-cashout-tasks/cache',
             count: tasks.length,
           });
-          setPlayerCashoutTasks(tasks);
+          setPlayerCashoutTasks((current) =>
+            arePlayerCashoutTasksEqual(current, tasks) ? current : tasks
+          );
           const completedTasks = tasks.filter((task) => task.status === 'completed');
           const recentCompletionCutoffMs = Date.now() - 5 * 60 * 1000;
 
@@ -4032,7 +4293,7 @@ export default function PlayerPage() {
       doc(db, 'users', playerUid),
       (snapshot) => {
         if (!snapshot.exists()) {
-          setWallet({ coin: 0, cash: 0 });
+          setWalletIfChanged({ coin: 0, cash: 0 });
           setIsBlockedPlayer(false);
           setPlayerUsername('');
           return;
@@ -4054,7 +4315,7 @@ export default function PlayerPage() {
           dismissedPaymentDetailsNoticeVersion?: number;
         };
 
-        setWallet({
+        setWalletIfChanged({
           coin: Number(playerData.coin || 0),
           cash: Number(playerData.cash || 0),
         });
@@ -4096,7 +4357,7 @@ export default function PlayerPage() {
         }
       },
       () => {
-        setWallet({ coin: 0, cash: 0 });
+        setWalletIfChanged({ coin: 0, cash: 0 });
         setPlayerUsername('');
         setDismissedPaymentDetailsNoticeVersion(0);
         setReferralCode('');
@@ -4114,14 +4375,14 @@ export default function PlayerPage() {
     }
 
     if (!playerUid) {
-      setReferralRewardGroups([]);
+      setReferralRewardGroupsIfChanged([]);
       setReferralRewardsLoading(false);
       return;
     }
     setReferralRewardsLoading(true);
     try {
       const groups = await fetchMyReferralRewards();
-      setReferralRewardGroups(groups);
+      setReferralRewardGroupsIfChanged(groups);
     } catch (error) {
       reportPlayerUiError(
         'player_referral_rewards',
@@ -4212,11 +4473,11 @@ export default function PlayerPage() {
           return;
         }
 
-        setAgents(baseData.staff as AdminUser[]);
+        setAgentsIfChanged(baseData.staff as AdminUser[]);
         setCoadminFrontendLinkByGameKey(buildCoadminFrontendLinkMap(baseData.gameLogins));
         setHasPendingFreeplayGift(baseData.pendingGift.hasPendingGift);
         setPendingFreeplayGiftId(String(baseData.pendingGift.giftId || '').trim());
-        setReferralRewardGroups(baseData.referralRewards.groups);
+        setReferralRewardGroupsIfChanged(baseData.referralRewards.groups);
         setReferralRewardsLoading(false);
 
         baseDataLoadedRef.current = true;
@@ -4677,7 +4938,10 @@ export default function PlayerPage() {
           const liveCoin = Number(
             (liveSnap.data() as { coin?: number }).coin || 0
           );
-          setWallet((w) => ({ ...w, coin: liveCoin }));
+          setWallet((current) => {
+            const nextWallet = { ...current, coin: liveCoin };
+            return areWalletsEqual(current, nextWallet) ? current : nextWallet;
+          });
           if (liveCoin < amountNum) {
             clearPendingForRetry('insufficient_coin_live_check');
             setMessage(
@@ -4742,12 +5006,13 @@ export default function PlayerPage() {
       });
 
       saveRecentPlayAmount(type, amountText);
-      setRequestHistory((current) =>
-        sortByNewest([
+      setRequestHistory((current) => {
+        const nextRequests = sortByNewest([
           result.request,
           ...current.filter((request) => request.id !== result.requestId),
-        ])
-      );
+        ]);
+        return arePlayerRequestsEqual(current, nextRequests) ? current : nextRequests;
+      });
       setMessage(type === 'redeem' ? PLAYER_REDEEM_SENT_MESSAGE : PLAYER_RECHARGE_SENT_MESSAGE);
       const toastAt = nowMs();
       clearPlayerRequestProgressTimers(idempotencyKey);
@@ -4843,8 +5108,8 @@ export default function PlayerPage() {
         throw new Error(payload.error || 'Failed to retry redeem request.');
       }
       console.info('[PLAYER_EXIT_CONFIRMED_RETRY_REQUESTED]', { requestId: request.id });
-      setRequestHistory((current) =>
-        sortByNewest(
+      setRequestHistory((current) => {
+        const nextRequests = sortByNewest(
           current.map((item) =>
             item.id === request.id
               ? {
@@ -4855,8 +5120,9 @@ export default function PlayerPage() {
                 }
               : item
           )
-        )
-      );
+        );
+        return arePlayerRequestsEqual(current, nextRequests) ? current : nextRequests;
+      });
       setMessage('Thanks. Your redeem is ready to continue.');
     } catch (error) {
       reportPlayerUiError(
@@ -5373,7 +5639,7 @@ export default function PlayerPage() {
           feeAmount: result.feeAmount,
           transactionId: result.eventId || result.transferId || transferId,
         });
-        setWallet({ cash: updatedCashBalance, coin: updatedCoinBalance });
+        setWalletIfChanged({ cash: updatedCashBalance, coin: updatedCoinBalance });
         console.info('[CONVERSION_LOCAL_BALANCE_UPDATED]', {
           type: 'cash_to_coin',
           source: 'api_response',
@@ -5399,7 +5665,7 @@ export default function PlayerPage() {
           feeAmount: result.feeAmount,
           transactionId: result.eventId || result.transferId || transferId,
         });
-        setWallet({ cash: updatedCashBalance, coin: updatedCoinBalance });
+        setWalletIfChanged({ cash: updatedCashBalance, coin: updatedCoinBalance });
         console.info('[CONVERSION_LOCAL_BALANCE_UPDATED]', {
           type: 'coin_to_cash',
           source: 'api_response',
@@ -5997,9 +6263,9 @@ export default function PlayerPage() {
   function renderRequestHistory() {
     return (
       <motion.div
-        initial={{ opacity: 0, y: 16 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.35 }}
+        initial={lowPerformanceMode ? false : { opacity: 0, y: 16 }}
+        animate={lowPerformanceMode ? undefined : { opacity: 1, y: 0 }}
+        transition={lowPerformanceMode ? undefined : { duration: 0.35 }}
         className="mt-6 rounded-3xl border border-amber-400/25 bg-black/40 p-4 shadow-[0_0_40px_-10px_rgba(234,179,8,0.35)] backdrop-blur-xl sm:p-6"
       >
         <div className="mb-5">
@@ -6007,7 +6273,7 @@ export default function PlayerPage() {
             <span aria-hidden>📜</span> Request History
           </h3>
           <p className="mt-2 text-xs text-amber-100/55 sm:text-sm">
-            Showing up to {MAX_REQUEST_HISTORY_DISPLAY} most recent recharge and redeem
+            Showing up to {requestHistoryDisplayLimit} most recent recharge and redeem
             requests.
           </p>
         </div>
@@ -6024,7 +6290,7 @@ export default function PlayerPage() {
               return (
                 <motion.div
                   key={request.id}
-                  layout
+                  layout={lowPerformanceMode ? false : true}
                   className="group rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.07] to-transparent p-4 shadow-lg transition-all active:scale-[0.99] sm:p-5 sm:hover:border-amber-400/35 sm:hover:shadow-[0_0_24px_-8px_rgba(234,179,8,0.4)]"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-4">
@@ -6093,10 +6359,10 @@ export default function PlayerPage() {
                 </motion.div>
               );
             })}
-            {requestHistory.length > MAX_REQUEST_HISTORY_DISPLAY && (
+            {requestHistory.length > requestHistoryDisplayLimit && (
               <p className="pt-2 text-center text-xs text-amber-100/40">
-                {requestHistory.length - MAX_REQUEST_HISTORY_DISPLAY} older request
-                {requestHistory.length - MAX_REQUEST_HISTORY_DISPLAY === 1 ? '' : 's'} not shown in this list.
+                {requestHistory.length - requestHistoryDisplayLimit} older request
+                {requestHistory.length - requestHistoryDisplayLimit === 1 ? '' : 's'} not shown in this list.
               </p>
             )}
           </div>
@@ -6150,7 +6416,7 @@ export default function PlayerPage() {
     <>
     <main
         ref={pageScrollRef}
-        className="player-fire-page relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white md:flex-row md:items-start lg:pb-0"
+        className={`player-fire-page ${lowPerformanceMode ? 'low-performance-mode' : ''} relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white md:flex-row md:items-start lg:pb-0`}
       >
         <div className="ember-overlay" aria-hidden="true" />
         {maintenanceBreak.enabled ? (
@@ -6651,12 +6917,12 @@ export default function PlayerPage() {
             )}
             
             {/* DASHBOARD VIEW */}
-            {activeView === 'dashboard' && <Lobby activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} agents={agents} bonusStripPaused={bonusStripPaused} bonusVanishedToast={bonusVanishedToast} formatWalletAmount={formatWalletAmount} gameLogins={gameLogins} handleActivateBonusEvent={handleActivateBonusEvent} handleCopyReferralCode={handleCopyReferralCode} handleOpenFirstUnreadAgent={handleOpenFirstUnreadAgent} openCashToCoinTransferModal={openCashToCoinTransferModal} openCoinToCashTransferModal={openCoinToCashTransferModal} isBlockedPlayer={isBlockedPlayer} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} referralCode={referralCode} setActiveView={setActiveViewFromLobby} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} setMessage={setMessage} setShowLoadCoinPanel={setShowLoadCoinPanel} totalUnread={totalUnread} wallet={wallet} />}
+            {activeView === 'dashboard' && <Lobby activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} agents={agents} bonusStripPaused={bonusStripPaused} bonusVanishedToast={bonusVanishedToast} formatWalletAmount={formatWalletAmount} gameLogins={gameLogins} handleActivateBonusEvent={handleActivateBonusEvent} handleCopyReferralCode={handleCopyReferralCode} handleOpenFirstUnreadAgent={handleOpenFirstUnreadAgent} openCashToCoinTransferModal={openCashToCoinTransferModal} openCoinToCashTransferModal={openCoinToCashTransferModal} isBlockedPlayer={isBlockedPlayer} lowPerformanceMode={lowPerformanceMode} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} referralCode={referralCode} setActiveView={setActiveViewFromLobby} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} setMessage={setMessage} setShowLoadCoinPanel={setShowLoadCoinPanel} totalUnread={totalUnread} wallet={wallet} />}
 
-            {activeView === 'bonus-events' && <Bonus activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} bonusEventsSessionLoading={bonusEventsSessionLoading} bonusSwipeStartXRef={bonusSwipeStartXRef} bonusVanishedToast={bonusVanishedToast} handleActivateBonusEvent={handleActivateBonusEvent} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} showBonusPanelHint={showBonusPanelHint} />}
+            {activeView === 'bonus-events' && <Bonus activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} bonusEventsSessionLoading={bonusEventsSessionLoading} bonusSwipeStartXRef={bonusSwipeStartXRef} bonusVanishedToast={bonusVanishedToast} handleActivateBonusEvent={handleActivateBonusEvent} lowPerformanceMode={lowPerformanceMode} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} showBonusPanelHint={showBonusPanelHint} />}
 
             {/* PLAY VIEW */}
-            {activeView === 'play' && <Play copyCredentialValue={copyCredentialValue} gameBackgroundImageByKey={gameBackgroundImageByKey} gameLogins={gameLogins} loadingList={loadingList} onCardsRendered={(input: { count: number; state: string }) => {
+            {activeView === 'play' && <Play copyCredentialValue={copyCredentialValue} gameBackgroundImageByKey={gameBackgroundImageByKey} gameLogins={gameLogins} loadingList={loadingList} lowPerformanceMode={lowPerformanceMode} onCardsRendered={(input: { count: number; state: string }) => {
               if (!playPanelCardsRenderedLoggedRef.current) {
                 playPanelCardsRenderedLoggedRef.current = true;
                 console.info('[PLAY_PANEL_CARDS_RENDERED]', {
@@ -6693,13 +6959,13 @@ export default function PlayerPage() {
             }} openActiveTableSplash={openActiveTableSplash} selectedGameName={selectedGameName} setSelectedGameName={setSelectedGameName} togglePassword={togglePassword} visiblePasswords={visiblePasswords} />}
 
             {/* USERNAMES VIEW */}
-            {activeView === 'usernames' && <Vault coadminFrontendLinkByGameKey={coadminFrontendLinkByGameKey} copyCredentialValue={copyCredentialValue} creatorNames={creatorNames} credentialTaskLoadingKey={credentialTaskLoadingKey} gameBackgroundImageByKey={gameBackgroundImageByKey} gameLogins={gameLogins} loadingList={loadingList} openCredentialResetModal={openCredentialResetModal} selectedCreatorUid={selectedCreatorUid} setSelectedCreatorUid={setSelectedCreatorUid} togglePassword={togglePassword} usernameCarersByGame={usernameCarersByGame} usernamesCreatorFilterKeys={usernamesCreatorFilterKeys} usernamesVisibleLogins={usernamesVisibleLogins} visiblePasswords={visiblePasswords} />}
+            {activeView === 'usernames' && <Vault coadminFrontendLinkByGameKey={coadminFrontendLinkByGameKey} copyCredentialValue={copyCredentialValue} creatorNames={creatorNames} credentialTaskLoadingKey={credentialTaskLoadingKey} gameBackgroundImageByKey={gameBackgroundImageByKey} gameLogins={gameLogins} loadingList={loadingList} lowPerformanceMode={lowPerformanceMode} openCredentialResetModal={openCredentialResetModal} selectedCreatorUid={selectedCreatorUid} setSelectedCreatorUid={setSelectedCreatorUid} togglePassword={togglePassword} usernameCarersByGame={usernameCarersByGame} usernamesCreatorFilterKeys={usernamesCreatorFilterKeys} usernamesVisibleLogins={usernamesVisibleLogins} visiblePasswords={visiblePasswords} />}
 
             {/* EARN COINS VIEW */}
-            {activeView === 'earn-coins' && <EarnCoins claimingFreeplayGift={claimingFreeplayGift} claimingReferredPlayerUid={claimingReferredPlayerUid} freeplayClaimSuccessMessage={freeplayClaimSuccessMessage} handleClaimFreeplayGift={handleClaimFreeplayGift} handleClaimReferralReward={handleClaimReferralReward} hasPendingFreeplayGift={hasPendingFreeplayGift} referralRewardGroups={referralRewardGroups} referralRewardsLoading={referralRewardsLoading} referredByPlayerName={referredByPlayerName} />}
+            {activeView === 'earn-coins' && <EarnCoins claimingFreeplayGift={claimingFreeplayGift} claimingReferredPlayerUid={claimingReferredPlayerUid} freeplayClaimSuccessMessage={freeplayClaimSuccessMessage} handleClaimFreeplayGift={handleClaimFreeplayGift} handleClaimReferralReward={handleClaimReferralReward} hasPendingFreeplayGift={hasPendingFreeplayGift} lowPerformanceMode={lowPerformanceMode} referralRewardGroups={referralRewardGroups} referralRewardsLoading={referralRewardsLoading} referredByPlayerName={referredByPlayerName} />}
 
             {/* AGENTS VIEW - ReachOutView integration remains the same but styled via the prop structure */}
-            {activeView === 'agents' && <Agents agentOnlineByUid={agentOnlineByUid} agents={agents} agentsScrollRef={agentsScrollRef} handleAgentSelect={handleAgentSelect} handleClearImage={handleClearImage} handleImageSelect={handleImageSelect} handleSendMessage={handleSendMessage} imagePreview={imagePreview} messages={messages} newMessage={newMessage} onBackToAgents={() => setSelectedAgent(null)} onMessageFocus={() => markThreadReadOnPlayerChatFocus(selectedAgent?.uid, playerAuthorityChatTypeForUser(selectedAgent), 'input')} pagedAgentChat={pagedAgentChat} selectedAgent={selectedAgent} sendingImage={sendingImage} setNewMessage={setNewMessage} unreadCounts={unreadCounts} />}
+            {activeView === 'agents' && <Agents agentOnlineByUid={agentOnlineByUid} agents={agents} agentsScrollRef={agentsScrollRef} handleAgentSelect={handleAgentSelect} handleClearImage={handleClearImage} handleImageSelect={handleImageSelect} handleSendMessage={handleSendMessage} imagePreview={imagePreview} lowPerformanceMode={lowPerformanceMode} messages={messages} newMessage={newMessage} onBackToAgents={() => setSelectedAgent(null)} onMessageFocus={() => markThreadReadOnPlayerChatFocus(selectedAgent?.uid, playerAuthorityChatTypeForUser(selectedAgent), 'input')} pagedAgentChat={pagedAgentChat} selectedAgent={selectedAgent} sendingImage={sendingImage} setNewMessage={setNewMessage} unreadCounts={unreadCounts} />}
             </div>
           </div>
         </section>
@@ -6978,7 +7244,7 @@ export default function PlayerPage() {
               maxHeight: activeTableViewportHeight
                 ? `${Math.max(320, activeTableViewportHeight - 16)}px`
                 : 'calc(100dvh - 1rem)',
-              ...(selectedGameBackgroundImage
+              ...(selectedGameBackgroundImage && !lowPerformanceMode
                 ? {
                     backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.08) 0%, rgba(0, 0, 0, 0.28) 100%), url("${selectedGameBackgroundImage}")`,
                     backgroundSize: '100% 100%',

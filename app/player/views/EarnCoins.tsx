@@ -12,6 +12,7 @@ type Props = {
   handleClaimFreeplayGift: () => void | Promise<void>;
   handleClaimReferralReward: (referredPlayerUid: string) => void | Promise<void>;
   hasPendingFreeplayGift: boolean;
+  lowPerformanceMode?: boolean;
   referralRewardGroups: ReferralRewardGroup[];
   referralRewardsLoading: boolean;
   referredByPlayerName: string;

@@ -21,6 +21,7 @@ type Props = {
   openCashToCoinTransferModal: () => void;
   openCoinToCashTransferModal: () => void;
   isBlockedPlayer: boolean;
+  lowPerformanceMode?: boolean;
   maintenanceBreak: { enabled: boolean };
   playerBonusEvents: BonusEvent[];
   referralCode: string;

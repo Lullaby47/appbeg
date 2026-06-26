@@ -197,9 +197,12 @@ export function usePresenceOnlineMap(
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
+    if (uniqueSorted.length === 0) {
+      return;
+    }
     const t = setInterval(() => setTick((n) => n + 1), 15000);
     return () => clearInterval(t);
-  }, []);
+  }, [uniqueSorted.length]);
 
   useEffect(() => {
     if (uniqueSorted.length === 0) {

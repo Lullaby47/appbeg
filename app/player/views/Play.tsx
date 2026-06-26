@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import type { PlayerGameLogin } from '@/features/games/playerGameLogins';
 import { getGameBackgroundImage } from '../utils';
@@ -9,6 +9,9 @@ type Props = Record<string, any>;
 
 const MOBILE_CARD_INITIAL_LIMIT = 12;
 const MOBILE_CARD_INCREMENT = 12;
+const LOW_PERFORMANCE_CARD_INITIAL_LIMIT = 8;
+const LOW_PERFORMANCE_CARD_INCREMENT = 8;
+const PLAYER_RENDER_DEBUG = process.env.NEXT_PUBLIC_PLAYER_RENDER_DEBUG === '1';
 
 function getMobileLowEndMode() {
   if (typeof window === 'undefined') {
@@ -26,6 +29,7 @@ export default function Play(props: Props) {
     gameBackgroundImageByKey,
     gameLogins,
     loadingList,
+    lowPerformanceMode = false,
     onCardsRendered,
     onShellRendered,
     openActiveTableSplash,
@@ -35,8 +39,28 @@ export default function Play(props: Props) {
     visiblePasswords,
   } = props;
 
+  const renderDebugCountRef = useRef(0);
   const [mobileLowEndMode, setMobileLowEndMode] = useState(getMobileLowEndMode);
-  const [visibleCardCount, setVisibleCardCount] = useState(MOBILE_CARD_INITIAL_LIMIT);
+  const cardInitialLimit = lowPerformanceMode
+    ? LOW_PERFORMANCE_CARD_INITIAL_LIMIT
+    : MOBILE_CARD_INITIAL_LIMIT;
+  const cardIncrement = lowPerformanceMode
+    ? LOW_PERFORMANCE_CARD_INCREMENT
+    : MOBILE_CARD_INCREMENT;
+  const shouldPageCards = mobileLowEndMode || lowPerformanceMode;
+  const [visibleCardCount, setVisibleCardCount] = useState(cardInitialLimit);
+
+  if (PLAYER_RENDER_DEBUG) {
+    renderDebugCountRef.current += 1;
+    console.info('[PLAYER_RENDER_DEBUG]', {
+      component: 'Play',
+      count: renderDebugCountRef.current,
+      lowPerformanceMode,
+      gameLoginCount: gameLogins.length,
+      visibleCardCount,
+      atMs: Date.now(),
+    });
+  }
 
   useEffect(() => {
     const mobileQuery = window.matchMedia('(max-width: 767px)');
@@ -55,8 +79,8 @@ export default function Play(props: Props) {
   }, []);
 
   useEffect(() => {
-    setVisibleCardCount(MOBILE_CARD_INITIAL_LIMIT);
-  }, [gameLogins.length, mobileLowEndMode]);
+    setVisibleCardCount(cardInitialLimit);
+  }, [cardInitialLimit, gameLogins.length, shouldPageCards]);
 
   useEffect(() => {
     onShellRendered?.();
@@ -74,13 +98,13 @@ export default function Play(props: Props) {
 
   const visibleGameLogins = useMemo(
     () =>
-      mobileLowEndMode
+      shouldPageCards
         ? gameLogins.slice(0, visibleCardCount)
         : gameLogins,
-    [gameLogins, mobileLowEndMode, visibleCardCount]
+    [gameLogins, shouldPageCards, visibleCardCount]
   );
   const hasMoreGameLogins =
-    mobileLowEndMode && visibleCardCount < gameLogins.length;
+    shouldPageCards && visibleCardCount < gameLogins.length;
 
   return (
 
@@ -139,9 +163,9 @@ export default function Play(props: Props) {
                         return (
                           <motion.div
                             key={game.id}
-                            initial={mobileLowEndMode ? false : { opacity: 0, y: 16 }}
-                            animate={mobileLowEndMode ? undefined : { opacity: 1, y: 0 }}
-                            transition={mobileLowEndMode ? undefined : { delay: index * 0.05 }}
+                            initial={shouldPageCards ? false : { opacity: 0, y: 16 }}
+                            animate={shouldPageCards ? undefined : { opacity: 1, y: 0 }}
+                            transition={shouldPageCards ? undefined : { delay: index * 0.05 }}
                             onClick={() => {
                               setSelectedGameName(game.gameName);
                               openActiveTableSplash();
@@ -162,7 +186,7 @@ export default function Play(props: Props) {
                                 : 'border-white/10 bg-black/45 hover:border-amber-400/35'
                             }`}
                             style={
-                              gameCardBackgroundImage
+                              gameCardBackgroundImage && !lowPerformanceMode
                                 ? {
                                     backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.2) 0%, rgba(0, 0, 0, 0.42) 100%), url("${gameCardBackgroundImage}")`,
                                     backgroundSize: '100% 100%',
@@ -273,7 +297,7 @@ export default function Play(props: Props) {
                         type="button"
                         onClick={() =>
                           setVisibleCardCount((count) =>
-                            Math.min(gameLogins.length, count + MOBILE_CARD_INCREMENT)
+                            Math.min(gameLogins.length, count + cardIncrement)
                           )
                         }
                         className="mt-3 min-h-[44px] w-full rounded-2xl border border-amber-400/35 bg-black/45 px-4 py-3 text-sm font-black text-amber-100"
