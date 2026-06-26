@@ -184,7 +184,7 @@ export default function Vault(props: Props) {
                         <motion.div
                           key={login.id}
                           layout={shouldPageCredentials ? false : true}
-                          className="fire-panel fire-orange group rounded-[1.7rem] border border-amber-300/25 bg-gradient-to-br from-[#3a140b]/88 via-[#5d2411]/78 to-[#261018]/92 p-3 shadow-[0_18px_40px_-18px_rgba(56,11,4,0.9)] backdrop-blur-xl transition-all sm:p-3.5 sm:hover:border-amber-300/45 sm:hover:shadow-[0_0_30px_-10px_rgba(251,191,36,0.38)]"
+                          className="fire-panel fire-orange group relative overflow-hidden rounded-[1.7rem] border border-amber-300/25 bg-gradient-to-br from-[#3a140b]/88 via-[#5d2411]/78 to-[#261018]/92 p-3 shadow-[0_18px_40px_-18px_rgba(56,11,4,0.9)] backdrop-blur-xl transition-all sm:p-3.5 sm:hover:border-amber-300/45 sm:hover:shadow-[0_0_30px_-10px_rgba(251,191,36,0.38)]"
                           style={
                             gameCardBackgroundImage && !lowPerformanceMode
                               ? {
@@ -197,6 +197,23 @@ export default function Vault(props: Props) {
                               : undefined
                           }
                         >
+                          {lowPerformanceMode && gameCardBackgroundImage ? (
+                            <div className="relative mb-3 h-24 overflow-hidden rounded-2xl border border-amber-200/15 bg-black/35">
+                              <img
+                                src={gameCardBackgroundImage}
+                                alt=""
+                                loading="lazy"
+                                decoding="async"
+                                fetchPriority="low"
+                                className="h-full w-full object-cover"
+                                aria-hidden="true"
+                              />
+                              <div
+                                className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/10 via-black/28 to-black/76"
+                                aria-hidden="true"
+                              />
+                            </div>
+                          ) : null}
                           <div className="mb-3 flex items-start justify-between gap-3 border-b border-amber-200/10 pb-2.5">
                             <div className="min-w-0">
                               <p className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-amber-100/50">

@@ -197,6 +197,23 @@ export default function Play(props: Props) {
                                 : undefined
                             }
                           >
+                            {lowPerformanceMode && gameCardBackgroundImage ? (
+                              <div className="relative mb-2 h-20 overflow-hidden rounded-xl border border-amber-200/15 bg-black/35">
+                                <img
+                                  src={gameCardBackgroundImage}
+                                  alt=""
+                                  loading="lazy"
+                                  decoding="async"
+                                  fetchPriority="low"
+                                  className="h-full w-full object-cover"
+                                  aria-hidden="true"
+                                />
+                                <div
+                                  className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/10 via-black/25 to-black/72"
+                                  aria-hidden="true"
+                                />
+                              </div>
+                            ) : null}
                             <div className="pointer-events-none absolute -right-6 -top-6 h-24 w-24 rounded-full bg-amber-400/15 blur-2xl" />
                             <div className="relative flex items-start justify-center gap-2">
                               <div className="min-w-0 flex-1 text-center">
