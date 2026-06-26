@@ -184,21 +184,10 @@ export default function Vault(props: Props) {
                         <motion.div
                           key={login.id}
                           layout={shouldPageCredentials ? false : true}
-                          className="fire-panel fire-orange group relative overflow-hidden rounded-[1.7rem] border border-amber-300/25 bg-gradient-to-br from-[#3a140b]/88 via-[#5d2411]/78 to-[#261018]/92 p-3 shadow-[0_18px_40px_-18px_rgba(56,11,4,0.9)] backdrop-blur-xl transition-all sm:p-3.5 sm:hover:border-amber-300/45 sm:hover:shadow-[0_0_30px_-10px_rgba(251,191,36,0.38)]"
-                          style={
-                            gameCardBackgroundImage && !lowPerformanceMode
-                              ? {
-                                  backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.24) 0%, rgba(0, 0, 0, 0.54) 100%), url("${gameCardBackgroundImage}")`,
-                                  backgroundSize: '100% 100%',
-                                  backgroundPosition: 'center',
-                                  backgroundRepeat: 'no-repeat',
-                                  filter: 'brightness(1.14) saturate(1.1)',
-                                }
-                              : undefined
-                          }
+                          className="fire-panel fire-orange group relative overflow-hidden rounded-[1.7rem] border border-amber-300/25 bg-gradient-to-br from-[#3a140b]/88 via-[#5d2411]/78 to-[#261018]/92 p-2.5 shadow-[0_18px_40px_-18px_rgba(56,11,4,0.9)] backdrop-blur-xl transition-all sm:p-3 sm:hover:border-amber-300/45 sm:hover:shadow-[0_0_30px_-10px_rgba(251,191,36,0.38)]"
                         >
-                          {lowPerformanceMode && gameCardBackgroundImage ? (
-                            <div className="relative mb-3 h-32 overflow-hidden rounded-2xl border border-amber-200/15 bg-black/35">
+                          <div className="relative mb-2.5 h-44 overflow-hidden rounded-2xl border border-amber-200/15 bg-gradient-to-br from-amber-500/20 via-red-950/55 to-black/75 sm:h-48">
+                            {gameCardBackgroundImage ? (
                               <img
                                 src={gameCardBackgroundImage}
                                 alt=""
@@ -208,18 +197,21 @@ export default function Vault(props: Props) {
                                 className="h-full w-full object-cover"
                                 aria-hidden="true"
                               />
-                              <div
-                                className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/10 via-black/28 to-black/76"
-                                aria-hidden="true"
-                              />
-                            </div>
-                          ) : null}
-                          <div className="mb-2 flex items-start justify-between gap-3 border-b border-amber-200/10 pb-2">
+                            ) : null}
+                            <div
+                              className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/8 via-black/18 to-black/72"
+                              aria-hidden="true"
+                            />
+                            <span className="absolute right-2 top-2 rounded-full border border-emerald-300/25 bg-emerald-400/12 px-2 py-0.5 text-[0.62rem] font-black uppercase tracking-[0.1em] text-emerald-100/85">
+                              ✨ Active
+                            </span>
+                          </div>
+                          <div className="mb-1.5 border-b border-amber-200/10 pb-1.5">
                             <div className="min-w-0">
                               <p className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-amber-100/50">
                                 🎮 Game
                               </p>
-                              <h3 className="mt-1 break-words bg-gradient-to-r from-amber-50 via-yellow-100 to-orange-200 bg-clip-text text-[1.25rem] font-black leading-tight text-transparent">
+                              <h3 className="mt-0.5 truncate bg-gradient-to-r from-amber-50 via-yellow-100 to-orange-200 bg-clip-text text-[1.18rem] font-black leading-tight text-transparent">
                                 {login.gameName}
                               </h3>
                               {downloadGameUrl ? (
@@ -227,19 +219,16 @@ export default function Vault(props: Props) {
                                   href={downloadGameUrl}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="mt-2 inline-flex items-center rounded-xl border border-red-200/80 bg-red-600 px-3 py-1.5 text-xs font-black uppercase tracking-[0.12em] text-white shadow-[0_0_22px_-6px_rgba(248,113,113,0.95),0_0_38px_-14px_rgba(220,38,38,0.98)] transition hover:bg-red-700 hover:text-white hover:shadow-[0_0_28px_-4px_rgba(252,165,165,1),0_0_46px_-12px_rgba(220,38,38,1)]"
+                                  className="mt-1.5 inline-flex min-h-[34px] items-center rounded-xl border border-red-200/80 bg-red-600 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-white shadow-[0_0_22px_-6px_rgba(248,113,113,0.95),0_0_38px_-14px_rgba(220,38,38,0.98)] transition hover:bg-red-700 hover:text-white hover:shadow-[0_0_28px_-4px_rgba(252,165,165,1),0_0_46px_-12px_rgba(220,38,38,1)]"
                                 >
                                   Download Game
                                 </a>
                               ) : null}
                             </div>
-                            <span className="shrink-0 rounded-full border border-emerald-300/35 bg-emerald-400/12 px-3 py-1 text-[0.72rem] font-black tracking-wide text-emerald-100 shadow-[0_0_18px_-10px_rgba(52,211,153,0.9)]">
-                              ✨ Active
-                            </span>
                           </div>
 
-                          <div className="space-y-2">
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.05] px-2.5 py-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+                          <div className="space-y-1.5">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.05] px-2 py-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
                               <div className="flex items-center justify-between gap-2">
                                 <p className="whitespace-nowrap text-[0.66rem] font-black uppercase leading-tight tracking-[0.14em] text-amber-100/58">
                                   Username
@@ -253,22 +242,22 @@ export default function Vault(props: Props) {
                                       clickEvent
                                     )
                                   }
-                                  className="rounded-xl border border-amber-300/35 bg-amber-400/10 px-2.5 py-0.5 text-[0.68rem] font-black leading-tight text-amber-50 transition hover:bg-amber-400/20"
+                                  className="min-h-[28px] rounded-xl border border-amber-300/35 bg-amber-400/10 px-2.5 py-0.5 text-[0.68rem] font-black leading-tight text-amber-50 transition hover:bg-amber-400/20"
                                 >
                                   Copy
                                 </button>
                               </div>
-                              <p className="mt-1 truncate rounded-xl border border-black/10 bg-black/30 px-2.5 py-0.5 font-mono text-[0.9rem] font-bold leading-tight tracking-[0.06em] text-white shadow-inner">
+                              <p className="mt-0.5 truncate rounded-xl border border-black/10 bg-black/30 px-2 py-0.5 font-mono text-[0.86rem] font-bold leading-tight tracking-[0.05em] text-white shadow-inner">
                                 {displayUsername || '—'}
                               </p>
                             </div>
 
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.05] px-2.5 py-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.05] px-2 py-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
                               <div className="flex items-center justify-between gap-2">
                                 <p className="whitespace-nowrap text-[0.66rem] font-black uppercase leading-tight tracking-[0.14em] text-amber-100/58">
                                   Password
                                 </p>
-                                <div className="flex gap-2">
+                                <div className="flex items-center gap-1.5">
                                   <button
                                     type="button"
                                     onClick={(clickEvent) =>
@@ -279,21 +268,21 @@ export default function Vault(props: Props) {
                                       )
                                     }
                                     disabled={!visible}
-                                    className="rounded-xl border border-violet-300/35 bg-violet-400/10 px-2.5 py-0.5 text-[0.68rem] font-black leading-tight text-violet-50 transition hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+                                    className="min-h-[28px] rounded-xl border border-violet-300/35 bg-violet-400/10 px-2.5 py-0.5 text-[0.68rem] font-black leading-tight text-violet-50 transition hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-40"
                                   >
                                     Copy
                                   </button>
                                   <button
                                     type="button"
                                     onClick={() => togglePassword(login.id)}
-                                    className="rounded-xl border border-amber-200/30 bg-amber-400 px-2.5 py-0.5 text-xs font-black leading-tight text-black transition hover:bg-amber-300"
+                                    className="min-h-[28px] rounded-xl border border-amber-200/30 bg-amber-400 px-2.5 py-0.5 text-xs font-black leading-tight text-black transition hover:bg-amber-300"
                                     aria-label={visible ? 'Hide password' : 'Show password'}
                                   >
                                     {visible ? '🙈' : '👁️'}
                                   </button>
                                 </div>
                               </div>
-                              <p className="mt-1 truncate rounded-xl border border-black/10 bg-black/30 px-2.5 py-0.5 font-mono text-[0.9rem] font-bold leading-tight tracking-[0.14em] text-white shadow-inner">
+                              <p className="mt-0.5 truncate rounded-xl border border-black/10 bg-black/30 px-2 py-0.5 font-mono text-[0.86rem] font-bold leading-tight tracking-[0.12em] text-white shadow-inner">
                                 {visible ? displayPassword : '••••••••••••••••'}
                               </p>
                             </div>
@@ -305,7 +294,7 @@ export default function Vault(props: Props) {
                                   openCredentialResetModal(login, 'reset_password', event)
                                 }
                                 disabled={credentialTaskLoadingKey === `reset_password:${login.id}`}
-                                className="min-h-[44px] w-full rounded-2xl border border-fuchsia-200/15 bg-gradient-to-r from-fuchsia-600 to-violet-600 px-3 py-2 text-sm font-black leading-tight text-white shadow-[0_10px_24px_-16px_rgba(217,70,239,0.95)] transition-all hover:from-fuchsia-500 hover:to-violet-500 disabled:opacity-50"
+                                className="min-h-[42px] w-full rounded-2xl border border-fuchsia-200/15 bg-gradient-to-r from-fuchsia-600 to-violet-600 px-3 py-1.5 text-sm font-black leading-tight text-white shadow-[0_10px_24px_-16px_rgba(217,70,239,0.95)] transition-all hover:from-fuchsia-500 hover:to-violet-500 disabled:opacity-50"
                               >
                                 {credentialTaskLoadingKey === `reset_password:${login.id}` ? (
                                   <i className="fas fa-spinner fa-spin"></i>

@@ -35,8 +35,6 @@ export default function Play(props: Props) {
     openActiveTableSplash,
     selectedGameName,
     setSelectedGameName,
-    togglePassword,
-    visiblePasswords,
   } = props;
 
   const renderDebugCountRef = useRef(0);
@@ -151,8 +149,6 @@ export default function Play(props: Props) {
                     <div className="grid grid-cols-2 gap-2 sm:items-start">
                       {visibleGameLogins.map((game: PlayerGameLogin, index: number) => {
                         const resolvedUsername = (game.gameUsername || '').trim();
-                        const resolvedPassword = String(game.gamePassword || '');
-                        const isPasswordVisible = Boolean(visiblePasswords[game.id]);
                         const hasUsername = Boolean(resolvedUsername);
                         const isSelected = selectedGameName === game.gameName;
                         const gameCardBackgroundImage = getGameBackgroundImage(
@@ -198,7 +194,7 @@ export default function Play(props: Props) {
                             }
                           >
                             {lowPerformanceMode && gameCardBackgroundImage ? (
-                              <div className="relative mb-2 h-24 overflow-hidden rounded-xl border border-amber-200/15 bg-black/35">
+                              <div className="relative mb-2 h-28 overflow-hidden rounded-xl border border-amber-200/15 bg-black/35">
                                 <img
                                   src={gameCardBackgroundImage}
                                   alt=""
@@ -217,13 +213,13 @@ export default function Play(props: Props) {
                             <div className="pointer-events-none absolute -right-6 -top-6 h-24 w-24 rounded-full bg-amber-400/15 blur-2xl" />
                             <div className="relative flex items-start justify-center gap-2">
                               <div className="min-w-0 flex-1 text-center">
-                                <h3 className="mt-0.5 truncate bg-gradient-to-r from-amber-100 via-yellow-200 to-orange-300 bg-clip-text text-lg font-black text-transparent drop-shadow-[0_0_12px_rgba(251,191,36,0.45)]">
+                                <h3 className="truncate bg-gradient-to-r from-amber-100 via-yellow-200 to-orange-300 bg-clip-text text-lg font-black text-transparent drop-shadow-[0_0_12px_rgba(251,191,36,0.45)]">
                                   {game.gameName}
                                 </h3>
                               </div>
                             </div>
                             {hasUsername && (
-                              <div className="relative mt-1 rounded-xl border border-white/10 bg-black/35 px-2 py-0.5">
+                              <div className="relative mt-1 rounded-xl border border-white/10 bg-black/35 px-2 py-1">
                                 <div className="flex items-center justify-between gap-1">
                                   <p className="whitespace-nowrap text-[9px] font-bold uppercase leading-tight tracking-[0.16em] text-amber-100/55">
                                     Game username
@@ -242,57 +238,6 @@ export default function Play(props: Props) {
                                 </div>
                                 <p className="truncate font-mono text-xs font-bold leading-tight text-white">
                                   {resolvedUsername}
-                                </p>
-                                <div className="mt-1 flex items-center justify-between gap-1">
-                                  <p className="whitespace-nowrap text-[9px] font-bold uppercase leading-tight tracking-[0.12em] text-amber-100/55">
-                                    Game password
-                                  </p>
-                                  <div className="flex shrink-0 items-center gap-1">
-                                    <button
-                                      type="button"
-                                      disabled={!isPasswordVisible || !resolvedPassword}
-                                      title={
-                                        isPasswordVisible
-                                          ? 'Copy password'
-                                          : 'Show password to copy'
-                                      }
-                                      onClick={(event) => {
-                                        event.preventDefault();
-                                        event.stopPropagation();
-                                        void copyCredentialValue(
-                                          resolvedPassword,
-                                          'Password',
-                                          event
-                                        );
-                                      }}
-                                      className="rounded-lg border border-violet-300/35 bg-violet-400/10 px-2 py-0.5 text-[9px] font-black leading-tight text-violet-50 transition hover:bg-violet-400/20 disabled:cursor-not-allowed disabled:opacity-40"
-                                    >
-                                      Copy
-                                    </button>
-                                    <span
-                                      onClick={(event) => {
-                                        event.preventDefault();
-                                        event.stopPropagation();
-                                        togglePassword(game.id);
-                                      }}
-                                      className="cursor-pointer rounded-lg border border-amber-400/40 bg-amber-500/20 px-2 py-0.5 text-[11px] font-black leading-tight text-amber-100 hover:bg-amber-500/30"
-                                      aria-label={isPasswordVisible ? 'Hide password' : 'Show password'}
-                                      role="button"
-                                      onKeyDown={(event) => {
-                                        if (event.key === 'Enter' || event.key === ' ') {
-                                          event.preventDefault();
-                                          event.stopPropagation();
-                                          togglePassword(game.id);
-                                        }
-                                      }}
-                                      tabIndex={0}
-                                    >
-                                      {isPasswordVisible ? '🙈' : '👁'}
-                                    </span>
-                                  </div>
-                                </div>
-                                <p className="mt-0.5 truncate font-mono text-xs font-bold tracking-wider text-white">
-                                  {isPasswordVisible ? resolvedPassword || '—' : '••••••••••'}
                                 </p>
                               </div>
                             )}
