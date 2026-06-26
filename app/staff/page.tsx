@@ -294,6 +294,10 @@ export default function StaffPage() {
   );
   const currentUserUid = staffAuthUid || auth.currentUser?.uid || '';
   const staffCashBoxUsdAmount = Number(staffCashBoxNpr || 0);
+  const dashboardStaffWalletCoinBalance = Math.max(
+    0,
+    Math.floor(Number(staffWallet?.balanceCoin || 0))
+  );
   const riskyPlayers = useMemo(
     () => riskSnapshots.filter((entry) => entry.riskLevel !== 'low').slice(0, 10),
     [riskSnapshots]
@@ -1816,6 +1820,17 @@ export default function StaffPage() {
                     <p className="mt-2 text-3xl font-bold">{players.length}</p>
                   </div>
                 )}
+                <div className="rounded-3xl border border-violet-400/25 bg-violet-500/10 p-5">
+                  <p className="text-sm text-violet-100/75">Staff Wallet</p>
+                  <p className="mt-2 text-3xl font-bold tabular-nums text-violet-50">
+                    {staffWalletLoading
+                      ? 'Loading...'
+                      : `${dashboardStaffWalletCoinBalance.toLocaleString()} coins`}
+                  </p>
+                  <p className="mt-2 text-xs text-violet-100/65">
+                    Coins available to load to players.
+                  </p>
+                </div>
                 <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
                   <p className="text-sm text-neutral-400">Reach Out Contacts</p>
                   <p className="mt-2 text-3xl font-bold">{chatUsers.length}</p>
@@ -1936,8 +1951,8 @@ export default function StaffPage() {
           )}
 
           {!isAdminCreatedStaff && activeView === 'view-players' && (
-            <div className="grid h-[calc(100dvh-8rem)] min-h-[36rem] grid-cols-1 gap-4 overflow-hidden lg:grid-cols-[minmax(17rem,21rem)_minmax(0,1fr)]">
-              <aside className="min-h-0 overflow-hidden rounded-2xl border border-white/10 bg-neutral-950/70">
+            <div className="grid h-[calc(100dvh-13rem)] min-h-0 grid-cols-1 grid-rows-[minmax(12rem,18rem)_minmax(0,1fr)] gap-4 overflow-hidden lg:h-[calc(100dvh-12rem)] lg:grid-cols-[minmax(17rem,21rem)_minmax(0,1fr)] lg:grid-rows-1">
+              <aside className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-neutral-950/70">
                 <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
                   <div>
                     <h2 className="text-base font-bold text-white">Players</h2>
@@ -1973,7 +1988,7 @@ export default function StaffPage() {
                   </div>
                 </div>
 
-                <div className="h-full min-h-0 space-y-1 overflow-y-auto px-2 py-2">
+                <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-2">
                   {loadingList ? (
                     <p className="px-3 py-4 text-sm text-neutral-400">Loading...</p>
                   ) : visiblePlayersForStaffList.length === 0 ? (
@@ -2036,7 +2051,7 @@ export default function StaffPage() {
                 </div>
               </aside>
 
-              <section className="min-h-0 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04]">
+              <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04]">
                 {!selectedViewPlayer ? (
                   <div className="flex h-full items-center justify-center px-4 text-center text-sm text-neutral-500">
                     Select a player to open their workspace.
