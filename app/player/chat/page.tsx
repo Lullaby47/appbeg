@@ -21,18 +21,22 @@ import {
 import { CASINO_BACKGROUND_TRACKS } from '../constants';
 import {
   acceptFriendRequest,
+  activateMyPlayerChatProfile,
   deleteDirectMessageForEveryone,
   deleteDirectMessageForMe,
+  deactivateMyPlayerChatProfile,
   ensureReferralFriendLinks,
   fetchPlayerChatBootstrap,
   filterVisibleDirectMessages,
   FriendLink,
+  getMyPlayerChatProfile,
   listenDirectChatList,
   listenFriendLinks,
   listenDirectMessages,
   listenDirectTyping,
   markDirectConversationSeen,
   PlayerChatMessage,
+  PlayerChatProfile,
   PlayerPeer,
   searchDirectMessages,
   sendFriendRequest,
@@ -42,11 +46,15 @@ import {
   sendDirectTextMessage,
   setDirectConversationMuted,
   setDirectTyping,
+  updateMyPlayerChatProfile,
   PLAYER_CHAT_RENDER_LIMIT,
 } from '@/features/messages/playerChat';
+import { uploadSignedPlayerChatImage } from '@/features/messages/playerChatPhotoUpload';
 import { markPlayerChatThreadRead, type PlayerChatReadType } from '@/features/messages/playerChatRead';
 
 const PLAYER_CHAT_RENDER_MAX = 10;
+const PLAYER_CHAT_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+const PLAYER_CHAT_PHOTO_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 function trimRenderedPlayerMessages(messages: PlayerChatMessage[]) {
   return messages.slice(-PLAYER_CHAT_RENDER_LIMIT);
@@ -77,6 +85,31 @@ function toTime(value: { toMillis?: () => number } | null | undefined) {
   return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+function timestampLikeFromIso(value: string | null | undefined) {
+  const date = value ? new Date(value) : new Date();
+  const ms = Number.isNaN(date.getTime()) ? Date.now() : date.getTime();
+  return {
+    toMillis: () => ms,
+    toDate: () => new Date(ms),
+  };
+}
+
+function createIdempotencyKey() {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function validatePhotoFile(file: File) {
+  if (!PLAYER_CHAT_PHOTO_TYPES.has(file.type)) {
+    return 'Only JPG, PNG, or WEBP images are allowed.';
+  }
+  if (!Number.isFinite(file.size) || file.size <= 0 || file.size > PLAYER_CHAT_PHOTO_MAX_BYTES) {
+    return 'Photo must be 5MB or smaller.';
+  }
+  return '';
+}
+
 export default function PlayerChatPage() {
   const isPlayerRole = useIsPlayerSessionRole();
   const mountLoggedRef = useRef(false);
@@ -88,6 +121,8 @@ export default function PlayerChatPage() {
   const [newMessage, setNewMessage] = useState('');
   const [sending, setSending] = useState(false);
   const [messageError, setMessageError] = useState('');
+  const [messageNotice, setMessageNotice] = useState('');
+  const [photoStatus, setPhotoStatus] = useState('');
   const [replyTarget, setReplyTarget] = useState<PlayerChatMessage | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [playerSearchTerm, setPlayerSearchTerm] = useState('');
@@ -116,6 +151,15 @@ export default function PlayerChatPage() {
   const pendingScrollToBottomRef = useRef(false);
   const [showNewMessagePill, setShowNewMessagePill] = useState(false);
   const [failedDraft, setFailedDraft] = useState('');
+  const [failedDraftIdempotencyKey, setFailedDraftIdempotencyKey] = useState('');
+  const [chatProfile, setChatProfile] = useState<PlayerChatProfile | null>(null);
+  const [profileDraftName, setProfileDraftName] = useState('');
+  const [profileDraftBio, setProfileDraftBio] = useState('');
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileEditing, setProfileEditing] = useState(false);
+  const [profileError, setProfileError] = useState('');
+  const [profileNotice, setProfileNotice] = useState('');
   const chatReadInFlightRef = useRef<Set<string>>(new Set());
   const lastChatReadClearAtRef = useRef<Record<string, number>>({});
 
@@ -304,6 +348,41 @@ export default function PlayerChatPage() {
     };
   }, [isPlayerRole, selfUid, playerSearchTerm]);
 
+  useEffect(() => {
+    if (!isPlayerRole) {
+      return;
+    }
+
+    let cancelled = false;
+    const loadProfile = async () => {
+      setProfileLoading(true);
+      setProfileError('');
+      try {
+        const profile = await getMyPlayerChatProfile();
+        if (cancelled) return;
+        setChatProfile(profile);
+        setProfileDraftName(profile.avatarName);
+        setProfileDraftBio(profile.bio);
+        setProfileEditing(!profile.isActive);
+      } catch (error) {
+        if (cancelled) return;
+        setChatProfile(null);
+        setProfileError(
+          error instanceof Error ? error.message : 'Failed to load Player Chat profile.'
+        );
+      } finally {
+        if (!cancelled) {
+          setProfileLoading(false);
+        }
+      }
+    };
+    void loadProfile();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isPlayerRole]);
+
   const onlineByUid = usePresenceOnlineMap(allPlayers.map((p) => p.uid), {
     requirePlayerRole: true,
   });
@@ -409,15 +488,17 @@ export default function PlayerChatPage() {
 
   const selectedMuted = selectedPeer ? Boolean(chatList[selectedPeer.uid]?.muted) : false;
   const selectedFriend = selectedPeer ? friendByUid[selectedPeer.uid] : null;
-  const selectedPeerDisplayName = selectedPeer
-    ? getPublicDisplayName(selectedPeer.username)
-    : '';
+  const selectedPeerDisplayName = selectedPeer ? selectedPeer.avatarName : '';
   const filteredPlayers = useMemo(() => {
     const term = playerSearchTerm.trim().toLowerCase();
     if (!term) {
       return allPlayers;
     }
-    return allPlayers.filter((p) => p.username.toLowerCase().includes(term));
+    return allPlayers.filter(
+      (p) =>
+        p.avatarName.toLowerCase().includes(term) ||
+        p.bio.toLowerCase().includes(term)
+    );
   }, [allPlayers, playerSearchTerm]);
   const messagesHiddenByFilters = rawMessageCount > 0 && messages.length === 0;
 
@@ -455,23 +536,28 @@ export default function PlayerChatPage() {
     await sendCurrentTextMessage(newMessage);
   }
 
-  async function sendCurrentTextMessage(value: string) {
+  async function sendCurrentTextMessage(value: string, retryIdempotencyKey = '') {
     if (!selectedPeer || sending) return;
     const body = value.trim();
     if (!body) return;
+    const messageIdempotencyKey = retryIdempotencyKey || createIdempotencyKey();
     setSending(true);
     setMessageError('');
+    setMessageNotice('');
     setFailedDraft('');
+    setFailedDraftIdempotencyKey('');
     try {
       await sendDirectTextMessage(selectedPeer.uid, body, {
         replyToMessageId: replyTarget?.id || '',
         replyToText: replyTarget?.text || '',
+        idempotencyKey: messageIdempotencyKey,
       });
       setNewMessage('');
       setReplyTarget(null);
       await markDirectConversationSeen(selectedPeer.uid);
     } catch (error) {
       setFailedDraft(body);
+      setFailedDraftIdempotencyKey(messageIdempotencyKey);
       setMessageError(error instanceof Error ? error.message : 'Failed to send message.');
     } finally {
       setSending(false);
@@ -479,18 +565,59 @@ export default function PlayerChatPage() {
   }
 
   async function onSendImage(file: File) {
-    if (!selectedPeer) return;
+    if (!selectedPeer || sending) return;
+    const validation = validatePhotoFile(file);
+    if (validation) {
+      setMessageError(validation);
+      setMessageNotice('');
+      setPhotoStatus('');
+      return;
+    }
+    const photoIdempotencyKey = createIdempotencyKey();
     setSending(true);
     setMessageError('');
+    setMessageNotice('');
+    setPhotoStatus('Uploading photo...');
     try {
-      await sendDirectImageMessage(selectedPeer.uid, file, {
+      const uploaded = await uploadSignedPlayerChatImage(file);
+      setPhotoStatus('Sending photo...');
+      const result = await sendDirectImageMessage(selectedPeer.uid, file, {
         replyToMessageId: replyTarget?.id || '',
         replyToText: replyTarget?.text || '',
+        idempotencyKey: photoIdempotencyKey,
+        uploadedImage: uploaded,
       });
       setReplyTarget(null);
+      if (result?.messageId) {
+        const nextMessage: PlayerChatMessage = {
+          id: result.messageId,
+          senderUid: selfUid,
+          type: 'image',
+          imageUrl: uploaded.secureUrl,
+          imagePublicId: uploaded.publicId,
+          createdAt: timestampLikeFromIso(result.createdAt) as PlayerChatMessage['createdAt'],
+          deliveredTo: [selfUid],
+          seenBy: [selfUid],
+          deletedFor: [],
+        };
+        setMessages((current) => trimRenderedPlayerMessages([...current, nextMessage]));
+        setChatList((current) => ({
+          ...current,
+          [selectedPeer.uid]: {
+            ...(current[selectedPeer.uid] || { unread: 0, muted: false, last: '' }),
+            last: 'Photo',
+          },
+        }));
+      }
+      setMessageNotice(
+        result?.chargedAmount === 1 ? 'Photo sent. 1 coin charged.' : 'Photo sent.'
+      );
+      await markDirectConversationSeen(selectedPeer.uid);
     } catch (error) {
-      setMessageError(error instanceof Error ? error.message : 'Failed to send image.');
+      // TODO: best-effort Cloudinary cleanup if upload succeeds but final send fails.
+      setMessageError(error instanceof Error ? error.message : 'Could not send photo. Please try again.');
     } finally {
+      setPhotoStatus('');
       setSending(false);
     }
   }
@@ -653,6 +780,74 @@ export default function PlayerChatPage() {
     }
   }
 
+  function validateProfileDraft(options?: { activating?: boolean }) {
+    const avatarName = profileDraftName.trim().replace(/\s+/g, ' ');
+    const bio = profileDraftBio.trim().replace(/\s+/g, ' ');
+    if (avatarName.length < 3 || avatarName.length > 32) {
+      return 'Avatar Name must be 3-32 characters.';
+    }
+    if (options?.activating && !bio) {
+      return 'Short Bio is required to activate Player Chat.';
+    }
+    if (bio.length > 120) {
+      return 'Short Bio must be 120 characters or less.';
+    }
+    return '';
+  }
+
+  async function saveProfileDraft(options?: { activate?: boolean }) {
+    const validation = validateProfileDraft({ activating: options?.activate });
+    if (validation) {
+      setProfileError(validation);
+      setProfileNotice('');
+      return;
+    }
+
+    setProfileSaving(true);
+    setProfileError('');
+    setProfileNotice('');
+    try {
+      const saved = await updateMyPlayerChatProfile({
+        avatarName: profileDraftName,
+        bio: profileDraftBio,
+      });
+      const next = options?.activate ? await activateMyPlayerChatProfile() : saved;
+      setChatProfile(next);
+      setProfileDraftName(next.avatarName);
+      setProfileDraftBio(next.bio);
+      setProfileEditing(!next.isActive);
+      setProfileNotice(
+        options?.activate ? 'Player Chat activated.' : 'Player Chat profile saved.'
+      );
+    } catch (error) {
+      setProfileError(
+        error instanceof Error ? error.message : 'Failed to save Player Chat profile.'
+      );
+    } finally {
+      setProfileSaving(false);
+    }
+  }
+
+  async function deactivateProfile() {
+    setProfileSaving(true);
+    setProfileError('');
+    setProfileNotice('');
+    try {
+      const next = await deactivateMyPlayerChatProfile();
+      setChatProfile(next);
+      setProfileDraftName(next.avatarName);
+      setProfileDraftBio(next.bio);
+      setProfileEditing(true);
+      setProfileNotice('Player Chat deactivated.');
+    } catch (error) {
+      setProfileError(
+        error instanceof Error ? error.message : 'Failed to deactivate Player Chat.'
+      );
+    } finally {
+      setProfileSaving(false);
+    }
+  }
+
   return (
     <>
     <main className="min-h-[100dvh] overflow-hidden bg-[#050509] text-white">
@@ -678,6 +873,124 @@ export default function PlayerChatPage() {
             >
               Add Friend
             </button>
+            <div className="mb-3 rounded-xl border border-white/10 bg-black/35 p-3">
+              {profileLoading ? (
+                <p className="text-sm text-amber-100/60">Loading profile...</p>
+              ) : !chatProfile?.isActive || profileEditing ? (
+                <form
+                  className="space-y-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void saveProfileDraft({ activate: !chatProfile?.isActive });
+                  }}
+                >
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold text-amber-100/70">
+                      Avatar Name
+                    </label>
+                    <input
+                      value={profileDraftName}
+                      maxLength={32}
+                      onChange={(event) => setProfileDraftName(event.target.value)}
+                      className="w-full rounded-lg border border-white/15 bg-black/45 px-3 py-2 text-sm"
+                      placeholder="3-32 characters"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold text-amber-100/70">
+                      Short Bio
+                    </label>
+                    <textarea
+                      value={profileDraftBio}
+                      maxLength={120}
+                      onChange={(event) => setProfileDraftBio(event.target.value)}
+                      className="min-h-[70px] w-full resize-none rounded-lg border border-white/15 bg-black/45 px-3 py-2 text-sm"
+                      placeholder="A short public bio"
+                    />
+                    <p className="mt-1 text-right text-[11px] text-amber-100/45">
+                      {profileDraftBio.length}/120
+                    </p>
+                  </div>
+                  {profileError ? <p className="text-xs text-red-300">{profileError}</p> : null}
+                  {profileNotice ? <p className="text-xs text-emerald-300">{profileNotice}</p> : null}
+                  <div className="flex flex-wrap gap-2">
+                    {chatProfile?.isActive ? (
+                      <>
+                        <button
+                          type="submit"
+                          disabled={profileSaving}
+                          className="rounded-lg bg-amber-300 px-3 py-1.5 text-xs font-bold text-black disabled:opacity-50"
+                        >
+                          {profileSaving ? 'Saving...' : 'Save'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={profileSaving}
+                          onClick={() => {
+                            setProfileDraftName(chatProfile.avatarName);
+                            setProfileDraftBio(chatProfile.bio);
+                            setProfileEditing(false);
+                            setProfileError('');
+                            setProfileNotice('');
+                          }}
+                          className="rounded-lg border border-white/20 px-3 py-1.5 text-xs hover:bg-white/10 disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="submit"
+                        disabled={profileSaving}
+                        className="rounded-lg bg-emerald-300 px-3 py-1.5 text-xs font-bold text-black disabled:opacity-50"
+                      >
+                        {profileSaving ? 'Activating...' : 'Activate Chat'}
+                      </button>
+                    )}
+                  </div>
+                </form>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-bold text-white">
+                        {chatProfile.avatarName}
+                      </p>
+                      <p className="mt-1 line-clamp-2 text-xs text-amber-100/60">
+                        {chatProfile.bio}
+                      </p>
+                    </div>
+                    <span className="shrink-0 rounded-full border border-emerald-300/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-200">
+                      Active
+                    </span>
+                  </div>
+                  {profileError ? <p className="text-xs text-red-300">{profileError}</p> : null}
+                  {profileNotice ? <p className="text-xs text-emerald-300">{profileNotice}</p> : null}
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={profileSaving}
+                      onClick={() => {
+                        setProfileEditing(true);
+                        setProfileError('');
+                        setProfileNotice('');
+                      }}
+                      className="rounded-lg border border-white/20 px-3 py-1.5 text-xs hover:bg-white/10 disabled:opacity-50"
+                    >
+                      Edit Profile
+                    </button>
+                    <button
+                      type="button"
+                      disabled={profileSaving}
+                      onClick={() => void deactivateProfile()}
+                      className="rounded-lg border border-red-300/40 px-3 py-1.5 text-xs text-red-100 hover:bg-red-500/15 disabled:opacity-50"
+                    >
+                      {profileSaving ? 'Updating...' : 'Deactivate Chat'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
             <p className="mb-2 text-xs uppercase tracking-[0.2em] text-emerald-300/80">
               All players
             </p>
@@ -700,7 +1013,13 @@ export default function PlayerChatPage() {
                 filteredPlayers.map((p) => {
                   const stat = chatList[p.uid];
                   const selected = selectedPeer?.uid === p.uid;
-                  const publicName = getPublicDisplayName(p.username);
+                  const initials =
+                    p.avatarName
+                      .split(/\s+/)
+                      .map((part) => part[0])
+                      .join('')
+                      .slice(0, 2)
+                      .toUpperCase() || 'P';
                   return (
                     <button
                       key={p.uid}
@@ -715,20 +1034,38 @@ export default function PlayerChatPage() {
                           : 'border-white/10 bg-black/30 hover:border-violet-300/40'
                       }`}
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="truncate font-semibold">
+                      <div className="flex items-start gap-3">
+                        <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-full border border-white/15 bg-black/50">
+                          {p.avatarImageUrl ? (
+                            <span
+                              aria-hidden="true"
+                              className="block h-full w-full bg-cover bg-center"
+                              style={{ backgroundImage: `url(${p.avatarImageUrl})` }}
+                            />
+                          ) : (
+                            <span className="flex h-full w-full items-center justify-center text-sm font-black text-amber-100">
+                              {initials}
+                            </span>
+                          )}
                           <span
-                            className={`mr-2 inline-block h-2.5 w-2.5 rounded-full ${
+                            className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border border-black ${
                               onlineByUid[p.uid] ? 'bg-emerald-400' : 'bg-neutral-600'
                             }`}
                           />
-                          {publicName}
-                        </span>
-                        {stat?.unread ? (
-                          <span className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-black">
-                            {stat.unread > 9 ? '9+' : stat.unread}
-                          </span>
-                        ) : null}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="truncate font-semibold">{p.avatarName}</span>
+                            {stat?.unread ? (
+                              <span className="shrink-0 rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-black">
+                                {stat.unread > 9 ? '9+' : stat.unread}
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="mt-1 line-clamp-2 text-xs text-amber-100/55">
+                            {p.bio || 'Chat profile active'}
+                          </p>
+                        </div>
                       </div>
                       <p className="mt-1 truncate text-xs text-amber-100/50">
                         {stat?.last || 'Start chatting'}
@@ -982,19 +1319,28 @@ export default function PlayerChatPage() {
                   className="shrink-0 border-t border-white/10 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]"
                 >
                   <div className="mb-2 flex gap-2">
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          void onSendImage(file);
-                        }
-                        e.target.value = '';
-                      }}
-                      className="text-xs"
-                    />
+                    <div className="min-w-0 flex-1">
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        disabled={sending}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            void onSendImage(file);
+                          }
+                          e.target.value = '';
+                        }}
+                        className="text-xs disabled:opacity-50"
+                      />
+                      <p className="mt-1 text-[11px] text-amber-100/55">
+                        Photo messages cost 1 coin.
+                      </p>
+                    </div>
                   </div>
+                  {photoStatus ? (
+                    <p className="mb-2 text-xs text-amber-200">{photoStatus}</p>
+                  ) : null}
                   <div className="flex gap-2">
                     <input
                       value={newMessage}
@@ -1025,13 +1371,18 @@ export default function PlayerChatPage() {
                       {failedDraft ? (
                         <button
                           type="button"
-                          onClick={() => void sendCurrentTextMessage(failedDraft)}
+                          onClick={() =>
+                            void sendCurrentTextMessage(failedDraft, failedDraftIdempotencyKey)
+                          }
                           className="rounded-full border border-red-300/40 px-2 py-0.5 font-semibold text-red-100 hover:bg-red-500/15"
                         >
                           Retry
                         </button>
                       ) : null}
                     </div>
+                  ) : null}
+                  {messageNotice ? (
+                    <p className="mt-2 text-xs text-emerald-300">{messageNotice}</p>
                   ) : null}
                 </form>
               </>

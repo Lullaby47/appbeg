@@ -5,9 +5,18 @@ import type { PoolClient } from 'pg';
 
 import {
   emitChatMessageOutboxEvent,
-  userChatLiveChannel,
 } from '@/lib/sql/liveOutbox';
+import { updatePlayerBalancesInTxn } from '@/lib/sql/authorityGameRequestHelpers';
+import {
+  claimAuthorityOperation,
+  insertAuthorityLedgerEvent,
+  readAuthorityOperationPayloadWithClient,
+} from '@/lib/sql/authorityLedger';
 import { cleanText, getPlayerMirrorPool } from '@/lib/sql/playerMirrorCommon';
+
+const PLAYER_CHAT_TEXT_FREE_LIMIT = 10;
+const PLAYER_CHAT_TEXT_FEE_COINS = 0.2;
+const PLAYER_CHAT_PHOTO_FEE_COINS = 1;
 
 export type AuthorityChatSendInput = {
   senderUid: string;
@@ -17,6 +26,19 @@ export type AuthorityChatSendInput = {
   text?: string;
   imageUrl?: string;
   imagePublicId?: string;
+  playerToPlayerTextBilling?: {
+    idempotencyKey: string;
+  };
+  playerToPlayerPhotoBilling?: {
+    idempotencyKey: string;
+  };
+};
+
+export type AuthorityChatBillingInfo = {
+  chargedAmount: number;
+  freeMessagesUsedInWindow: number;
+  freeMessagesRemaining: number;
+  senderCoinBalance: number | null;
 };
 
 export type AuthorityChatDeleteInput = {
@@ -127,12 +149,183 @@ async function upsertMessageInTxn(
   );
 }
 
+function numberFromDb(value: unknown) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    return 0;
+  }
+  return Math.max(0, n);
+}
+
+function sameBillingRequest(
+  payload: Record<string, unknown> | null,
+  input: {
+    senderUid: string;
+    receiverUid: string;
+    conversationId: string;
+    type: 'text' | 'image';
+    text: string;
+    imagePublicId?: string;
+  }
+) {
+  if (!payload) {
+    return false;
+  }
+  return (
+    cleanText(payload.senderUid) === input.senderUid &&
+    cleanText(payload.receiverUid) === input.receiverUid &&
+    cleanText(payload.conversationId) === input.conversationId &&
+    cleanText(payload.type) === input.type &&
+    cleanText(payload.text) === input.text &&
+    cleanText(payload.imagePublicId) === cleanText(input.imagePublicId)
+  );
+}
+
+async function countSenderPlayerTextMessagesInWindow(
+  client: PoolClient,
+  input: { senderUid: string }
+) {
+  const result = await client.query(
+    `
+      SELECT COUNT(*)::int AS message_count
+      FROM public.chat_messages_cache message
+      JOIN public.players_cache receiver
+        ON receiver.uid = message.receiver_uid
+       AND receiver.deleted_at IS NULL
+       AND receiver.role = 'player'
+      WHERE message.sender_uid = $1
+        AND message.type = 'text'
+        AND message.deleted_at IS NULL
+        AND message.created_at >= now() - interval '24 hours'
+    `,
+    [input.senderUid]
+  );
+  return Math.max(0, Number(result.rows[0]?.message_count || 0));
+}
+
+async function insertPlayerChatFeeEventInTxn(
+  client: PoolClient,
+  input: {
+    eventId: string;
+    eventType: 'player_chat_text_fee' | 'player_chat_photo_fee';
+    senderUid: string;
+    senderUsername: string;
+    receiverUid: string;
+    coadminUid: string | null;
+    messageId: string;
+    conversationId: string;
+    amount: number;
+    beforeCoin: number;
+    afterCoin: number;
+    idempotencyKey: string;
+    createdAt: string;
+    extraFields?: Record<string, unknown>;
+  }
+) {
+  const rawEvent = {
+    senderUid: input.senderUid,
+    receiverUid: input.receiverUid,
+    amount: input.amount,
+    amountCoins: input.amount,
+    messageId: input.messageId,
+    conversationId: input.conversationId,
+    beforeCoin: input.beforeCoin,
+    afterCoin: input.afterCoin,
+    idempotencyKey: input.idempotencyKey,
+    createdAt: input.createdAt,
+    ...(input.extraFields || {}),
+  };
+
+  await client.query(
+    `
+      INSERT INTO public.financial_events_cache (
+        firebase_id,
+        player_uid,
+        coadmin_uid,
+        actor_uid,
+        actor_role,
+        related_user_uid,
+        related_user_role,
+        type,
+        amount,
+        amount_coins,
+        currency,
+        unit,
+        before_coin,
+        after_coin,
+        meta,
+        created_at,
+        updated_at,
+        source,
+        mirrored_at,
+        deleted_at,
+        raw_firestore_data
+      )
+      VALUES (
+        $1, $2, NULLIF($3, ''), $2, 'player',
+        $4, 'player', $5,
+        $6::numeric, $6::numeric, 'coin', 'coin',
+        $7::numeric, $8::numeric, $9::jsonb,
+        $10::timestamptz, $10::timestamptz,
+        'authority_chat_billing', now(), NULL, $9::jsonb
+      )
+      ON CONFLICT (firebase_id) DO NOTHING
+    `,
+    [
+      input.eventId,
+      input.senderUid,
+      input.coadminUid,
+      input.receiverUid,
+      input.eventType,
+      input.amount,
+      input.beforeCoin,
+      input.afterCoin,
+      JSON.stringify(rawEvent),
+      input.createdAt,
+    ]
+  );
+
+  await insertAuthorityLedgerEvent(client, {
+    eventKey: `financialEvents:${input.eventId}:${input.senderUid}:coin:${input.eventType}`,
+    userUid: input.senderUid,
+    username: input.senderUsername,
+    role: 'player',
+    coadminUid: input.coadminUid,
+    balanceType: 'coin',
+    direction: 'debit',
+    delta: -input.amount,
+    absoluteAfter: input.afterCoin,
+    eventType: input.eventType,
+    sourceCollection: 'financial_events_cache',
+    sourceId: input.eventId,
+    actorUid: input.senderUid,
+    actorRole: 'player',
+    confidence: 'high',
+    sourceCreatedAt: input.createdAt,
+    rawSourceData: rawEvent,
+    sourceFields: rawEvent,
+  });
+}
+
 export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
   const db = getPlayerMirrorPool();
   const senderUid = cleanText(input.senderUid);
   const receiverUid = cleanText(input.receiverUid);
   const conversationId = cleanText(input.conversationId);
   const type = input.type === 'image' ? 'image' : 'text';
+  const text = type === 'text' ? cleanText(input.text) : '';
+  const imageUrl = type === 'image' ? cleanText(input.imageUrl) : '';
+  const imagePublicId = type === 'image' ? cleanText(input.imagePublicId) : '';
+  const textBillingIdempotencyKey = cleanText(input.playerToPlayerTextBilling?.idempotencyKey).slice(
+    0,
+    160
+  );
+  const photoBillingIdempotencyKey = cleanText(input.playerToPlayerPhotoBilling?.idempotencyKey).slice(
+    0,
+    160
+  );
+  const shouldBillPlayerText = type === 'text' && Boolean(textBillingIdempotencyKey);
+  const shouldBillPlayerPhoto = type === 'image' && Boolean(photoBillingIdempotencyKey);
   console.info('[MESSAGE_CREATE_START]', {
     senderUid,
     receiverUid,
@@ -149,11 +342,17 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
     return { ok: false as const, reason: 'missing_input' };
   }
 
-  if (type === 'text' && !cleanText(input.text)) {
+  if (type === 'text' && !text) {
     return { ok: false as const, reason: 'empty_text' };
   }
-  if (type === 'image' && !cleanText(input.imageUrl)) {
+  if (type === 'image' && (!imageUrl || !imagePublicId)) {
     return { ok: false as const, reason: 'missing_image' };
+  }
+  if (input.playerToPlayerTextBilling && !textBillingIdempotencyKey) {
+    return { ok: false as const, reason: 'missing_idempotency_key' };
+  }
+  if (input.playerToPlayerPhotoBilling && !photoBillingIdempotencyKey) {
+    return { ok: false as const, reason: 'missing_idempotency_key' };
   }
 
   const messageId = randomUUID();
@@ -168,9 +367,73 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
   try {
     await client.query('BEGIN');
 
+    const operationKey = shouldBillPlayerText
+      ? `player_chat_text:${senderUid}:${textBillingIdempotencyKey}`
+      : shouldBillPlayerPhoto
+        ? `player_chat_photo:${senderUid}:${photoBillingIdempotencyKey}`
+        : null;
+    if (operationKey) {
+      const requestPayload = {
+        senderUid,
+        receiverUid,
+        conversationId,
+        type,
+        text,
+        imagePublicId,
+        idempotencyKey: shouldBillPlayerPhoto
+          ? photoBillingIdempotencyKey
+          : textBillingIdempotencyKey,
+      } satisfies {
+        senderUid: string;
+        receiverUid: string;
+        conversationId: string;
+        type: 'text' | 'image';
+        text: string;
+        imagePublicId: string;
+        idempotencyKey: string;
+      };
+      const claim = await claimAuthorityOperation(client, {
+        operationKey,
+        operationType: shouldBillPlayerPhoto
+          ? 'player_chat_photo_message'
+          : 'player_chat_text_message',
+        userUid: senderUid,
+        sourceId: messageId,
+        actorUid: senderUid,
+        actorRole: 'player',
+        payload: requestPayload,
+      });
+      if (claim.duplicate) {
+        const payload = await readAuthorityOperationPayloadWithClient(client, operationKey, {
+          flowName: shouldBillPlayerPhoto
+            ? 'player_chat_photo_message'
+            : 'player_chat_text_message',
+        });
+        if (!sameBillingRequest(payload, requestPayload) || !payload?.messageId) {
+          await client.query('ROLLBACK');
+          return { ok: false as const, reason: 'idempotency_conflict' };
+        }
+        await client.query('ROLLBACK');
+        return {
+          ok: true as const,
+          duplicate: true,
+          messageId: cleanText(payload.messageId),
+          conversationId: cleanText(payload.conversationId) || conversationId,
+          createdAt: cleanText(payload.createdAt) || nowIso,
+          billing: {
+            chargedAmount: Number(payload.chargedAmount || 0),
+            freeMessagesUsedInWindow: Number(payload.freeMessagesUsedInWindow || 0),
+            freeMessagesRemaining: Number(payload.freeMessagesRemaining || 0),
+            senderCoinBalance:
+              payload.senderCoinBalance == null ? null : Number(payload.senderCoinBalance),
+          } satisfies AuthorityChatBillingInfo,
+        };
+      }
+    }
+
     const participantRows = await client.query(
       `
-        SELECT uid, role, coadmin_uid, created_by
+        SELECT uid, username, role, coadmin_uid, created_by
         FROM public.players_cache
         WHERE uid = ANY($1::text[]) AND deleted_at IS NULL
       `,
@@ -207,6 +470,74 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
       conversationId,
     });
 
+    let billing: AuthorityChatBillingInfo = {
+      chargedAmount: 0,
+      freeMessagesUsedInWindow: 0,
+      freeMessagesRemaining: 0,
+      senderCoinBalance: null,
+    };
+    if (shouldBillPlayerText || shouldBillPlayerPhoto) {
+      if (senderRole !== 'player' || receiverRole !== 'player') {
+        await client.query('ROLLBACK');
+        return { ok: false as const, reason: 'invalid_player_chat_billing_context' };
+      }
+      const senderLock = await client.query(
+        `
+          SELECT uid, username, role, status, coin, coadmin_uid, created_by, raw_firestore_data
+          FROM public.players_cache
+          WHERE uid = $1
+            AND deleted_at IS NULL
+          FOR UPDATE
+        `,
+        [senderUid]
+      );
+      const sender = senderLock.rows[0] as Record<string, unknown> | undefined;
+      if (!sender || cleanText(sender.role).toLowerCase() !== 'player') {
+        await client.query('ROLLBACK');
+        return { ok: false as const, reason: 'invalid_player_chat_billing_context' };
+      }
+
+      const beforeCoin = numberFromDb(sender.coin);
+      const sentTextCount = shouldBillPlayerText
+        ? await countSenderPlayerTextMessagesInWindow(client, { senderUid })
+        : 0;
+      const shouldChargeText = shouldBillPlayerText && sentTextCount >= PLAYER_CHAT_TEXT_FREE_LIMIT;
+      const chargedAmount = shouldBillPlayerPhoto
+        ? PLAYER_CHAT_PHOTO_FEE_COINS
+        : shouldChargeText
+          ? PLAYER_CHAT_TEXT_FEE_COINS
+          : 0;
+      if (chargedAmount > 0 && beforeCoin < chargedAmount) {
+        await client.query('ROLLBACK');
+        return {
+          ok: false as const,
+          reason: shouldBillPlayerPhoto
+            ? 'insufficient_coin_for_chat_photo'
+            : 'insufficient_coin_for_chat_message',
+        };
+      }
+
+      const afterCoin = Number((beforeCoin - chargedAmount).toFixed(4));
+      const freeMessagesUsedInWindow = shouldBillPlayerText
+        ? Math.min(
+            PLAYER_CHAT_TEXT_FREE_LIMIT,
+            sentTextCount + (shouldChargeText ? 0 : 1)
+          )
+        : 0;
+      const freeMessagesRemaining = shouldBillPlayerText
+        ? Math.max(0, PLAYER_CHAT_TEXT_FREE_LIMIT - (sentTextCount + 1))
+        : 0;
+      if (chargedAmount > 0) {
+        await updatePlayerBalancesInTxn(client, senderUid, { coin: afterCoin });
+      }
+      billing = {
+        chargedAmount,
+        freeMessagesUsedInWindow,
+        freeMessagesRemaining,
+        senderCoinBalance: chargedAmount > 0 ? afterCoin : beforeCoin,
+      };
+    }
+
     await upsertConversationInTxn(client, {
       conversationId,
       senderUid,
@@ -221,9 +552,9 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
       senderUid,
       receiverUid,
       type,
-      text: type === 'text' ? cleanText(input.text) : null,
-      imageUrl: type === 'image' ? cleanText(input.imageUrl) : null,
-      imagePublicId: type === 'image' ? cleanText(input.imagePublicId) : null,
+      text: type === 'text' ? text : null,
+      imageUrl: type === 'image' ? imageUrl : null,
+      imagePublicId: type === 'image' ? imagePublicId : null,
       nowIso,
     });
     console.info('[MESSAGE_CREATE_ROW_WRITTEN]', {
@@ -247,8 +578,8 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
       senderUid,
       receiverUid,
       type,
-      text: type === 'text' ? cleanText(input.text) : null,
-      imageUrl: type === 'image' ? cleanText(input.imageUrl) : null,
+      text: type === 'text' ? text : null,
+      imageUrl: type === 'image' ? imageUrl : null,
       updatedAt: nowIso,
       source: 'authority_chat',
       participantUids: [senderUid, receiverUid],
@@ -272,6 +603,74 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
       unreadCount: unreadCounts[receiverUid],
     });
 
+    if ((shouldBillPlayerText || shouldBillPlayerPhoto) && billing.chargedAmount > 0) {
+      const eventType = shouldBillPlayerPhoto
+        ? 'player_chat_photo_fee'
+        : 'player_chat_text_fee';
+      const eventId = shouldBillPlayerPhoto
+        ? `playerChatPhotoFee_${messageId}`
+        : `playerChatTextFee_${messageId}`;
+      const beforeCoin = Number(
+        ((billing.senderCoinBalance || 0) + billing.chargedAmount).toFixed(4)
+      );
+      const afterCoin = Number(billing.senderCoinBalance || 0);
+      await insertPlayerChatFeeEventInTxn(client, {
+        eventId,
+        eventType,
+        senderUid,
+        senderUsername: cleanText(senderRow?.username),
+        receiverUid,
+        coadminUid,
+        messageId,
+        conversationId,
+        amount: billing.chargedAmount,
+        beforeCoin,
+        afterCoin,
+        idempotencyKey: shouldBillPlayerPhoto
+          ? photoBillingIdempotencyKey
+          : textBillingIdempotencyKey,
+        createdAt: nowIso,
+        extraFields: shouldBillPlayerPhoto
+          ? { imagePublicId }
+          : {
+              freeMessagesUsedInWindow: billing.freeMessagesUsedInWindow,
+              freeMessagesRemaining: billing.freeMessagesRemaining,
+            },
+      });
+    }
+
+    if (operationKey) {
+      await client.query(
+        `
+          UPDATE public.authority_operations
+          SET source_id = $2,
+              payload = $3::jsonb
+          WHERE operation_key = $1
+        `,
+        [
+          operationKey,
+          messageId,
+          JSON.stringify({
+            senderUid,
+            receiverUid,
+            conversationId,
+            type,
+            text,
+            imagePublicId,
+            idempotencyKey: shouldBillPlayerPhoto
+              ? photoBillingIdempotencyKey
+              : textBillingIdempotencyKey,
+            messageId,
+            createdAt: nowIso,
+            chargedAmount: billing.chargedAmount,
+            freeMessagesUsedInWindow: billing.freeMessagesUsedInWindow,
+            freeMessagesRemaining: billing.freeMessagesRemaining,
+            senderCoinBalance: billing.senderCoinBalance,
+          }),
+        ]
+      );
+    }
+
     await client.query('COMMIT');
     console.info('[MESSAGE_CREATE_COMMIT]', {
       messageId,
@@ -289,6 +688,8 @@ export async function sendChatMessageInSql(input: AuthorityChatSendInput) {
       messageId,
       conversationId,
       createdAt: nowIso,
+      duplicate: false,
+      billing: shouldBillPlayerText || shouldBillPlayerPhoto ? billing : undefined,
     };
   } catch (error) {
     await client.query('ROLLBACK');

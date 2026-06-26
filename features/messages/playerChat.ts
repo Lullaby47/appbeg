@@ -31,7 +31,6 @@ import { getLocalPlayerSessionId, getPlayerApiHeaders } from '@/features/auth/pl
 import { getCachedSessionUser } from '@/features/auth/sessionUser';
 import { fetchChatApi } from '@/lib/client/chatLogoutDiagnostics';
 import {
-  assertClientFirestoreDisabled,
   noopFirestoreUnsubscribe,
   shouldSkipClientFirestore,
 } from '@/lib/client/clientFirestoreGuard';
@@ -52,7 +51,9 @@ const DIRECT_MESSAGE_LIVE_WINDOW = PLAYER_CHAT_RENDER_LIMIT;
 
 export type PlayerPeer = {
   uid: string;
-  username: string;
+  avatarName: string;
+  bio: string;
+  avatarImageUrl?: string | null;
   lastSeenAt?: string | null;
 };
 
@@ -72,6 +73,15 @@ export type PlayerChatMessage = {
   seenBy?: string[];
 };
 
+export type PlayerChatSendResult = {
+  messageId: string;
+  conversationId: string;
+  createdAt: string | null;
+  chargedAmount: number;
+  senderCoinBalance: number | null;
+  duplicate: boolean;
+};
+
 export type PlayerChatListItem = {
   conversationId: string;
   otherUid: string;
@@ -89,6 +99,111 @@ export type FriendLink = {
   createdAt?: string | null;
   updatedAt?: string | null;
 };
+
+export type PlayerChatProfile = {
+  isActive: boolean;
+  avatarName: string;
+  bio: string;
+  avatarImageUrl: string | null;
+  reviewStatus: string;
+  suspendedUntil: string | null;
+  activatedAt: string | null;
+};
+
+export type PlayerChatProfileInput = {
+  avatarName: string;
+  bio: string;
+};
+
+function defaultPlayerChatProfile(): PlayerChatProfile {
+  return {
+    isActive: false,
+    avatarName: '',
+    bio: '',
+    avatarImageUrl: null,
+    reviewStatus: 'approved',
+    suspendedUntil: null,
+    activatedAt: null,
+  };
+}
+
+function mapPlayerChatProfile(value: Partial<PlayerChatProfile> | null | undefined): PlayerChatProfile {
+  return {
+    isActive: value?.isActive === true,
+    avatarName: cleanText(value?.avatarName || ''),
+    bio: cleanText(value?.bio || ''),
+    avatarImageUrl: cleanText(value?.avatarImageUrl || '') || null,
+    reviewStatus: cleanText(value?.reviewStatus || '') || 'approved',
+    suspendedUntil: cleanText(value?.suspendedUntil || '') || null,
+    activatedAt: cleanText(value?.activatedAt || '') || null,
+  };
+}
+
+async function readProfileApiPayload(response: Response, fallback: string) {
+  const payload = (await response.json().catch(() => ({}))) as {
+    ok?: boolean;
+    profile?: Partial<PlayerChatProfile>;
+    error?: string;
+  };
+  if (!response.ok) {
+    throw new Error(payload.error || fallback);
+  }
+  return mapPlayerChatProfile(payload.profile || defaultPlayerChatProfile());
+}
+
+export async function getMyPlayerChatProfile() {
+  const headers = await getPlayerApiHeaders(false, {
+    route: '/api/player/chat/profile',
+  });
+  const response = await fetch('/api/player/chat/profile', {
+    method: 'GET',
+    headers,
+    cache: 'no-store',
+  });
+  return readProfileApiPayload(response, 'Failed to load Player Chat profile.');
+}
+
+export async function updateMyPlayerChatProfile(input: PlayerChatProfileInput) {
+  const headers = await getPlayerApiHeaders(true, {
+    route: '/api/player/chat/profile',
+  });
+  const response = await fetch('/api/player/chat/profile', {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({
+      avatarName: input.avatarName,
+      bio: input.bio,
+    }),
+    cache: 'no-store',
+  });
+  return readProfileApiPayload(response, 'Failed to save Player Chat profile.');
+}
+
+export async function activateMyPlayerChatProfile() {
+  const headers = await getPlayerApiHeaders(true, {
+    route: '/api/player/chat/profile/activate',
+  });
+  const response = await fetch('/api/player/chat/profile/activate', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({}),
+    cache: 'no-store',
+  });
+  return readProfileApiPayload(response, 'Failed to activate Player Chat profile.');
+}
+
+export async function deactivateMyPlayerChatProfile() {
+  const headers = await getPlayerApiHeaders(true, {
+    route: '/api/player/chat/profile/deactivate',
+  });
+  const response = await fetch('/api/player/chat/profile/deactivate', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({}),
+    cache: 'no-store',
+  });
+  return readProfileApiPayload(response, 'Failed to deactivate Player Chat profile.');
+}
 
 export async function fetchPlayerChatBootstrap(search = '') {
   const params = new URLSearchParams();
@@ -125,7 +240,9 @@ export async function fetchPlayerChatBootstrap(search = '') {
   return (payload.players || [])
     .map((player) => ({
       uid: cleanText(player.uid),
-      username: cleanText(player.username) || 'Player',
+      avatarName: cleanText(player.avatarName) || 'Player',
+      bio: cleanText(player.bio),
+      avatarImageUrl: cleanText(String(player.avatarImageUrl || '')) || null,
       lastSeenAt: cleanText(String(player.lastSeenAt || '')) || null,
     }))
     .filter((player) => player.uid);
@@ -293,22 +410,52 @@ async function sendDirectTextMessageViaSql(
   senderUid: string,
   receiverUid: string,
   text: string,
-  conversationId: string
+  conversationId: string,
+  idempotencyKey: string
 ) {
   const response = await fetch('/api/chat/messages', {
     method: 'POST',
-    headers: await getSqlApiReadHeaders(true),
+    headers: {
+      ...(await getSqlApiReadHeaders(true)),
+      'Idempotency-Key': idempotencyKey,
+    },
     body: JSON.stringify({
       peerUid: receiverUid,
       conversationId,
       type: 'text',
       text,
+      idempotencyKey,
     }),
     cache: 'no-store',
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
   if (!response.ok) {
-    throw new Error(payload.error || 'Failed to send chat message.');
+    const errorCode = cleanText(payload.error || '');
+    if (errorCode === 'sender_chat_profile_inactive') {
+      throw new Error('Activate your chat profile before sending messages.');
+    }
+    if (errorCode === 'receiver_chat_profile_inactive') {
+      throw new Error('This player is not available for chat right now.');
+    }
+    if (errorCode === 'invalid_chat_receiver') {
+      throw new Error('This player is not available for chat right now.');
+    }
+    if (errorCode === 'out_of_scope_receiver') {
+      throw new Error('This player is not available for chat right now.');
+    }
+    if (errorCode === 'insufficient_coin_for_chat_message') {
+      throw new Error('You need coins to send more messages today.');
+    }
+    if (errorCode === 'insufficient_coin_for_chat_photo') {
+      throw new Error('You need 1 coin to send a photo.');
+    }
+    if (errorCode === 'invalid_photo_message' || errorCode === 'missing_image') {
+      throw new Error('Could not send photo. Please try again.');
+    }
+    if (errorCode === 'idempotency_conflict') {
+      throw new Error('This message retry could not be verified. Please type it again.');
+    }
+    throw new Error(errorCode || 'Failed to send chat message.');
   }
   logSqlClientMigration({
     feature: 'player_chat_send_text',
@@ -317,6 +464,80 @@ async function sendDirectTextMessageViaSql(
     result: 'ok',
     fallbackUsed: false,
   });
+}
+
+async function sendDirectImageMessageViaSql(
+  receiverUid: string,
+  input: {
+    conversationId: string;
+    imageUrl: string;
+    imagePublicId: string;
+    idempotencyKey: string;
+  }
+): Promise<PlayerChatSendResult> {
+  const response = await fetch('/api/chat/messages', {
+    method: 'POST',
+    headers: {
+      ...(await getSqlApiReadHeaders(true)),
+      'Idempotency-Key': input.idempotencyKey,
+    },
+    body: JSON.stringify({
+      peerUid: receiverUid,
+      conversationId: input.conversationId,
+      type: 'image',
+      imageUrl: input.imageUrl,
+      imagePublicId: input.imagePublicId,
+      idempotencyKey: input.idempotencyKey,
+    }),
+    cache: 'no-store',
+  });
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    messageId?: string;
+    conversationId?: string;
+    createdAt?: string;
+    chargedAmount?: number;
+    senderCoinBalance?: number | null;
+    duplicate?: boolean;
+  };
+  if (!response.ok) {
+    const errorCode = cleanText(payload.error || '');
+    if (errorCode === 'sender_chat_profile_inactive') {
+      throw new Error('Activate your chat profile before sending photos.');
+    }
+    if (errorCode === 'receiver_chat_profile_inactive') {
+      throw new Error('This player is not available for chat right now.');
+    }
+    if (errorCode === 'invalid_chat_receiver' || errorCode === 'out_of_scope_receiver') {
+      throw new Error('This player is not available for chat right now.');
+    }
+    if (errorCode === 'insufficient_coin_for_chat_photo') {
+      throw new Error('You need 1 coin to send a photo.');
+    }
+    if (errorCode === 'invalid_photo_message' || errorCode === 'missing_image') {
+      throw new Error('Could not send photo. Please try again.');
+    }
+    if (errorCode === 'idempotency_conflict') {
+      throw new Error('This photo retry could not be verified. Please choose it again.');
+    }
+    throw new Error(errorCode || 'Failed to send photo.');
+  }
+  logSqlClientMigration({
+    feature: 'player_chat_send_image',
+    oldFirebaseOperation: 'setDoc+addDoc',
+    newSqlRoute: '/api/chat/messages',
+    result: 'ok',
+    fallbackUsed: false,
+  });
+  return {
+    messageId: cleanText(payload.messageId || ''),
+    conversationId: cleanText(payload.conversationId || ''),
+    createdAt: cleanText(payload.createdAt || '') || null,
+    chargedAmount: Number(payload.chargedAmount || 0),
+    senderCoinBalance:
+      payload.senderCoinBalance == null ? null : Number(payload.senderCoinBalance),
+    duplicate: payload.duplicate === true,
+  };
 }
 
 async function markDirectConversationSeenViaSql(otherUid: string) {
@@ -341,7 +562,7 @@ async function markDirectConversationSeenViaSql(otherUid: string) {
 export async function sendDirectTextMessage(
   receiverUid: string,
   text: string,
-  options?: { replyToMessageId?: string; replyToText?: string }
+  options?: { replyToMessageId?: string; replyToText?: string; idempotencyKey?: string }
 ) {
   const senderUid = assertAuthUid();
   const body = cleanText(text);
@@ -356,7 +577,12 @@ export async function sendDirectTextMessage(
       operation: 'setDoc+addDoc',
       replacement: 'POST /api/chat/messages',
     });
-    await sendDirectTextMessageViaSql(senderUid, receiverUid, body, conversationId);
+    const idempotencyKey =
+      cleanText(options?.idempotencyKey || '') ||
+      (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await sendDirectTextMessageViaSql(senderUid, receiverUid, body, conversationId, idempotencyKey);
     return;
   }
   await withRateLimit(conversationId, senderUid);
@@ -399,7 +625,12 @@ export async function sendDirectTextMessage(
 export async function sendDirectImageMessage(
   receiverUid: string,
   file: File,
-  options?: { replyToMessageId?: string; replyToText?: string }
+  options?: {
+    replyToMessageId?: string;
+    replyToText?: string;
+    idempotencyKey?: string;
+    uploadedImage?: { secureUrl: string; publicId: string };
+  }
 ) {
   const senderUid = assertAuthUid();
   if (!file.type.startsWith('image/')) {
@@ -417,7 +648,23 @@ export async function sendDirectImageMessage(
       operation: 'setDoc+addDoc',
       replacement: 'POST /api/chat/messages',
     });
-    throw new Error('Image chat not ready');
+    const conversationId = getDirectConversationId(senderUid, receiverUid);
+    const imageUrl = cleanText(options?.uploadedImage?.secureUrl || '');
+    const imagePublicId = cleanText(options?.uploadedImage?.publicId || '');
+    const idempotencyKey =
+      cleanText(options?.idempotencyKey || '') ||
+      (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    if (!imageUrl || !imagePublicId) {
+      throw new Error('Could not upload photo. Please try again.');
+    }
+    return sendDirectImageMessageViaSql(receiverUid, {
+      conversationId,
+      imageUrl,
+      imagePublicId,
+      idempotencyKey,
+    });
   }
 
   const conversationId = getDirectConversationId(senderUid, receiverUid);
@@ -458,6 +705,7 @@ export async function sendDirectImageMessage(
     createdAt: serverTimestamp(),
     ttlExpiresAt: chatMessageTtl(),
   });
+  return null;
 }
 
 export function listenDirectMessages(

@@ -10,19 +10,23 @@ import { readUserPresenceCacheByUids } from '@/lib/sql/userPresenceCache';
 
 export type PlayerChatPeer = {
   uid: string;
-  username: string;
+  avatarName: string;
+  bio: string;
+  avatarImageUrl: string | null;
   lastSeenAt: string | null;
 };
 
 function mapPeerRow(row: Record<string, unknown>): PlayerChatPeer | null {
   const uid = cleanText(row.uid);
-  const username = cleanText(row.username);
-  if (!uid || !username) {
+  const avatarName = cleanText(row.avatar_name);
+  if (!uid || !avatarName) {
     return null;
   }
   return {
     uid,
-    username,
+    avatarName,
+    bio: cleanText(row.bio),
+    avatarImageUrl: cleanText(row.avatar_image_url) || null,
     lastSeenAt: null,
   };
 }
@@ -46,24 +50,41 @@ export async function readPlayerChatPeers(input: {
   let searchSql = '';
   if (search) {
     params.push(`%${search.toLowerCase()}%`);
-    searchSql = `AND LOWER(username) LIKE $${params.length}`;
+    searchSql = `
+          AND (
+            LOWER(profile.avatar_name) LIKE $${params.length}
+            OR LOWER(profile.bio) LIKE $${params.length}
+          )
+    `;
   }
 
   try {
     const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(
       db,
       `
-        SELECT uid, username, updated_at, created_at, mirrored_at
-        FROM public.players_cache
-        WHERE deleted_at IS NULL
-          AND uid <> $1
-          AND role = 'player'
-          AND LOWER(COALESCE(status, 'active')) = 'active'
-          AND (coadmin_uid = $2 OR created_by = $2)
+        SELECT
+          player.uid,
+          profile.avatar_name,
+          profile.bio,
+          profile.avatar_image_url,
+          profile.updated_at,
+          profile.activated_at
+        FROM public.players_cache player
+        JOIN public.player_chat_profiles profile
+          ON profile.player_uid = player.uid
+        WHERE player.deleted_at IS NULL
+          AND player.uid <> $1
+          AND player.role = 'player'
+          AND LOWER(COALESCE(player.status, 'active')) = 'active'
+          AND (player.coadmin_uid = $2 OR player.created_by = $2)
+          AND profile.coadmin_uid = $2
+          AND profile.is_active = TRUE
+          AND profile.review_status = 'approved'
+          AND (profile.suspended_until IS NULL OR profile.suspended_until < now())
           ${searchSql}
         ORDER BY
-          COALESCE(updated_at, created_at, mirrored_at) DESC NULLS LAST,
-          username ASC
+          COALESCE(profile.activated_at, profile.updated_at) DESC NULLS LAST,
+          LOWER(profile.avatar_name) ASC
         LIMIT $3
       `,
       params,

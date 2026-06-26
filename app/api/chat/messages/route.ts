@@ -105,6 +105,27 @@ async function readChatParticipant(uid: string) {
   };
 }
 
+async function hasActivePublicChatProfile(uid: string) {
+  const db = getPlayerMirrorPool();
+  const cleanUid = cleanText(uid);
+  if (!db || !cleanUid) {
+    return false;
+  }
+  const result = await db.query(
+    `
+      SELECT 1
+      FROM public.player_chat_profiles
+      WHERE player_uid = $1
+        AND is_active = TRUE
+        AND review_status = 'approved'
+        AND (suspended_until IS NULL OR suspended_until < now())
+      LIMIT 1
+    `,
+    [cleanUid]
+  );
+  return result.rows.length > 0;
+}
+
 async function validatePlayerMessageScope(senderUid: string, receiverUid: string) {
   const [sender, receiver] = await Promise.all([
     readChatParticipant(senderUid),
@@ -114,15 +135,99 @@ async function validatePlayerMessageScope(senderUid: string, receiverUid: string
     return { ok: false as const, reason: 'sender_scope_not_found' };
   }
   if (!receiver || !receiver.role) {
-    return { ok: false as const, reason: 'receiver_not_found' };
+    return { ok: false as const, reason: 'invalid_chat_receiver' };
   }
   if (receiver.uid === sender.coadminUid) {
-    return { ok: true as const };
+    return { ok: true as const, sender, receiver };
   }
   if (receiver.coadminUid && receiver.coadminUid === sender.coadminUid) {
-    return { ok: true as const };
+    return { ok: true as const, sender, receiver };
   }
-  return { ok: false as const, reason: 'receiver_outside_player_coadmin_scope' };
+  return { ok: false as const, reason: 'out_of_scope_receiver' };
+}
+
+async function validatePlayerToPlayerPublicProfiles(input: {
+  senderUid: string;
+  receiverUid: string;
+}) {
+  const scope = await validatePlayerMessageScope(input.senderUid, input.receiverUid);
+  if (!scope.ok) {
+    return scope;
+  }
+
+  if (scope.sender.role !== 'player') {
+    return { ok: false as const, reason: 'sender_scope_not_found' };
+  }
+  if (scope.receiver.role !== 'player') {
+    return { ok: true as const, sender: scope.sender, receiver: scope.receiver };
+  }
+
+  const [senderActive, receiverActive] = await Promise.all([
+    hasActivePublicChatProfile(input.senderUid),
+    hasActivePublicChatProfile(input.receiverUid),
+  ]);
+  if (!senderActive) {
+    return { ok: false as const, reason: 'sender_chat_profile_inactive' };
+  }
+  if (!receiverActive) {
+    return { ok: false as const, reason: 'receiver_chat_profile_inactive' };
+  }
+  return { ok: true as const, sender: scope.sender, receiver: scope.receiver };
+}
+
+function statusForPlayerSendValidationReason(reason: string) {
+  if (reason === 'invalid_chat_receiver') {
+    return 404;
+  }
+  if (
+    reason === 'out_of_scope_receiver' ||
+    reason === 'sender_scope_not_found'
+  ) {
+    return 403;
+  }
+  if (
+    reason === 'sender_chat_profile_inactive' ||
+    reason === 'receiver_chat_profile_inactive'
+  ) {
+    return 409;
+  }
+  return 403;
+}
+
+function safeCloudinaryFolderSegment(value: string) {
+  return cleanText(value).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+}
+
+function isValidCloudinaryImageUrl(value: string) {
+  const imageUrl = cleanText(value);
+  if (!imageUrl) {
+    return false;
+  }
+  try {
+    const parsed = new URL(imageUrl);
+    return (
+      parsed.protocol === 'https:' &&
+      (parsed.hostname === 'res.cloudinary.com' || parsed.hostname.endsWith('.cloudinary.com')) &&
+      parsed.pathname.includes('/image/upload/')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isValidPlayerChatCloudinaryPublicId(value: string, input: {
+  senderUid: string;
+  coadminUid: string;
+}) {
+  const imagePublicId = cleanText(value);
+  if (!imagePublicId || imagePublicId.length > 300) {
+    return false;
+  }
+  if (imagePublicId.includes('..') || imagePublicId.includes('\\')) {
+    return false;
+  }
+  const expectedPrefix = `player-chat/${safeCloudinaryFolderSegment(input.coadminUid)}/${safeCloudinaryFolderSegment(input.senderUid)}/`;
+  return imagePublicId.startsWith(expectedPrefix);
 }
 
 export async function GET(request: Request) {
@@ -348,6 +453,7 @@ export async function POST(request: Request) {
     text?: string;
     imageUrl?: string;
     imagePublicId?: string;
+    idempotencyKey?: string;
   };
   const receiverUid = cleanText(body.peerUid);
   console.info('[MESSAGE_CREATE_START]', {
@@ -382,13 +488,18 @@ export async function POST(request: Request) {
   }
 
   const type = String(body.type || 'text').trim().toLowerCase() === 'image' ? 'image' : 'text';
-  if (type === 'image') {
+  if (type === 'image' && auth.user.role !== 'player') {
     return apiError('Image chat not ready.', 501);
   }
 
   const text = cleanText(body.text);
-  if (!text) {
+  const imageUrl = cleanText(body.imageUrl);
+  const imagePublicId = cleanText(body.imagePublicId);
+  if (type === 'text' && !text) {
     return apiError('Message text is required.', 400);
+  }
+  if (type === 'image' && (!isValidCloudinaryImageUrl(imageUrl) || !imagePublicId)) {
+    return apiError('invalid_photo_message', 400);
   }
 
   const conversationId = cleanText(body.conversationId) || getConversationId(auth.user.uid, receiverUid);
@@ -400,8 +511,13 @@ export async function POST(request: Request) {
     return apiError('Conversation does not match sender and receiver.', 403);
   }
 
+  let playerToPlayerTextBilling: { idempotencyKey: string } | undefined;
+  let playerToPlayerPhotoBilling: { idempotencyKey: string } | undefined;
   if (auth.user.role === 'player') {
-    const scope = await validatePlayerMessageScope(auth.user.uid, receiverUid);
+    const scope = await validatePlayerToPlayerPublicProfiles({
+      senderUid: auth.user.uid,
+      receiverUid,
+    });
     if (!scope.ok) {
       console.info('[MESSAGE_CREATE_ERROR]', {
         route: ROUTE,
@@ -409,7 +525,31 @@ export async function POST(request: Request) {
         receiverUid,
         reason: scope.reason,
       });
-      return apiError('Forbidden.', 403);
+      return apiError(scope.reason, statusForPlayerSendValidationReason(scope.reason));
+    }
+    if (type === 'image' && scope.receiver.role !== 'player') {
+      return apiError('Image chat not ready.', 501);
+    }
+    if (scope.receiver.role === 'player') {
+      const idempotencyKey =
+        cleanText(body.idempotencyKey) || cleanText(request.headers.get('Idempotency-Key'));
+      if (!idempotencyKey) {
+        return apiError('idempotency_key_required', 400);
+      }
+      if (type === 'image') {
+        if (
+          !scope.sender.coadminUid ||
+          !isValidPlayerChatCloudinaryPublicId(imagePublicId, {
+            senderUid: auth.user.uid,
+            coadminUid: scope.sender.coadminUid,
+          })
+        ) {
+          return apiError('invalid_photo_message', 400);
+        }
+        playerToPlayerPhotoBilling = { idempotencyKey };
+      } else {
+        playerToPlayerTextBilling = { idempotencyKey };
+      }
     }
   }
 
@@ -417,8 +557,12 @@ export async function POST(request: Request) {
     senderUid: auth.user.uid,
     receiverUid,
     conversationId,
-    type: 'text',
-    text,
+    type,
+    text: type === 'text' ? text : undefined,
+    imageUrl: type === 'image' ? imageUrl : undefined,
+    imagePublicId: type === 'image' ? imagePublicId : undefined,
+    playerToPlayerTextBilling,
+    playerToPlayerPhotoBilling,
   });
 
   if (!result.ok) {
@@ -428,7 +572,25 @@ export async function POST(request: Request) {
       receiverUid,
       reason: result.reason,
     });
-    return apiError('Failed to send chat message.', 500);
+    const status =
+      result.reason === 'insufficient_coin_for_chat_message'
+        ? 402
+        : result.reason === 'insufficient_coin_for_chat_photo'
+          ? 402
+          : result.reason === 'idempotency_conflict'
+            ? 409
+            : result.reason === 'missing_image'
+              ? 400
+              : 500;
+    return apiError(
+      result.reason === 'insufficient_coin_for_chat_message' ||
+        result.reason === 'insufficient_coin_for_chat_photo' ||
+        result.reason === 'missing_image' ||
+        result.reason === 'idempotency_conflict'
+        ? result.reason
+        : 'Failed to send chat message.',
+      status
+    );
   }
 
   console.info('[PLAYER_MESSAGE_SENT]', {
@@ -443,9 +605,24 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     success: true,
+    message: {
+      id: result.messageId,
+      senderUid: auth.user.uid,
+      receiverUid,
+      type,
+      text: type === 'text' ? text : null,
+      imageUrl: type === 'image' ? imageUrl : null,
+      imagePublicId: type === 'image' ? imagePublicId : null,
+      createdAt: result.createdAt,
+    },
     messageId: result.messageId,
     conversationId: result.conversationId,
     createdAt: result.createdAt,
+    chargedAmount: result.billing?.chargedAmount ?? 0,
+    freeMessagesUsedInWindow: result.billing?.freeMessagesUsedInWindow ?? null,
+    freeMessagesRemaining: result.billing?.freeMessagesRemaining ?? null,
+    senderCoinBalance: result.billing?.senderCoinBalance ?? null,
+    duplicate: result.duplicate === true,
     source: 'postgres',
     firestore_fallback: false,
   });
