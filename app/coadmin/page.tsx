@@ -76,6 +76,11 @@ import {
   adjustPlayerCash,
   adjustPlayerCoin,
 } from '@/features/users/coadminPlayerCoin';
+import {
+  allocateStaffWalletCoins,
+  listCoadminStaffWallets,
+  type CoadminStaffWalletRow,
+} from '@/features/users/staffWallet';
 
 import {
   GameLogin,
@@ -476,6 +481,12 @@ export default function CoadminPage() {
   const [staffList, setStaffList] = useState<StaffUser[]>([]);
   const [selectedStaff, setSelectedStaff] = useState<StaffUser | null>(null);
   const [deleteStaffTarget, setDeleteStaffTarget] = useState<StaffUser | null>(null);
+  const [staffWalletsByUid, setStaffWalletsByUid] = useState<
+    Record<string, CoadminStaffWalletRow>
+  >({});
+  const [staffWalletsLoading, setStaffWalletsLoading] = useState(false);
+  const [staffWalletAmountByUid, setStaffWalletAmountByUid] = useState<Record<string, string>>({});
+  const [staffWalletAllocatingUid, setStaffWalletAllocatingUid] = useState<string | null>(null);
 
   const [carerUsername, setCarerUsername] = useState('');
   const [carerPassword, setCarerPassword] = useState('');
@@ -2123,10 +2134,27 @@ export default function CoadminPage() {
 
     try {
       setStaffList(await getUsersForCurrentCoadmin(getStaff));
+      void loadStaffWallets();
     } catch (err: any) {
       setMessage(err.message || 'Failed to load staff.');
     } finally {
       setLoadingList(false);
+    }
+  }
+
+  async function loadStaffWallets() {
+    setStaffWalletsLoading(true);
+    try {
+      const wallets = await listCoadminStaffWallets();
+      const byUid = wallets.reduce<Record<string, CoadminStaffWalletRow>>((acc, wallet) => {
+        acc[wallet.staffUid] = wallet;
+        return acc;
+      }, {});
+      setStaffWalletsByUid(byUid);
+    } catch (err: unknown) {
+      setMessage(err instanceof Error ? err.message : 'Failed to load staff wallets.');
+    } finally {
+      setStaffWalletsLoading(false);
     }
   }
 
@@ -2539,6 +2567,63 @@ export default function CoadminPage() {
       setMessage(err.message || 'Failed to create staff.');
     } finally {
       setLoading(false);
+    }
+  }
+
+  function buildStaffWalletIdempotencyKey(staffUid: string, amount: number) {
+    const cryptoApi = typeof window !== 'undefined' ? window.crypto : undefined;
+    const randomId =
+      cryptoApi && typeof cryptoApi.randomUUID === 'function'
+        ? cryptoApi.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return `coadmin-staff-wallet:${staffUid}:${amount}:${randomId}`;
+  }
+
+  async function handleAllocateStaffWallet(staffMember: StaffUser) {
+    const raw = String(staffWalletAmountByUid[staffMember.uid] || '').trim();
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+      setMessage('Enter a positive whole-number Staff Wallet amount.');
+      return;
+    }
+
+    const amount = parsed;
+    setStaffWalletAllocatingUid(staffMember.uid);
+    setMessage('');
+
+    try {
+      const result = await allocateStaffWalletCoins({
+        staffUid: staffMember.uid,
+        amount,
+        idempotencyKey: buildStaffWalletIdempotencyKey(staffMember.uid, amount),
+      });
+      setStaffWalletAmountByUid((current) => ({
+        ...current,
+        [staffMember.uid]: '',
+      }));
+      setStaffWalletsByUid((current) => ({
+        ...current,
+        [staffMember.uid]: {
+          staffUid: staffMember.uid,
+          username: staffMember.username || null,
+          status: staffMember.status || null,
+          coadminUid: staffMember.coadminUid || staffMember.createdBy || '',
+          balanceCoin: result.balanceCoin,
+          totalAllocatedCoin: result.totalAllocatedCoin,
+          totalLoadedCoin: current[staffMember.uid]?.totalLoadedCoin || 0,
+          walletUpdatedAt: new Date().toISOString(),
+        },
+      }));
+      void loadStaffWallets();
+      setMessage(
+        result.duplicate
+          ? 'Staff Wallet allocation already processed.'
+          : `Allocated ${amount.toLocaleString()} coins to ${staffMember.username || 'staff'}.`
+      );
+    } catch (err: unknown) {
+      setMessage(err instanceof Error ? err.message : 'Failed to allocate Staff Wallet coins.');
+    } finally {
+      setStaffWalletAllocatingUid(null);
     }
   }
 
@@ -4720,6 +4805,21 @@ export default function CoadminPage() {
               loadingOlderMessages={pagedCoadminChat.loadingOlder}
               onLoadOlderMessages={pagedCoadminChat.loadOlder}
               renderSelectedExtras={(staffMember) => {
+                const staffWallet = staffWalletsByUid[staffMember.uid];
+                const staffWalletBalance = Math.max(
+                  0,
+                  Math.floor(Number(staffWallet?.balanceCoin || 0))
+                );
+                const staffWalletTotalAllocated = Math.max(
+                  0,
+                  Math.floor(Number(staffWallet?.totalAllocatedCoin || 0))
+                );
+                const staffWalletTotalLoaded = Math.max(
+                  0,
+                  Math.floor(Number(staffWallet?.totalLoadedCoin || 0))
+                );
+                const walletAmountInput = staffWalletAmountByUid[staffMember.uid] || '';
+                const walletAllocating = staffWalletAllocatingUid === staffMember.uid;
                 const completedPayouts = staffLedgerPayoutTasks.filter(
                   (task) =>
                     getEffectivePlayerCashoutTaskStatus(task) === 'completed'
@@ -4735,6 +4835,56 @@ export default function CoadminPage() {
 
                 return (
                   <div className="mt-6 space-y-5 border-t border-white/15 pt-6 text-left">
+                    <div className="rounded-2xl border border-violet-400/35 bg-violet-950/20 p-4">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                        <div>
+                          <h4 className="text-sm font-black uppercase tracking-wide text-violet-100">
+                            Staff Wallet
+                          </h4>
+                          <p className="mt-2 text-3xl font-black text-white tabular-nums">
+                            {staffWalletsLoading
+                              ? 'Loading...'
+                              : `${staffWalletBalance.toLocaleString()} coins`}
+                          </p>
+                          <p className="mt-1 text-xs text-violet-100/70">
+                            Total allocated: {staffWalletTotalAllocated.toLocaleString()} coins
+                            {' · '}
+                            Total loaded to players: {staffWalletTotalLoaded.toLocaleString()} coins
+                          </p>
+                        </div>
+
+                        <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-end lg:w-auto">
+                          <label className="min-w-0 flex-1 text-sm text-neutral-300 lg:w-48">
+                            Amount
+                            <input
+                              type="number"
+                              min={1}
+                              step={1}
+                              inputMode="numeric"
+                              value={walletAmountInput}
+                              onChange={(event) =>
+                                setStaffWalletAmountByUid((current) => ({
+                                  ...current,
+                                  [staffMember.uid]: event.target.value,
+                                }))
+                              }
+                              disabled={walletAllocating}
+                              placeholder="0"
+                              className="mt-1 w-full rounded-xl border border-white/15 bg-black/40 px-3 py-2 text-white outline-none focus:border-violet-400/60 disabled:opacity-50"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => void handleAllocateStaffWallet(staffMember)}
+                            disabled={walletAllocating || staffWalletsLoading}
+                            className="whitespace-nowrap rounded-xl bg-violet-400 px-4 py-2.5 text-sm font-black text-black hover:bg-violet-300 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {walletAllocating ? 'Allocating...' : 'Allocate Coins'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
                     <div>
                       <h4 className="text-sm font-black uppercase tracking-wide text-teal-200/95">
                         Staff oversight snapshot

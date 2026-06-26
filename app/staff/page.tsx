@@ -73,6 +73,11 @@ import { OnlineIndicator } from '@/components/presence/OnlineIndicator';
 import ImageUploadField from '@/components/common/ImageUploadField';
 
 import { giveFreeplayGift } from '@/features/freeplay/coadminFreeplay';
+import {
+  getMyStaffWallet,
+  loadPlayerCoinsFromStaffWallet,
+  type StaffWalletBalance,
+} from '@/features/users/staffWallet';
 import { AdminUser, ChatMessage } from '../../components/admin/types';
 
 type StaffView =
@@ -190,6 +195,10 @@ export default function StaffPage() {
   const [claimPayAccountName, setClaimPayAccountName] = useState('');
   const [claimPayLoading, setClaimPayLoading] = useState(false);
   const [staffCashBoxNpr, setStaffCashBoxNpr] = useState(0);
+  const [staffWallet, setStaffWallet] = useState<StaffWalletBalance | null>(null);
+  const [staffWalletLoading, setStaffWalletLoading] = useState(false);
+  const [staffWalletLoadAmountInput, setStaffWalletLoadAmountInput] = useState('');
+  const [staffWalletLoadBusy, setStaffWalletLoadBusy] = useState(false);
   const [latestCarerEscalation, setLatestCarerEscalation] =
     useState<CarerEscalationAlert | null>(null);
   const [showCarerEscalationSplash, setShowCarerEscalationSplash] = useState(false);
@@ -406,10 +415,22 @@ export default function StaffPage() {
         belongsToCoadmin(player, coadminUid)
       );
       setPlayers(sortByNewest(relatedPlayers));
+      void loadMyStaffWalletBalance();
     } catch (error: any) {
       setMessage(error.message || 'Failed to load players.');
     } finally {
       setLoadingList(false);
+    }
+  }
+
+  async function loadMyStaffWalletBalance() {
+    setStaffWalletLoading(true);
+    try {
+      setStaffWallet(await getMyStaffWallet());
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to load Staff Wallet.');
+    } finally {
+      setStaffWalletLoading(false);
     }
   }
 
@@ -1287,6 +1308,95 @@ export default function StaffPage() {
     markConversationAsRead(user.uid);
   }
 
+  function buildStaffWalletLoadIdempotencyKey(playerUid: string, amount: number) {
+    const cryptoApi = typeof window !== 'undefined' ? window.crypto : undefined;
+    const randomId =
+      cryptoApi && typeof cryptoApi.randomUUID === 'function'
+        ? cryptoApi.randomUUID()
+        : `${playerUid}-${amount}`;
+    return `staff-wallet-load:${playerUid}:${amount}:${randomId}`;
+  }
+
+  function staffWalletLoadErrorMessage(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error || '');
+    if (message === 'insufficient_staff_wallet_balance') {
+      return 'Not enough coins in your Staff Wallet.';
+    }
+    if (message === 'invalid_player') {
+      return 'This player is no longer available.';
+    }
+    if (message === 'out_of_scope_player') {
+      return 'This player is outside your coadmin scope.';
+    }
+    if (message === 'invalid_amount') {
+      return 'Enter a positive whole-number amount.';
+    }
+    if (message === 'missing_idempotency_key') {
+      return 'Could not prepare a safe request. Please try again.';
+    }
+    if (message === 'idempotency_conflict') {
+      return 'This wallet load request conflicts with a previous request. Please try again.';
+    }
+    return message || 'Failed to load coins from Staff Wallet.';
+  }
+
+  async function handleLoadPlayerFromStaffWallet(player: PlayerUser) {
+    if (!player?.uid) {
+      setMessage('Select a player first.');
+      return;
+    }
+
+    const parsed = Number(staffWalletLoadAmountInput.trim());
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+      setMessage('Enter a positive whole-number amount.');
+      return;
+    }
+
+    const currentWalletBalance = Math.max(0, Math.floor(Number(staffWallet?.balanceCoin || 0)));
+    if (parsed > currentWalletBalance) {
+      setMessage('Not enough coins in your Staff Wallet.');
+      return;
+    }
+
+    setStaffWalletLoadBusy(true);
+    setMessage('');
+
+    try {
+      const result = await loadPlayerCoinsFromStaffWallet({
+        playerUid: player.uid,
+        amount: parsed,
+        idempotencyKey: buildStaffWalletLoadIdempotencyKey(player.uid, parsed),
+      });
+
+      setStaffWallet((current) => ({
+        staffUid: current?.staffUid || result.staffUid,
+        coadminUid: current?.coadminUid || '',
+        balanceCoin: result.staffWalletBalanceCoin,
+        totalAllocatedCoin: current?.totalAllocatedCoin || 0,
+        totalLoadedCoin: (current?.totalLoadedCoin || 0) + result.loadedAmount,
+      }));
+      setPlayers((current) =>
+        current.map((item) =>
+          item.uid === player.uid ? { ...item, coin: result.playerBalanceCoin } : item
+        )
+      );
+      setSelectedViewPlayer((current) =>
+        current?.uid === player.uid ? { ...current, coin: result.playerBalanceCoin } : current
+      );
+      setStaffWalletLoadAmountInput('');
+      void loadMyStaffWalletBalance();
+      setMessage(
+        result.duplicate
+          ? 'This Staff Wallet load was already processed.'
+          : `Loaded ${parsed.toLocaleString()} coins to ${player.username || 'player'}.`
+      );
+    } catch (error) {
+      setMessage(staffWalletLoadErrorMessage(error));
+    } finally {
+      setStaffWalletLoadBusy(false);
+    }
+  }
+
   async function handleGiveFreeplayToPlayer(player: PlayerUser) {
     if (freeplayGiveTargetUid || !player.uid) {
       return;
@@ -1773,8 +1883,24 @@ export default function StaffPage() {
                 onStartChat={handleOpenPlayerChat}
                 renderSelectedExtras={(user) => {
                   const playerRisk = riskByPlayerUid.get(user.uid);
+                  const staffWalletBalance = Math.max(
+                    0,
+                    Math.floor(Number(staffWallet?.balanceCoin || 0))
+                  );
+                  const staffWalletTotalAllocated = Math.max(
+                    0,
+                    Math.floor(Number(staffWallet?.totalAllocatedCoin || 0))
+                  );
+                  const staffWalletTotalLoaded = Math.max(
+                    0,
+                    Math.floor(Number(staffWallet?.totalLoadedCoin || 0))
+                  );
+                  const requestedWalletLoadAmount = Number(staffWalletLoadAmountInput || 0);
+                  const walletLoadAmountTooHigh =
+                    Number.isFinite(requestedWalletLoadAmount) &&
+                    requestedWalletLoadAmount > staffWalletBalance;
                   return (
-                    <div className="mt-5 space-y-3">
+                    <div className="mt-5 space-y-4">
                       {playerRisk ? (
                         <p className="text-sm font-semibold text-orange-200/90">
                           Risk: {String(playerRisk.riskLevel).toUpperCase()} (
@@ -1787,6 +1913,65 @@ export default function StaffPage() {
                           {Math.max(0, Math.floor(Number(user.coin || 0))).toLocaleString()}
                         </span>
                       </p>
+                      <div className="rounded-2xl border border-violet-400/35 bg-violet-950/20 p-4">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                          <div>
+                            <p className="text-xs font-black uppercase tracking-wide text-violet-100">
+                              Load Coins From My Staff Wallet
+                            </p>
+                            <p className="mt-2 text-2xl font-black text-white tabular-nums">
+                              {staffWalletLoading
+                                ? 'Loading...'
+                                : `${staffWalletBalance.toLocaleString()} coins`}
+                            </p>
+                            <p className="mt-1 text-[11px] text-violet-100/70">
+                              Total allocated: {staffWalletTotalAllocated.toLocaleString()} coins
+                              {' · '}
+                              Total loaded: {staffWalletTotalLoaded.toLocaleString()} coins
+                            </p>
+                          </div>
+                          <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-end lg:w-auto">
+                            <label className="min-w-0 flex-1 text-sm text-neutral-300 lg:w-48">
+                              Amount
+                              <input
+                                type="number"
+                                min={1}
+                                step={1}
+                                inputMode="numeric"
+                                value={staffWalletLoadAmountInput}
+                                onChange={(event) =>
+                                  setStaffWalletLoadAmountInput(event.target.value)
+                                }
+                                disabled={staffWalletLoadBusy}
+                                placeholder="0"
+                                className="mt-1 w-full rounded-xl border border-white/15 bg-black/40 px-3 py-2 text-white outline-none focus:border-violet-400/60 disabled:opacity-50"
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => void handleLoadPlayerFromStaffWallet(user)}
+                              disabled={
+                                staffWalletLoadBusy ||
+                                staffWalletLoading ||
+                                staffWalletBalance <= 0 ||
+                                walletLoadAmountTooHigh
+                              }
+                              className="whitespace-nowrap rounded-xl bg-violet-400 px-4 py-2.5 text-sm font-black text-black hover:bg-violet-300 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {staffWalletLoadBusy ? 'Loading...' : 'Load Coins'}
+                            </button>
+                          </div>
+                        </div>
+                        <p className="mt-2 text-[11px] text-violet-100/65">
+                          Loads coins to this player by spending from your own Staff Wallet
+                          allowance.
+                        </p>
+                        {walletLoadAmountTooHigh ? (
+                          <p className="mt-1 text-[11px] font-semibold text-rose-200">
+                            Amount is higher than your available Staff Wallet balance.
+                          </p>
+                        ) : null}
+                      </div>
                       {user.cash != null && (
                         <p className="text-xs text-neutral-500">
                           Cash (view only):{' '}

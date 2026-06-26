@@ -68,8 +68,9 @@ async function postPlayerBalanceAdjust({
 
 /**
  * Add or remove whole-number coin for a player in the current user’s coadmin scope.
- * Callers may be a **coadmin** or **staff**; scope is resolved the same way as other
- * player tools (parent coadmin). Deductions cannot make coin negative.
+ * Callers must be a **coadmin** or **admin**. Staff coin loads must go through the
+ * staff wallet flow so the staff wallet is debited before a player is credited.
+ * Deductions cannot make coin negative.
  */
 export async function adjustPlayerCoin({
   playerUid,

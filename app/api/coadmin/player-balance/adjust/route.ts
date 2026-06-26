@@ -24,7 +24,7 @@ type Body = {
 export async function POST(request: Request) {
   const route = '/api/coadmin/player-balance/adjust';
   try {
-    const auth = await requireApiUser(request, ['coadmin', 'staff', 'admin']);
+    const auth = await requireApiUser(request, ['coadmin', 'admin']);
     if ('response' in auth) {
       const appSessionId = String(request.headers.get('X-App-Session-Id') || '').trim();
       const hasAuthorization = Boolean(String(request.headers.get('Authorization') || '').trim());
