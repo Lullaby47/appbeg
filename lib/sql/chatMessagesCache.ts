@@ -186,7 +186,7 @@ export async function readChatMessagesCacheByConversation(
         FROM public.chat_messages_cache
         WHERE deleted_at IS NULL
           AND conversation_id = $1
-        ORDER BY created_at DESC NULLS LAST
+        ORDER BY created_at DESC NULLS LAST, firebase_id DESC
         LIMIT $2
       `,
       [cleanConversationId, Math.max(1, Math.min(200, limit))],
@@ -216,6 +216,74 @@ export async function readChatMessagesCacheByConversation(
   } catch (error) {
     console.warn('[CHAT_MESSAGES_CACHE] read failed', {
       conversationId: cleanConversationId,
+      error,
+    });
+    return null;
+  }
+}
+
+export async function readOlderChatMessagesCacheByConversation(
+  conversationId: string,
+  olderThanMessageId: string,
+  limit = 50
+): Promise<CachedChatMessage[] | null> {
+  const cleanConversationId = cleanText(conversationId);
+  const cleanMessageId = cleanText(olderThanMessageId);
+  const db = getPlayerMirrorPool();
+  if (!db || !cleanConversationId || !cleanMessageId) {
+    return [];
+  }
+
+  try {
+    const cursor = await runMirrorPoolQuery<Record<string, unknown>>(
+      db,
+      `
+        SELECT firebase_id, created_at
+        FROM public.chat_messages_cache
+        WHERE deleted_at IS NULL
+          AND conversation_id = $1
+          AND firebase_id = $2
+        LIMIT 1
+      `,
+      [cleanConversationId, cleanMessageId],
+      { context: 'chat_messages_cache_cursor_read' }
+    );
+    const cursorRow = cursor.rows[0];
+    if (!cursorRow) {
+      return [];
+    }
+
+    const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(
+      db,
+      `
+        SELECT firebase_id, conversation_id, sender_uid, receiver_uid, type, text, image_url,
+               image_public_id, created_at, raw_firestore_data
+        FROM public.chat_messages_cache
+        WHERE deleted_at IS NULL
+          AND conversation_id = $1
+          AND (
+            created_at < $2::timestamptz
+            OR (created_at = $2::timestamptz AND firebase_id < $3)
+          )
+        ORDER BY created_at DESC NULLS LAST, firebase_id DESC
+        LIMIT $4
+      `,
+      [
+        cleanConversationId,
+        cursorRow.created_at,
+        cleanMessageId,
+        Math.max(1, Math.min(200, limit)),
+      ],
+      { context: 'chat_messages_cache_older_read' }
+    );
+    return rows
+      .map(mapChatMessageRow)
+      .filter((row): row is CachedChatMessage => Boolean(row))
+      .reverse();
+  } catch (error) {
+    console.warn('[CHAT_MESSAGES_CACHE] older read failed', {
+      conversationId: cleanConversationId,
+      olderThanMessageId: cleanMessageId,
       error,
     });
     return null;

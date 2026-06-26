@@ -2,18 +2,26 @@ import { getAppSessionRequestHeaders } from '@/features/auth/appSession';
 import { auth } from '@/lib/firebase/client';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 
-async function postJson(path: string, body: Record<string, unknown>) {
+async function postJson(
+  path: string,
+  body: Record<string, unknown>,
+  options?: { requireSuccess?: boolean }
+) {
   const token = await auth.currentUser?.getIdToken();
-  if (!token) {
-    return;
+  const appSessionHeaders = getAppSessionRequestHeaders();
+  if (!token && !appSessionHeaders['X-App-Session-Id']) {
+    if (options?.requireSuccess) {
+      throw new Error('No app session is available to update chat read state.');
+    }
+    return false;
   }
   try {
     const response = await fetch(path, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-        ...getAppSessionRequestHeaders(),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...appSessionHeaders,
       },
       body: JSON.stringify(body),
     });
@@ -22,9 +30,18 @@ async function postJson(path: string, body: Record<string, unknown>) {
         path,
         status: response.status,
       });
+      if (options?.requireSuccess) {
+        throw new Error('Failed to update chat read state.');
+      }
+      return false;
     }
+    return true;
   } catch (error) {
     console.warn('[CHAT_CACHE_MIRROR] request failed', { path, error });
+    if (options?.requireSuccess) {
+      throw error;
+    }
+    return false;
   }
 }
 
@@ -80,7 +97,11 @@ export async function mirrorChatMessageCacheBestEffort(values: {
   });
 }
 
-export async function markConversationReadCacheBestEffort(conversationId: string, uid: string) {
+export async function markConversationReadCacheBestEffort(
+  conversationId: string,
+  uid: string,
+  options?: { requireSuccess?: boolean }
+) {
   if (!isClientSqlReadMode()) {
     return;
   }
@@ -88,5 +109,5 @@ export async function markConversationReadCacheBestEffort(conversationId: string
     conversationId,
     action: 'mark_read',
     unreadCounts: { [uid]: 0 },
-  });
+  }, { requireSuccess: options?.requireSuccess });
 }

@@ -314,7 +314,11 @@ function subscribeUnreadShared(
 export async function fetchSqlChatMessages(
   peerUid: string,
   limit = 50,
-  options?: { conversationId?: string; preferStaffSession?: boolean }
+  options?: {
+    conversationId?: string;
+    olderThanMessageId?: string;
+    preferStaffSession?: boolean;
+  }
 ) {
   const context = await readChatApiContext({
     preferStaffSession: options?.preferStaffSession,
@@ -328,6 +332,9 @@ export async function fetchSqlChatMessages(
   if (options?.conversationId) {
     params.set('conversationId', options.conversationId);
   }
+  if (options?.olderThanMessageId) {
+    params.set('olderThanMessageId', options.olderThanMessageId);
+  }
   const url = `/api/chat/messages?${params.toString()}`;
 
   console.info(`[${logTag}_QUERY]`, {
@@ -335,6 +342,7 @@ export async function fetchSqlChatMessages(
     role: context.role,
     peerUid,
     limit,
+    olderThanMessageId: options?.olderThanMessageId || null,
   });
 
   const response = await fetchChatApi(
@@ -365,12 +373,25 @@ export async function fetchSqlChatMessages(
   const messages = (payload.messages || []).map(mapCachedMessage);
   console.info('[CHAT_MESSAGES_CLIENT]', {
     conversationId: options?.conversationId || null,
+    olderThanMessageId: options?.olderThanMessageId || null,
     currentUid: context.uid,
     currentRole: context.role,
     returnedMessages: messages.length,
     messageIds: messages.slice(0, 5).map((message) => message.id),
   });
   return messages;
+}
+
+export async function fetchSqlChatMessagesOlderThan(
+  peerUid: string,
+  olderThanMessageId: string,
+  limit = 50,
+  options?: { conversationId?: string; preferStaffSession?: boolean }
+) {
+  return fetchSqlChatMessages(peerUid, limit, {
+    ...options,
+    olderThanMessageId,
+  });
 }
 
 function attachChatSqlPoll(input: {

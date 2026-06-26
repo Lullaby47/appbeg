@@ -4,6 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, doc, getDoc, getDocs, onSnapshot, query, where } from 'firebase/firestore';
 
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
+import {
+  readErrorMessage,
+  shouldSuppressInternalSqlFirestoreUiError,
+} from '@/lib/client/sqlFirestoreError';
 import { isClientSqlReadMode } from '@/lib/client/sqlReadMode';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 
@@ -99,6 +103,7 @@ type StaffSessionContext = {
 const AED_TO_USD = 0.2723;
 const NPR_TO_USD = 0.0075;
 const NPR_TO_AED = NPR_TO_USD / AED_TO_USD;
+const STAFF_PLAYER_CHAT_PAGE_SIZE = 25;
 
 function sortByNewest<T extends { createdAt?: any }>(list: T[]) {
   return [...list].sort((a: any, b: any) => {
@@ -118,6 +123,13 @@ function formatAed(value: number) {
 
 function formatUsdFromNpr(value: number) {
   return formatAed(Number(value || 0));
+}
+
+function staffRiskErrorMessage(error: unknown) {
+  if (shouldSuppressInternalSqlFirestoreUiError(error)) {
+    return 'Risk data is not available in SQL mode yet.';
+  }
+  return readErrorMessage(error) || 'Failed to load player risk data.';
 }
 
 function getRiskTone(level: string, score: number) {
@@ -180,6 +192,7 @@ export default function StaffPage() {
   const [selectedChatUser, setSelectedChatUser] = useState<AdminUser | null>(null);
   const [selectedViewPlayer, setSelectedViewPlayer] = useState<PlayerUser | null>(null);
   const [selectedPlayerChatUser, setSelectedPlayerChatUser] = useState<PlayerUser | null>(null);
+  const [playerSearchQuery, setPlayerSearchQuery] = useState('');
   const [newMessage, setNewMessage] = useState('');
   const staffReachOutScrollRef = useRef<HTMLDivElement | null>(null);
   const staffPlayerScrollRef = useRef<HTMLDivElement | null>(null);
@@ -242,6 +255,8 @@ export default function StaffPage() {
     },
   });
   const pagedStaffPlayerChat = usePaginatedChatMessages(selectedPlayerChatUser?.uid ?? null, {
+    recentWindowSize: STAFF_PLAYER_CHAT_PAGE_SIZE,
+    pageSize: STAFF_PLAYER_CHAT_PAGE_SIZE,
     scrollContainerRef: staffPlayerScrollRef,
     onWindowMessages: () => {
       if (selectedPlayerChatUser) {
@@ -376,6 +391,25 @@ export default function StaffPage() {
       return bTime - aTime;
     });
   }, [players, unreadCounts, selectedPlayerChatUser?.uid, playerMessages]);
+
+  const visiblePlayersForStaffList = useMemo(() => {
+    const queryText = playerSearchQuery.trim().toLowerCase();
+    if (!queryText) {
+      return playersSortedByUnread;
+    }
+
+    return playersSortedByUnread.filter((player) => {
+      const searchableValues = [
+        player.username,
+        (player as { displayName?: string | null }).displayName,
+        (player as { name?: string | null }).name,
+        player.uid,
+      ];
+      return searchableValues.some((value) =>
+        String(value || '').toLowerCase().includes(queryText)
+      );
+    });
+  }, [playerSearchQuery, playersSortedByUnread]);
 
   const staffPresenceUids = useMemo(() => {
     const s = new Set<string>();
@@ -846,7 +880,9 @@ export default function StaffPage() {
             },
             (error) => {
               if (!isCancelled) {
-                setMessage(error.message || 'Failed to load player risk snapshots.');
+                if (!shouldSuppressInternalSqlFirestoreUiError(error)) {
+                  setMessage(error.message || 'Failed to load player risk snapshots.');
+                }
               }
             }
           );
@@ -866,13 +902,17 @@ export default function StaffPage() {
           },
           (error) => {
             if (!isCancelled) {
-              setMessage(error.message || 'Failed to load player risk snapshots.');
+              if (!shouldSuppressInternalSqlFirestoreUiError(error)) {
+                setMessage(error.message || 'Failed to load player risk snapshots.');
+              }
             }
           }
         );
       } catch (error: any) {
         if (!isCancelled) {
-          setMessage(error.message || 'Failed to start risk snapshot listener.');
+          if (!shouldSuppressInternalSqlFirestoreUiError(error)) {
+            setMessage(error.message || 'Failed to start risk snapshot listener.');
+          }
         }
       }
     }
@@ -1142,7 +1182,7 @@ export default function StaffPage() {
       setSelectedRiskSnapshot(snapshot);
       setShowRiskPanel(true);
     } catch (error: any) {
-      setMessage(error.message || 'Failed to load player risk data.');
+      setMessage(staffRiskErrorMessage(error));
     } finally {
       setRiskActionLoading(null);
     }
@@ -1169,7 +1209,7 @@ export default function StaffPage() {
       }
       setMessage('Risk action saved.');
     } catch (error: any) {
-      setMessage(error.message || 'Failed to save risk action.');
+      setMessage(staffRiskErrorMessage(error) || 'Failed to save risk action.');
     } finally {
       setRiskActionLoading(null);
     }
@@ -1333,13 +1373,17 @@ export default function StaffPage() {
 
     if ((unreadCounts[user.uid] || 0) > 0) {
       try {
-        await markConversationAsRead(user.uid);
+        await markConversationAsRead(user.uid, { requirePersist: true });
         setUnreadCounts((current) => {
           const next = { ...current };
           delete next[user.uid];
           return next;
         });
-      } catch {
+      } catch (error) {
+        console.warn('[STAFF_PLAYER_CHAT_MARK_READ_FAILED]', {
+          playerUid: user.uid,
+          error: error instanceof Error ? error.message : String(error),
+        });
         // Keep the unread badge if the persisted read marker fails.
       }
     }
@@ -1897,7 +1941,9 @@ export default function StaffPage() {
                 <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
                   <div>
                     <h2 className="text-base font-bold text-white">Players</h2>
-                    <p className="text-xs text-neutral-400">{players.length} visible</p>
+                    <p className="text-xs text-neutral-400">
+                      {visiblePlayersForStaffList.length} visible
+                    </p>
                   </div>
                   {playerChatUnreadTotal > 0 ? (
                     <span className="rounded-full bg-red-500 px-2.5 py-1 text-xs font-bold text-white">
@@ -1906,13 +1952,34 @@ export default function StaffPage() {
                   ) : null}
                 </div>
 
+                <div className="border-b border-white/10 p-2">
+                  <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/35 px-3 py-2">
+                    <input
+                      value={playerSearchQuery}
+                      onChange={(event) => setPlayerSearchQuery(event.target.value)}
+                      placeholder="Search players..."
+                      className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-neutral-500"
+                    />
+                    {playerSearchQuery.trim() ? (
+                      <button
+                        type="button"
+                        onClick={() => setPlayerSearchQuery('')}
+                        className="rounded-full px-2 text-sm font-bold text-neutral-400 hover:bg-white/10 hover:text-white"
+                        aria-label="Clear player search"
+                      >
+                        x
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+
                 <div className="h-full min-h-0 space-y-1 overflow-y-auto px-2 py-2">
                   {loadingList ? (
                     <p className="px-3 py-4 text-sm text-neutral-400">Loading...</p>
-                  ) : playersSortedByUnread.length === 0 ? (
+                  ) : visiblePlayersForStaffList.length === 0 ? (
                     <p className="px-3 py-4 text-sm text-neutral-400">No players found.</p>
                   ) : (
-                    playersSortedByUnread.map((player) => {
+                    visiblePlayersForStaffList.map((player) => {
                       const isSelected = selectedViewPlayer?.uid === player.uid;
                       const unreadCount = unreadCounts[player.uid] || 0;
                       const isOnline = Boolean(staffOnlineByUid[player.uid]);
@@ -2179,9 +2246,13 @@ export default function StaffPage() {
                                     className="rounded-full border border-white/15 bg-black/60 px-4 py-1.5 text-xs font-semibold text-white shadow-sm hover:border-white/25 disabled:opacity-50"
                                   >
                                     {pagedStaffPlayerChat.loadingOlder
-                                      ? 'Loading...'
-                                      : 'Load previous messages'}
+                                      ? 'Loading older messages...'
+                                      : 'Load older messages'}
                                   </button>
+                                </div>
+                              ) : playerMessages.length > 0 ? (
+                                <div className="mb-2 text-center text-[11px] font-medium text-neutral-500">
+                                  No older messages
                                 </div>
                               ) : null}
                               {playerMessages.length === 0 ? (

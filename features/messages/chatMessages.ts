@@ -18,6 +18,7 @@ import {
 import {
   attachSqlChatMessagesPoll,
   attachSqlUnreadCountsPoll,
+  fetchSqlChatMessagesOlderThan,
   isChatSqlReadEnabled,
 } from '@/features/live/chatSqlRead';
 import {
@@ -394,14 +395,16 @@ export async function fetchMessagesOlderThan(
   olderThanMessageId: string,
   pageSize: number = CHAT_OLDER_MESSAGE_PAGE_SIZE
 ): Promise<FirestoreChatMessage[]> {
+  if (isChatSqlReadEnabled()) {
+    logClientFirestoreSkipped('chat_messages_older_than', { receiverUid });
+    return fetchSqlChatMessagesOlderThan(receiverUid, olderThanMessageId, pageSize, {
+      preferStaffSession: true,
+    });
+  }
+
   const currentUser = auth.currentUser;
 
   if (!currentUser) {
-    return [];
-  }
-
-  if (isChatSqlReadEnabled()) {
-    logClientFirestoreSkipped('chat_messages_older_than', { receiverUid });
     return [];
   }
 
@@ -442,7 +445,10 @@ export async function fetchMessagesOlderThan(
   return batch;
 }
 
-export async function markConversationAsRead(receiverUid: string) {
+export async function markConversationAsRead(
+  receiverUid: string,
+  options?: { requirePersist?: boolean }
+) {
   const cached = getCachedSessionUser();
   const currentUserUid = cached?.uid || auth.currentUser?.uid;
 
@@ -453,7 +459,9 @@ export async function markConversationAsRead(receiverUid: string) {
   const conversationId = getConversationId(currentUserUid, receiverUid);
 
   if (isChatSqlReadEnabled()) {
-    await markConversationReadCacheBestEffort(conversationId, currentUserUid);
+    await markConversationReadCacheBestEffort(conversationId, currentUserUid, {
+      requireSuccess: options?.requirePersist,
+    });
     return;
   }
 

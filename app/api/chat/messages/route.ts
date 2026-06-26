@@ -7,7 +7,10 @@ import {
   logCacheSqlRead,
 } from '@/lib/server/cacheSqlRead';
 import { deleteChatMessageInSql, sendChatMessageInSql } from '@/lib/sql/authorityChat';
-import { readChatMessagesCacheByConversation } from '@/lib/sql/chatMessagesCache';
+import {
+  readChatMessagesCacheByConversation,
+  readOlderChatMessagesCacheByConversation,
+} from '@/lib/sql/chatMessagesCache';
 import { cleanText, getPlayerMirrorPool } from '@/lib/sql/playerMirrorCommon';
 import { isDatabaseUrlConfigured } from '@/lib/server/sqlRuntime';
 import { isChatVerboseLogs } from '@/lib/server/verboseLogs';
@@ -141,8 +144,9 @@ export async function GET(request: Request) {
     return apiError('peerUid query parameter is required.', 400);
   }
 
-  const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') || 50)));
+  const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') || 25)));
   const requestedConversationId = cleanText(url.searchParams.get('conversationId'));
+  const olderThanMessageId = cleanText(url.searchParams.get('olderThanMessageId'));
   let conversationId = getConversationId(auth.user.uid, peerUid);
   console.info('[CHAT_SESSION_CONTEXT]', {
     currentUid: auth.user.uid,
@@ -184,11 +188,14 @@ export async function GET(request: Request) {
     }
     conversationId = direct.conversationId;
   }
-  const messages = await readChatMessagesCacheByConversation(conversationId, limit);
+  const messages = olderThanMessageId
+    ? await readOlderChatMessagesCacheByConversation(conversationId, olderThanMessageId, limit)
+    : await readChatMessagesCacheByConversation(conversationId, limit);
 
   if (isCacheSqlAuthoritative()) {
     logCacheSqlRead(ROUTE, {
       conversationId,
+      olderThanMessageId: olderThanMessageId || null,
       count: messages?.length || 0,
       durationMs: Date.now() - startedAt,
     });
@@ -200,6 +207,7 @@ export async function GET(request: Request) {
   if (isChatVerboseLogs()) {
     console.info('[CHAT_MESSAGES_API]', {
       conversationId,
+      olderThanMessageId: olderThanMessageId || null,
       currentUid: auth.user.uid,
       totalMessages: messages?.length || 0,
       messageIds: (messages || []).slice(0, 5).map((message) => message.id),
@@ -215,8 +223,10 @@ export async function GET(request: Request) {
     });
   }
 
+  const responseMessages = messages || [];
+
   return NextResponse.json({
-    messages: (messages || []).map((message) => ({
+    messages: responseMessages.map((message) => ({
       id: message.id,
       senderUid: message.senderUid,
       receiverUid: message.receiverUid,
@@ -228,6 +238,8 @@ export async function GET(request: Request) {
       deletedFor: message.deletedFor,
       createdAt: message.createdAt,
     })),
+    hasMore: responseMessages.length === limit,
+    nextCursor: responseMessages[0]?.id || null,
     conversationId,
     source: 'postgres',
     firestore_fallback: false,
