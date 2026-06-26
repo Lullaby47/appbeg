@@ -199,6 +199,7 @@ export default function StaffPage() {
   const [staffWalletLoading, setStaffWalletLoading] = useState(false);
   const [staffWalletLoadAmountInput, setStaffWalletLoadAmountInput] = useState('');
   const [staffWalletLoadBusy, setStaffWalletLoadBusy] = useState(false);
+  const [staffWalletLoadFormUid, setStaffWalletLoadFormUid] = useState<string | null>(null);
   const [latestCarerEscalation, setLatestCarerEscalation] =
     useState<CarerEscalationAlert | null>(null);
   const [showCarerEscalationSplash, setShowCarerEscalationSplash] = useState(false);
@@ -349,17 +350,32 @@ export default function StaffPage() {
   }, []);
 
   const playersSortedByUnread = useMemo(() => {
+    const latestKnownActivityByPlayerUid = new Map<string, number>();
+    if (selectedPlayerChatUser?.uid && playerMessages.length > 0) {
+      latestKnownActivityByPlayerUid.set(
+        selectedPlayerChatUser.uid,
+        Math.max(...playerMessages.map((msg) => msg.timestamp.getTime()))
+      );
+    }
+
     return [...players].sort((a, b) => {
       const unreadB = unreadCounts[b.uid] || 0;
       const unreadA = unreadCounts[a.uid] || 0;
       if (unreadB !== unreadA) {
         return unreadB - unreadA;
       }
+      // TODO: replace this limited client-known activity fallback with conversation summary
+      // metadata from SQL so every row can sort by latest message like Messenger.
+      const activityB = latestKnownActivityByPlayerUid.get(b.uid) || 0;
+      const activityA = latestKnownActivityByPlayerUid.get(a.uid) || 0;
+      if (activityB !== activityA) {
+        return activityB - activityA;
+      }
       const aTime = (a as { createdAt?: { toDate?: () => Date } }).createdAt?.toDate?.()?.getTime() || 0;
       const bTime = (b as { createdAt?: { toDate?: () => Date } }).createdAt?.toDate?.()?.getTime() || 0;
       return bTime - aTime;
     });
-  }, [players, unreadCounts]);
+  }, [players, unreadCounts, selectedPlayerChatUser?.uid, playerMessages]);
 
   const staffPresenceUids = useMemo(() => {
     const s = new Set<string>();
@@ -1308,6 +1324,27 @@ export default function StaffPage() {
     markConversationAsRead(user.uid);
   }
 
+  async function handleSelectPlayerWorkspace(user: PlayerUser) {
+    setSelectedViewPlayer(user);
+    setSelectedPlayerChatUser(user);
+    setNewPlayerMessage('');
+    setStaffWalletLoadFormUid(null);
+    setStaffWalletLoadAmountInput('');
+
+    if ((unreadCounts[user.uid] || 0) > 0) {
+      try {
+        await markConversationAsRead(user.uid);
+        setUnreadCounts((current) => {
+          const next = { ...current };
+          delete next[user.uid];
+          return next;
+        });
+      } catch {
+        // Keep the unread badge if the persisted read marker fails.
+      }
+    }
+  }
+
   function buildStaffWalletLoadIdempotencyKey(playerUid: string, amount: number) {
     const cryptoApi = typeof window !== 'undefined' ? window.crypto : undefined;
     const randomId =
@@ -1383,7 +1420,11 @@ export default function StaffPage() {
       setSelectedViewPlayer((current) =>
         current?.uid === player.uid ? { ...current, coin: result.playerBalanceCoin } : current
       );
+      setSelectedPlayerChatUser((current) =>
+        current?.uid === player.uid ? { ...current, coin: result.playerBalanceCoin } : current
+      );
       setStaffWalletLoadAmountInput('');
+      setStaffWalletLoadFormUid(null);
       void loadMyStaffWalletBalance();
       setMessage(
         result.duplicate
@@ -1851,6 +1892,373 @@ export default function StaffPage() {
           )}
 
           {!isAdminCreatedStaff && activeView === 'view-players' && (
+            <div className="grid h-[calc(100dvh-8rem)] min-h-[36rem] grid-cols-1 gap-4 overflow-hidden lg:grid-cols-[minmax(17rem,21rem)_minmax(0,1fr)]">
+              <aside className="min-h-0 overflow-hidden rounded-2xl border border-white/10 bg-neutral-950/70">
+                <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+                  <div>
+                    <h2 className="text-base font-bold text-white">Players</h2>
+                    <p className="text-xs text-neutral-400">{players.length} visible</p>
+                  </div>
+                  {playerChatUnreadTotal > 0 ? (
+                    <span className="rounded-full bg-red-500 px-2.5 py-1 text-xs font-bold text-white">
+                      {playerChatUnreadTotal}
+                    </span>
+                  ) : null}
+                </div>
+
+                <div className="h-full min-h-0 space-y-1 overflow-y-auto px-2 py-2">
+                  {loadingList ? (
+                    <p className="px-3 py-4 text-sm text-neutral-400">Loading...</p>
+                  ) : playersSortedByUnread.length === 0 ? (
+                    <p className="px-3 py-4 text-sm text-neutral-400">No players found.</p>
+                  ) : (
+                    playersSortedByUnread.map((player) => {
+                      const isSelected = selectedViewPlayer?.uid === player.uid;
+                      const unreadCount = unreadCounts[player.uid] || 0;
+                      const isOnline = Boolean(staffOnlineByUid[player.uid]);
+                      return (
+                        <button
+                          key={player.uid}
+                          type="button"
+                          onClick={() => void handleSelectPlayerWorkspace(player)}
+                          className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${
+                            isSelected
+                              ? 'bg-white text-black'
+                              : unreadCount > 0
+                                ? 'bg-red-500/10 text-white ring-1 ring-red-500/25 hover:bg-red-500/15'
+                                : 'text-white hover:bg-white/10'
+                          }`}
+                        >
+                          <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-neutral-800 text-sm font-bold">
+                            {(player.username || 'P').charAt(0).toUpperCase()}
+                            <span
+                              className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full ring-2 ${
+                                isSelected ? 'ring-white' : 'ring-neutral-950'
+                              } ${isOnline ? 'bg-emerald-400' : 'bg-neutral-500'}`}
+                            />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-semibold">
+                              {player.username}
+                            </span>
+                            <span
+                              className={`block truncate text-xs ${
+                                isSelected
+                                  ? 'text-black/60'
+                                  : unreadCount > 0
+                                    ? 'text-red-100'
+                                    : 'text-neutral-500'
+                              }`}
+                            >
+                              {unreadCount > 0
+                                ? `${unreadCount} unread`
+                                : isOnline
+                                  ? 'Online'
+                                  : 'Offline'}
+                            </span>
+                          </span>
+                          {unreadCount > 0 ? (
+                            <span className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold text-white">
+                              {unreadCount > 9 ? '9+' : unreadCount}
+                            </span>
+                          ) : null}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </aside>
+
+              <section className="min-h-0 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04]">
+                {!selectedViewPlayer ? (
+                  <div className="flex h-full items-center justify-center px-4 text-center text-sm text-neutral-500">
+                    Select a player to open their workspace.
+                  </div>
+                ) : (
+                  (() => {
+                    const user = selectedViewPlayer;
+                    const playerRisk = riskByPlayerUid.get(user.uid);
+                    const staffWalletBalance = Math.max(
+                      0,
+                      Math.floor(Number(staffWallet?.balanceCoin || 0))
+                    );
+                    const staffWalletTotalAllocated = Math.max(
+                      0,
+                      Math.floor(Number(staffWallet?.totalAllocatedCoin || 0))
+                    );
+                    const staffWalletTotalLoaded = Math.max(
+                      0,
+                      Math.floor(Number(staffWallet?.totalLoadedCoin || 0))
+                    );
+                    const requestedWalletLoadAmount = Number(staffWalletLoadAmountInput || 0);
+                    const walletLoadAmountTooHigh =
+                      Number.isFinite(requestedWalletLoadAmount) &&
+                      requestedWalletLoadAmount > staffWalletBalance;
+                    const isWalletFormOpen = staffWalletLoadFormUid === user.uid;
+                    const playerIsOnline = Boolean(staffOnlineByUid[user.uid]);
+
+                    return (
+                      <div className="flex h-full min-h-0 flex-col">
+                        <div className="shrink-0 border-b border-white/10 px-4 py-3">
+                          <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <OnlineIndicator
+                                  online={playerIsOnline}
+                                  sizeClassName="h-3 w-3"
+                                />
+                                <h2 className="truncate text-xl font-bold text-white">
+                                  {user.username}
+                                </h2>
+                                {playerRisk ? (
+                                  <span className="rounded-full bg-orange-500/15 px-2 py-0.5 text-[11px] font-bold text-orange-100">
+                                    Risk {String(playerRisk.riskLevel).toUpperCase()} (
+                                    {playerRisk.riskScore || 0})
+                                  </span>
+                                ) : null}
+                              </div>
+                              <p className="mt-1 text-xs text-neutral-400">
+                                {user.role} / {user.status} /{' '}
+                                {playerIsOnline ? 'Online' : 'Offline'}
+                              </p>
+                            </div>
+
+                            <div className="flex flex-wrap gap-2 text-xs">
+                              <span className="rounded-xl border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-amber-100">
+                                Coin:{' '}
+                                <span className="font-bold tabular-nums">
+                                  {Math.max(0, Math.floor(Number(user.coin || 0))).toLocaleString()}
+                                </span>
+                              </span>
+                              <span className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-emerald-100">
+                                Cash:{' '}
+                                <span className="font-bold tabular-nums">
+                                  {Math.max(0, Math.floor(Number(user.cash || 0))).toLocaleString()}
+                                </span>
+                              </span>
+                              <span className="rounded-xl border border-violet-400/25 bg-violet-400/10 px-3 py-2 text-violet-100">
+                                My Wallet:{' '}
+                                <span className="font-bold tabular-nums">
+                                  {staffWalletLoading
+                                    ? '...'
+                                    : `${staffWalletBalance.toLocaleString()} coins`}
+                                </span>
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenPlayerChat(user)}
+                              className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-black hover:bg-neutral-200"
+                            >
+                              Chat
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleTogglePlayerStatus(user)}
+                              disabled={playerBlockActionUid !== null}
+                              className="rounded-xl bg-yellow-500/20 px-3 py-2 text-xs font-semibold text-yellow-200 hover:bg-yellow-500/30 disabled:opacity-60"
+                            >
+                              {playerBlockActionUid === user.uid
+                                ? 'Updating...'
+                                : user.status === 'disabled'
+                                  ? 'Unblock'
+                                  : 'Block'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleGiveFreeplayToPlayer(user)}
+                              disabled={Boolean(freeplayGiveTargetUid) || user.status === 'disabled'}
+                              className="rounded-xl border border-fuchsia-400/30 bg-fuchsia-500/15 px-3 py-2 text-xs font-semibold text-fuchsia-100 hover:bg-fuchsia-500/25 disabled:opacity-60"
+                            >
+                              {freeplayGiveTargetUid === user.uid ? 'Sending...' : 'Give Freeplay'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleOpenRiskPanel(user.uid)}
+                              disabled={riskActionLoading === `open-${user.uid}`}
+                              className="rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/20 disabled:opacity-60"
+                            >
+                              {riskActionLoading === `open-${user.uid}`
+                                ? 'Loading...'
+                                : 'View Risk Data'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setStaffWalletLoadFormUid(isWalletFormOpen ? null : user.uid);
+                                if (isWalletFormOpen) {
+                                  setStaffWalletLoadAmountInput('');
+                                }
+                              }}
+                              className="rounded-xl border border-violet-400/35 bg-violet-400/15 px-3 py-2 text-xs font-semibold text-violet-100 hover:bg-violet-400/25"
+                            >
+                              Load Coins
+                            </button>
+                          </div>
+
+                          {isWalletFormOpen ? (
+                            <div className="mt-3 rounded-xl border border-violet-400/25 bg-black/30 p-3">
+                              <div className="flex flex-col gap-3 md:flex-row md:items-end">
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-xs font-semibold text-violet-100">
+                                    Staff Wallet
+                                  </p>
+                                  <p className="mt-1 text-[11px] text-violet-100/70">
+                                    Available: {staffWalletBalance.toLocaleString()} coins / Loaded:{' '}
+                                    {staffWalletTotalLoaded.toLocaleString()} / Allocated:{' '}
+                                    {staffWalletTotalAllocated.toLocaleString()}
+                                  </p>
+                                </div>
+                                <label className="min-w-0 text-xs text-neutral-300 md:w-40">
+                                  Amount
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    step={1}
+                                    inputMode="numeric"
+                                    value={staffWalletLoadAmountInput}
+                                    onChange={(event) =>
+                                      setStaffWalletLoadAmountInput(event.target.value)
+                                    }
+                                    disabled={staffWalletLoadBusy}
+                                    placeholder="0"
+                                    className="mt-1 w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-violet-400/60 disabled:opacity-50"
+                                  />
+                                </label>
+                                <div className="flex gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleLoadPlayerFromStaffWallet(user)}
+                                    disabled={
+                                      staffWalletLoadBusy ||
+                                      staffWalletLoading ||
+                                      staffWalletBalance <= 0 ||
+                                      walletLoadAmountTooHigh
+                                    }
+                                    className="rounded-lg bg-violet-300 px-3 py-2 text-xs font-bold text-black hover:bg-violet-200 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {staffWalletLoadBusy ? 'Loading...' : 'Confirm'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setStaffWalletLoadFormUid(null);
+                                      setStaffWalletLoadAmountInput('');
+                                    }}
+                                    disabled={staffWalletLoadBusy}
+                                    className="rounded-lg bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/20 disabled:opacity-50"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                              {walletLoadAmountTooHigh ? (
+                                <p className="mt-2 text-[11px] font-semibold text-rose-200">
+                                  Amount is higher than your available Staff Wallet balance.
+                                </p>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        {selectedPlayerChatUser?.uid === user.uid ? (
+                          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                            <div
+                              ref={staffPlayerScrollRef}
+                              className="min-h-0 flex-1 space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain px-4 py-3"
+                            >
+                              {pagedStaffPlayerChat.hasMoreOlder ? (
+                                <div className="sticky top-0 z-10 mb-2 flex justify-center">
+                                  <button
+                                    type="button"
+                                    disabled={pagedStaffPlayerChat.loadingOlder}
+                                    onClick={() => void pagedStaffPlayerChat.loadOlder()}
+                                    className="rounded-full border border-white/15 bg-black/60 px-4 py-1.5 text-xs font-semibold text-white shadow-sm hover:border-white/25 disabled:opacity-50"
+                                  >
+                                    {pagedStaffPlayerChat.loadingOlder
+                                      ? 'Loading...'
+                                      : 'Load previous messages'}
+                                  </button>
+                                </div>
+                              ) : null}
+                              {playerMessages.length === 0 ? (
+                                <div className="flex h-full items-center justify-center text-sm text-neutral-500">
+                                  No messages yet. Send first message to player.
+                                </div>
+                              ) : (
+                                playerMessages.map((msg) => (
+                                  <div
+                                    key={msg.id}
+                                    className={`flex ${
+                                      msg.sender === 'admin' ? 'justify-end' : 'justify-start'
+                                    }`}
+                                  >
+                                    <div
+                                      className={`max-w-[78%] rounded-2xl px-3 py-2 text-sm ${
+                                        msg.sender === 'admin'
+                                          ? 'bg-white text-black'
+                                          : 'bg-neutral-800 text-white'
+                                      }`}
+                                    >
+                                      {msg.text ? <p className="break-words">{msg.text}</p> : null}
+                                      {msg.imageUrl ? (
+                                        <a
+                                          className="mt-1 block text-xs underline"
+                                          href={msg.imageUrl}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                        >
+                                          View image
+                                        </a>
+                                      ) : null}
+                                      <p className="mt-1 text-[11px] opacity-70">
+                                        {msg.timestamp.toLocaleTimeString([], {
+                                          hour: '2-digit',
+                                          minute: '2-digit',
+                                        })}
+                                      </p>
+                                    </div>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+
+                            <form
+                              onSubmit={handleSendPlayerMessage}
+                              className="flex shrink-0 gap-2 border-t border-white/10 p-3"
+                            >
+                              <input
+                                value={newPlayerMessage}
+                                onChange={(event) => setNewPlayerMessage(event.target.value)}
+                                placeholder="Type message to player..."
+                                className="min-w-0 flex-1 rounded-xl border border-white/15 bg-black/35 px-4 py-3 text-sm text-white outline-none focus:border-white/35"
+                              />
+                              <button
+                                type="submit"
+                                disabled={!newPlayerMessage.trim()}
+                                className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-neutral-200 disabled:opacity-50"
+                              >
+                                Send
+                              </button>
+                            </form>
+                          </div>
+                        ) : (
+                          <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-neutral-500">
+                            Select Chat to open this conversation.
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()
+                )}
+              </section>
+            </div>
+          )}
+
+          {false && !isAdminCreatedStaff && activeView === 'view-players' && (
             <div>
               {playerChatUnreadTotal > 0 && (
                 <div className="mb-4 flex justify-end">
@@ -1999,12 +2407,12 @@ export default function StaffPage() {
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2">
                         <OnlineIndicator
-                          online={Boolean(staffOnlineByUid[selectedPlayerChatUser.uid])}
+                          online={Boolean(staffOnlineByUid[selectedPlayerChatUser?.uid || ''])}
                           sizeClassName="h-3 w-3"
                         />
                         <div>
                           <h3 className="text-lg font-bold text-cyan-100">
-                            Chat with {selectedPlayerChatUser.username}
+                            Chat with {selectedPlayerChatUser?.username || 'player'}
                           </h3>
                           <p className="text-xs text-cyan-100/70">Player support conversation</p>
                         </div>
