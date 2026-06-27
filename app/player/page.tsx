@@ -2,7 +2,7 @@
 
 import '../../styles/player-fire.css';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, MouseEvent, SetStateAction, TouchEvent } from 'react';
 import { flushSync } from 'react-dom';
 import Link from 'next/link';
@@ -663,6 +663,7 @@ export default function PlayerPage() {
   const [newMessage, setNewMessage] = useState('');
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const agentsScrollRef = useRef<HTMLDivElement>(null);
+  const lastRenderedAgentReadRef = useRef('');
 
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
@@ -1255,20 +1256,31 @@ export default function PlayerPage() {
     scrollContainerRef: agentsScrollRef,
     requirePlayerRole: true,
     recentWindowSize: PLAYER_AGENT_CHAT_RECENT_MESSAGE_WINDOW,
-    onWindowMessages: () => {
-      if (selectedAgent && (unreadCounts[selectedAgent.uid] || 0) > 0) {
-        markThreadReadOnPlayerChatFocus(
-          selectedAgent.uid,
-          playerAuthorityChatTypeForUser(selectedAgent),
-          'open'
-        );
-      }
-    },
   });
   const messages: ChatMessage[] = useMemo(() => {
     const currentUid = playerUid || auth.currentUser?.uid || getCachedSessionUser()?.uid || '';
     return mapFirestoreChatToDisplay(pagedAgentChat.items, currentUid);
   }, [pagedAgentChat.items, playerUid]);
+
+  useLayoutEffect(() => {
+    if (!selectedAgent || messages.length === 0) {
+      return;
+    }
+    const lastMessageId = messages[messages.length - 1]?.id || '';
+    const readKey = `${selectedAgent.uid}:${lastMessageId}`;
+    if (lastRenderedAgentReadRef.current === readKey) {
+      return;
+    }
+    lastRenderedAgentReadRef.current = readKey;
+    const frameId = window.requestAnimationFrame(() => {
+      markThreadReadOnPlayerChatFocus(
+        selectedAgent.uid,
+        playerAuthorityChatTypeForUser(selectedAgent),
+        'open'
+      );
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [markThreadReadOnPlayerChatFocus, messages, playerAuthorityChatTypeForUser, selectedAgent]);
   const hasSeenCashoutTaskSnapshotRef = useRef(false);
   const knownCompletedCashoutTaskIdsRef = useRef<Set<string>>(new Set());
   const cashoutSplashSeenIdsRef = useRef<Set<string>>(new Set());
@@ -5277,6 +5289,12 @@ export default function PlayerPage() {
         await sendChatMessage(selectedAgent.uid, newMessage);
         setNewMessage('');
       }
+      window.requestAnimationFrame(() => {
+        const el = agentsScrollRef.current;
+        if (el) {
+          el.scrollTop = el.scrollHeight;
+        }
+      });
     } catch (error) {
       reportPlayerUiError('player_agent_chat', error, setMessage, 'Failed to send message.');
     } finally {
@@ -5288,7 +5306,7 @@ export default function PlayerPage() {
     setSelectedAgent(agent);
     setNewMessage('');
     handleClearImage();
-    markThreadReadOnPlayerChatFocus(agent.uid, playerAuthorityChatTypeForUser(agent), 'open');
+    lastRenderedAgentReadRef.current = '';
   }
 
   function handleOpenFirstUnreadAgent() {

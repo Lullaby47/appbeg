@@ -2,7 +2,7 @@
 
 import '@/styles/player-fire.css';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { getLocalAppSessionId } from '@/features/auth/appSession';
 import { getLocalPlayerSessionId } from '@/features/auth/playerSession';
@@ -84,11 +84,24 @@ function logChatMessageLimitApplied(beforeCount: number, afterCount: number) {
   });
 }
 
-function isNearScrollBottom(el: HTMLElement | null, threshold = 96) {
+function isNearScrollBottom(el: HTMLElement | null, threshold = 80) {
   if (!el) {
     return true;
   }
-  return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+  return el.scrollTop + el.clientHeight >= el.scrollHeight - threshold;
+}
+
+function scrollMessageListToBottom(
+  scrollEl: HTMLElement | null,
+  bottomEl: HTMLElement | null,
+  behavior: ScrollBehavior = 'auto'
+) {
+  if (!scrollEl) {
+    bottomEl?.scrollIntoView({ behavior, block: 'end' });
+    return;
+  }
+  scrollEl.scrollTop = scrollEl.scrollHeight;
+  bottomEl?.scrollIntoView({ behavior, block: 'end' });
 }
 
 function toTime(value: { toMillis?: () => number } | null | undefined) {
@@ -197,6 +210,7 @@ export default function PlayerChatPage() {
   const [profileNotice, setProfileNotice] = useState('');
   const chatReadInFlightRef = useRef<Set<string>>(new Set());
   const lastChatReadClearAtRef = useRef<Record<string, number>>({});
+  const lastRenderedReadThreadRef = useRef('');
 
   useEffect(() => {
     installPlayerThemeAudioGuard(CASINO_BACKGROUND_TRACKS);
@@ -505,7 +519,6 @@ export default function PlayerChatPage() {
       });
     });
     const unsubTyping = listenDirectTyping(selectedPeer.uid, setTyping);
-    markThreadReadOnPlayerChatFocus(selectedPeer.uid, 'player_player', 'open');
     return () => {
       unsubMessages();
       unsubTyping();
@@ -519,6 +532,7 @@ export default function PlayerChatPage() {
     setShowNewMessagePill(false);
     nearBottomRef.current = true;
     pendingScrollToBottomRef.current = true;
+    lastRenderedReadThreadRef.current = '';
   }, [selectedPeer?.uid]);
 
   const rewardFeePreview = useMemo(() => {
@@ -561,11 +575,11 @@ export default function PlayerChatPage() {
   );
   const messagesHiddenByFilters = rawMessageCount > 0 && messages.length === 0;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!selectedPeer) return;
     if (pendingScrollToBottomRef.current) {
       pendingScrollToBottomRef.current = false;
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      scrollMessageListToBottom(messagesScrollRef.current, messagesEndRef.current, 'auto');
       setShowNewMessagePill(false);
       nearBottomRef.current = true;
     }
@@ -590,6 +604,22 @@ export default function PlayerChatPage() {
     });
   }, [messages, rawMessageCount, selectedPeer, selfUid]);
 
+  useEffect(() => {
+    if (!selectedPeer || messages.length === 0) {
+      return;
+    }
+    const lastMessageId = messages[messages.length - 1]?.id || '';
+    const readKey = `${selectedPeer.uid}:${lastMessageId}`;
+    if (lastRenderedReadThreadRef.current === readKey) {
+      return;
+    }
+    lastRenderedReadThreadRef.current = readKey;
+    const frameId = window.requestAnimationFrame(() => {
+      markThreadReadOnPlayerChatFocus(selectedPeer.uid, 'player_player', 'open');
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [markThreadReadOnPlayerChatFocus, messages, selectedPeer]);
+
   async function onSend(e: React.FormEvent) {
     e.preventDefault();
     await sendCurrentTextMessage(newMessage);
@@ -613,6 +643,9 @@ export default function PlayerChatPage() {
       });
       setNewMessage('');
       setReplyTarget(null);
+      pendingScrollToBottomRef.current = true;
+      nearBottomRef.current = true;
+      setShowNewMessagePill(false);
       await markDirectConversationSeen(selectedPeer.uid);
     } catch (error) {
       setFailedDraft(body);
@@ -647,6 +680,9 @@ export default function PlayerChatPage() {
         uploadedImage: uploaded,
       });
       setReplyTarget(null);
+      pendingScrollToBottomRef.current = true;
+      nearBottomRef.current = true;
+      setShowNewMessagePill(false);
       if (result?.messageId) {
         const nextMessage: PlayerChatMessage = {
           id: result.messageId,
@@ -1718,7 +1754,7 @@ export default function PlayerChatPage() {
                       type="button"
                       onClick={() => {
                         pendingScrollToBottomRef.current = false;
-                        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                        scrollMessageListToBottom(messagesScrollRef.current, messagesEndRef.current, 'smooth');
                         nearBottomRef.current = true;
                         setShowNewMessagePill(false);
                         if (process.env.NODE_ENV === 'development') {

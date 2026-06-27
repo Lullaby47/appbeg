@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -111,6 +112,27 @@ const AED_TO_USD = 0.2723;
 const NPR_TO_USD = 0.0075;
 const NPR_TO_AED = NPR_TO_USD / AED_TO_USD;
 const STAFF_PLAYER_CHAT_PAGE_SIZE = 25;
+const CHAT_BOTTOM_THRESHOLD_PX = 80;
+
+function isNearChatBottom(el: HTMLElement | null) {
+  if (!el) {
+    return true;
+  }
+  return el.scrollTop + el.clientHeight >= el.scrollHeight - CHAT_BOTTOM_THRESHOLD_PX;
+}
+
+function scrollChatToBottom(
+  scrollEl: HTMLElement | null,
+  bottomEl: HTMLElement | null,
+  behavior: ScrollBehavior = 'auto'
+) {
+  if (!scrollEl) {
+    bottomEl?.scrollIntoView({ behavior, block: 'end' });
+    return;
+  }
+  scrollEl.scrollTop = scrollEl.scrollHeight;
+  bottomEl?.scrollIntoView({ behavior, block: 'end' });
+}
 
 function subscribeStaffMobileViewport(onChange: () => void) {
   const media = window.matchMedia('(max-width: 1023px)');
@@ -239,7 +261,12 @@ export default function StaffPage() {
   const [newMessage, setNewMessage] = useState('');
   const staffReachOutScrollRef = useRef<HTMLDivElement | null>(null);
   const staffPlayerScrollRef = useRef<HTMLDivElement | null>(null);
+  const staffPlayerMessagesEndRef = useRef<HTMLDivElement | null>(null);
+  const staffPlayerNearBottomRef = useRef(true);
+  const lastRenderedStaffAgentReadRef = useRef('');
+  const lastRenderedStaffPlayerReadRef = useRef('');
   const [newPlayerMessage, setNewPlayerMessage] = useState('');
+  const [showStaffPlayerNewMessagePill, setShowStaffPlayerNewMessagePill] = useState(false);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
@@ -291,21 +318,11 @@ export default function StaffPage() {
 
   const pagedStaffAgentChat = usePaginatedChatMessages(selectedChatUser?.uid ?? null, {
     scrollContainerRef: staffReachOutScrollRef,
-    onWindowMessages: () => {
-      if (selectedChatUser) {
-        markConversationAsRead(selectedChatUser.uid);
-      }
-    },
   });
   const pagedStaffPlayerChat = usePaginatedChatMessages(selectedPlayerChatUser?.uid ?? null, {
     recentWindowSize: STAFF_PLAYER_CHAT_PAGE_SIZE,
     pageSize: STAFF_PLAYER_CHAT_PAGE_SIZE,
     scrollContainerRef: staffPlayerScrollRef,
-    onWindowMessages: () => {
-      if (selectedPlayerChatUser) {
-        markConversationAsRead(selectedPlayerChatUser.uid);
-      }
-    },
   });
 
   const staffChatActorUid = staffAuthUid || getCachedSessionUser()?.uid || auth.currentUser?.uid || '';
@@ -317,6 +334,49 @@ export default function StaffPage() {
   const playerMessages: ChatMessage[] = useMemo(() => {
     return mapFirestoreChatToDisplay(pagedStaffPlayerChat.items, staffChatActorUid);
   }, [pagedStaffPlayerChat.items, staffChatActorUid]);
+
+  useLayoutEffect(() => {
+    if (!selectedChatUser || messages.length === 0) {
+      return;
+    }
+    const lastMessageId = messages[messages.length - 1]?.id || '';
+    const readKey = `${selectedChatUser.uid}:${lastMessageId}`;
+    if (lastRenderedStaffAgentReadRef.current === readKey) {
+      return;
+    }
+    lastRenderedStaffAgentReadRef.current = readKey;
+    const frameId = window.requestAnimationFrame(() => {
+      void markConversationAsRead(selectedChatUser.uid);
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [messages, selectedChatUser]);
+
+  useLayoutEffect(() => {
+    if (!selectedPlayerChatUser) {
+      return;
+    }
+    if (playerMessages.length === 0) {
+      return;
+    }
+    const shouldPin = staffPlayerNearBottomRef.current;
+    if (shouldPin) {
+      scrollChatToBottom(staffPlayerScrollRef.current, staffPlayerMessagesEndRef.current, 'auto');
+      setShowStaffPlayerNewMessagePill(false);
+    } else {
+      setShowStaffPlayerNewMessagePill(true);
+    }
+
+    const lastMessageId = playerMessages[playerMessages.length - 1]?.id || '';
+    const readKey = `${selectedPlayerChatUser.uid}:${lastMessageId}`;
+    if (lastRenderedStaffPlayerReadRef.current === readKey) {
+      return;
+    }
+    lastRenderedStaffPlayerReadRef.current = readKey;
+    const frameId = window.requestAnimationFrame(() => {
+      void markConversationAsRead(selectedPlayerChatUser.uid);
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [playerMessages, selectedPlayerChatUser]);
 
   const reachOutUnread = useMemo(
     () => chatUsers.reduce((total, user) => total + (unreadCounts[user.uid] || 0), 0),
@@ -1300,6 +1360,12 @@ export default function StaffPage() {
     try {
       await sendChatMessage(selectedChatUser.uid, newMessage.trim());
       setNewMessage('');
+      window.requestAnimationFrame(() => {
+        const el = staffReachOutScrollRef.current;
+        if (el) {
+          el.scrollTop = el.scrollHeight;
+        }
+      });
     } catch (error: any) {
       setMessage(error.message || 'Failed to send message.');
     }
@@ -1313,7 +1379,11 @@ export default function StaffPage() {
     try {
       await sendChatMessage(selectedPlayerChatUser.uid, newPlayerMessage.trim());
       setNewPlayerMessage('');
-      markConversationAsRead(selectedPlayerChatUser.uid);
+      staffPlayerNearBottomRef.current = true;
+      setShowStaffPlayerNewMessagePill(false);
+      window.requestAnimationFrame(() => {
+        scrollChatToBottom(staffPlayerScrollRef.current, staffPlayerMessagesEndRef.current, 'auto');
+      });
     } catch (error: any) {
       setMessage(error.message || 'Failed to send player message.');
     }
@@ -1414,13 +1484,15 @@ export default function StaffPage() {
   function handleSelectReachOutUser(user: AdminUser) {
     setSelectedChatUser(user);
     setNewMessage('');
-    markConversationAsRead(user.uid);
+    lastRenderedStaffAgentReadRef.current = '';
   }
 
   function handleOpenPlayerChat(user: PlayerUser) {
     setSelectedPlayerChatUser(user);
     setNewPlayerMessage('');
-    markConversationAsRead(user.uid);
+    lastRenderedStaffPlayerReadRef.current = '';
+    staffPlayerNearBottomRef.current = true;
+    setShowStaffPlayerNewMessagePill(false);
   }
 
   function handleBackToPlayerList() {
@@ -1435,25 +1507,11 @@ export default function StaffPage() {
     setSelectedViewPlayer(user);
     setSelectedPlayerChatUser(user);
     setNewPlayerMessage('');
+    lastRenderedStaffPlayerReadRef.current = '';
+    staffPlayerNearBottomRef.current = true;
+    setShowStaffPlayerNewMessagePill(false);
     setStaffWalletLoadFormUid(null);
     setStaffWalletLoadAmountInput('');
-
-    if ((unreadCounts[user.uid] || 0) > 0) {
-      try {
-        await markConversationAsRead(user.uid, { requirePersist: true });
-        setUnreadCounts((current) => {
-          const next = { ...current };
-          delete next[user.uid];
-          return next;
-        });
-      } catch (error) {
-        console.warn('[STAFF_PLAYER_CHAT_MARK_READ_FAILED]', {
-          playerUid: user.uid,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        // Keep the unread badge if the persisted read marker fails.
-      }
-    }
   }
 
   function buildStaffWalletLoadIdempotencyKey(playerUid: string, amount: number) {
@@ -2357,6 +2415,13 @@ export default function StaffPage() {
                           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                             <div
                               ref={staffPlayerScrollRef}
+                              onScroll={(event) => {
+                                const nearBottom = isNearChatBottom(event.currentTarget);
+                                staffPlayerNearBottomRef.current = nearBottom;
+                                if (nearBottom) {
+                                  setShowStaffPlayerNewMessagePill(false);
+                                }
+                              }}
                               className="min-h-0 flex-1 space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain px-4 py-3"
                             >
                               {pagedStaffPlayerChat.hasMoreOlder ? (
@@ -2417,6 +2482,24 @@ export default function StaffPage() {
                                   </div>
                                 ))
                               )}
+                              <div ref={staffPlayerMessagesEndRef} />
+                              {showStaffPlayerNewMessagePill ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    scrollChatToBottom(
+                                      staffPlayerScrollRef.current,
+                                      staffPlayerMessagesEndRef.current,
+                                      'smooth'
+                                    );
+                                    staffPlayerNearBottomRef.current = true;
+                                    setShowStaffPlayerNewMessagePill(false);
+                                  }}
+                                  className="sticky bottom-2 z-10 mx-auto block rounded-full border border-white/40 bg-white px-3 py-1 text-xs font-bold text-black shadow-lg shadow-black/30"
+                                >
+                                  New message
+                                </button>
+                              ) : null}
                             </div>
 
                             <form
@@ -2623,6 +2706,13 @@ export default function StaffPage() {
 
                   <div
                     ref={staffPlayerScrollRef}
+                    onScroll={(event) => {
+                      const nearBottom = isNearChatBottom(event.currentTarget);
+                      staffPlayerNearBottomRef.current = nearBottom;
+                      if (nearBottom) {
+                        setShowStaffPlayerNewMessagePill(false);
+                      }
+                    }}
                     className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain rounded-xl bg-black/25 p-3"
                   >
                     {pagedStaffPlayerChat.hasMoreOlder ? (
@@ -2674,6 +2764,24 @@ export default function StaffPage() {
                         </div>
                       ))
                     )}
+                    <div ref={staffPlayerMessagesEndRef} />
+                    {showStaffPlayerNewMessagePill ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          scrollChatToBottom(
+                            staffPlayerScrollRef.current,
+                            staffPlayerMessagesEndRef.current,
+                            'smooth'
+                          );
+                          staffPlayerNearBottomRef.current = true;
+                          setShowStaffPlayerNewMessagePill(false);
+                        }}
+                        className="sticky bottom-2 z-10 mx-auto block rounded-full border border-cyan-200/70 bg-cyan-100 px-3 py-1 text-xs font-bold text-black shadow-lg shadow-black/30"
+                      >
+                        New message
+                      </button>
+                    ) : null}
                   </div>
 
                   <form

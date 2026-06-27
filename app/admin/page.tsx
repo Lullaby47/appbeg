@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import imageCompression from 'browser-image-compression';
 
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
@@ -91,6 +91,7 @@ export default function AdminPage() {
   const [newMessage, setNewMessage] = useState('');
   const reachOutScrollRef = useRef<HTMLDivElement>(null);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+  const lastRenderedChatReadRef = useRef('');
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [sendingImage, setSendingImage] = useState(false);
@@ -99,11 +100,6 @@ export default function AdminPage() {
 
   const pagedReachOut = usePaginatedChatMessages(selectedChatUser?.uid ?? null, {
     scrollContainerRef: reachOutScrollRef,
-    onWindowMessages: () => {
-      if (selectedChatUser) {
-        markConversationAsRead(selectedChatUser.uid);
-      }
-    },
   });
 
   const messages: ChatMessage[] = useMemo(() => {
@@ -119,6 +115,22 @@ export default function AdminPage() {
       timestamp: msg.createdAt?.toDate?.() || new Date(),
     }));
   }, [pagedReachOut.items]);
+
+  useLayoutEffect(() => {
+    if (!selectedChatUser || messages.length === 0) {
+      return;
+    }
+    const lastMessageId = messages[messages.length - 1]?.id || '';
+    const readKey = `${selectedChatUser.uid}:${lastMessageId}`;
+    if (lastRenderedChatReadRef.current === readKey) {
+      return;
+    }
+    lastRenderedChatReadRef.current = readKey;
+    const frameId = window.requestAnimationFrame(() => {
+      void markConversationAsRead(selectedChatUser.uid);
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [messages, selectedChatUser]);
 
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
@@ -835,6 +847,12 @@ export default function AdminPage() {
         await sendChatMessage(selectedChatUser.uid, newMessage);
         setNewMessage('');
       }
+      window.requestAnimationFrame(() => {
+        const el = reachOutScrollRef.current;
+        if (el) {
+          el.scrollTop = el.scrollHeight;
+        }
+      });
     } catch (err: any) {
       setMessage(err.message || 'Failed to send message.');
     } finally {
@@ -845,7 +863,7 @@ export default function AdminPage() {
   function handleUserSelect(user: AdminUser) {
     setSelectedChatUser(user);
     setNewMessage('');
-    markConversationAsRead(user.uid);
+    lastRenderedChatReadRef.current = '';
   }
 
   async function handleOpenFirstUnreadChat() {
@@ -866,7 +884,7 @@ export default function AdminPage() {
     if (unreadUser) {
       setSelectedChatUser(unreadUser);
       setNewMessage('');
-      markConversationAsRead(unreadUser.uid);
+      lastRenderedChatReadRef.current = '';
     }
   }
 

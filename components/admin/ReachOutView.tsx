@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AdminUser, ChatMessage } from './types';
 import { OnlineIndicator } from '@/components/presence/OnlineIndicator';
 import {
@@ -9,6 +9,28 @@ import {
 } from '@/lib/admin/displayNames';
 
 const EMOJIS = ['😀', '😂', '😍', '😎', '👍', '🙏', '🔥', '❤️', '🎉', '😢'];
+
+const CHAT_BOTTOM_THRESHOLD_PX = 80;
+
+function isNearScrollBottom(el: HTMLElement | null) {
+  if (!el) {
+    return true;
+  }
+  return el.scrollTop + el.clientHeight >= el.scrollHeight - CHAT_BOTTOM_THRESHOLD_PX;
+}
+
+function scrollMessageListToBottom(
+  scrollEl: HTMLElement | null,
+  bottomEl: HTMLElement | null,
+  behavior: ScrollBehavior = 'auto'
+) {
+  if (!scrollEl) {
+    bottomEl?.scrollIntoView({ behavior, block: 'end' });
+    return;
+  }
+  scrollEl.scrollTop = scrollEl.scrollHeight;
+  bottomEl?.scrollIntoView({ behavior, block: 'end' });
+}
 
 function getOnlineStatusLabel(
   onlineByUid: Record<string, boolean>,
@@ -84,7 +106,7 @@ export default function ReachOutView({
     setShowNewMessagePill(false);
   }, [selectedChatUser?.id]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (messages.length === 0) {
       return;
     }
@@ -113,12 +135,12 @@ export default function ReachOutView({
       }
     }
     if (nearBottom) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      scrollMessageListToBottom(messagesScrollRef?.current ?? null, messagesEndRef.current, 'auto');
       setShowNewMessagePill(false);
       return;
     }
     setShowNewMessagePill(true);
-  }, [messages, messagesScrollRef, playerLightweightMode]);
+  }, [messages, messagesScrollRef, playerLightweightMode, selectedChatUser?.id, selectedChatUser?.uid]);
 
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString([], {
@@ -285,7 +307,7 @@ export default function ReachOutView({
           ref={messagesScrollRef}
           onScroll={(event) => {
             const el = event.currentTarget;
-            const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 96;
+            const nearBottom = isNearScrollBottom(el);
             nearBottomRef.current = nearBottom;
             if (nearBottom) {
               setShowNewMessagePill(false);
@@ -377,7 +399,7 @@ export default function ReachOutView({
             <button
               type="button"
               onClick={() => {
-                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                scrollMessageListToBottom(messagesScrollRef?.current ?? null, messagesEndRef.current, 'smooth');
                 nearBottomRef.current = true;
                 setShowNewMessagePill(false);
                 if (process.env.NODE_ENV === 'development') {
@@ -654,7 +676,7 @@ export default function ReachOutView({
               ref={messagesScrollRef}
               onScroll={(event) => {
                 const el = event.currentTarget;
-                const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 96;
+                const nearBottom = isNearScrollBottom(el);
                 nearBottomRef.current = nearBottom;
                 if (nearBottom) {
                   setShowNewMessagePill(false);
@@ -734,7 +756,7 @@ export default function ReachOutView({
                 <button
                   type="button"
                   onClick={() => {
-                    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                    scrollMessageListToBottom(messagesScrollRef?.current ?? null, messagesEndRef.current, 'smooth');
                     nearBottomRef.current = true;
                     setShowNewMessagePill(false);
                     if (process.env.NODE_ENV === 'development') {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   collection,
   doc,
@@ -571,6 +571,7 @@ export default function CoadminPage() {
 
   const [newMessage, setNewMessage] = useState('');
   const coadminChatScrollRef = useRef<HTMLDivElement>(null);
+  const lastRenderedCoadminChatReadRef = useRef('');
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
 
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
@@ -723,17 +724,28 @@ export default function CoadminPage() {
 
   const pagedCoadminChat = usePaginatedChatMessages(activeChatUser?.uid ?? null, {
     scrollContainerRef: coadminChatScrollRef,
-    onWindowMessages: () => {
-      if (activeChatUser) {
-        markConversationAsRead(activeChatUser.uid);
-      }
-    },
   });
 
   const messages: ChatMessage[] = useMemo(() => {
     const actorUid = coadminActorUid || auth.currentUser?.uid || '';
     return mapFirestoreChatToDisplay(pagedCoadminChat.items, actorUid);
   }, [coadminActorUid, pagedCoadminChat.items]);
+
+  useLayoutEffect(() => {
+    if (!activeChatUser || messages.length === 0) {
+      return;
+    }
+    const lastMessageId = messages[messages.length - 1]?.id || '';
+    const readKey = `${activeChatUser.uid}:${lastMessageId}`;
+    if (lastRenderedCoadminChatReadRef.current === readKey) {
+      return;
+    }
+    lastRenderedCoadminChatReadRef.current = readKey;
+    const frameId = window.requestAnimationFrame(() => {
+      void markConversationAsRead(activeChatUser.uid);
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [activeChatUser, messages]);
 
   const totalUnread = Object.values(unreadCounts).reduce(
     (total, count) => total + count,
@@ -3647,6 +3659,12 @@ export default function CoadminPage() {
         await sendChatMessage(activeChatUser.uid, newMessage);
         setNewMessage('');
       }
+      window.requestAnimationFrame(() => {
+        const el = coadminChatScrollRef.current;
+        if (el) {
+          el.scrollTop = el.scrollHeight;
+        }
+      });
     } catch (err: any) {
       setMessage(err.message || 'Failed to send message.');
     } finally {
@@ -3666,7 +3684,7 @@ export default function CoadminPage() {
     setReachOutChatUser(null);
     setNewMessage('');
     handleClearImage();
-    markConversationAsRead(user.uid);
+    lastRenderedCoadminChatReadRef.current = '';
   }
 
   function handleReachOutUserSelect(user: AdminUser) {
@@ -3674,7 +3692,7 @@ export default function CoadminPage() {
     setStaffChatUser(null);
     setNewMessage('');
     handleClearImage();
-    markConversationAsRead(user.uid);
+    lastRenderedCoadminChatReadRef.current = '';
   }
 
   async function handleOpenFirstUnreadStaffChat() {
@@ -3696,7 +3714,7 @@ export default function CoadminPage() {
       setReachOutChatUser(null);
       setNewMessage('');
       handleClearImage();
-      markConversationAsRead(unreadStaff.uid);
+      lastRenderedCoadminChatReadRef.current = '';
     }
   }
 
@@ -3718,7 +3736,7 @@ export default function CoadminPage() {
       setStaffChatUser(null);
       setNewMessage('');
       handleClearImage();
-      markConversationAsRead(unreadUser.uid);
+      lastRenderedCoadminChatReadRef.current = '';
     }
   }
 
