@@ -5,9 +5,10 @@ import type { Dispatch, MouseEvent, SetStateAction } from 'react';
 import { motion } from 'motion/react';
 import type { PlayerGameLogin } from '@/features/games/playerGameLogins';
 import { UNKNOWN_CREATOR_FILTER_KEY } from '../constants';
+import { warmPlayerImages } from '../playerAssetPreload';
+import { usePlayerRenderPerf } from '../performance';
 import {
   getGameBackgroundImage,
-  getMobileGameBackgroundImage,
   normalizeBackgroundKey,
   normalizeExternalUrl,
 } from '../utils';
@@ -88,9 +89,6 @@ const CredentialCard = memo(function CredentialCard({
 }: CredentialCardProps) {
   const isResetLoading = credentialTaskLoadingKey === `reset_password:${login.id}`;
   const imageLoading = index < EAGER_CREDENTIAL_IMAGE_COUNT ? 'eager' : 'lazy';
-  const renderedImage = isMobileCard
-    ? getMobileGameBackgroundImage(gameCardBackgroundImage)
-    : gameCardBackgroundImage;
   const cardClassName =
     'vault-credential-card fire-panel fire-orange group relative overflow-hidden rounded-[1.7rem] border border-amber-300/25 bg-gradient-to-br from-[#3a140b]/88 via-[#5d2411]/78 to-[#261018]/92 p-2.5 shadow-[0_18px_40px_-18px_rgba(56,11,4,0.9)] backdrop-blur-xl transition-all sm:p-3 sm:hover:border-amber-300/45 sm:hover:shadow-[0_0_30px_-10px_rgba(251,191,36,0.38)]';
   const cardContent = (
@@ -100,9 +98,9 @@ const CredentialCard = memo(function CredentialCard({
           className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_24%_18%,rgba(252,211,77,0.28),transparent_34%),linear-gradient(135deg,rgba(234,88,12,0.26),rgba(88,28,135,0.28)_55%,rgba(0,0,0,0.55))]"
           aria-hidden="true"
         />
-        {renderedImage ? (
+        {gameCardBackgroundImage ? (
           <img
-            src={renderedImage}
+            src={gameCardBackgroundImage}
             alt=""
             loading={imageLoading}
             decoding="async"
@@ -300,6 +298,12 @@ export default function Vault(props: VaultProps) {
     });
   });
 
+  usePlayerRenderPerf('Vault', () => ({
+    credentialCount: usernamesVisibleLogins.length,
+    visibleCredentialCount,
+    lowPerformanceMode,
+  }));
+
   useEffect(() => {
     const mobileQuery = window.matchMedia('(max-width: 767px)');
     const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -326,6 +330,21 @@ export default function Vault(props: VaultProps) {
   );
   const hasMoreCredentials =
     shouldPageCredentials && visibleCredentialCount < usernamesVisibleLogins.length;
+
+  useEffect(() => {
+    if (loadingList || visibleCredentials.length === 0) {
+      return;
+    }
+    const firstVisibleImages = visibleCredentials
+      .slice(0, EAGER_CREDENTIAL_IMAGE_COUNT)
+      .map((login: PlayerGameLogin) =>
+        getGameBackgroundImage(gameBackgroundImageByKey, login.gameName)
+      );
+    warmPlayerImages(firstVisibleImages, {
+      priority: 'high',
+      reason: 'vault_first_visible',
+    });
+  }, [gameBackgroundImageByKey, loadingList, visibleCredentials]);
 
   return (
     <div className="space-y-5 sm:space-y-6">

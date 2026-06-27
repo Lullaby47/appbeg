@@ -3,7 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import type { PlayerGameLogin } from '@/features/games/playerGameLogins';
-import { getGameBackgroundImage, getMobileGameBackgroundImage } from '../utils';
+import { warmPlayerImages } from '../playerAssetPreload';
+import { usePlayerRenderPerf } from '../performance';
+import { getGameBackgroundImage } from '../utils';
 
 type Props = Record<string, any>;
 
@@ -60,6 +62,12 @@ export default function Play(props: Props) {
     });
   }
 
+  usePlayerRenderPerf('Play', () => ({
+    gameLoginCount: gameLogins.length,
+    visibleCardCount,
+    lowPerformanceMode,
+  }));
+
   useEffect(() => {
     const mobileQuery = window.matchMedia('(max-width: 767px)');
     const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -103,6 +111,21 @@ export default function Play(props: Props) {
   );
   const hasMoreGameLogins =
     shouldPageCards && visibleCardCount < gameLogins.length;
+
+  useEffect(() => {
+    if (loadingList || visibleGameLogins.length === 0) {
+      return;
+    }
+    const firstVisibleImages = visibleGameLogins
+      .slice(0, 6)
+      .map((game: PlayerGameLogin) =>
+        getGameBackgroundImage(gameBackgroundImageByKey, game.gameName)
+      );
+    warmPlayerImages(firstVisibleImages, {
+      priority: 'high',
+      reason: 'play_first_visible',
+    });
+  }, [gameBackgroundImageByKey, loadingList, visibleGameLogins]);
 
   return (
 
@@ -155,11 +178,6 @@ export default function Play(props: Props) {
                           gameBackgroundImageByKey,
                           game.gameName
                         );
-                        const renderedGameCardImage =
-                          shouldPageCards || lowPerformanceMode
-                            ? getMobileGameBackgroundImage(gameCardBackgroundImage)
-                            : gameCardBackgroundImage;
-
                         return (
                           <motion.div
                             key={game.id}
@@ -186,9 +204,9 @@ export default function Play(props: Props) {
                                 : 'border-white/10 bg-black/45 hover:border-amber-400/35'
                             }`}
                             style={
-                              renderedGameCardImage && !lowPerformanceMode
+                              gameCardBackgroundImage && !lowPerformanceMode
                                 ? {
-                                    backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.2) 0%, rgba(0, 0, 0, 0.42) 100%), url("${renderedGameCardImage}")`,
+                                    backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.2) 0%, rgba(0, 0, 0, 0.42) 100%), url("${gameCardBackgroundImage}")`,
                                     backgroundSize: '100% 100%',
                                     backgroundPosition: 'center',
                                     backgroundRepeat: 'no-repeat',
@@ -197,10 +215,10 @@ export default function Play(props: Props) {
                                 : undefined
                             }
                           >
-                            {lowPerformanceMode && renderedGameCardImage ? (
+                            {lowPerformanceMode && gameCardBackgroundImage ? (
                               <div className="relative mb-2 h-28 overflow-hidden rounded-xl border border-amber-200/15 bg-black/35">
                                 <img
-                                  src={renderedGameCardImage}
+                                  src={gameCardBackgroundImage}
                                   alt=""
                                   loading={index < 6 ? 'eager' : 'lazy'}
                                   decoding="async"

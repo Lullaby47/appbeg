@@ -212,6 +212,18 @@ import {
   sanitizeWholeAmountText,
   sortByNewest,
 } from './utils';
+import {
+  getDefaultPlayerGameImageUrls,
+  getPreferredPlayerGameImageUrl,
+  PLAYER_DECORATIVE_ASSET_URLS,
+  PLAYER_FREEPLAY_GIFT_IMAGE_URL,
+  warmPlayerImages,
+} from './playerAssetPreload';
+import {
+  markPlayerPerf,
+  usePlayerRenderPerf,
+  usePlayerViewChangePerf,
+} from './performance';
 
 const Lobby = dynamic(() => import('./views/Lobby'), { loading: () => null });
 const Bonus = dynamic(() => import('./views/Bonus'), { loading: () => null });
@@ -720,6 +732,65 @@ export default function PlayerPage() {
       });
     }
   }
+
+  usePlayerRenderPerf('PlayerPage', () => ({
+    activeView,
+    lowPerformanceMode,
+    gameLoginCount: gameLogins.length,
+    requestHistoryCount: requestHistory.length,
+    cashoutTaskCount: playerCashoutTasks.length,
+    unreadThreadCount: Object.keys(unreadCounts).length,
+  }));
+  usePlayerViewChangePerf(activeView);
+
+  useEffect(() => {
+    warmPlayerImages([...PLAYER_DECORATIVE_ASSET_URLS, ...getDefaultPlayerGameImageUrls(true)], {
+      priority: 'idle',
+      reason: 'player_shell_idle',
+    });
+  }, []);
+
+  useEffect(() => {
+    markPlayerPerf('active_view_assets_warm_start', {
+      activeView,
+      gameLoginCount: gameLogins.length,
+      hasPendingFreeplayGift,
+    });
+
+    if (activeView === 'play' || activeView === 'usernames') {
+      warmPlayerImages(
+        gameLogins.slice(0, 6).map((login) =>
+          getGameBackgroundImage(gameBackgroundImageByKey, login.gameName)
+        ),
+        {
+          priority: 'high',
+          reason: `${activeView}_visible_original_images`,
+        }
+      );
+    }
+
+    if (activeView === 'dashboard' || activeView === 'play') {
+      warmPlayerImages(
+        gameLogins.slice(0, 4).map((login) =>
+          getPreferredPlayerGameImageUrl(
+            getGameBackgroundImage(gameBackgroundImageByKey, login.gameName),
+            true
+          )
+        ),
+        {
+          priority: 'idle',
+          reason: 'likely_next_view_mobile_images',
+        }
+      );
+    }
+
+    if (activeView === 'earn-coins' || hasPendingFreeplayGift) {
+      warmPlayerImages([PLAYER_FREEPLAY_GIFT_IMAGE_URL], {
+        priority: activeView === 'earn-coins' ? 'high' : 'idle',
+        reason: 'earn_coins_freeplay_gift',
+      });
+    }
+  }, [activeView, gameBackgroundImageByKey, gameLogins, hasPendingFreeplayGift]);
 
   const playerStartupRef = useRef<{
     startedAt: number;
