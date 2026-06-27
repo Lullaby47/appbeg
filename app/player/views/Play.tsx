@@ -216,7 +216,7 @@ function Play(props: Props) {
                             }
                           >
                             <div className="pointer-events-none absolute -right-6 -top-6 h-24 w-24 rounded-full bg-amber-400/15 blur-2xl" />
-                            <div className="relative flex items-start justify-center gap-2">
+                            <div className="relative flex items-start justify-center gap-2 rounded-xl border border-white/10 bg-gradient-to-b from-black/65 via-black/50 to-black/35 px-2 py-1 shadow-[0_2px_12px_rgba(0,0,0,0.35)]">
                               <div className="min-w-0 flex-1 text-center">
                                 <h3 className="truncate bg-gradient-to-r from-amber-100 via-yellow-200 to-orange-300 bg-clip-text text-lg font-black text-transparent drop-shadow-[0_0_12px_rgba(251,191,36,0.45)]">
                                   {game.gameName}
@@ -224,9 +224,9 @@ function Play(props: Props) {
                               </div>
                             </div>
                             {hasUsername && (
-                              <div className="relative mt-1 rounded-xl border border-white/10 bg-black/35 px-2 py-1">
+                              <div className="relative mt-1 rounded-xl border border-white/15 bg-black/60 px-2 py-1 shadow-[0_2px_12px_rgba(0,0,0,0.35)]">
                                 <div className="flex items-center justify-between gap-1">
-                                  <p className="whitespace-nowrap text-[9px] font-bold uppercase leading-tight tracking-[0.16em] text-amber-100/55">
+                                  <p className="whitespace-nowrap text-[9px] font-bold uppercase leading-tight tracking-[0.16em] text-amber-100/80">
                                     Game username
                                   </p>
                                   <button
