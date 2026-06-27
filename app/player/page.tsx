@@ -378,8 +378,11 @@ function detectLowPerformanceMode() {
   const mobileViewport = window.matchMedia('(max-width: 767px)').matches;
   const deviceMemory = Number((navigator as Navigator & { deviceMemory?: number }).deviceMemory);
   const lowDeviceMemory = Number.isFinite(deviceMemory) && deviceMemory <= 4;
+  const hardwareConcurrency = Number(navigator.hardwareConcurrency);
+  const lowCoreCount =
+    Number.isFinite(hardwareConcurrency) && hardwareConcurrency > 0 && hardwareConcurrency <= 4;
 
-  return reducedMotion || lowDeviceMemory || (coarsePointer && mobileViewport);
+  return reducedMotion || (mobileViewport && (coarsePointer || lowDeviceMemory || lowCoreCount));
 }
 
 function areWalletsEqual(left: PlayerWallet, right: PlayerWallet) {
@@ -1310,6 +1313,7 @@ export default function PlayerPage() {
     handleInstallClick,
   } = usePwaInstall();
   const [showPlayerHelpHint, setShowPlayerHelpHint] = useState(false);
+  const showPlayerHelpHintRef = useRef(false);
   const [musicEnabled, setMusicEnabled] = useState(() => {
     if (typeof window === 'undefined') {
       return false;
@@ -1604,8 +1608,10 @@ export default function PlayerPage() {
   const showPlayerHelpHintToast = useCallback(() => {
     playerHelpHintSeenRef.current = true;
     clearPlayerHelpHintHideTimeout();
+    showPlayerHelpHintRef.current = true;
     setShowPlayerHelpHint(true);
     playerHelpHintHideTimeoutRef.current = window.setTimeout(() => {
+      showPlayerHelpHintRef.current = false;
       setShowPlayerHelpHint(false);
       playerHelpHintHideTimeoutRef.current = null;
     }, 5000);
@@ -1624,11 +1630,14 @@ export default function PlayerPage() {
       return;
     }
 
-    showPlayerHelpHintToast();
+    const initialHintTimer = window.setTimeout(showPlayerHelpHintToast, 0);
     schedulePlayerHelpHintOnIdle();
 
     const handlePlayerActivity = () => {
-      setShowPlayerHelpHint(false);
+      if (showPlayerHelpHintRef.current) {
+        showPlayerHelpHintRef.current = false;
+        setShowPlayerHelpHint(false);
+      }
       clearPlayerHelpHintHideTimeout();
       schedulePlayerHelpHintOnIdle();
     };
@@ -1642,6 +1651,7 @@ export default function PlayerPage() {
       window.removeEventListener('pointerdown', handlePlayerActivity);
       window.removeEventListener('keydown', handlePlayerActivity);
       window.removeEventListener('touchstart', handlePlayerActivity);
+      window.clearTimeout(initialHintTimer);
       clearPlayerHelpHintHideTimeout();
       clearPlayerHelpHintIdleTimeout();
     };
@@ -5359,7 +5369,10 @@ export default function PlayerPage() {
       if (options.scrollToTop === false) {
         return;
       }
-      pageScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+      requestAnimationFrame(() => {
+        pageScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      });
       return;
     }
     setActiveView(view);
@@ -6434,7 +6447,7 @@ export default function PlayerPage() {
     <>
     <main
         ref={pageScrollRef}
-        className={`player-fire-page ${lowPerformanceMode ? 'low-performance-mode' : ''} relative z-0 flex min-h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white md:flex-row md:items-start lg:pb-0`}
+        className={`player-fire-page ${lowPerformanceMode ? 'low-performance-mode player-mobile-lite' : ''} relative z-0 flex min-h-[100dvh] flex-col overflow-y-visible overflow-x-hidden bg-transparent pb-[calc(5.25rem+env(safe-area-inset-bottom))] text-white md:flex-row md:items-start md:overflow-y-auto lg:pb-0`}
       >
         <div className="ember-overlay" aria-hidden="true" />
         {maintenanceBreak.enabled ? (
