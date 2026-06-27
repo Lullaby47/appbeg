@@ -8,6 +8,7 @@ import {
   runMirrorPoolQuery,
   toIsoString,
 } from '@/lib/sql/playerMirrorCommon';
+import { emitPlayerFriendLinkOutboxEvent } from '@/lib/sql/liveOutbox';
 
 export type PlayerFriendLinkStatus = 'pending' | 'accepted' | 'blocked' | 'declined';
 
@@ -21,6 +22,13 @@ export type PlayerFriendLink = {
   createdAt: string | null;
   updatedAt: string | null;
   acceptedAt: string | null;
+  peer?: {
+    uid: string;
+    avatarEmoji: string;
+    avatarName: string;
+    bio: string;
+    avatarImageUrl: string | null;
+  };
 };
 
 type PlayerScopeRow = {
@@ -66,7 +74,8 @@ function mapFriendLinkRow(row: Record<string, unknown>): PlayerFriendLink {
   const participants = Array.isArray(row.participants)
     ? row.participants.map((uid) => cleanText(uid)).filter(Boolean)
     : [cleanText(row.participant_a_uid), cleanText(row.participant_b_uid)].filter(Boolean);
-  return {
+  const peerUid = cleanText(row.other_uid);
+  const link: PlayerFriendLink = {
     id: cleanText(row.link_id),
     participants,
     status: (cleanText(row.status) || 'pending') as PlayerFriendLinkStatus,
@@ -77,6 +86,16 @@ function mapFriendLinkRow(row: Record<string, unknown>): PlayerFriendLink {
     updatedAt: toIsoString(row.updated_at),
     acceptedAt: toIsoString(row.accepted_at),
   };
+  if (peerUid) {
+    link.peer = {
+      uid: peerUid,
+      avatarEmoji: cleanText(row.other_avatar_emoji),
+      avatarName: cleanText(row.other_avatar_name) || cleanText(row.other_username) || 'Player',
+      bio: cleanText(row.other_bio),
+      avatarImageUrl: cleanText(row.other_avatar_image_url) || null,
+    };
+  }
+  return link;
 }
 
 async function readActivePlayerForFriend(client: PoolClient, uid: string, lock: boolean) {
@@ -239,9 +258,18 @@ export async function createPendingPlayerFriendLink(input: {
         }),
       ]
     );
+    const link = mapFriendLinkRow(result.rows[0] as Record<string, unknown>);
+    await emitPlayerFriendLinkOutboxEvent(client, {
+      linkId: pair.linkId,
+      participantUids: pair.participants,
+      requestedByUid: actorUid,
+      actorUid,
+      status: 'pending',
+      eventType: 'player_friend_request_created',
+    });
     await client.query('COMMIT');
     return {
-      link: mapFriendLinkRow(result.rows[0] as Record<string, unknown>),
+      link,
       target: {
         uid: targetUid,
         username: cleanText(other.username) || 'Player',
@@ -320,9 +348,185 @@ export async function acceptPlayerFriendLink(input: { actorUid: string; otherUid
       `,
       [pair.linkId, actorUid]
     );
+    const link = mapFriendLinkRow(result.rows[0] as Record<string, unknown>);
+    await emitPlayerFriendLinkOutboxEvent(client, {
+      linkId: pair.linkId,
+      participantUids: pair.participants,
+      requestedByUid,
+      actorUid,
+      status: 'accepted',
+      eventType: 'player_friend_request_accepted',
+    });
     await client.query('COMMIT');
     return {
-      link: mapFriendLinkRow(result.rows[0] as Record<string, unknown>),
+      link,
+      target: {
+        uid: otherUid,
+        username: cleanText(other.username) || 'Player',
+      },
+      duplicate: false,
+    };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function declinePlayerFriendLink(input: { actorUid: string; otherUid: string }) {
+  const actorUid = cleanText(input.actorUid);
+  const otherUid = cleanText(input.otherUid);
+  const db = getPlayerMirrorPool();
+  if (!db) {
+    throw new Error('Postgres is unavailable.');
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const { pair, other } = await validateFriendParticipants(client, actorUid, otherUid, true);
+    const existing = await readFriendLinkForUpdate(client, pair.linkId);
+    if (!existing || existing.deleted_at) {
+      throw new Error('Friend request not found.');
+    }
+    const status = cleanText(existing.status).toLowerCase();
+    if (status === 'declined') {
+      await client.query('COMMIT');
+      return {
+        link: mapFriendLinkRow(existing),
+        target: {
+          uid: otherUid,
+          username: cleanText(other.username) || 'Player',
+        },
+        duplicate: true,
+      };
+    }
+    if (status !== 'pending') {
+      throw new Error('Friend request cannot be declined.');
+    }
+    const requestedByUid = cleanText(existing.requested_by_uid);
+    if (requestedByUid === actorUid) {
+      throw new Error('Only the recipient can decline this friend request.');
+    }
+    if (requestedByUid !== otherUid) {
+      throw new Error('Friend request is invalid.');
+    }
+
+    const result = await client.query(
+      `
+        UPDATE public.player_friend_links_cache
+        SET status = 'declined',
+            accepted_by_uid = NULL,
+            updated_at = now(),
+            accepted_at = NULL,
+            mirrored_at = now(),
+            raw_firestore_data = jsonb_set(
+              COALESCE(raw_firestore_data, '{}'::jsonb),
+              '{status}',
+              to_jsonb('declined'::text),
+              true
+            )
+        WHERE link_id = $1
+          AND deleted_at IS NULL
+        RETURNING *
+      `,
+      [pair.linkId]
+    );
+    const link = mapFriendLinkRow(result.rows[0] as Record<string, unknown>);
+    await emitPlayerFriendLinkOutboxEvent(client, {
+      linkId: pair.linkId,
+      participantUids: pair.participants,
+      requestedByUid,
+      actorUid,
+      status: 'declined',
+      eventType: 'player_friend_request_declined',
+    });
+    await client.query('COMMIT');
+    return {
+      link,
+      target: {
+        uid: otherUid,
+        username: cleanText(other.username) || 'Player',
+      },
+      duplicate: false,
+    };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function cancelPlayerFriendLink(input: { actorUid: string; otherUid: string }) {
+  const actorUid = cleanText(input.actorUid);
+  const otherUid = cleanText(input.otherUid);
+  const db = getPlayerMirrorPool();
+  if (!db) {
+    throw new Error('Postgres is unavailable.');
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const { pair, other } = await validateFriendParticipants(client, actorUid, otherUid, true);
+    const existing = await readFriendLinkForUpdate(client, pair.linkId);
+    if (!existing || existing.deleted_at) {
+      throw new Error('Friend request not found.');
+    }
+    const requestedByUid = cleanText(existing.requested_by_uid);
+    if (requestedByUid !== actorUid) {
+      throw new Error('Only the sender can cancel this friend request.');
+    }
+    const status = cleanText(existing.status).toLowerCase();
+    if (status === 'declined') {
+      await client.query('COMMIT');
+      return {
+        link: mapFriendLinkRow(existing),
+        target: {
+          uid: otherUid,
+          username: cleanText(other.username) || 'Player',
+        },
+        duplicate: true,
+      };
+    }
+    if (status !== 'pending') {
+      throw new Error('Friend request cannot be cancelled.');
+    }
+
+    const result = await client.query(
+      `
+        UPDATE public.player_friend_links_cache
+        SET status = 'declined',
+            accepted_by_uid = NULL,
+            updated_at = now(),
+            accepted_at = NULL,
+            mirrored_at = now(),
+            raw_firestore_data = COALESCE(raw_firestore_data, '{}'::jsonb)
+              || jsonb_build_object(
+                'status', 'declined',
+                'resolution', 'cancelled',
+                'cancelledByUid', $2::text
+              )
+        WHERE link_id = $1
+          AND deleted_at IS NULL
+        RETURNING *
+      `,
+      [pair.linkId, actorUid]
+    );
+    const link = mapFriendLinkRow(result.rows[0] as Record<string, unknown>);
+    await emitPlayerFriendLinkOutboxEvent(client, {
+      linkId: pair.linkId,
+      participantUids: pair.participants,
+      requestedByUid,
+      actorUid,
+      status: 'cancelled',
+      eventType: 'player_friend_request_cancelled',
+    });
+    await client.query('COMMIT');
+    return {
+      link,
       target: {
         uid: otherUid,
         username: cleanText(other.username) || 'Player',
@@ -350,7 +554,14 @@ export async function listPlayerFriendLinks(actorUid: string) {
   const { rows } = await runMirrorPoolQuery<Record<string, unknown>>(
     db,
     `
-      SELECT f.*
+      SELECT
+        f.*,
+        other.uid AS other_uid,
+        other.username AS other_username,
+        profile.avatar_emoji AS other_avatar_emoji,
+        profile.avatar_name AS other_avatar_name,
+        profile.bio AS other_bio,
+        profile.avatar_image_url AS other_avatar_image_url
       FROM public.player_friend_links_cache f
       JOIN public.players_cache other
         ON other.uid = CASE
@@ -360,6 +571,8 @@ export async function listPlayerFriendLinks(actorUid: string) {
        AND other.deleted_at IS NULL
        AND other.role = 'player'
        AND LOWER(COALESCE(other.status, '')) = 'active'
+      LEFT JOIN public.player_chat_profiles profile
+        ON profile.player_uid = other.uid
       WHERE f.deleted_at IS NULL
         AND (f.participant_a_uid = $1 OR f.participant_b_uid = $1)
         AND f.status IN ('pending', 'accepted')

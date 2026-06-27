@@ -100,6 +100,7 @@ export type FriendLink = {
   requestedByUid: string;
   createdAt?: string | null;
   updatedAt?: string | null;
+  peer?: PlayerPeer;
 };
 
 export type PlayerChatProfile = {
@@ -1060,11 +1061,18 @@ export async function sendFriendRequest(otherUid: string) {
         headersSent: Object.keys(headers),
       }
     );
-    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      link?: FriendLink;
+      duplicate?: boolean;
+    };
     if (!response.ok) {
       throw new Error(payload.error || 'Failed to send friend request.');
     }
-    return;
+    return {
+      link: payload.link,
+      duplicate: payload.duplicate === true,
+    };
   }
 
   const selfUid = assertAuthUid();
@@ -1121,6 +1129,8 @@ export async function sendFriendRequestByReferralCode(referralCode: string) {
     const payload = (await response.json().catch(() => ({}))) as {
       error?: string;
       target?: { uid?: string; username?: string };
+      link?: FriendLink;
+      duplicate?: boolean;
     };
     if (!response.ok) {
       throw new Error(payload.error || 'Failed to add friend.');
@@ -1128,6 +1138,8 @@ export async function sendFriendRequestByReferralCode(referralCode: string) {
     return {
       uid: cleanText(payload.target?.uid || ''),
       username: cleanText(payload.target?.username || '') || 'Player',
+      link: payload.link,
+      duplicate: payload.duplicate === true,
     };
   }
 
@@ -1209,6 +1221,88 @@ export async function acceptFriendRequest(otherUid: string) {
   );
 }
 
+export async function declineFriendRequest(otherUid: string) {
+  const cleanOtherUid = cleanText(otherUid);
+  if (!cleanOtherUid) {
+    throw new Error('Player is required.');
+  }
+  if (!isClientSqlReadMode()) {
+    throw new Error('Declining friend requests requires the SQL chat runtime.');
+  }
+
+  logClientFirebaseRuntimeRemoved({
+    feature: 'player_chat_friend_decline',
+    file: 'features/messages/playerChat.ts',
+    operation: 'setDoc playerFriendLinks',
+    replacement: 'POST /api/player/chat/friends/decline',
+  });
+  const headers = await getPlayerApiHeaders(true, {
+    route: '/api/player/chat/friends/decline',
+  });
+  const cached = getCachedSessionUser();
+  const response = await fetchChatApi(
+    '/api/player/chat/friends/decline',
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ otherUid: cleanOtherUid }),
+      cache: 'no-store',
+    },
+    {
+      role: cached?.role ?? 'player',
+      uid: cached?.uid ?? null,
+      hasAppSessionId: Boolean(getLocalAppSessionId()),
+      hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+      headersSent: Object.keys(headers),
+    }
+  );
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to decline friend request.');
+  }
+}
+
+export async function cancelFriendRequest(otherUid: string) {
+  const cleanOtherUid = cleanText(otherUid);
+  if (!cleanOtherUid) {
+    throw new Error('Player is required.');
+  }
+  if (!isClientSqlReadMode()) {
+    throw new Error('Cancelling friend requests requires the SQL chat runtime.');
+  }
+
+  logClientFirebaseRuntimeRemoved({
+    feature: 'player_chat_friend_cancel',
+    file: 'features/messages/playerChat.ts',
+    operation: 'setDoc playerFriendLinks',
+    replacement: 'POST /api/player/chat/friends/cancel',
+  });
+  const headers = await getPlayerApiHeaders(true, {
+    route: '/api/player/chat/friends/cancel',
+  });
+  const cached = getCachedSessionUser();
+  const response = await fetchChatApi(
+    '/api/player/chat/friends/cancel',
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ otherUid: cleanOtherUid }),
+      cache: 'no-store',
+    },
+    {
+      role: cached?.role ?? 'player',
+      uid: cached?.uid ?? null,
+      hasAppSessionId: Boolean(getLocalAppSessionId()),
+      hasPlayerSessionId: Boolean(getLocalPlayerSessionId()),
+      headersSent: Object.keys(headers),
+    }
+  );
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to cancel friend request.');
+  }
+}
+
 export function listenFriendLinks(onNext: (links: FriendLink[]) => void) {
   if (
     shouldSkipClientFirestore({
@@ -1220,7 +1314,18 @@ export function listenFriendLinks(onNext: (links: FriendLink[]) => void) {
   ) {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let eventSource: EventSource | null = null;
+    let pollInFlight = false;
+    let refreshAfterPoll = false;
     const poll = async () => {
+      if (cancelled) {
+        return;
+      }
+      if (pollInFlight) {
+        refreshAfterPoll = true;
+        return;
+      }
+      pollInFlight = true;
       try {
         const headers = await getPlayerApiHeaders(false, {
           route: '/api/player/chat/friends',
@@ -1262,6 +1367,18 @@ export function listenFriendLinks(onNext: (links: FriendLink[]) => void) {
                 requestedByUid: cleanText(link.requestedByUid),
                 createdAt: link.createdAt || null,
                 updatedAt: link.updatedAt || null,
+                peer: link.peer?.uid
+                  ? {
+                      uid: cleanText(link.peer.uid),
+                      avatarEmoji: cleanText(link.peer.avatarEmoji),
+                      avatarName: cleanText(link.peer.avatarName) || 'Player',
+                      gender: cleanText(String(link.peer.gender || '')).toLowerCase(),
+                      bio: cleanText(link.peer.bio),
+                      avatarImageUrl:
+                        cleanText(String(link.peer.avatarImageUrl || '')) || null,
+                      lastSeenAt: cleanText(String(link.peer.lastSeenAt || '')) || null,
+                    }
+                  : undefined,
               }))
               .filter((link) => link.id && link.participants.length === 2)
           );
@@ -1272,17 +1389,54 @@ export function listenFriendLinks(onNext: (links: FriendLink[]) => void) {
           onNext([]);
         }
       } finally {
-        if (!cancelled) {
+        pollInFlight = false;
+        if (!cancelled && refreshAfterPoll) {
+          refreshAfterPoll = false;
+          void poll();
+        } else if (!cancelled) {
           timer = setTimeout(poll, 4000);
         }
       }
     };
+    const refreshNow = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      void poll();
+    };
     void poll();
+    const selfUid = resolveListenerSelfUid();
+    if (selfUid && typeof EventSource !== 'undefined') {
+      const params = new URLSearchParams({
+        channels: `user:${selfUid}:chat`,
+        lastEventId: '0',
+      });
+      const appSessionId = cleanText(getLocalAppSessionId());
+      if (appSessionId) {
+        params.set('appSessionId', appSessionId);
+      }
+      const playerSessionId = cleanText(getLocalPlayerSessionId());
+      if (playerSessionId) {
+        params.set('playerSessionId', playerSessionId);
+      }
+      eventSource = new EventSource(`/api/live/stream?${params.toString()}`);
+      const friendEvents = [
+        'player_friend_request_created',
+        'player_friend_request_accepted',
+        'player_friend_request_declined',
+        'player_friend_request_cancelled',
+      ];
+      friendEvents.forEach((eventName) => {
+        eventSource?.addEventListener(eventName, refreshNow);
+      });
+    }
     return () => {
       cancelled = true;
       if (timer) {
         clearTimeout(timer);
       }
+      eventSource?.close();
     };
   }
 

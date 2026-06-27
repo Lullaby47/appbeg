@@ -30,7 +30,7 @@ async function readPlayerByReferralCode(referralCode: string) {
       WHERE deleted_at IS NULL
         AND role = 'player'
         AND LOWER(COALESCE(status, '')) = 'active'
-        AND referral_code = $1
+        AND UPPER(BTRIM(referral_code)) = $1
       LIMIT 1
     `,
     [code]
@@ -48,7 +48,7 @@ async function readPlayerByReferralCode(referralCode: string) {
        AND p.deleted_at IS NULL
        AND p.role = 'player'
        AND LOWER(COALESCE(p.status, '')) = 'active'
-      WHERE r.code = $1
+      WHERE UPPER(BTRIM(r.code)) = $1
         AND r.deleted_at IS NULL
       LIMIT 1
     `,

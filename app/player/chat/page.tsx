@@ -21,9 +21,11 @@ import { CASINO_BACKGROUND_TRACKS } from '../constants';
 import {
   acceptFriendRequest,
   activateMyPlayerChatProfile,
+  cancelFriendRequest,
   deleteDirectMessageForEveryone,
   deleteDirectMessageForMe,
   deactivateMyPlayerChatProfile,
+  declineFriendRequest,
   ensureReferralFriendLinks,
   fetchPlayerChatBootstrap,
   filterVisibleDirectMessages,
@@ -160,8 +162,14 @@ export default function PlayerChatPage() {
   const rewardInFlightRef = useRef(false);
   const [chatList, setChatList] = useState<Record<string, { unread: number; muted: boolean; last: string }>>({});
   const [friendByUid, setFriendByUid] = useState<
-    Record<string, { status: 'pending' | 'accepted'; requestedByUid: string }>
+    Record<
+      string,
+      { status: 'pending' | 'accepted'; requestedByUid: string; peer?: PlayerPeer }
+    >
   >({});
+  const [friendActionUid, setFriendActionUid] = useState('');
+  const [friendError, setFriendError] = useState('');
+  const [friendNotice, setFriendNotice] = useState('');
   const [showAddByReferralModal, setShowAddByReferralModal] = useState(false);
   const [referralInput, setReferralInput] = useState('');
   const [referralLoading, setReferralLoading] = useState(false);
@@ -441,13 +449,17 @@ export default function PlayerChatPage() {
       return;
     }
     return listenFriendLinks((links: FriendLink[]) => {
-      const next: Record<string, { status: 'pending' | 'accepted'; requestedByUid: string }> = {};
+      const next: Record<
+        string,
+        { status: 'pending' | 'accepted'; requestedByUid: string; peer?: PlayerPeer }
+      > = {};
       links.forEach((link) => {
         const otherUid = (link.participants || []).find((uid) => uid !== selfUid) || '';
         if (!otherUid) return;
         next[otherUid] = {
           status: link.status,
           requestedByUid: link.requestedByUid,
+          peer: link.peer,
         };
       });
       setFriendByUid(next);
@@ -530,6 +542,23 @@ export default function PlayerChatPage() {
         p.bio.toLowerCase().includes(term)
     );
   }, [allPlayers, playerSearchTerm]);
+  const pendingFriendRequests = useMemo(
+    () =>
+      Object.entries(friendByUid).flatMap(([uid, link]) => {
+        if (link.status !== 'pending') {
+          return [];
+        }
+        const player = allPlayers.find((candidate) => candidate.uid === uid) || link.peer;
+        if (!player) {
+          return [];
+        }
+        return [{
+          player,
+          direction: link.requestedByUid === selfUid ? 'sent' as const : 'received' as const,
+        }];
+      }),
+    [allPlayers, friendByUid, selfUid]
+  );
   const messagesHiddenByFilters = rawMessageCount > 0 && messages.length === 0;
 
   useEffect(() => {
@@ -761,13 +790,141 @@ export default function PlayerChatPage() {
     setReferralError('');
     setReferralNotice('');
     try {
-      await sendFriendRequestByReferralCode(code);
-      setReferralNotice('Friend request sent.');
+      const result = await sendFriendRequestByReferralCode(code);
+      if (result.uid && result.link) {
+        const link = result.link;
+        setFriendByUid((current) => ({
+          ...current,
+          [result.uid]: {
+            status: link.status === 'accepted' ? 'accepted' : 'pending',
+            requestedByUid: link.requestedByUid || selfUid,
+            peer:
+              current[result.uid]?.peer ||
+              allPlayers.find((player) => player.uid === result.uid) || {
+                uid: result.uid,
+                avatarEmoji: '',
+                avatarName: result.username,
+                bio: '',
+                avatarImageUrl: null,
+                lastSeenAt: null,
+              },
+          },
+        }));
+      }
+      setReferralNotice(
+        result.link?.status === 'accepted'
+          ? `You and ${result.username} are already friends.`
+          : result.duplicate
+            ? `A friend request with ${result.username} is already pending.`
+            : `Friend request sent to ${result.username}.`
+      );
       setReferralInput('');
     } catch (error) {
       setReferralError(error instanceof Error ? error.message : 'Failed to add friend.');
     } finally {
       setReferralLoading(false);
+    }
+  }
+
+  async function onSendFriendRequest(otherUid: string) {
+    if (!otherUid || friendActionUid) return;
+    setFriendActionUid(otherUid);
+    setFriendError('');
+    setFriendNotice('');
+    try {
+      const result = await sendFriendRequest(otherUid);
+      setFriendByUid((current) => ({
+        ...current,
+        [otherUid]: {
+          status: result?.link?.status === 'accepted' ? 'accepted' : 'pending',
+          requestedByUid: result?.link?.requestedByUid || selfUid,
+          peer:
+            current[otherUid]?.peer ||
+            allPlayers.find((player) => player.uid === otherUid) ||
+            selectedPeer ||
+            undefined,
+        },
+      }));
+      setFriendNotice(
+        result?.link?.status === 'accepted'
+          ? 'You are already friends.'
+          : result?.duplicate
+            ? 'Friend request is already pending.'
+            : 'Friend request sent.'
+      );
+    } catch (error) {
+      setFriendError(error instanceof Error ? error.message : 'Failed to send friend request.');
+    } finally {
+      setFriendActionUid('');
+    }
+  }
+
+  async function onAcceptFriendRequest(otherUid: string) {
+    if (!otherUid || friendActionUid) return;
+    setFriendActionUid(otherUid);
+    setFriendError('');
+    setFriendNotice('');
+    try {
+      await acceptFriendRequest(otherUid);
+      setFriendByUid((current) => ({
+        ...current,
+        [otherUid]: {
+          status: 'accepted',
+          requestedByUid: current[otherUid]?.requestedByUid || otherUid,
+          peer: current[otherUid]?.peer,
+        },
+      }));
+      setFriendNotice('Friend request accepted.');
+    } catch (error) {
+      setFriendError(error instanceof Error ? error.message : 'Failed to accept friend request.');
+    } finally {
+      setFriendActionUid('');
+    }
+  }
+
+  async function onDeclineFriendRequest(otherUid: string) {
+    if (!otherUid || friendActionUid) return;
+    setFriendActionUid(otherUid);
+    setFriendError('');
+    setFriendNotice('');
+    try {
+      await declineFriendRequest(otherUid);
+      setFriendByUid((current) => {
+        const next = { ...current };
+        delete next[otherUid];
+        return next;
+      });
+      if (selectedPeer?.uid === otherUid) {
+        setSelectedPeer(null);
+      }
+      setFriendNotice('Friend request declined.');
+    } catch (error) {
+      setFriendError(error instanceof Error ? error.message : 'Failed to decline friend request.');
+    } finally {
+      setFriendActionUid('');
+    }
+  }
+
+  async function onCancelFriendRequest(otherUid: string) {
+    if (!otherUid || friendActionUid) return;
+    setFriendActionUid(otherUid);
+    setFriendError('');
+    setFriendNotice('');
+    try {
+      await cancelFriendRequest(otherUid);
+      setFriendByUid((current) => {
+        const next = { ...current };
+        delete next[otherUid];
+        return next;
+      });
+      if (selectedPeer?.uid === otherUid) {
+        setSelectedPeer(null);
+      }
+      setFriendNotice('Friend request cancelled.');
+    } catch (error) {
+      setFriendError(error instanceof Error ? error.message : 'Failed to cancel friend request.');
+    } finally {
+      setFriendActionUid('');
     }
   }
 
@@ -1074,9 +1231,19 @@ export default function PlayerChatPage() {
 
   return (
     <>
-    <main className="min-h-[100dvh] overflow-hidden bg-[#050509] text-white">
-        <div className="mx-auto flex h-[100dvh] min-h-0 w-full max-w-7xl flex-col gap-4 overflow-hidden p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] lg:flex-row lg:gap-5 lg:p-5">
-          <aside className="fire-panel fire-violet flex max-h-[34dvh] min-h-0 w-full shrink-0 flex-col overflow-hidden rounded-2xl border border-violet-400/30 bg-black/50 p-4 lg:max-h-none lg:w-[320px]">
+    <main className="min-h-[100dvh] bg-[#050509] text-white">
+        <div
+          className={`mx-auto flex w-full max-w-7xl flex-col gap-4 lg:h-[100dvh] lg:min-h-0 lg:flex-row lg:gap-5 lg:overflow-hidden lg:p-5 ${
+            selectedPeer
+              ? 'h-[100dvh] min-h-0 overflow-hidden p-0'
+              : 'min-h-[100dvh] p-4 pb-[calc(1rem+env(safe-area-inset-bottom))]'
+          }`}
+        >
+          <aside
+            className={`fire-panel fire-violet min-h-0 w-full shrink-0 flex-col rounded-2xl border border-violet-400/30 bg-black/50 p-4 lg:flex lg:w-[320px] lg:overflow-hidden ${
+              selectedPeer ? 'hidden' : 'flex'
+            }`}
+          >
             <div className="mb-4 flex items-center justify-between">
               <h1 className="text-xl font-black tracking-wide text-amber-200">Player Chat</h1>
               <Link
@@ -1149,6 +1316,62 @@ export default function PlayerChatPage() {
                 </div>
               )}
             </div>
+            {pendingFriendRequests.length > 0 ? (
+              <div className="mb-3 rounded-xl border border-amber-300/30 bg-amber-500/10 p-3">
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-amber-200">
+                  Pending friend requests ({pendingFriendRequests.length})
+                </p>
+                <div className="mt-2 max-h-44 space-y-2 overflow-y-auto overflow-x-hidden pr-1">
+                  {pendingFriendRequests.map(({ player, direction }) => (
+                    <div
+                      key={player.uid}
+                      className="rounded-xl border border-white/10 bg-black/35 p-2.5"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/15 bg-black/50 text-lg">
+                          {player.avatarEmoji || 'P'}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-sm font-bold text-white">
+                          {player.avatarName}
+                        </span>
+                        <span className="shrink-0 rounded-full border border-amber-300/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-amber-200">
+                          Pending
+                        </span>
+                      </div>
+                      <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-amber-100/60">
+                        {direction === 'sent' ? 'Sent' : 'Received'}
+                      </p>
+                      <div className="mt-2 flex gap-2">
+                        {direction === 'received' ? (
+                          <button
+                            type="button"
+                            disabled={Boolean(friendActionUid)}
+                            onClick={() => void onAcceptFriendRequest(player.uid)}
+                            className="flex-1 rounded-lg border border-emerald-300/40 bg-emerald-500/15 px-2 py-1.5 text-xs font-bold text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-50"
+                          >
+                            {friendActionUid === player.uid ? 'Updating...' : 'Accept'}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          disabled={Boolean(friendActionUid)}
+                          onClick={() =>
+                            void (direction === 'sent'
+                              ? onCancelFriendRequest(player.uid)
+                              : onDeclineFriendRequest(player.uid))
+                          }
+                          className="flex-1 rounded-lg border border-red-300/40 bg-red-500/10 px-2 py-1.5 text-xs font-bold text-red-100 hover:bg-red-500/20 disabled:opacity-50"
+                        >
+                          {direction === 'sent' ? 'Cancel Request' : 'Decline'}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {friendError ? <p className="mb-2 text-xs text-red-300">{friendError}</p> : null}
+            {friendNotice ? <p className="mb-2 text-xs text-emerald-300">{friendNotice}</p> : null}
             <p className="mb-2 text-xs uppercase tracking-[0.2em] text-emerald-300/80">
               All players
             </p>
@@ -1158,7 +1381,7 @@ export default function PlayerChatPage() {
               placeholder="Search players"
               className="mb-3 w-full rounded-xl border border-white/15 bg-black/45 px-3 py-2 text-sm"
             />
-            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain pr-1">
+            <div className="max-h-[min(50dvh,28rem)] min-h-0 flex-1 space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain pr-1 lg:max-h-none">
               {chatLoading ? (
                 <p className="rounded-xl border border-white/10 bg-black/40 p-3 text-sm text-amber-100/60">
                   Chat loading...
@@ -1227,6 +1450,17 @@ export default function PlayerChatPage() {
                           <p className="mt-1 line-clamp-2 text-xs text-amber-100/55">
                             {p.bio || 'Chat profile active'}
                           </p>
+                          {friendByUid[p.uid]?.status === 'accepted' ? (
+                            <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-emerald-300">
+                              Friends
+                            </p>
+                          ) : friendByUid[p.uid]?.status === 'pending' ? (
+                            <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-amber-300">
+                              {friendByUid[p.uid].requestedByUid === selfUid
+                                ? 'Request sent'
+                                : 'Request received'}
+                            </p>
+                          ) : null}
                         </div>
                       </div>
                       <p className="mt-1 truncate text-xs text-amber-100/50">
@@ -1239,7 +1473,11 @@ export default function PlayerChatPage() {
             </div>
           </aside>
 
-          <section className="fire-panel fire-orange flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-amber-400/20 bg-black/45">
+          <section
+            className={`fire-panel fire-orange min-h-0 flex-1 flex-col overflow-hidden border border-amber-400/20 bg-black/45 lg:flex lg:rounded-2xl ${
+              selectedPeer ? 'flex rounded-none' : 'hidden'
+            }`}
+          >
             {!selectedPeer ? (
               <div className="m-auto p-8 text-center text-amber-100/65">
                 <p className="text-4xl">💬</p>
@@ -1248,27 +1486,63 @@ export default function PlayerChatPage() {
             ) : (
               <>
                 <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-white/10 p-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedPeer(null);
+                      setSearchResults([]);
+                    }}
+                    className="rounded-lg border border-white/20 bg-white/5 px-2.5 py-1 text-xs font-bold text-amber-100 hover:bg-white/10 lg:hidden"
+                  >
+                    ← Back
+                  </button>
                   <h2 className="mr-auto text-lg font-bold">{selectedPeerDisplayName}</h2>
                   {typing ? <span className="text-xs text-emerald-300">typing...</span> : null}
                   {!selectedFriend ? (
                     <button
                       type="button"
-                      onClick={() => void sendFriendRequest(selectedPeer.uid)}
+                      disabled={Boolean(friendActionUid)}
+                      onClick={() => void onSendFriendRequest(selectedPeer.uid)}
                       className="rounded-lg border border-emerald-300/40 bg-emerald-500/15 px-2.5 py-1 text-xs hover:bg-emerald-500/25"
                     >
-                      Add Friend
+                      {friendActionUid === selectedPeer.uid ? 'Sending...' : 'Add Friend'}
                     </button>
                   ) : selectedFriend.status === 'pending' && selectedFriend.requestedByUid !== selfUid ? (
-                    <button
-                      type="button"
-                      onClick={() => void acceptFriendRequest(selectedPeer.uid)}
-                      className="rounded-lg border border-amber-300/40 bg-amber-500/15 px-2.5 py-1 text-xs hover:bg-amber-500/25"
-                    >
-                      Accept Request
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        disabled={Boolean(friendActionUid)}
+                        onClick={() => void onAcceptFriendRequest(selectedPeer.uid)}
+                        className="rounded-lg border border-amber-300/40 bg-amber-500/15 px-2.5 py-1 text-xs hover:bg-amber-500/25 disabled:opacity-50"
+                      >
+                        {friendActionUid === selectedPeer.uid ? 'Updating...' : 'Accept Request'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={Boolean(friendActionUid)}
+                        onClick={() => void onDeclineFriendRequest(selectedPeer.uid)}
+                        className="rounded-lg border border-red-300/40 bg-red-500/10 px-2.5 py-1 text-xs text-red-100 hover:bg-red-500/20 disabled:opacity-50"
+                      >
+                        Decline
+                      </button>
+                    </>
+                  ) : selectedFriend.status === 'pending' ? (
+                    <>
+                      <span className="rounded-lg border border-amber-300/30 bg-amber-500/10 px-2.5 py-1 text-xs font-bold text-amber-200">
+                        Pending · Sent
+                      </span>
+                      <button
+                        type="button"
+                        disabled={Boolean(friendActionUid)}
+                        onClick={() => void onCancelFriendRequest(selectedPeer.uid)}
+                        className="rounded-lg border border-red-300/40 bg-red-500/10 px-2.5 py-1 text-xs text-red-100 hover:bg-red-500/20 disabled:opacity-50"
+                      >
+                        {friendActionUid === selectedPeer.uid ? 'Cancelling...' : 'Cancel Request'}
+                      </button>
+                    </>
                   ) : (
                     <span className="rounded-lg border border-white/15 px-2.5 py-1 text-xs text-emerald-300">
-                      {selectedFriend.status === 'accepted' ? 'Friends' : 'Request Sent'}
+                      Friends
                     </span>
                   )}
                   <button

@@ -541,6 +541,54 @@ export async function emitChatMessageOutboxEvent(
   }
 }
 
+export async function emitPlayerFriendLinkOutboxEvent(
+  client: PoolClient,
+  input: {
+    linkId: string;
+    participantUids: string[];
+    requestedByUid: string;
+    actorUid: string;
+    status: string;
+    eventType:
+      | 'player_friend_request_created'
+      | 'player_friend_request_accepted'
+      | 'player_friend_request_declined'
+      | 'player_friend_request_cancelled';
+  }
+) {
+  const linkId = cleanText(input.linkId);
+  const participantUids = Array.from(
+    new Set(input.participantUids.map(cleanText).filter(Boolean))
+  );
+  if (!linkId || participantUids.length !== 2) {
+    return [];
+  }
+  const updatedAt = new Date().toISOString();
+  const payload = {
+    entityId: linkId,
+    linkId,
+    participantUids,
+    requestedByUid: cleanText(input.requestedByUid),
+    actorUid: cleanText(input.actorUid),
+    status: cleanText(input.status),
+    updatedAt,
+    source: 'player_friend_links',
+  };
+  return insertLiveOutboxEventsBatch(
+    client,
+    participantUids.map((uid) => ({
+      channel: userChatLiveChannel(uid),
+      eventType: input.eventType,
+      entityType: 'player_friend_link',
+      entityId: linkId,
+      payload,
+      source: 'player_friend_links',
+      mirroredAt: updatedAt,
+    })),
+    { flowName: input.eventType }
+  );
+}
+
 function resolveCarerTaskOutboxChannels(input: {
   coadminUid?: unknown;
   assignedCarerUid?: unknown;
