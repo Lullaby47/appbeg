@@ -57,7 +57,6 @@ type CredentialCardProps = {
   credentialTaskLoadingKey: string | null;
   downloadGameUrl: string;
   gameCardBackgroundImage: string;
-  index: number;
   isMobileCard: boolean;
   login: PlayerGameLogin;
   openCredentialResetModal: VaultProps['openCredentialResetModal'];
@@ -80,7 +79,6 @@ const CredentialCard = memo(function CredentialCard({
   credentialTaskLoadingKey,
   downloadGameUrl,
   gameCardBackgroundImage,
-  index,
   isMobileCard,
   login,
   openCredentialResetModal,
@@ -89,30 +87,19 @@ const CredentialCard = memo(function CredentialCard({
 }: CredentialCardProps) {
   const isResetLoading = credentialTaskLoadingKey === `reset_password:${login.id}`;
   const cardClassName =
-    'vault-credential-card fire-panel fire-orange group relative overflow-hidden rounded-[1.7rem] border border-amber-300/25 bg-gradient-to-br from-[#3a140b]/88 via-[#5d2411]/78 to-[#261018]/92 p-2.5 shadow-[0_18px_40px_-18px_rgba(56,11,4,0.9)] backdrop-blur-xl transition-all sm:p-3 sm:hover:border-amber-300/45 sm:hover:shadow-[0_0_30px_-10px_rgba(251,191,36,0.38)]';
+    'player-game-card-image vault-credential-card fire-panel fire-orange group relative overflow-hidden rounded-[1.7rem] border border-amber-300/25 bg-gradient-to-br from-[#3a140b]/88 via-[#5d2411]/78 to-[#261018]/92 p-3 shadow-[0_18px_40px_-18px_rgba(56,11,4,0.9)] backdrop-blur-xl transition-all sm:p-3.5 sm:hover:border-amber-300/45 sm:hover:shadow-[0_0_30px_-10px_rgba(251,191,36,0.38)]';
+  const cardStyle = gameCardBackgroundImage
+    ? {
+        backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.24) 0%, rgba(0, 0, 0, 0.54) 100%), url("${gameCardBackgroundImage}")`,
+        backgroundSize: '100% 100%',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+        filter: 'brightness(1.14) saturate(1.1)',
+      }
+    : undefined;
   const cardContent = (
     <>
-      <div className="relative mb-2.5 h-44 overflow-hidden rounded-2xl border border-amber-200/15 bg-gradient-to-br from-amber-500/20 via-red-950/55 to-black/75 sm:h-48">
-        {gameCardBackgroundImage ? (
-          <img
-            src={gameCardBackgroundImage}
-            alt=""
-            loading="lazy"
-            decoding="async"
-            fetchPriority="low"
-            className="h-full w-full object-cover"
-            aria-hidden="true"
-          />
-        ) : null}
-        <div
-          className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/8 via-black/18 to-black/72"
-          aria-hidden="true"
-        />
-        <span className="absolute right-2 top-2 rounded-full border border-emerald-300/25 bg-emerald-400/12 px-2 py-0.5 text-[0.62rem] font-black uppercase tracking-[0.1em] text-emerald-100/85">
-          Active
-        </span>
-      </div>
-      <div className="mb-1.5 border-b border-amber-200/10 pb-1.5">
+      <div className="mb-1.5 flex items-start justify-between gap-3 border-b border-amber-200/10 pb-1.5">
         <div className="min-w-0">
           <p className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-amber-100/50">
             Game
@@ -131,6 +118,9 @@ const CredentialCard = memo(function CredentialCard({
             </a>
           ) : null}
         </div>
+        <span className="shrink-0 rounded-full border border-emerald-300/25 bg-emerald-400/12 px-2 py-0.5 text-[0.62rem] font-black uppercase tracking-[0.1em] text-emerald-100/85">
+          Active
+        </span>
       </div>
 
       <div className="space-y-1.5">
@@ -204,11 +194,15 @@ const CredentialCard = memo(function CredentialCard({
   );
 
   if (isMobileCard) {
-    return <div className={cardClassName}>{cardContent}</div>;
+    return (
+      <div className={cardClassName} style={cardStyle}>
+        {cardContent}
+      </div>
+    );
   }
 
   return (
-    <motion.div layout className={cardClassName}>
+    <motion.div layout className={cardClassName} style={cardStyle}>
       {cardContent}
     </motion.div>
   );
@@ -224,7 +218,6 @@ function areCredentialCardPropsEqual(
   const nextLoading = next.credentialTaskLoadingKey === `reset_password:${nextLogin.id}`;
 
   return (
-    previous.index === next.index &&
     previous.isMobileCard === next.isMobileCard &&
     previous.visible === next.visible &&
     previousLoading === nextLoading &&
@@ -405,7 +398,7 @@ function Vault(props: VaultProps) {
           ) : (
             <>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:gap-5">
-                {visibleCredentials.map((login: PlayerGameLogin, index: number) => {
+                {visibleCredentials.map((login: PlayerGameLogin) => {
                   const fallbackFrontendUrl =
                     coadminFrontendLinkByGameKey[
                       normalizeBackgroundKey(String(login.gameName || ''))
@@ -425,7 +418,6 @@ function Vault(props: VaultProps) {
                       credentialTaskLoadingKey={credentialTaskLoadingKey}
                       downloadGameUrl={downloadGameUrl}
                       gameCardBackgroundImage={gameCardBackgroundImage}
-                      index={index}
                       isMobileCard={shouldPageCredentials}
                       login={login}
                       openCredentialResetModal={openCredentialResetModal}

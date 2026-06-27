@@ -1260,6 +1260,14 @@
     filter: none !important;
   }
 
+  .player-fire-page .player-game-card-image {
+    filter: brightness(1.12) saturate(1.08) !important;
+  }
+
+  .player-fire-page .vault-credential-card.player-game-card-image {
+    filter: brightness(1.14) saturate(1.1) !important;
+  }
+
   .player-fire-page .vault-credential-card {
     contain: paint;
     transform: none !important;
