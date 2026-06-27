@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import type { PlayerGameLogin } from '@/features/games/playerGameLogins';
 import { warmPlayerImages } from '../playerAssetPreload';
@@ -25,7 +25,7 @@ function getMobileLowEndMode() {
   );
 }
 
-export default function Play(props: Props) {
+function Play(props: Props) {
   const {
     copyCredentialValue,
     gameBackgroundImageByKey,
@@ -204,7 +204,7 @@ export default function Play(props: Props) {
                                 : 'border-white/10 bg-black/45 hover:border-amber-400/35'
                             }`}
                             style={
-                              gameCardBackgroundImage && !lowPerformanceMode
+                              gameCardBackgroundImage
                                 ? {
                                     backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.2) 0%, rgba(0, 0, 0, 0.42) 100%), url("${gameCardBackgroundImage}")`,
                                     backgroundSize: '100% 100%',
@@ -215,23 +215,6 @@ export default function Play(props: Props) {
                                 : undefined
                             }
                           >
-                            {lowPerformanceMode && gameCardBackgroundImage ? (
-                              <div className="relative mb-2 h-28 overflow-hidden rounded-xl border border-amber-200/15 bg-black/35">
-                                <img
-                                  src={gameCardBackgroundImage}
-                                  alt=""
-                                  loading="lazy"
-                                  decoding="async"
-                                  fetchPriority="low"
-                                  className="h-full w-full object-cover"
-                                  aria-hidden="true"
-                                />
-                                <div
-                                  className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/10 via-black/25 to-black/72"
-                                  aria-hidden="true"
-                                />
-                              </div>
-                            ) : null}
                             <div className="pointer-events-none absolute -right-6 -top-6 h-24 w-24 rounded-full bg-amber-400/15 blur-2xl" />
                             <div className="relative flex items-start justify-center gap-2">
                               <div className="min-w-0 flex-1 text-center">
@@ -294,3 +277,5 @@ export default function Play(props: Props) {
               </div>
   );
 }
+
+export default memo(Play);

@@ -239,7 +239,7 @@ function areCredentialCardPropsEqual(
   );
 }
 
-export default function Vault(props: VaultProps) {
+function Vault(props: VaultProps) {
   const {
     coadminFrontendLinkByGameKey,
     copyCredentialValue,
@@ -465,3 +465,5 @@ export default function Vault(props: VaultProps) {
     </div>
   );
 }
+
+export default memo(Vault);

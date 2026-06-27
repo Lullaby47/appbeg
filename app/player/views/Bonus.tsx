@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { memo, useEffect } from 'react';
 import { playerDebugLog } from '@/lib/client/playerDebugLogs';
 import { AnimatePresence, motion } from 'motion/react';
 import { getPlayerBonusEventDescription } from '../utils';
@@ -8,7 +8,7 @@ import { usePlayerRenderPerf } from '../performance';
 
 type Props = Record<string, any>;
 
-export default function Bonus(props: Props) {
+function Bonus(props: Props) {
   const {
     activatingBonusEventId,
     activeBonusCarouselIndex,
@@ -265,3 +265,5 @@ export default function Bonus(props: Props) {
               </div>
   );
 }
+
+export default memo(Bonus);

@@ -1335,6 +1335,10 @@ export default function PlayerPage() {
     const currentUid = playerUid || auth.currentUser?.uid || getCachedSessionUser()?.uid || '';
     return mapFirestoreChatToDisplay(pagedAgentChat.items, currentUid);
   }, [pagedAgentChat.items, playerUid]);
+  const agentPagedChatViewState = useMemo(
+    () => ({ loadingOlder: pagedAgentChat.loadingOlder }),
+    [pagedAgentChat.loadingOlder]
+  );
 
   useLayoutEffect(() => {
     if (!selectedAgent || messages.length === 0) {
@@ -1521,7 +1525,7 @@ export default function PlayerPage() {
     return Boolean(state?.[ACTIVE_TABLE_SPLASH_HISTORY_KEY]);
   }
 
-  function openActiveTableSplash() {
+  const openActiveTableSplash = useCallback(() => {
     if (!showActiveTableSplashRef.current && !activeTableHistoryOpenRef.current) {
       resumeThemeAfterTableRef.current = Boolean(
         musicEnabledRef.current && audioRef.current && !audioRef.current.paused
@@ -1541,7 +1545,7 @@ export default function PlayerPage() {
     }
     setIsPlayAmountEditable(false);
     setShowActiveTableSplash(true);
-  }
+  }, [playTableOpenSound]);
 
   function closeActiveTableSplash(options?: { fromPopState?: boolean }) {
     const wasOpen = showActiveTableSplashRef.current || activeTableHistoryOpenRef.current;
@@ -2907,11 +2911,11 @@ export default function PlayerPage() {
     }, 1800);
   }
 
-  function showClipboardToast(
+  const showClipboardToast = useCallback((
     text: string,
     tone: ClipboardToastTone,
     event: Pick<MouseEvent, 'clientX' | 'clientY'>
-  ) {
+  ) => {
     if (clipboardToastTimerRef.current !== null) {
       clearTimeout(clipboardToastTimerRef.current);
       clipboardToastTimerRef.current = null;
@@ -2926,9 +2930,9 @@ export default function PlayerPage() {
       setClipboardToast(null);
       clipboardToastTimerRef.current = null;
     }, 2200);
-  }
+  }, []);
 
-  async function copyCredentialValue(value: string, label: string, event: MouseEvent) {
+  const copyCredentialValue = useCallback(async (value: string, label: string, event: MouseEvent) => {
     const clean = value.trim();
 
     if (!clean) {
@@ -2942,9 +2946,9 @@ export default function PlayerPage() {
     } catch {
       showClipboardToast('Could not copy.', 'error', event);
     }
-  }
+  }, [showClipboardToast]);
 
-  async function handleCopyReferralCode(event: MouseEvent) {
+  const handleCopyReferralCode = useCallback(async (event: MouseEvent) => {
     const code = referralCode.trim();
     if (!code) {
       showClipboardToast('Referral code is not ready yet.', 'warn', event);
@@ -2957,9 +2961,9 @@ export default function PlayerPage() {
     } catch {
       showClipboardToast('Could not copy.', 'error', event);
     }
-  }
+  }, [referralCode, showClipboardToast]);
 
-  async function ensureCurrentPlayerReferralCode(currentPlayerUid: string) {
+  const ensureCurrentPlayerReferralCode = useCallback(async (currentPlayerUid: string) => {
     if (!currentPlayerUid || referralCodeEnsureInFlightRef.current) {
       return;
     }
@@ -3005,9 +3009,9 @@ export default function PlayerPage() {
     } finally {
       referralCodeEnsureInFlightRef.current = false;
     }
-  }
+  }, []);
 
-  function applyPlayerProfileSnapshot(profile: PlayerProfileSqlSnapshot, currentPlayerUid: string) {
+  const applyPlayerProfileSnapshot = useCallback((profile: PlayerProfileSqlSnapshot, currentPlayerUid: string) => {
     markPlayerPerf('live_update_profile', {
       playerUid: currentPlayerUid,
       coin: Number(profile.coin || 0),
@@ -3051,7 +3055,7 @@ export default function PlayerPage() {
         window.sessionStorage.setItem(noticeKey, '1');
       }
     }
-  }
+  }, [ensureCurrentPlayerReferralCode, setWalletIfChanged]);
 
   const playNotificationSound = useCallback(() => {
     playSoundEffect(notificationSoundRef, '/urgency-sound.mp3', 0.6);
@@ -4525,7 +4529,7 @@ export default function PlayerPage() {
     }
   }, [playerUid, shouldSkipIndividualLoader]);
 
-  async function handleClaimReferralReward(referredPlayerUid: string) {
+  const handleClaimReferralReward = useCallback(async (referredPlayerUid: string) => {
     if (!referredPlayerUid || claimingReferredPlayerUid) {
       return;
     }
@@ -4549,7 +4553,7 @@ export default function PlayerPage() {
     } finally {
       setClaimingReferredPlayerUid(null);
     }
-  }
+  }, [claimingReferredPlayerUid, loadReferralRewards]);
 
   const loadFreeplayGift = useCallback(async (options: { force?: boolean } = {}) => {
     if (shouldSkipIndividualLoader('freeplay', options.force)) {
@@ -4676,7 +4680,7 @@ export default function PlayerPage() {
     isPlayerRole,
   ]);
 
-  async function handleClaimFreeplayGift() {
+  const handleClaimFreeplayGift = useCallback(async () => {
     if (!hasPendingFreeplayGift || !pendingFreeplayGiftId || claimingFreeplayGift) {
       return;
     }
@@ -4724,7 +4728,15 @@ export default function PlayerPage() {
     } finally {
       setClaimingFreeplayGift(false);
     }
-  }
+  }, [
+    applyPlayerProfileSnapshot,
+    claimingFreeplayGift,
+    hasPendingFreeplayGift,
+    loadFreeplayGift,
+    pendingFreeplayGiftId,
+    playGiftSound,
+    playerUid,
+  ]);
 
   useEffect(() => {
     if (!freeplayClaimSuccessMessage) {
@@ -5278,11 +5290,11 @@ export default function PlayerPage() {
     }
   }
 
-  function openCredentialResetModal(
+  const openCredentialResetModal = useCallback((
     gameLogin: PlayerGameLogin,
     taskType: 'reset_password' | 'recreate_username',
     event?: MouseEvent<HTMLButtonElement>
-  ) {
+  ) => {
     event?.preventDefault();
     event?.stopPropagation();
     console.info('[PLAYER_ACTION_CLICK]', {
@@ -5291,7 +5303,7 @@ export default function PlayerPage() {
       gameLoginId: gameLogin.id,
     });
     setCredentialResetModal({ gameLogin, taskType });
-  }
+  }, []);
 
   async function executeCredentialResetTask(
     gameLogin: PlayerGameLogin,
@@ -5354,7 +5366,7 @@ export default function PlayerPage() {
     await executeCredentialResetTask(gameLogin, taskType);
   }
 
-  async function handleImageSelect(file: File) {
+  const handleImageSelect = useCallback(async (file: File) => {
     try {
       const { default: imageCompression } = await import('browser-image-compression');
       const compressed = await imageCompression(file, {
@@ -5369,9 +5381,9 @@ export default function PlayerPage() {
       console.error(error);
       setMessage('Failed to process image.');
     }
-  }
+  }, []);
 
-  function handleClearImage() {
+  const handleClearImage = useCallback(() => {
     setSelectedImage(null);
 
     if (imagePreview) {
@@ -5379,9 +5391,9 @@ export default function PlayerPage() {
     }
 
     setImagePreview(null);
-  }
+  }, [imagePreview]);
 
-  async function handleSendMessage(event: React.FormEvent) {
+  const handleSendMessage = useCallback(async (event: FormEvent) => {
     event.preventDefault();
 
     if (!selectedAgent) {
@@ -5418,16 +5430,16 @@ export default function PlayerPage() {
     } finally {
       setSendingImage(false);
     }
-  }
+  }, [handleClearImage, newMessage, playerCoadminUid, playerUid, selectedAgent, selectedImage]);
 
-  function handleAgentSelect(agent: AdminUser) {
+  const handleAgentSelect = useCallback((agent: AdminUser) => {
     setSelectedAgent(agent);
     setNewMessage('');
     handleClearImage();
     lastRenderedAgentReadRef.current = '';
-  }
+  }, [handleClearImage]);
 
-  function handleOpenFirstUnreadAgent() {
+  const handleOpenFirstUnreadAgent = useCallback(() => {
     const unreadAgent =
       agents.find((agent) => (unreadCounts[agent.uid] || 0) > 0) || null;
 
@@ -5436,9 +5448,9 @@ export default function PlayerPage() {
     if (unreadAgent) {
       handleAgentSelect(unreadAgent);
     }
-  }
+  }, [agents, handleAgentSelect, unreadCounts]);
 
-  function openPlayView(source: string) {
+  const openPlayView = useCallback((source: string) => {
     if (!playPanelRenderStartLoggedRef.current) {
       playPanelRenderStartLoggedRef.current = true;
       console.info('[PLAY_PANEL_RENDER_START]', {
@@ -5452,9 +5464,9 @@ export default function PlayerPage() {
       });
     }
     setActiveView('play');
-  }
+  }, [activeView, baseDataLoaded, isPlayerRole, loadingList, playerUid, startupNow]);
 
-  function setActiveViewFromLobby(value: SetStateAction<PlayerView>) {
+  const setActiveViewFromLobby = useCallback((value: SetStateAction<PlayerView>) => {
     if (typeof value === 'function') {
       setActiveView(value);
       return;
@@ -5464,9 +5476,9 @@ export default function PlayerPage() {
       return;
     }
     setActiveView(value);
-  }
+  }, [openPlayView]);
 
-  function handleChangeView(view: PlayerView, options: { scrollToTop?: boolean } = {}) {
+  const handleChangeView = useCallback((view: PlayerView, options: { scrollToTop?: boolean } = {}) => {
     if (view === 'play') {
       openPlayView('handleChangeView');
       setMobileMenuOpen(false);
@@ -5497,7 +5509,7 @@ export default function PlayerPage() {
       pageScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
-  }
+  }, [handleClearImage, openPlayView]);
 
   function handlePanelTouchStart(event: TouchEvent<HTMLDivElement>) {
     if (event.touches.length !== 1) {
@@ -5544,12 +5556,12 @@ export default function PlayerPage() {
     handleChangeView(nextView, { scrollToTop: false });
   }
 
-  function togglePassword(loginId: string) {
+  const togglePassword = useCallback((loginId: string) => {
     setVisiblePasswords((previous) => ({
       ...previous,
       [loginId]: !previous[loginId],
     }));
-  }
+  }, []);
 
   function createCashToCoinTransferId() {
     if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -5558,7 +5570,7 @@ export default function PlayerPage() {
     return `${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
   }
 
-  function openCashToCoinTransferModal() {
+  const openCashToCoinTransferModal = useCallback(() => {
     if (maintenanceBreak.enabled) {
       setMessage(maintenanceBreak.message);
       return;
@@ -5568,9 +5580,9 @@ export default function PlayerPage() {
     setTransferCoinAmountInput('');
     setMessage('');
     setShowCoinConfirmSplash(true);
-  }
+  }, [maintenanceBreak.enabled, maintenanceBreak.message]);
 
-  function openCoinToCashTransferModal() {
+  const openCoinToCashTransferModal = useCallback(() => {
     if (maintenanceBreak.enabled) {
       setMessage(maintenanceBreak.message);
       return;
@@ -5580,7 +5592,7 @@ export default function PlayerPage() {
     setTransferCoinAmountInput('');
     setMessage('');
     setShowCoinConfirmSplash(true);
-  }
+  }, [maintenanceBreak.enabled, maintenanceBreak.message]);
 
   function openPlayerPasswordResetModal(event?: MouseEvent<HTMLButtonElement>) {
     event?.preventDefault();
@@ -6086,7 +6098,7 @@ export default function PlayerPage() {
     }
   }
 
-  async function handleActivateBonusEvent(bonusEvent: BonusEvent) {
+  const handleActivateBonusEvent = useCallback(async (bonusEvent: BonusEvent) => {
     if (maintenanceBreak.enabled) {
       console.info('[MAINTENANCE] blocked player action', {
         action: 'bonus_event',
@@ -6145,7 +6157,12 @@ export default function PlayerPage() {
     } finally {
       setActivatingBonusEventId(null);
     }
-  }
+  }, [
+    maintenanceBreak.enabled,
+    maintenanceBreak.message,
+    playerCoadminUid,
+    playerUid,
+  ]);
 
   function readPlayerLogoutContext() {
     const cached = getCachedSessionUser();
@@ -6550,6 +6567,56 @@ export default function PlayerPage() {
       </button>
     );
   }
+
+  const handlePlayCardsRendered = useCallback((input: { count: number; state: string }) => {
+    if (!playPanelCardsRenderedLoggedRef.current) {
+      playPanelCardsRenderedLoggedRef.current = true;
+      console.info('[PLAY_PANEL_CARDS_RENDERED]', {
+        elapsed_ms: startupNow(),
+        count: input.count,
+        state: input.state,
+        source: '/api/player/play-data',
+      });
+    }
+    if (!playPanelFullyReadyLoggedRef.current) {
+      playPanelFullyReadyLoggedRef.current = true;
+      console.info('[PLAY_PANEL_FULLY_READY]', {
+        elapsed_ms: startupNow(),
+        definition: 'play shell rendered and play-data card state resolved',
+        cardCount: input.count,
+        cardState: input.state,
+        nonBlockingHydration: {
+          baseDataLoaded,
+          cashoutsLoaded: Boolean(playerStartupRef.current?.cashoutsLoaded),
+          liveSnapshotLoaded: Boolean(playerStartupRef.current?.requestsLoaded),
+          bonusEventsListening: shouldListenToBonusEvents,
+        },
+      });
+    }
+  }, [baseDataLoaded, shouldListenToBonusEvents, startupNow]);
+
+  const handlePlayShellRendered = useCallback(() => {
+    if (!playPanelShellRenderedLoggedRef.current) {
+      playPanelShellRenderedLoggedRef.current = true;
+      console.info('[PLAY_PANEL_SHELL_RENDERED]', {
+        elapsed_ms: startupNow(),
+        gameLoginCount: gameLogins.length,
+        loadingList,
+      });
+    }
+  }, [gameLogins.length, loadingList, startupNow]);
+
+  const handleAgentsBackToAgents = useCallback(() => {
+    setSelectedAgent(null);
+  }, []);
+
+  const handleAgentsMessageFocus = useCallback(() => {
+    markThreadReadOnPlayerChatFocus(
+      selectedAgent?.uid,
+      playerAuthorityChatTypeForUser(selectedAgent),
+      'input'
+    );
+  }, [markThreadReadOnPlayerChatFocus, playerAuthorityChatTypeForUser, selectedAgent]);
 
   return (
     <>
@@ -7061,41 +7128,7 @@ export default function PlayerPage() {
             {activeView === 'bonus-events' && <Bonus activatingBonusEventId={activatingBonusEventId} activeBonusCarouselIndex={activeBonusCarouselIndex} bonusEventsSessionLoading={bonusEventsSessionLoading} bonusSwipeStartXRef={bonusSwipeStartXRef} bonusVanishedToast={bonusVanishedToast} handleActivateBonusEvent={handleActivateBonusEvent} lowPerformanceMode={lowPerformanceMode} maintenanceBreak={maintenanceBreak} playerBonusEvents={playerBonusEvents} setBonusCarouselIndex={setBonusCarouselIndex} setBonusStripPaused={setBonusStripPaused} showBonusPanelHint={showBonusPanelHint} />}
 
             {/* PLAY VIEW */}
-            {activeView === 'play' && <Play copyCredentialValue={copyCredentialValue} gameBackgroundImageByKey={gameBackgroundImageByKey} gameLogins={gameLogins} loadingList={loadingList} lowPerformanceMode={lowPerformanceMode} onCardsRendered={(input: { count: number; state: string }) => {
-              if (!playPanelCardsRenderedLoggedRef.current) {
-                playPanelCardsRenderedLoggedRef.current = true;
-                console.info('[PLAY_PANEL_CARDS_RENDERED]', {
-                  elapsed_ms: startupNow(),
-                  count: input.count,
-                  state: input.state,
-                  source: '/api/player/play-data',
-                });
-              }
-              if (!playPanelFullyReadyLoggedRef.current) {
-                playPanelFullyReadyLoggedRef.current = true;
-                console.info('[PLAY_PANEL_FULLY_READY]', {
-                  elapsed_ms: startupNow(),
-                  definition: 'play shell rendered and play-data card state resolved',
-                  cardCount: input.count,
-                  cardState: input.state,
-                  nonBlockingHydration: {
-                    baseDataLoaded,
-                    cashoutsLoaded: Boolean(playerStartupRef.current?.cashoutsLoaded),
-                    liveSnapshotLoaded: Boolean(playerStartupRef.current?.requestsLoaded),
-                    bonusEventsListening: shouldListenToBonusEvents,
-                  },
-                });
-              }
-            }} onShellRendered={() => {
-              if (!playPanelShellRenderedLoggedRef.current) {
-                playPanelShellRenderedLoggedRef.current = true;
-                console.info('[PLAY_PANEL_SHELL_RENDERED]', {
-                  elapsed_ms: startupNow(),
-                  gameLoginCount: gameLogins.length,
-                  loadingList,
-                });
-              }
-            }} openActiveTableSplash={openActiveTableSplash} selectedGameName={selectedGameName} setSelectedGameName={setSelectedGameName} togglePassword={togglePassword} visiblePasswords={visiblePasswords} />}
+            {activeView === 'play' && <Play copyCredentialValue={copyCredentialValue} gameBackgroundImageByKey={gameBackgroundImageByKey} gameLogins={gameLogins} loadingList={loadingList} lowPerformanceMode={lowPerformanceMode} onCardsRendered={handlePlayCardsRendered} onShellRendered={handlePlayShellRendered} openActiveTableSplash={openActiveTableSplash} selectedGameName={selectedGameName} setSelectedGameName={setSelectedGameName} togglePassword={togglePassword} visiblePasswords={visiblePasswords} />}
 
             {/* USERNAMES VIEW */}
             {activeView === 'usernames' && <Vault coadminFrontendLinkByGameKey={coadminFrontendLinkByGameKey} copyCredentialValue={copyCredentialValue} creatorNames={creatorNames} credentialTaskLoadingKey={credentialTaskLoadingKey} gameBackgroundImageByKey={gameBackgroundImageByKey} gameLogins={gameLogins} loadingList={loadingList} lowPerformanceMode={lowPerformanceMode} openCredentialResetModal={openCredentialResetModal} selectedCreatorUid={selectedCreatorUid} setSelectedCreatorUid={setSelectedCreatorUid} togglePassword={togglePassword} usernameCarersByGame={usernameCarersByGame} usernamesCreatorFilterKeys={usernamesCreatorFilterKeys} usernamesVisibleLogins={usernamesVisibleLogins} visiblePasswords={visiblePasswords} />}
@@ -7104,7 +7137,7 @@ export default function PlayerPage() {
             {activeView === 'earn-coins' && <EarnCoins claimingFreeplayGift={claimingFreeplayGift} claimingReferredPlayerUid={claimingReferredPlayerUid} freeplayClaimSuccessMessage={freeplayClaimSuccessMessage} handleClaimFreeplayGift={handleClaimFreeplayGift} handleClaimReferralReward={handleClaimReferralReward} hasPendingFreeplayGift={hasPendingFreeplayGift} lowPerformanceMode={lowPerformanceMode} referralRewardGroups={referralRewardGroups} referralRewardsLoading={referralRewardsLoading} referredByPlayerName={referredByPlayerName} />}
 
             {/* AGENTS VIEW - ReachOutView integration remains the same but styled via the prop structure */}
-            {activeView === 'agents' && <Agents agentOnlineByUid={agentOnlineByUid} agents={agents} agentsScrollRef={agentsScrollRef} handleAgentSelect={handleAgentSelect} handleClearImage={handleClearImage} handleImageSelect={handleImageSelect} handleSendMessage={handleSendMessage} imagePreview={imagePreview} lowPerformanceMode={lowPerformanceMode} messages={messages} newMessage={newMessage} onBackToAgents={() => setSelectedAgent(null)} onMessageFocus={() => markThreadReadOnPlayerChatFocus(selectedAgent?.uid, playerAuthorityChatTypeForUser(selectedAgent), 'input')} pagedAgentChat={pagedAgentChat} selectedAgent={selectedAgent} sendingImage={sendingImage} setNewMessage={setNewMessage} unreadCounts={unreadCounts} />}
+            {activeView === 'agents' && <Agents agentOnlineByUid={agentOnlineByUid} agents={agents} agentsScrollRef={agentsScrollRef} handleAgentSelect={handleAgentSelect} handleClearImage={handleClearImage} handleImageSelect={handleImageSelect} handleSendMessage={handleSendMessage} imagePreview={imagePreview} lowPerformanceMode={lowPerformanceMode} messages={messages} newMessage={newMessage} onBackToAgents={handleAgentsBackToAgents} onMessageFocus={handleAgentsMessageFocus} pagedAgentChat={agentPagedChatViewState} selectedAgent={selectedAgent} sendingImage={sendingImage} setNewMessage={setNewMessage} unreadCounts={unreadCounts} />}
             </div>
           </div>
         </section>

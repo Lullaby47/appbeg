@@ -1,6 +1,7 @@
 'use client';
 
 import { AnimatePresence, motion } from 'motion/react';
+import { memo } from 'react';
 import type { Dispatch, MouseEvent, SetStateAction } from 'react';
 import type { BonusEvent } from '@/features/bonusEvents/bonusEvents';
 import type { PlayerView } from '../types';
@@ -35,7 +36,7 @@ type Props = {
   wallet: { coin: number; cash: number };
 };
 
-export default function Lobby(props: Props) {
+function Lobby(props: Props) {
   const {
     activatingBonusEventId,
     activeBonusCarouselIndex,
@@ -434,3 +435,5 @@ export default function Lobby(props: Props) {
               </div>
   );
 }
+
+export default memo(Lobby);

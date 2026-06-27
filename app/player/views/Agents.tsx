@@ -1,13 +1,13 @@
 'use client';
 
-import { useRef } from 'react';
+import { memo, useRef } from 'react';
 import ReachOutView from '@/components/admin/ReachOutView';
 import { usePlayerRenderPerf } from '../performance';
 
 type Props = Record<string, any>;
 const PLAYER_RENDER_DEBUG = process.env.NEXT_PUBLIC_PLAYER_RENDER_DEBUG === '1';
 
-export default function Agents(props: Props) {
+function Agents(props: Props) {
   const {
     agentOnlineByUid,
     agents,
@@ -84,3 +84,5 @@ export default function Agents(props: Props) {
               </div>
   );
 }
+
+export default memo(Agents);

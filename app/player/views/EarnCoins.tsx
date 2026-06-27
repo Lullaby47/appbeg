@@ -1,6 +1,7 @@
 'use client';
 
 import { AnimatePresence, motion } from 'motion/react';
+import { memo } from 'react';
 
 import type { ReferralRewardGroup } from '@/features/referrals/playerReferralRewards';
 import { getPublicDisplayName } from '@/lib/player/publicDisplayName';
@@ -19,7 +20,7 @@ type Props = {
   referredByPlayerName: string;
 };
 
-export default function EarnCoins(props: Props) {
+function EarnCoins(props: Props) {
   const {
     claimingFreeplayGift,
     claimingReferredPlayerUid,
@@ -271,3 +272,5 @@ export default function EarnCoins(props: Props) {
               </div>
   );
 }
+
+export default memo(EarnCoins);
