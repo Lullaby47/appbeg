@@ -1,6 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { collection, doc, getDoc, getDocs, onSnapshot, query, where } from 'firebase/firestore';
 
 import { assertClientFirestoreDisabled } from '@/lib/client/clientFirestoreGuard';
@@ -105,6 +112,20 @@ const NPR_TO_USD = 0.0075;
 const NPR_TO_AED = NPR_TO_USD / AED_TO_USD;
 const STAFF_PLAYER_CHAT_PAGE_SIZE = 25;
 
+function subscribeStaffMobileViewport(onChange: () => void) {
+  const media = window.matchMedia('(max-width: 1023px)');
+  media.addEventListener('change', onChange);
+  return () => media.removeEventListener('change', onChange);
+}
+
+function getStaffMobileViewportSnapshot() {
+  return window.matchMedia('(max-width: 1023px)').matches;
+}
+
+function getStaffMobileViewportServerSnapshot() {
+  return false;
+}
+
 function sortByNewest<T extends { createdAt?: any }>(list: T[]) {
   return [...list].sort((a: any, b: any) => {
     const aTime = a.createdAt?.toDate?.()?.getTime?.() || a.createdAt?.getTime?.() || 0;
@@ -195,6 +216,11 @@ function isAutoDismissStaffSuccessMessage(value: string) {
 }
 
 export default function StaffPage() {
+  const isMobilePlayerWorkspace = useSyncExternalStore(
+    subscribeStaffMobileViewport,
+    getStaffMobileViewportSnapshot,
+    getStaffMobileViewportServerSnapshot
+  );
   const [activeView, setActiveView] = useState<StaffView>('dashboard');
   const [creatorRole, setCreatorRole] = useState<'admin' | 'coadmin' | null>(null);
   const [playerUsername, setPlayerUsername] = useState('');
@@ -1397,6 +1423,14 @@ export default function StaffPage() {
     markConversationAsRead(user.uid);
   }
 
+  function handleBackToPlayerList() {
+    setSelectedViewPlayer(null);
+    setSelectedPlayerChatUser(null);
+    setNewPlayerMessage('');
+    setStaffWalletLoadFormUid(null);
+    setStaffWalletLoadAmountInput('');
+  }
+
   async function handleSelectPlayerWorkspace(user: PlayerUser) {
     setSelectedViewPlayer(user);
     setSelectedPlayerChatUser(user);
@@ -1816,17 +1850,23 @@ export default function StaffPage() {
         items={sidebarItems}
         footer={<LogoutButton />}
       >
-          <div className="mb-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-emerald-200/80">
-              USD Cash Box
-            </p>
-            <p className="mt-1 text-2xl font-bold text-emerald-100">
-              {formatAed(staffCashBoxUsdAmount)}
-            </p>
-            <p className="mt-1 text-xs text-emerald-100/70">
-              Includes 5% reward from each completed player cashout.
-            </p>
-          </div>
+          {!(
+            isMobilePlayerWorkspace &&
+            activeView === 'view-players' &&
+            selectedViewPlayer
+          ) ? (
+            <div className="mb-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4">
+              <p className="text-xs uppercase tracking-[0.2em] text-emerald-200/80">
+                USD Cash Box
+              </p>
+              <p className="mt-1 text-2xl font-bold text-emerald-100">
+                {formatAed(staffCashBoxUsdAmount)}
+              </p>
+              <p className="mt-1 text-xs text-emerald-100/70">
+                Includes 5% reward from each completed player cashout.
+              </p>
+            </div>
+          ) : null}
 
           {message && (
             <div className="mb-4 rounded-2xl bg-white/10 p-3 text-sm text-neutral-300">
@@ -1980,8 +2020,23 @@ export default function StaffPage() {
           )}
 
           {!isAdminCreatedStaff && activeView === 'view-players' && (
-            <div className="grid h-[calc(100dvh-13rem)] min-h-0 grid-cols-1 grid-rows-[minmax(12rem,18rem)_minmax(0,1fr)] gap-4 overflow-hidden lg:h-[calc(100dvh-12rem)] lg:grid-cols-[minmax(17rem,21rem)_minmax(0,1fr)] lg:grid-rows-1">
-              <aside className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-neutral-950/70">
+            <div
+              className={
+                isMobilePlayerWorkspace
+                  ? selectedViewPlayer
+                    ? 'fixed inset-0 z-[35] flex min-h-0 flex-col overflow-hidden bg-neutral-950'
+                    : 'block'
+                  : 'grid h-[calc(100dvh-12rem)] min-h-0 grid-cols-[minmax(17rem,21rem)_minmax(0,1fr)] grid-rows-1 gap-4 overflow-hidden'
+              }
+            >
+              {!isMobilePlayerWorkspace || !selectedViewPlayer ? (
+                <aside
+                  className={
+                    isMobilePlayerWorkspace
+                      ? 'flex flex-col rounded-2xl border border-white/10 bg-neutral-950/70'
+                      : 'flex min-h-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-neutral-950/70'
+                  }
+                >
                 <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
                   <div>
                     <h2 className="text-base font-bold text-white">Players</h2>
@@ -2017,7 +2072,13 @@ export default function StaffPage() {
                   </div>
                 </div>
 
-                <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-2">
+                <div
+                  className={
+                    isMobilePlayerWorkspace
+                      ? 'space-y-1 px-2 py-2'
+                      : 'min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-2'
+                  }
+                >
                   {loadingList ? (
                     <p className="px-3 py-4 text-sm text-neutral-400">Loading...</p>
                   ) : visiblePlayersForStaffList.length === 0 ? (
@@ -2078,9 +2139,17 @@ export default function StaffPage() {
                     })
                   )}
                 </div>
-              </aside>
+                </aside>
+              ) : null}
 
-              <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04]">
+              {!isMobilePlayerWorkspace || selectedViewPlayer ? (
+                <section
+                  className={
+                    isMobilePlayerWorkspace
+                      ? 'flex h-full min-h-0 flex-col overflow-hidden border border-white/10 bg-neutral-950'
+                      : 'flex min-h-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04]'
+                  }
+                >
                 {!selectedViewPlayer ? (
                   <div className="flex h-full items-center justify-center px-4 text-center text-sm text-neutral-500">
                     Select a player to open their workspace.
@@ -2111,6 +2180,15 @@ export default function StaffPage() {
                     return (
                       <div className="flex h-full min-h-0 flex-col">
                         <div className="shrink-0 border-b border-white/10 px-4 py-3">
+                          {isMobilePlayerWorkspace ? (
+                            <button
+                              type="button"
+                              onClick={handleBackToPlayerList}
+                              className="mb-3 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-bold text-white hover:bg-white/15"
+                            >
+                              Back to players
+                            </button>
+                          ) : null}
                           <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-2">
@@ -2343,7 +2421,7 @@ export default function StaffPage() {
 
                             <form
                               onSubmit={handleSendPlayerMessage}
-                              className="flex shrink-0 gap-2 border-t border-white/10 p-3"
+                              className="flex shrink-0 gap-2 border-t border-white/10 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]"
                             >
                               <input
                                 value={newPlayerMessage}
@@ -2369,7 +2447,8 @@ export default function StaffPage() {
                     );
                   })()
                 )}
-              </section>
+                </section>
+              ) : null}
             </div>
           )}
 
