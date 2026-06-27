@@ -220,10 +220,9 @@ export default function Play(props: Props) {
                                 <img
                                   src={gameCardBackgroundImage}
                                   alt=""
-                                  loading={index < 6 ? 'eager' : 'lazy'}
+                                  loading="lazy"
                                   decoding="async"
-                                  width={640}
-                                  height={360}
+                                  fetchPriority="low"
                                   className="h-full w-full object-cover"
                                   aria-hidden="true"
                                 />

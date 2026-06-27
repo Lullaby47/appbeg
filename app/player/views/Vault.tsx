@@ -88,33 +88,27 @@ const CredentialCard = memo(function CredentialCard({
   visible,
 }: CredentialCardProps) {
   const isResetLoading = credentialTaskLoadingKey === `reset_password:${login.id}`;
-  const imageLoading = index < EAGER_CREDENTIAL_IMAGE_COUNT ? 'eager' : 'lazy';
   const cardClassName =
     'vault-credential-card fire-panel fire-orange group relative overflow-hidden rounded-[1.7rem] border border-amber-300/25 bg-gradient-to-br from-[#3a140b]/88 via-[#5d2411]/78 to-[#261018]/92 p-2.5 shadow-[0_18px_40px_-18px_rgba(56,11,4,0.9)] backdrop-blur-xl transition-all sm:p-3 sm:hover:border-amber-300/45 sm:hover:shadow-[0_0_30px_-10px_rgba(251,191,36,0.38)]';
   const cardContent = (
     <>
-      <div className="vault-credential-image relative mb-2.5 aspect-[16/9] h-44 overflow-hidden rounded-2xl border border-amber-200/15 bg-gradient-to-br from-[#2c130d] via-[#6c2b16] to-[#130b13] sm:h-48">
-        <div
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_24%_18%,rgba(252,211,77,0.28),transparent_34%),linear-gradient(135deg,rgba(234,88,12,0.26),rgba(88,28,135,0.28)_55%,rgba(0,0,0,0.55))]"
-          aria-hidden="true"
-        />
+      <div className="relative mb-2.5 h-44 overflow-hidden rounded-2xl border border-amber-200/15 bg-gradient-to-br from-amber-500/20 via-red-950/55 to-black/75 sm:h-48">
         {gameCardBackgroundImage ? (
           <img
             src={gameCardBackgroundImage}
             alt=""
-            loading={imageLoading}
+            loading="lazy"
             decoding="async"
-            width={640}
-            height={360}
-            className="relative z-[1] h-full w-full object-cover"
+            fetchPriority="low"
+            className="h-full w-full object-cover"
             aria-hidden="true"
           />
         ) : null}
         <div
-          className="pointer-events-none absolute inset-0 z-[2] bg-gradient-to-b from-black/8 via-black/18 to-black/72"
+          className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/8 via-black/18 to-black/72"
           aria-hidden="true"
         />
-        <span className="absolute right-2 top-2 z-[3] rounded-full border border-emerald-300/25 bg-emerald-400/12 px-2 py-0.5 text-[0.62rem] font-black uppercase tracking-[0.1em] text-emerald-100/85">
+        <span className="absolute right-2 top-2 rounded-full border border-emerald-300/25 bg-emerald-400/12 px-2 py-0.5 text-[0.62rem] font-black uppercase tracking-[0.1em] text-emerald-100/85">
           Active
         </span>
       </div>
