@@ -3008,6 +3008,11 @@ export default function PlayerPage() {
   }
 
   function applyPlayerProfileSnapshot(profile: PlayerProfileSqlSnapshot, currentPlayerUid: string) {
+    markPlayerPerf('live_update_profile', {
+      playerUid: currentPlayerUid,
+      coin: Number(profile.coin || 0),
+      cash: Number(profile.cash || 0),
+    });
     setWalletIfChanged({
       coin: Number(profile.coin || 0),
       cash: Number(profile.cash || 0),
@@ -3580,6 +3585,9 @@ export default function PlayerPage() {
         source: 'listenToUnreadCounts',
       });
       unsubscribe = listenToUnreadCounts((counts) => {
+        markPlayerPerf('live_update_unread_counts', {
+          threadCount: Object.keys(counts).length,
+        });
         console.info('[PLAYER_CHAT_READ] refreshReadStateLoaded', {
           threadCount: Object.keys(counts).length,
         });
@@ -3624,6 +3632,11 @@ export default function PlayerPage() {
       playerUid,
       (list) => {
         const sorted = sortByNewest(list);
+        markPlayerPerf('live_update_game_logins', {
+          source: 'listenToPlayerGameLoginsByPlayer',
+          count: sorted.length,
+          activeView: activeViewRef.current,
+        });
         setGameLogins((current) =>
           arePlayerGameLoginsEqual(current, sorted) ? current : sorted
         );
@@ -3671,6 +3684,11 @@ export default function PlayerPage() {
         playerUid,
         (requests) => {
           const sortedRequests = sortByNewest(requests);
+          markPlayerPerf('live_update_requests', {
+            source: 'listenToPlayerGameRequestsByPlayer',
+            count: sortedRequests.length,
+            activeView: activeViewRef.current,
+          });
           setRequestHistory((current) =>
             arePlayerRequestsEqual(current, sortedRequests) ? current : sortedRequests
           );
@@ -3941,6 +3959,11 @@ export default function PlayerPage() {
               count: requests.length,
             });
             const sortedRequests = sortByNewest(requests);
+            markPlayerPerf('live_update_requests', {
+              source: 'player_request_sql_read',
+              count: sortedRequests.length,
+              activeView: activeViewRef.current,
+            });
             setRequestHistory((current) =>
               arePlayerRequestsEqual(current, sortedRequests) ? current : sortedRequests
             );
@@ -4052,6 +4075,12 @@ export default function PlayerPage() {
             void getPlayerGameLoginsByPlayer(playerUid)
               .then((logins) => {
                 const sortedLogins = sortByNewest(logins);
+                markPlayerPerf('live_update_game_logins', {
+                  source: 'player_request_sql_read_refetch',
+                  count: sortedLogins.length,
+                  reason,
+                  activeView: activeViewRef.current,
+                });
                 setGameLogins((current) =>
                   arePlayerGameLoginsEqual(current, sortedLogins) ? current : sortedLogins
                 );
@@ -4170,6 +4199,10 @@ export default function PlayerPage() {
             source: '/api/player-cashout-tasks/cache',
             count: tasks.length,
           });
+          markPlayerPerf('live_update_cashout_tasks', {
+            count: tasks.length,
+            activeView: activeViewRef.current,
+          });
           setPlayerCashoutTasks((current) =>
             arePlayerCashoutTasksEqual(current, tasks) ? current : tasks
           );
@@ -4279,6 +4312,10 @@ export default function PlayerPage() {
     const unsubscribe = listenBonusEventsByCoadmin(
       playerCoadminUid,
       (events) => {
+        markPlayerPerf('live_update_bonus_events', {
+          count: events.length,
+          activeView,
+        });
         if (PLAYER_BONUS_DEBUG) {
           console.info('[player bonusEvents] render-values', {
             snapshotSize: events.length,

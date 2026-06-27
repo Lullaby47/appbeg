@@ -6,6 +6,7 @@ import type { BonusEvent } from '@/features/bonusEvents/bonusEvents';
 import type { PlayerView } from '../types';
 import { getPlayerBonusEventDescription } from '../utils';
 import { MAX_PLAYER_BONUS_EVENTS_DISPLAY } from '@/features/bonusEvents/bonusEvents';
+import { usePlayerRenderPerf } from '../performance';
 
 type Props = {
   activatingBonusEventId: string | null;
@@ -60,6 +61,13 @@ export default function Lobby(props: Props) {
     totalUnread,
     wallet,
   } = props;
+
+  usePlayerRenderPerf('Lobby', () => ({
+    agentCount: agents.length,
+    gameLoginCount: gameLogins.length,
+    bonusEventCount: playerBonusEvents.length,
+    totalUnread,
+  }));
 
   return (
 

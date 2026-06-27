@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from 'motion/react';
 
 import type { ReferralRewardGroup } from '@/features/referrals/playerReferralRewards';
 import { getPublicDisplayName } from '@/lib/player/publicDisplayName';
+import { usePlayerRenderPerf } from '../performance';
 
 type Props = {
   claimingFreeplayGift: boolean;
@@ -30,6 +31,13 @@ export default function EarnCoins(props: Props) {
     referralRewardsLoading,
     referredByPlayerName,
   } = props;
+
+  usePlayerRenderPerf('EarnCoins', () => ({
+    hasPendingFreeplayGift,
+    referralRewardGroupCount: referralRewardGroups.length,
+    referralRewardsLoading,
+    claimingFreeplayGift,
+  }));
 
   return (
 

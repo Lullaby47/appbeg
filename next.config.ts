@@ -26,6 +26,25 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_SQL_PLAYER_LOGIN: publicSqlPlayerLogin,
     NEXT_PUBLIC_SQL_READ_MODE: publicSqlReadMode,
   },
+  async headers() {
+    const playerStaticImageCache = [
+      {
+        key: 'Cache-Control',
+        value: 'public, max-age=604800, stale-while-revalidate=2592000',
+      },
+    ];
+
+    return [
+      {
+        source: '/assets/player/:path*',
+        headers: playerStaticImageCache,
+      },
+      {
+        source: '/gamebackgroundimage/:path*',
+        headers: playerStaticImageCache,
+      },
+    ];
+  },
 };
 
 export default nextConfig;

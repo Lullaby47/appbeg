@@ -2,6 +2,7 @@
 
 import { useRef } from 'react';
 import ReachOutView from '@/components/admin/ReachOutView';
+import { usePlayerRenderPerf } from '../performance';
 
 type Props = Record<string, any>;
 const PLAYER_RENDER_DEBUG = process.env.NEXT_PUBLIC_PLAYER_RENDER_DEBUG === '1';
@@ -28,6 +29,13 @@ export default function Agents(props: Props) {
   } = props;
   const renderDebugCountRef = useRef(0);
   const isChatOpen = Boolean(selectedAgent);
+
+  usePlayerRenderPerf('Agents', () => ({
+    isChatOpen,
+    agentCount: agents.length,
+    messageCount: messages.length,
+    unreadThreadCount: Object.keys(unreadCounts || {}).length,
+  }));
 
   if (PLAYER_RENDER_DEBUG) {
     renderDebugCountRef.current += 1;

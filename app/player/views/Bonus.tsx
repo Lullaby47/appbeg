@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { playerDebugLog } from '@/lib/client/playerDebugLogs';
 import { AnimatePresence, motion } from 'motion/react';
 import { getPlayerBonusEventDescription } from '../utils';
+import { usePlayerRenderPerf } from '../performance';
 
 type Props = Record<string, any>;
 
@@ -21,6 +22,13 @@ export default function Bonus(props: Props) {
     setBonusStripPaused,
     showBonusPanelHint,
   } = props;
+
+  usePlayerRenderPerf('Bonus', () => ({
+    bonusEventCount: playerBonusEvents.length,
+    activeBonusCarouselIndex,
+    bonusEventsSessionLoading,
+    showBonusPanelHint,
+  }));
 
   useEffect(() => {
     if (bonusEventsSessionLoading) {
