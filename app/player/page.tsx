@@ -382,7 +382,7 @@ function detectLowPerformanceMode() {
   const lowCoreCount =
     Number.isFinite(hardwareConcurrency) && hardwareConcurrency > 0 && hardwareConcurrency <= 4;
 
-  return reducedMotion || (mobileViewport && (coarsePointer || lowDeviceMemory || lowCoreCount));
+  return reducedMotion || (mobileViewport && coarsePointer && (lowDeviceMemory || lowCoreCount));
 }
 
 function areWalletsEqual(left: PlayerWallet, right: PlayerWallet) {

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import type { PlayerGameLogin } from '@/features/games/playerGameLogins';
-import { getGameBackgroundImage } from '../utils';
+import { getGameBackgroundImage, getMobileGameBackgroundImage } from '../utils';
 
 type Props = Record<string, any>;
 
@@ -155,6 +155,10 @@ export default function Play(props: Props) {
                           gameBackgroundImageByKey,
                           game.gameName
                         );
+                        const renderedGameCardImage =
+                          shouldPageCards || lowPerformanceMode
+                            ? getMobileGameBackgroundImage(gameCardBackgroundImage)
+                            : gameCardBackgroundImage;
 
                         return (
                           <motion.div
@@ -182,9 +186,9 @@ export default function Play(props: Props) {
                                 : 'border-white/10 bg-black/45 hover:border-amber-400/35'
                             }`}
                             style={
-                              gameCardBackgroundImage && !lowPerformanceMode
+                              renderedGameCardImage && !lowPerformanceMode
                                 ? {
-                                    backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.2) 0%, rgba(0, 0, 0, 0.42) 100%), url("${gameCardBackgroundImage}")`,
+                                    backgroundImage: `linear-gradient(180deg, rgba(0, 0, 0, 0.2) 0%, rgba(0, 0, 0, 0.42) 100%), url("${renderedGameCardImage}")`,
                                     backgroundSize: '100% 100%',
                                     backgroundPosition: 'center',
                                     backgroundRepeat: 'no-repeat',
@@ -193,14 +197,15 @@ export default function Play(props: Props) {
                                 : undefined
                             }
                           >
-                            {lowPerformanceMode && gameCardBackgroundImage ? (
+                            {lowPerformanceMode && renderedGameCardImage ? (
                               <div className="relative mb-2 h-28 overflow-hidden rounded-xl border border-amber-200/15 bg-black/35">
                                 <img
-                                  src={gameCardBackgroundImage}
+                                  src={renderedGameCardImage}
                                   alt=""
-                                  loading="lazy"
+                                  loading={index < 6 ? 'eager' : 'lazy'}
                                   decoding="async"
-                                  fetchPriority="low"
+                                  width={640}
+                                  height={360}
                                   className="h-full w-full object-cover"
                                   aria-hidden="true"
                                 />

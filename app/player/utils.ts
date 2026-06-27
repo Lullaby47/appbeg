@@ -181,6 +181,15 @@ export function getGameBackgroundImage(
   return backgroundsByKey[key] || DEFAULT_GAME_BACKGROUND_IMAGE;
 }
 
+export function getMobileGameBackgroundImage(imagePath: string) {
+  const cleanPath = String(imagePath || '').trim();
+  const match = cleanPath.match(/^\/gamebackgroundimage\/([^/]+)\.png$/i);
+  if (!match) {
+    return cleanPath;
+  }
+  return `/gamebackgroundimage/mobile/${match[1]}.webp`;
+}
+
 export function normalizeExternalUrl(siteUrl?: string | null) {
   const trimmed = String(siteUrl || '').trim();
   if (!trimmed) {

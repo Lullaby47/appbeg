@@ -5,7 +5,12 @@ import type { Dispatch, MouseEvent, SetStateAction } from 'react';
 import { motion } from 'motion/react';
 import type { PlayerGameLogin } from '@/features/games/playerGameLogins';
 import { UNKNOWN_CREATOR_FILTER_KEY } from '../constants';
-import { getGameBackgroundImage, normalizeBackgroundKey, normalizeExternalUrl } from '../utils';
+import {
+  getGameBackgroundImage,
+  getMobileGameBackgroundImage,
+  normalizeBackgroundKey,
+  normalizeExternalUrl,
+} from '../utils';
 
 type CreatorFilterKeys = {
   sortedUids: string[];
@@ -83,6 +88,9 @@ const CredentialCard = memo(function CredentialCard({
 }: CredentialCardProps) {
   const isResetLoading = credentialTaskLoadingKey === `reset_password:${login.id}`;
   const imageLoading = index < EAGER_CREDENTIAL_IMAGE_COUNT ? 'eager' : 'lazy';
+  const renderedImage = isMobileCard
+    ? getMobileGameBackgroundImage(gameCardBackgroundImage)
+    : gameCardBackgroundImage;
   const cardClassName =
     'vault-credential-card fire-panel fire-orange group relative overflow-hidden rounded-[1.7rem] border border-amber-300/25 bg-gradient-to-br from-[#3a140b]/88 via-[#5d2411]/78 to-[#261018]/92 p-2.5 shadow-[0_18px_40px_-18px_rgba(56,11,4,0.9)] backdrop-blur-xl transition-all sm:p-3 sm:hover:border-amber-300/45 sm:hover:shadow-[0_0_30px_-10px_rgba(251,191,36,0.38)]';
   const cardContent = (
@@ -92,9 +100,9 @@ const CredentialCard = memo(function CredentialCard({
           className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_24%_18%,rgba(252,211,77,0.28),transparent_34%),linear-gradient(135deg,rgba(234,88,12,0.26),rgba(88,28,135,0.28)_55%,rgba(0,0,0,0.55))]"
           aria-hidden="true"
         />
-        {gameCardBackgroundImage ? (
+        {renderedImage ? (
           <img
-            src={gameCardBackgroundImage}
+            src={renderedImage}
             alt=""
             loading={imageLoading}
             decoding="async"
